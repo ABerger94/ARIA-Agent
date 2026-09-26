@@ -43,10 +43,11 @@ except ImportError:
 # =====================================================================
 GEMINI_API_KEY = "AQ...."
 
-# Workspace & Memory Databases
+# Workspace & File Logs
 WORKSPACE_DIR = os.path.join(os.path.expanduser("~"), "robot_workspace")
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
 DB_PATH = os.path.join(WORKSPACE_DIR, "aria_memory.db")
+CHAT_LOG_FILE = os.path.join(WORKSPACE_DIR, "chat_history.md")
 
 # Voice Engine
 tts = pyttsx3.init()
@@ -55,13 +56,16 @@ recognizer = sr.Recognizer()
 
 # Global State Variables
 CURRENT_STATE = "idle"
+HUD_MODE = "visor"  # 'visor' or 'chat_log'
 SUBTITLE_TEXT = "A.R.I.A. Autonomous Agent OS online. All subsystems active."
-LOG_STREAM = ["A.R.I.A. Kernel 4.0 loaded.", "Neural memory database connected."]
-SPEECH_QUEUE = queue.Queue()
+LOG_STREAM = ["A.R.I.A. Kernel 4.5 loaded.", "Chat history and memory databases synced."]
 BUSY_PROCESSING = False
 SERVO_PAN, SERVO_TILT = 90, 45
 HARDWARE_CONNECTED = False
 SERIAL_CONN = None
+
+# In-Memory Rolling Chat History for HUD View
+DISPLAY_CHAT_LOG = []
 
 def add_log(msg):
     global LOG_STREAM
@@ -71,9 +75,9 @@ def add_log(msg):
         LOG_STREAM.pop(0)
 
 # =====================================================================
-# 2. PERSISTENT LONG-TERM MEMORY (SQLite)
+# 2. PERSISTENT CHAT LOGGING & DATABASE (SQLite + Markdown)
 # =====================================================================
-def init_memory_db():
+def init_databases():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
@@ -85,8 +89,47 @@ def init_memory_db():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            sender TEXT,
+            message TEXT
+        )
+    ''')
     conn.commit()
     conn.close()
+
+def log_conversation(sender: str, message: str):
+    """Logs conversation to SQLite, HUD buffer, and markdown file."""
+    global DISPLAY_CHAT_LOG
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    time_short = datetime.now().strftime("%H:%M:%S")
+
+    # 1. Update in-memory HUD display log
+    DISPLAY_CHAT_LOG.append((time_short, sender, message))
+    if len(DISPLAY_CHAT_LOG) > 30:
+        DISPLAY_CHAT_LOG.pop(0)
+
+    # 2. Write to SQLite
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO chat_history (timestamp, sender, message) VALUES (?, ?, ?)",
+                       (timestamp, sender, message))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        add_log(f"DB err: {e}")
+
+    # 3. Append to persistent Markdown file
+    try:
+        with open(CHAT_LOG_FILE, "a", encoding="utf-8") as f:
+            if not os.path.exists(CHAT_LOG_FILE) or os.path.getsize(CHAT_LOG_FILE) == 0:
+                f.write("# A.R.I.A. Master Conversation & Action Log\n\n---\n")
+            f.write(f"\n### [{timestamp}] {sender.upper()}:\n{message}\n")
+    except Exception as e:
+        add_log(f"File log err: {e}")
 
 def memory_save(category: str, key: str, value: str):
     conn = sqlite3.connect(DB_PATH)
@@ -120,7 +163,7 @@ def memory_get_all() -> str:
         return "Memory bank is currently empty."
     return "\n".join([f"• [{cat}] {k}: {v}" for cat, k, v in rows])
 
-init_memory_db()
+init_databases()
 
 # =====================================================================
 # 3. PHYSICAL ROBOTICS HARDWARE BRIDGE (USB Serial)
@@ -128,19 +171,18 @@ init_memory_db()
 def init_hardware():
     global SERIAL_CONN, HARDWARE_CONNECTED
     if not SERIAL_AVAILABLE:
-        add_log("Hardware serial library offline.")
         return
     ports = serial.tools.list_ports.comports()
     for port in ports:
-        if "Arduino" in port.description or "CH340" in port.description or "USB Serial" in port.description:
+        if any(h in port.description for h in ["Arduino", "CH340", "USB Serial"]):
             try:
                 SERIAL_CONN = serial.Serial(port.device, 115200, timeout=1)
                 HARDWARE_CONNECTED = True
                 add_log(f"Physical hardware linked: {port.device}")
                 return
             except Exception as e:
-                add_log(f"Hardware port error: {e}")
-    add_log("Hardware: Virtual Mode (No physical servos)")
+                add_log(f"Hardware error: {e}")
+    add_log("Hardware: Virtual Mode (No servos connected)")
 
 def send_servo_command(pan: int, tilt: int):
     global SERVO_PAN, SERVO_TILT, SERIAL_CONN
@@ -149,7 +191,7 @@ def send_servo_command(pan: int, tilt: int):
     if HARDWARE_CONNECTED and SERIAL_CONN and SERIAL_CONN.is_open:
         cmd = f"P{SERVO_PAN}T{SERVO_TILT}\n"
         SERIAL_CONN.write(cmd.encode())
-    add_log(f"Neck orientation: Pan {SERVO_PAN}°, Tilt {SERVO_TILT}°")
+    add_log(f"Servos: Pan {SERVO_PAN}°, Tilt {SERVO_TILT}°")
 
 init_hardware()
 
@@ -185,15 +227,15 @@ def tool_gui_click(x: int, y: int) -> str:
     if not GUI_AVAILABLE:
         return "PyAutoGUI not installed."
     pyautogui.click(x, y)
-    add_log(f"GUI: Clicked coordinates ({x}, {y})")
-    return f"Successfully clicked at screen coordinates ({x}, {y})."
+    add_log(f"GUI: Clicked ({x}, {y})")
+    return f"Clicked coordinates ({x}, {y})."
 
 def tool_gui_type(text: str) -> str:
     if not GUI_AVAILABLE:
         return "PyAutoGUI not installed."
     pyautogui.write(text, interval=0.03)
     add_log(f"GUI: Typed '{text[:20]}...'")
-    return f"Successfully typed text into active application."
+    return f"Typed text into active window."
 
 def tool_open_app_or_url(target: str) -> str:
     add_log(f"Launching: {target}")
@@ -242,11 +284,11 @@ TOOLS_DECLARATION = [
             },
             {
                 "name": "save_memory",
-                "description": "Stores a permanent fact, project note, or user preference in persistent memory.",
+                "description": "Stores a permanent fact or user preference in persistent memory.",
                 "parameters": {
                     "type": "OBJECT",
                     "properties": {
-                        "category": {"type": "STRING", "description": "e.g. user_profile, project, preference, note"},
+                        "category": {"type": "STRING", "description": "e.g. user_profile, project, preference"},
                         "key": {"type": "STRING", "description": "Specific memory key"},
                         "value": {"type": "STRING", "description": "Information to remember"}
                     },
@@ -255,17 +297,17 @@ TOOLS_DECLARATION = [
             },
             {
                 "name": "search_memory",
-                "description": "Searches long-term persistent memory for past notes, projects, or user facts.",
+                "description": "Searches persistent memory for past notes, projects, or user facts.",
                 "parameters": {"type": "OBJECT", "properties": {"query": {"type": "STRING"}}, "required": ["query"]}
             },
             {
                 "name": "gui_click",
-                "description": "Clicks at specific X, Y pixel coordinates on the screen.",
+                "description": "Clicks at specific X, Y pixel coordinates on screen.",
                 "parameters": {"type": "OBJECT", "properties": {"x": {"type": "INTEGER"}, "y": {"type": "INTEGER"}}, "required": ["x", "y"]}
             },
             {
                 "name": "gui_type",
-                "description": "Types text into the currently active computer window.",
+                "description": "Types text into the active computer window.",
                 "parameters": {"type": "OBJECT", "properties": {"text": {"type": "STRING"}}, "required": ["text"]}
             },
             {
@@ -337,7 +379,7 @@ def apply_led_scanlines(canvas, x1, y1, x2, y2):
         canvas[y, max(0, x1):min(canvas.shape[1], x2)] = canvas[y, max(0, x1):min(canvas.shape[1], x2)] // 2
 
 def draw_hud():
-    global CURRENT_STATE
+    global CURRENT_STATE, HUD_MODE
     w, h = 1280, 720
     canvas = np.zeros((h, w, 3), dtype=np.uint8)
 
@@ -345,10 +387,11 @@ def draw_hud():
     GLOW = (120, 90, 10)
     AMBER = (30, 160, 255)
     GREEN = (40, 240, 120)
+    WHITE_TEXT = (235, 242, 255)
     BORDER = (45, 50, 60)
     PANEL_BG = (15, 17, 22)
 
-    # Background grid
+    # Grid background
     for x in range(0, w, 80):
         cv2.line(canvas, (x, 0), (x, h), (18, 20, 24), 1)
     for y in range(0, h, 80):
@@ -371,7 +414,7 @@ def draw_hud():
     battery = psutil.sensors_battery()
     bat_str = f"{battery.percent}%" if battery else "AC"
 
-    cv2.putText(canvas, "A.R.I.A. // AUTONOMOUS AGENT OS v4.0", (30, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.65, CYAN, 2, cv2.LINE_AA)
+    cv2.putText(canvas, "A.R.I.A. // AUTONOMOUS AGENT OS v4.5", (30, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.65, CYAN, 2, cv2.LINE_AA)
     sys_stats = f"{now_str}  |  CPU: {cpu_usage}%  |  MEM: {mem_usage}%  |  BAT: {bat_str}"
     cv2.putText(canvas, sys_stats, (650, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 170, 180), 1, cv2.LINE_AA)
     cv2.line(canvas, (20, 55), (1260, 55), CYAN, 1)
@@ -380,9 +423,9 @@ def draw_hud():
     cv2.putText(canvas, "[ SUBSYSTEM MATRIX ]", (35, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, CYAN, 1, cv2.LINE_AA)
     modules = [
         ("• Hands-Free Audio", "ACTIVE"),
+        ("• Chat Log Engine", "SAVING"),
         ("• Neural Memory", "SYNCED"),
         ("• GUI Automation", "ONLINE"),
-        ("• Proactive Heartbeat", "RUNNING"),
         ("• Physical Bridge", "LINKED" if HARDWARE_CONNECTED else "VIRTUAL"),
         ("• Neck Orientation", f"{SERVO_PAN}° / {SERVO_TILT}°")
     ]
@@ -390,7 +433,7 @@ def draw_hud():
         cv2.putText(canvas, mod, (35, 135 + i * 32), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 1, cv2.LINE_AA)
         cv2.putText(canvas, stat, (200, 135 + i * 32), cv2.FONT_HERSHEY_SIMPLEX, 0.38, GREEN, 1, cv2.LINE_AA)
 
-    # Optic PIP (Picture in Picture)
+    # Optic PIP
     pip_x, pip_y, pip_w, pip_h = 35, 335, 230, 115
     cv2.rectangle(canvas, (pip_x, pip_y), (pip_x + pip_w, pip_y + pip_h), (30, 35, 45), -1)
     if LATEST_CAMERA_FRAME is not None:
@@ -398,7 +441,7 @@ def draw_hud():
         canvas[pip_y:pip_y+pip_h, pip_x:pip_x+pip_w] = thumb
     cv2.circle(canvas, (pip_x + pip_w // 2, pip_y + pip_h // 2), 15, CYAN, 1)
     cv2.line(canvas, (pip_x + pip_w // 2 - 25, pip_y + pip_h // 2), (pip_x + pip_w // 2 + 25, pip_y + pip_h // 2), CYAN, 1)
-    cv2.line(canvas, (pip_x + pip_w // 2, pip_y + pip_h // 2 - 25), (pip_x + pip_w // 2, pip_y + pip_h // 2 + 25), CYAN, 1)
+    cv2.line(canvas, (pip_x + pip_w // 2 - 25, pip_y + pip_h // 2), (pip_x + pip_w // 2 + 25, pip_y + pip_h // 2), CYAN, 1)
     cv2.putText(canvas, "OPTIC FEED // CAM_01", (pip_x + 5, pip_y + pip_h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.35, CYAN, 1, cv2.LINE_AA)
 
     # Right Panel: Action Stream
@@ -406,42 +449,82 @@ def draw_hud():
     for i, log in enumerate(LOG_STREAM):
         cv2.putText(canvas, log[:32], (1015, 135 + i * 32), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (170, 190, 200), 1, cv2.LINE_AA)
 
-    # Central Visor
-    lx, rx, cy = 520, 760, 230
-    if CURRENT_STATE == "idle":
-        for ex in (lx, rx):
-            cv2.ellipse(canvas, (ex, cy), (55, 78), 0, 0, 360, GLOW, -1)
-            cv2.ellipse(canvas, (ex, cy), (48, 70), 0, 0, 360, CYAN, -1)
-            cv2.circle(canvas, (ex - 15, cy - 25), 8, (255, 255, 255), -1)
-            apply_led_scanlines(canvas, ex - 60, cy - 80, ex + 60, cy + 80)
-    elif CURRENT_STATE == "listening":
-        for ex in (lx, rx):
-            cv2.circle(canvas, (ex, cy), 70, (255, 80, 255), -1)
-            cv2.circle(canvas, (ex - 15, cy - 20), 10, (255, 255, 255), -1)
-            apply_led_scanlines(canvas, ex - 70, cy - 70, ex + 70, cy + 70)
-    elif CURRENT_STATE == "thinking":
-        for ex, tilt, dy in ((lx, -12, -15), (rx, 8, -5)):
-            cv2.ellipse(canvas, (ex, cy + dy), (48, 68), tilt, 0, 360, (0, 100, 200), -1)
-            cv2.ellipse(canvas, (ex, cy + dy), (42, 60), tilt, 0, 360, AMBER, -1)
-            cv2.circle(canvas, (ex - 12, cy + dy - 20), 7, (255, 255, 255), -1)
-            apply_led_scanlines(canvas, ex - 60, cy + dy - 70, ex + 60, cy + dy + 70)
-    elif CURRENT_STATE == "coding":
-        for ex in (lx, rx):
-            cv2.rectangle(canvas, (ex - 55, cy - 65), (ex + 55, cy + 65), (0, 100, 40), -1)
-            cv2.rectangle(canvas, (ex - 50, cy - 60), (ex + 50, cy + 60), GREEN, 2)
-            cv2.putText(canvas, "</>", (ex - 35, cy + 12), cv2.FONT_HERSHEY_SIMPLEX, 1.1, GREEN, 2, cv2.LINE_AA)
-            apply_led_scanlines(canvas, ex - 60, cy - 70, ex + 60, cy + 70)
-    elif CURRENT_STATE == "speaking":
-        for ex in (lx, rx):
-            cv2.ellipse(canvas, (ex, cy - 10), (52, 45), 0, 190, 350, CYAN, 10)
-            apply_led_scanlines(canvas, ex - 60, cy - 60, ex + 60, cy + 40)
-        t = time.time() * 12
-        for i in range(-16, 17):
-            bar_x = 640 + (i * 12)
-            bar_h = int(abs(np.sin(t + i * 0.45)) * 34) + 4
-            cv2.line(canvas, (bar_x, 370 - bar_h), (bar_x, 370 + bar_h), CYAN, 2)
+    # =================================================================
+    # CENTRAL DISPLAY: Toggle between EVE Visor and Tactical Chat Log
+    # =================================================================
+    if HUD_MODE == "chat_log":
+        # Holographic Terminal Box
+        cv2.rectangle(canvas, (300, 70), (980, 460), (12, 14, 18), -1)
+        cv2.rectangle(canvas, (300, 70), (980, 460), CYAN, 1)
+        cv2.putText(canvas, "[ TACTICAL CHAT LOG // RECENT TRANSCRIPT ]", (320, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, CYAN, 1, cv2.LINE_AA)
+        
+        # Build multi-line wrapped transcript lines
+        rendered_lines = []
+        for ts, sender, text in DISPLAY_CHAT_LOG:
+            header_color = CYAN if sender.lower() == "user" else GREEN
+            header = f"[{ts}] {sender.upper()}:"
+            
+            # Wrap at 62 characters so all lines fit cleanly with margins
+            msg_lines = textwrap.wrap(text, width=62)
+            if msg_lines:
+                # Line 1: Header in color, text message in crisp WHITE
+                rendered_lines.append([
+                    (320, header, header_color),
+                    (465, msg_lines[0], WHITE_TEXT)
+                ])
+                # Subsequent lines: Text in crisp WHITE aligned under line 1
+                for sub_line in msg_lines[1:]:
+                    rendered_lines.append([
+                        (465, sub_line, WHITE_TEXT)
+                    ])
+            else:
+                rendered_lines.append([(320, header, header_color)])
+            rendered_lines.append([])  # Blank spacer line
 
-    # Subtitles
+        # Keep the most recent 14 visible lines (auto-scroll)
+        visible_lines = rendered_lines[-14:] if len(rendered_lines) > 14 else rendered_lines
+        chat_y = 135
+        for line_items in visible_lines:
+            for x_pos, txt, color in line_items:
+                cv2.putText(canvas, txt, (x_pos, chat_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
+            chat_y += 22
+    else:
+        # Animated EVE Visor Eyes
+        lx, rx, cy = 520, 760, 230
+        if CURRENT_STATE == "idle":
+            for ex in (lx, rx):
+                cv2.ellipse(canvas, (ex, cy), (55, 78), 0, 0, 360, GLOW, -1)
+                cv2.ellipse(canvas, (ex, cy), (48, 70), 0, 0, 360, CYAN, -1)
+                cv2.circle(canvas, (ex - 15, cy - 25), 8, (255, 255, 255), -1)
+                apply_led_scanlines(canvas, ex - 60, cy - 80, ex + 60, cy + 80)
+        elif CURRENT_STATE == "listening":
+            for ex in (lx, rx):
+                cv2.circle(canvas, (ex, cy), 70, (255, 80, 255), -1)
+                cv2.circle(canvas, (ex - 15, cy - 20), 10, (255, 255, 255), -1)
+                apply_led_scanlines(canvas, ex - 70, cy - 70, ex + 70, cy + 70)
+        elif CURRENT_STATE == "thinking":
+            for ex, tilt, dy in ((lx, -12, -15), (rx, 8, -5)):
+                cv2.ellipse(canvas, (ex, cy + dy), (48, 68), tilt, 0, 360, (0, 100, 200), -1)
+                cv2.ellipse(canvas, (ex, cy + dy), (42, 60), tilt, 0, 360, AMBER, -1)
+                cv2.circle(canvas, (ex - 12, cy + dy - 20), 7, (255, 255, 255), -1)
+                apply_led_scanlines(canvas, ex - 60, cy + dy - 70, ex + 60, cy + dy + 70)
+        elif CURRENT_STATE == "coding":
+            for ex in (lx, rx):
+                cv2.rectangle(canvas, (ex - 55, cy - 65), (ex + 55, cy + 65), (0, 100, 40), -1)
+                cv2.rectangle(canvas, (ex - 50, cy - 60), (ex + 50, cy + 60), GREEN, 2)
+                cv2.putText(canvas, "</>", (ex - 35, cy + 12), cv2.FONT_HERSHEY_SIMPLEX, 1.1, GREEN, 2, cv2.LINE_AA)
+                apply_led_scanlines(canvas, ex - 60, cy - 70, ex + 60, cy + 70)
+        elif CURRENT_STATE == "speaking":
+            for ex in (lx, rx):
+                cv2.ellipse(canvas, (ex, cy - 10), (52, 45), 0, 190, 350, CYAN, 10)
+                apply_led_scanlines(canvas, ex - 60, cy - 60, ex + 60, cy + 40)
+            t = time.time() * 12
+            for i in range(-16, 17):
+                bar_x = 640 + (i * 12)
+                bar_h = int(abs(np.sin(t + i * 0.45)) * 34) + 4
+                cv2.line(canvas, (bar_x, 370 - bar_h), (bar_x, 370 + bar_h), CYAN, 2)
+
+    # Subtitles Bay (Auto-Wrapping, Anti-Aliased)
     cv2.putText(canvas, "[ VOCAL SYNTHESIS SUBTITLES ]", (40, 508), cv2.FONT_HERSHEY_SIMPLEX, 0.48, CYAN, 1, cv2.LINE_AA)
     wrapped_lines = textwrap.wrap(SUBTITLE_TEXT, width=88)
     if len(wrapped_lines) <= 4:
@@ -454,9 +537,10 @@ def draw_hud():
 
     start_y = 538
     for idx, line in enumerate(wrapped_lines[:7]):
-        cv2.putText(canvas, line, (40, start_y + idx * line_height), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (235, 242, 255), 1, cv2.LINE_AA)
+        cv2.putText(canvas, line, (40, start_y + idx * line_height), cv2.FONT_HERSHEY_SIMPLEX, font_scale, WHITE_TEXT, 1, cv2.LINE_AA)
 
-    controls = "CONTROLS: [HANDS-FREE ACTIVE]  |  [SPACE] Speak  |  [S] Screen Vision  |  [T] Type  |  [Q] Exit"
+    # Controls Helper
+    controls = "CONTROLS: [C] Toggle Chat Log View  |  [L] Open Log in Notepad  |  [SPACE] Voice  |  [S] Screen  |  [Q] Exit"
     cv2.putText(canvas, controls, (40, 692), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (130, 140, 150), 1, cv2.LINE_AA)
 
     cv2.imshow("A.R.I.A. Autonomous Agent OS", canvas)
@@ -466,6 +550,7 @@ def speak(text):
     global SUBTITLE_TEXT, CURRENT_STATE
     SUBTITLE_TEXT = text
     add_log(f"Speech: {text[:28]}...")
+    log_conversation("A.R.I.A.", text)
     CURRENT_STATE = "speaking"
     draw_hud()
     tts.say(text)
@@ -474,7 +559,7 @@ def speak(text):
     draw_hud()
 
 # =====================================================================
-# 6. AUTONOMOUS AGENT BRAIN (Multi-Turn + Memory Injection)
+# 6. AUTONOMOUS AGENT BRAIN
 # =====================================================================
 CONVERSATION_HISTORY = []
 
@@ -484,6 +569,7 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False):
     CURRENT_STATE = "thinking"
     draw_hud()
     
+    log_conversation("User", user_prompt)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
     
     now_time = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
@@ -492,11 +578,10 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False):
     system_instruction = (
         f"You are A.R.I.A. (Adaptive Robotic Intelligence Agent), an embodied autonomous desktop AI Agent OS. "
         f"Current time: {now_time}. "
-        f"Known persistent memories about the user and past sessions:\n{known_memories}\n"
-        "Capabilities: Live web search, persistent memory read/write, Python code execution, GUI mouse/typing automation, "
-        "and physical neck servo actuation. "
+        f"Known persistent memories:\n{known_memories}\n"
+        "Capabilities: Live web search, persistent memory read/write, Python code execution, GUI automation, and servo movement. "
         "When told important personal facts, preferences, or project details, actively call 'save_memory'! "
-        "Respond concisely and intelligently in 1-2 spoken sentences."
+        "Keep vocal responses concise, refined, and intelligent (1-2 sentences)."
     )
     
     prompt_label = "User (Screen View): " if is_screen else "User: "
@@ -589,41 +674,34 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False):
     BUSY_PROCESSING = False
 
 # =====================================================================
-# 7. PROACTIVE HEARTBEAT ENGINE (Autonomous Daemon)
+# 7. PROACTIVE HEARTBEAT ENGINE
 # =====================================================================
 def proactive_heartbeat_loop():
-    """Runs continuously in the background every 30s to watch over user."""
     time.sleep(10)
     last_battery_alert = False
     session_start = time.time()
-    
     while True:
         try:
-            # 1. Low battery alert
             battery = psutil.sensors_battery()
             if battery and not battery.power_plugged and battery.percent < 20 and not last_battery_alert:
                 last_battery_alert = True
                 if not BUSY_PROCESSING:
-                    speak(f"Allen, your laptop battery is at {battery.percent}%. Please connect to AC power.")
+                    speak(f"Allen, battery level is at {battery.percent}%. Please connect to AC power.")
             elif battery and battery.power_plugged:
                 last_battery_alert = False
 
-            # 2. 60-Minute Focus Break
-            elapsed_hours = (time.time() - session_start) / 3600
-            if elapsed_hours >= 1.0:
+            if (time.time() - session_start) / 3600 >= 1.0:
                 session_start = time.time()
                 if not BUSY_PROCESSING:
-                    speak("You have been active for an hour. Consider stretching your eyes.")
+                    speak("You have been active for an hour. Consider taking a 5-minute stretch.")
         except Exception as e:
             add_log(f"Heartbeat err: {e}")
-            
         time.sleep(30)
 
-# Start background proactive engine
 threading.Thread(target=proactive_heartbeat_loop, daemon=True).start()
 
 # =====================================================================
-# 8. HANDS-FREE VOICE & ACTION DISPATCHER
+# 8. HANDS-FREE VOICE & DISPATCHER
 # =====================================================================
 def handle_action(mode="voice", typed_prompt=None):
     global CURRENT_STATE
@@ -657,7 +735,6 @@ def handle_action(mode="voice", typed_prompt=None):
     threading.Thread(target=run_agent, args=(user_text, image_bytes, is_screen), daemon=True).start()
 
 def continuous_voice_listener():
-    """Listens continuously in the background for speech."""
     with sr.Microphone() as source:
         recognizer.adjust_for_ambient_noise(source, duration=1.0)
         while True:
@@ -666,7 +743,7 @@ def continuous_voice_listener():
                     audio = recognizer.listen(source, timeout=3, phrase_time_limit=8)
                     transcript = recognizer.recognize_google(audio).lower()
                     if "aria" in transcript or "hey aria" in transcript:
-                        add_log(f"Wake trigger: '{transcript[:25]}'")
+                        add_log(f"Wake: '{transcript[:25]}'")
                         cleaned = transcript.replace("hey aria", "").replace("aria", "").strip()
                         if cleaned:
                             threading.Thread(target=run_agent, args=(cleaned, None, False), daemon=True).start()
@@ -676,30 +753,36 @@ def continuous_voice_listener():
                     pass
             time.sleep(0.3)
 
-# Start hands-free voice loop in background
 threading.Thread(target=continuous_voice_listener, daemon=True).start()
 
 # =====================================================================
 # 9. MAIN EVENT LOOP
 # =====================================================================
-print("\n" + "="*70)
-print(" A.R.I.A. AUTONOMOUS AGENT OPERATING SYSTEM (v4.0)")
-print(" Features: Hands-Free Voice, SQLite Memory, Heartbeat, GUI Auto, Servos")
+print("\n" + "="*75)
+print(" A.R.I.A. AUTONOMOUS AGENT OPERATING SYSTEM (v4.5)")
 print(" Controls:")
-print("  - Just say: 'Hey A.R.I.A. [command]' anytime!")
+print("  - [C]        : Toggle Tactical Chat Log View on HUD")
+print("  - [L]        : Open Master Chat Log File in Notepad")
 print("  - [SPACEBAR] : Manual Voice Input")
-print("  - [S]        : Screen Vision (Reads your current laptop display)")
+print("  - [S]        : Screen Perception (Look at laptop display)")
 print("  - [T]        : Type directive directly")
 print("  - [Q]        : Disengage / Shutdown")
-print("="*70 + "\n")
+print("="*75 + "\n")
 
 draw_hud()
-speak("A.R.I.A. Autonomous Agent OS initialized. Hands-free voice and memory matrix online.")
+speak("A.R.I.A. online. Master chat logger and neural memory active. At your command.")
 
 while True:
     draw_hud()
     key = cv2.waitKey(100) & 0xFF
-    if key == ord(' '):
+    
+    if key == ord('c') or key == ord('C'):  # Toggle Chat View
+        HUD_MODE = "chat_log" if HUD_MODE == "visor" else "visor"
+        add_log(f"HUD mode switched to: {HUD_MODE}")
+    elif key == ord('l') or key == ord('L'):  # Open Chat Log in Notepad
+        add_log("Opening chat_history.md in Notepad...")
+        os.system(f'notepad "{CHAT_LOG_FILE}"')
+    elif key == ord(' '):
         handle_action(mode="voice")
     elif key == ord('s') or key == ord('S'):
         handle_action(mode="screen")
