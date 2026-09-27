@@ -73,7 +73,7 @@ Gmail sending uses an app password, saved via ARIA's `gmail_setup` tool.
 ## Project layout
 
 ```
-aria.py                  Main program (v9.16)
+aria.py                  Main program (v9.17)
 soul.md                  Her persona — loaded into mind on every start
 requirements.txt         Python dependencies
 windows/                 Auto-start installer + watchdog (.bat)
@@ -82,6 +82,8 @@ tools/                   Helper scripts (key manager)
 
 ## Version history
 
+- **v9.17** — Back to Google cloud transcription by default; the local
+  faster-whisper path stays in the file, dormant behind `_USE_LOCAL_STT`
 - **v9.16** — Hallucination guard for local STT: voice-activity filtering
   (Silero VAD), no conditioning on previous text, and segments the model
   itself flags as non-speech are dropped -- silence becomes "didn't catch
