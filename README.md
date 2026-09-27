@@ -73,7 +73,7 @@ Gmail sending uses an app password, saved via ARIA's `gmail_setup` tool.
 ## Project layout
 
 ```
-aria.py                  Main program (v9.18)
+aria.py                  Main program (v9.19)
 soul.md                  Her persona — loaded into mind on every start
 requirements.txt         Python dependencies
 windows/                 Auto-start installer + watchdog (.bat)
@@ -82,6 +82,9 @@ tools/                   Helper scripts (key manager)
 
 ## Version history
 
+- **v9.19** — Version numbers removed from all user-visible text and code
+  (HUD, subtitles, console, spoken greeting, comments); the header
+  changelog keeps the full version history
 - **v9.18** — Subtitle sanitizer: vocal subtitles now pass through the
   HUD's `_hud()` ASCII sanitizer like the chat log and action stream,
   so curly quotes and other Unicode punctuation render correctly
