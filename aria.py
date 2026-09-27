@@ -165,6 +165,11 @@ New in v6.1 (everything from v6.0 kept):
  The whole local path — VAD filter, no-previous-text conditioning,
  no-speech filtering — stays in the file, dormant; set
  _USE_LOCAL_STT = True to re-enable it.
+ v9.18: subtitle sanitizer — the HUD's vocal-subtitle line rendered
+ '???' for Unicode punctuation (curly apostrophes, quotes, dashes)
+ because SUBTITLE_TEXT was drawn raw; it is now passed through
+ _hud() at assignment in _speech_worker, consistent with the
+ action stream and chat log.
  HTTPS phone bridge: self-signed cert for the current LAN IP so iOS grants mic access (first iPhone visit taps through a cert warning); falls back to
  HTTPS via a bundled self-signed cert (no extra packages).
  1. EDGE TTS VOICE — en-US-AriaNeural via the free edge-tts package. Sounds
@@ -577,7 +582,7 @@ def _spine_write_resume_card():
 
 
 atexit.register(_spine_write_resume_card)
-spine_append("restart", {"version": "9.17"})  # the spine opens on every boot
+spine_append("restart", {"version": "9.18"})  # the spine opens on every boot
 
 tts = pyttsx3.init()          # fallback voice; Edge TTS preferred (see speech worker)
 tts.setProperty('rate', 170)
@@ -2171,7 +2176,9 @@ def _speech_worker():
         _SPEECH_STOP.clear()
         try:
             global SUBTITLE_TEXT, CURRENT_STATE
-            SUBTITLE_TEXT = text
+            SUBTITLE_TEXT = _hud(text)  # v9.18: Hershey fonts draw
+            # ASCII only; _hud maps curly quotes/dashes/etc. so the
+            # subtitle line can never render '???'
             CURRENT_STATE = "speaking"
             draw_hud()
             if _EDGE_READY:
