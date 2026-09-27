@@ -12,3 +12,6 @@ pycaw>=20230407; sys_platform == "win32"
 aiohttp>=3.9
 requests>=2.31
 cryptography>=41.0
+# Optional (v9.14+): local speech recognition via Whisper on CPU.
+# Without it, ARIA uses Google's cloud recognizer exactly as before.
+faster-whisper>=1.0
