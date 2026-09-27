@@ -2,6 +2,12 @@
 A.R.I.A. — Autonomous Robotic Intelligence Agent
 Powered by Gemini 3.8 Flash.
 
+ v9.31: phone bridge text replies speak aloud on the phone — after a
+ text reply arrives, the bridge page fetches its audio from the existing
+ /api/say endpoint and plays it (same as hold-to-talk); a Speak replies
+ ON/OFF toggle on the page, persisted in localStorage. Audio trims at 500
+ chars; the full text still shows in the log.
+
  v9.30: merge her streaming chat-log fix with the v9.28 feature set —
  her cure is kept (log the full reply text after the stream, always), with
  one refinement: the HUD subtitle/draw stays out of silent/reply_sink turns,
@@ -3017,6 +3023,7 @@ user-select:none;-webkit-user-select:none}</style></head><body>
 <form onsubmit="return send()"><input id="t" placeholder="Directive..."
 autocomplete="off"><button>Send</button></form>
 <button id="talk">Hold to talk</button>
+<button id="spk" style="width:100%;margin-top:8px">Speak replies: ON</button>
 <script>
 let token=localStorage.getItem('aria_bridge_token')||'';
 function ensureToken(){if(!token){token=prompt('Bridge token (shown in her console at startup):')||'';
@@ -3033,9 +3040,20 @@ document.getElementById('log').innerHTML=j.map(e=>
 e[1].toUpperCase()+'</span>: '+e[2].replace(/</g,'&lt;')+'</div>').join('');
 const l=document.getElementById('log');l.scrollTop=l.scrollHeight;}
 async function send(){const t=document.getElementById('t');if(!t.value)return false;
-const v=t.value;t.value='';await api('/api/ask',{method:'POST',
+const v=t.value;t.value='';const r=await api('/api/ask',{method:'POST',
 headers:{'Content-Type':'application/json'},body:JSON.stringify({text:v})});
-refresh();return false;}
+let reply='';try{const j=await r.json();reply=(j.reply&&j.reply[0])||'';}catch(e){}
+refresh();
+if(reply&&!muted){try{const a=await api('/api/say?text='+encodeURIComponent(reply.slice(0,500)));
+const buf=await a.arrayBuffer();
+new Audio(URL.createObjectURL(new Blob([buf],{type:'audio/mpeg'}))).play();}catch(e){}}
+return false;}
+let muted=localStorage.getItem('aria_bridge_mute')==='1';
+const spk=document.getElementById('spk');
+function paintSpk(){spk.textContent='Speak replies: '+(muted?'OFF':'ON');}
+spk.addEventListener('click',()=>{muted=!muted;
+localStorage.setItem('aria_bridge_mute',muted?'1':'0');paintSpk();});
+paintSpk();
 const talk=document.getElementById('talk');let rec=null,chunks=[];
 talk.addEventListener('pointerdown',async e=>{e.preventDefault();ensureToken();
 try{const s=await navigator.mediaDevices.getUserMedia({audio:true});
