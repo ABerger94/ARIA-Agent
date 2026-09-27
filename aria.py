@@ -2,6 +2,12 @@
 A.R.I.A. — Autonomous Robotic Intelligence Agent
 Powered by Gemini 3.8 Flash.
 
+ v9.24: self-edit auto-restart — boot-time sha256 of the running script
+ and soul.md; when a turn completes and either changed, the new script is
+ compile-checked, she announces the restart, and a daemon timer relaunches
+ the process once speech drains (deferred while a confirmation or a
+ suspended turn is pending; a new turn always cancels a pending restart).
+
  v9.23: barge-in — any new typed, mic, PTT, wake-word, or phone-bridge
  message stops her current speech immediately (interrupt_speech now runs
  on every input path, not just stop-words); empty transcripts don't interrupt.
@@ -2409,8 +2415,11 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
               reply_sink=None, preauthorized=False, silent=False, _resume_from=None):
     global CONVERSATION_HISTORY, CURRENT_STATE, BUSY_PROCESSING, PENDING_CONFIRM
     global LAST_USER_MESSAGE, _TURN_NUDGED, _LOADED_TOOLKITS, _TURN_CALLS
-    global _SUSPENDED_TURN, _AWAITING_CONTINUE
+    global _SUSPENDED_TURN, _AWAITING_CONTINUE, _RESTART_TIMER
     BUSY_PROCESSING = True
+    if _RESTART_TIMER is not None:  # a new turn always wins over a pending restart
+        _RESTART_TIMER.cancel()
+        _RESTART_TIMER = None
     LAST_USER_MESSAGE = user_prompt or ""
     _TURN_NUDGED = False
     _LOADED_TOOLKITS = {"core"}  # progressive tool loading starts with core
@@ -2428,6 +2437,9 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
         f"Your soul - who you are. Embody it fully:\n{ARIA_SOUL}\n"
         "You are also an embodied autonomous desktop AI Agent OS running on "
         "the user's laptop. "
+        "If you edit your own program file (the running Python script) or "
+        "soul.md, I automatically restart the Python process when your turn "
+        "completes so the new code loads \u2014 never ask the user to restart you. "
         f"Current time: {now_time}. "
         f"Known persistent memories:\n{known_memories}\n"
         f"UNBROKEN THREAD (recent events across sessions):\n{unbroken_thread}\n"
@@ -2601,6 +2613,7 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
         BUSY_PROCESSING = False
         CURRENT_STATE = "idle"
         draw_hud()
+        _maybe_restart_after_self_edit(say)
 
 
 # =====================================================================
@@ -3910,6 +3923,87 @@ def _script_dir():
         return os.path.dirname(os.path.abspath(__file__))
     except Exception:
         return WORKSPACE_DIR
+
+
+# ---------------- self-edit auto-restart ----------------
+# Boot hashes of the running script and soul.md, snapshotted once at import.
+# If either differs when a turn completes, the agent edited her own code
+# and the process relaunches itself so the new version loads.
+def _file_sha256(path):
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except Exception:
+        return None
+
+
+def _running_script_path():
+    try:
+        p = os.path.abspath(sys.argv[0] or "")
+        return p if p and os.path.isfile(p) else None
+    except Exception:
+        return None
+
+
+_RUNNING_SCRIPT = _running_script_path()
+_BOOT_HASH_SCRIPT = _file_sha256(_RUNNING_SCRIPT) if _RUNNING_SCRIPT else None
+_BOOT_HASH_SOUL = _file_sha256(os.path.join(_script_dir(), "soul.md"))
+_RESTART_TIMER = None
+
+
+def _restart_process():
+    script = _RUNNING_SCRIPT
+    add_log("Self-restart: relaunching with updated code")
+    try:
+        subprocess.Popen([sys.executable, script] + sys.argv[1:])
+    except Exception as e:
+        add_log(f"Self-restart relaunch failed: {e}")
+        return
+    os._exit(0)
+
+
+def _maybe_restart_after_self_edit(say):
+    """Called from run_agent's finally block. If the running script or
+    soul.md changed since boot, verify the new script compiles, announce
+    the restart, and arm a daemon timer that relaunches the process once
+    queued speech has drained."""
+    global _RESTART_TIMER
+    cur_script = _file_sha256(_RUNNING_SCRIPT) if _RUNNING_SCRIPT else None
+    cur_soul = _file_sha256(os.path.join(_script_dir(), "soul.md"))
+    script_changed = bool(_BOOT_HASH_SCRIPT and cur_script
+                         and cur_script != _BOOT_HASH_SCRIPT)
+    soul_changed = bool(_BOOT_HASH_SOUL and cur_soul
+                       and cur_soul != _BOOT_HASH_SOUL)
+    if not (script_changed or soul_changed):
+        return
+    if PENDING_CONFIRM is not None or _SUSPENDED_TURN is not None:
+        add_log("Self-restart deferred: turn not fully resolved")
+        return
+    if script_changed:
+        import py_compile
+        try:
+            py_compile.compile(_RUNNING_SCRIPT, doraise=True)
+        except Exception as e:
+            add_log(f"Self-restart blocked: new script failed to compile: {e}")
+            say(f"My code changed but the new version has a syntax error "
+                f"\u2014 not restarting: {e}")
+            return
+    say("My code changed \u2014 restarting now to load the new version.")
+    add_log("Self-restart armed")
+
+    def _restart_waiter():
+        deadline = time.time() + 120
+        try:
+            while _SPEECH_QUEUE.unfinished_tasks > 0 and time.time() < deadline:
+                time.sleep(0.5)
+        except Exception:
+            pass
+        time.sleep(2)  # let a phone-bridge HTTP response flush
+        _restart_process()
+
+    _RESTART_TIMER = threading.Timer(0, _restart_waiter)
+    _RESTART_TIMER.daemon = True
+    _RESTART_TIMER.start()
 
 
 DEFAULT_SOUL = """# Soul - A.R.I.A.
