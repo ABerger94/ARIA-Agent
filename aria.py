@@ -2,6 +2,9 @@
 A.R.I.A. — Autonomous Robotic Intelligence Agent
 Powered by Gemini 3.8 Flash.
 
+ v9.20: quote file paths in open_app_or_url — paths with spaces
+ (e.g. "The Boy and the Heron") no longer get truncated at the first space.
+
  v9.19: version numbers removed from all user-visible text and code — the
  changelog keeps its versions; everything else (HUD, subtitles, console,
  spoken greeting, comments, docstrings) is clean.
@@ -985,10 +988,14 @@ def tool_gui_type(text: str) -> str:
 def tool_open_app_or_url(target: str) -> str:
     add_log(f"Launching: {target}")
     try:
+        # strip embedded quotes so a " in a name can't break the quoting
+        # below; `start` needs the empty "" first arg or it eats the
+        # quoted path as a window title.
+        target = str(target).replace('"', "")
         if target.startswith(("http://", "https://")):
             os.system(f'start "" "{target}"')
             return f"Opened URL: {target}"
-        os.system(f'start {target}')
+        os.system(f'start "" "{target}"')
         return f"Launched application: {target}"
     except Exception as e:
         return f"Error opening target: {e}"
