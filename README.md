@@ -73,7 +73,7 @@ Gmail sending uses an app password, saved via ARIA's `gmail_setup` tool.
 ## Project layout
 
 ```
-aria.py                  Main program (v9.26)
+aria.py                  Main program (v9.27)
 soul.md                  Her persona — loaded into mind on every start
 requirements.txt         Python dependencies
 windows/                 Auto-start installer + watchdog (.bat)
@@ -82,6 +82,11 @@ tools/                   Helper scripts (key manager)
 
 ## Version history
 
+- **v9.27** — Pipelined parallel TTS prefetching + early clause speech emission:
+  text generation feeds a dedicated prefetch synthesis worker in parallel with
+  playback, eliminating the 1-2s gap between sentences; early clause boundary
+  detection begins vocalizing long opening sentences after the first clause
+  (>=3 words), cutting time-to-first-sound.
 - **v9.26** — Streaming-speech queue fix: the pre-tool speech stop now uses
   interrupt_speech() (the old inline drain skipped task_done, leaking the
   unfinished-tasks counter and leaving the stop event set, which silently
