@@ -14,7 +14,7 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
 - **Voice in / voice out** — Edge TTS neural voice with pyttsx3 fallback;
   mic input with local Whisper transcription (v9.14, Google fallback);
   hold-SPACE push-to-talk (v9.11); wake word
-- **Agent brain** — Gemini function-calling loop (no turn cap; 10-minute
+- **Agent brain** — Gemini function-calling loop (no turn cap; 30-minute
   budget per request — on timeout she asks "Should I keep going?" and
   "yes"/"continue" resumes the same reasoning chain)
 - **Progressive tool loading** (v9.8) — only 16 core tool schemas go to the
@@ -82,6 +82,13 @@ tools/                   Helper scripts (key manager)
 
 ## Version history
 
+- **v9.28** — Live HUD subsystem status tracking: every subsystem row now
+  reports its real state instead of a hardcoded label — camera/screen
+  reflect the last capture attempt, memory runs a cached DB probe, sandbox
+  shows RUNNING while code executes, scheduler shows a live pending-task
+  count; plus a new last-tool row showing the most recently executed tool
+  and its time. Agent-loop time budget raised from 10 to 30 minutes per
+  request.
 - **v9.27** — Pipelined parallel TTS prefetching + early clause speech emission:
   text generation feeds a dedicated prefetch synthesis worker in parallel with
   playback, eliminating the 1-2s gap between sentences; early clause boundary
