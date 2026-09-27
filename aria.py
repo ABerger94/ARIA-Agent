@@ -2,6 +2,12 @@
 A.R.I.A. — Autonomous Robotic Intelligence Agent
 Powered by Gemini 3.8 Flash.
 
+ v9.26: streaming-speech queue fix — the pre-tool speech stop now uses
+ interrupt_speech() (the old inline drain skipped task_done, leaking the
+ unfinished-tasks counter and leaving the stop event set, which silently
+ muted streaming on every tool-call turn); the stop event is cleared
+ before each fresh streaming call.
+
  v9.25: streaming sentence TTS + prompt context diet — real-time SSE token
  streaming from Gemini detects sentence boundaries on the fly and enqueues
  speech instantly (cutting voice latency to <800ms); unique memory key
@@ -2711,6 +2717,7 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
                         _SPEECH_QUEUE.put(s)
                         _stream_sents.append(s)
 
+            _SPEECH_STOP.clear()  # a prior stop must not mute this stream
             data = _gemini_call(system_instruction, contents,
                                tool_decls=_toolkit_declarations(),
                                on_text_chunk=_stream_chunk_cb if (not silent and reply_sink is None) else None)
@@ -2743,12 +2750,7 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
                     reply_sink.append(final_text)
                 return
 
-            _SPEECH_STOP.set()
-            while not _SPEECH_QUEUE.empty():
-                try:
-                    _SPEECH_QUEUE.get_nowait()
-                except Exception:
-                    pass
+            interrupt_speech()  # stop pre-tool chatter; drains queue with task_done
 
             CURRENT_STATE = "coding"
             draw_hud()
