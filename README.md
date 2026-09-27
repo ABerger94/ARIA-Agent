@@ -82,6 +82,10 @@ tools/                   Helper scripts (key manager)
 
 ## Version history
 
+- **v9.33** — Everything lives under the script folder: a one-time startup
+  migration moves any leftover ~/robot_workspace data (memory DB, chat
+  history, journal, models, …) into <script-dir>/workspace, never
+  overwriting files already there.
 - **v9.32** — HUD subsystems panel right-aligns the status column inside
   the box; long statuses like "ARMED (1)" no longer spill past the edge.
 - **v9.31** — Phone bridge text replies speak aloud on the phone: after a
