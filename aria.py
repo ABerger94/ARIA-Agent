@@ -149,6 +149,14 @@ New in v6.1 (everything from v6.0 kept):
  continue-yes. Suspended state is in-memory only (lost on restart).
  The duplicate-call guard and confirmation flow are unchanged; the
  budget never interrupts a running tool call.
+ v9.16: hallucination guard for local STT — Whisper was inventing
+ words on silence/background hum. _transcribe() now passes
+ vad_filter=True (bundled Silero VAD, no new dependency) and
+ condition_on_previous_text=False (stops the model riffing on its own
+ prior output), and drops any segment whose no_speech_prob exceeds
+ _FW_NO_SPEECH_CUTOFF (0.6). If nothing survives filtering, the empty
+ result falls through to the Google fallback exactly as before —
+ silence becomes "didn't catch that", never invented words.
  HTTPS phone bridge: self-signed cert for the current LAN IP so iOS grants mic access (first iPhone visit taps through a cert warning); falls back to
  HTTPS via a bundled self-signed cert (no extra packages).
  1. EDGE TTS VOICE — en-US-AriaNeural via the free edge-tts package. Sounds
@@ -561,7 +569,7 @@ def _spine_write_resume_card():
 
 
 atexit.register(_spine_write_resume_card)
-spine_append("restart", {"version": "9.15"})  # the spine opens on every boot
+spine_append("restart", {"version": "9.16"})  # the spine opens on every boot
 
 tts = pyttsx3.init()          # fallback voice; Edge TTS preferred (see speech worker)
 tts.setProperty('rate', 170)
@@ -3331,6 +3339,7 @@ except Exception:
 
 _FW_MODEL = None
 _FW_LOCK = threading.Lock()
+_FW_NO_SPEECH_CUTOFF = 0.6  # v9.16: drop Whisper segments above this no_speech_prob
 
 
 def _get_fw_model():
@@ -3361,14 +3370,29 @@ def _transcribe(audio):
 
     Prefers local faster-whisper; falls back to Google cloud recognition
     on any failure (missing package, load error, empty result, transcribe
-    error). Google-path exceptions propagate exactly as before, so every
-    call site's existing error handling is unchanged.
+    error, or nothing surviving the v9.16 no-speech filter). Google-path
+    exceptions propagate exactly as before, so every call site's existing
+    error handling is unchanged.
     """
     model = _get_fw_model()
     if model is not None:
         try:
-            segments, _ = model.transcribe(_fw_pcm(audio), language="en")
-            text = "".join(s.text for s in segments).strip()
+            # v9.16: vad_filter skips non-speech audio via the bundled
+            # Silero VAD (no new dependency); condition_on_previous_text
+            # stops the model riffing on its own prior output — both are
+            # known hallucination amplifiers. A VAD-related exception
+            # (e.g. onnxruntime trouble) lands in the except below and
+            # degrades to Google.
+            segments, _ = model.transcribe(
+                _fw_pcm(audio), language="en",
+                vad_filter=True, condition_on_previous_text=False)
+            # v9.16: drop segments Whisper itself flags as probably not
+            # speech. Empty after filtering falls through to Google below
+            # ("didn't catch that"), never invented words. getattr default
+            # keeps older/fake segment objects without the attribute.
+            kept = [s for s in segments
+                    if getattr(s, "no_speech_prob", 0.0) <= _FW_NO_SPEECH_CUTOFF]
+            text = "".join(s.text for s in kept).strip()
             if text:
                 return text
         except Exception as e:
