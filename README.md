@@ -82,6 +82,10 @@ tools/                   Helper scripts (key manager)
 
 ## Version history
 
+- **v9.31** — Phone bridge text replies speak aloud on the phone: after a
+  text reply arrives, the bridge page fetches its audio from /api/say and
+  plays it (same as hold-to-talk); Speak replies ON/OFF toggle persisted
+  in localStorage. Audio trims at 500 chars; full text still shows.
 - **v9.30** — Merges her streaming chat-log fix with the v9.28 feature set:
   her cure (always log the full reply text after the stream) is kept, with
   the HUD subtitle/draw kept out of silent turns; live subsystem rows,
