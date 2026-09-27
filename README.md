@@ -82,6 +82,8 @@ tools/                   Helper scripts (key manager)
 
 ## Version history
 
+- **v9.32** — HUD subsystems panel right-aligns the status column inside
+  the box; long statuses like "ARMED (1)" no longer spill past the edge.
 - **v9.31** — Phone bridge text replies speak aloud on the phone: after a
   text reply arrives, the bridge page fetches its audio from /api/say and
   plays it (same as hold-to-talk); Speak replies ON/OFF toggle persisted
