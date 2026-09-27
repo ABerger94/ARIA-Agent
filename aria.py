@@ -1,6 +1,10 @@
 """
-A.R.I.A. v9.12 — Autonomous Robotic Intelligence Agent
+A.R.I.A. — Autonomous Robotic Intelligence Agent
 Powered by Gemini 3.8 Flash.
+
+ v9.19: version numbers removed from all user-visible text and code — the
+ changelog keeps its versions; everything else (HUD, subtitles, console,
+ spoken greeting, comments, docstrings) is clean.
 
 New in v6.1 (everything from v6.0 kept):
  0. VOICE DIAGNOSTICS — startup now prints exactly which voice step fails.
@@ -289,7 +293,7 @@ def _save_keys():
         return False
 
 
-# ---- Gemini API key pool (v8.0) ----
+# ---- Gemini API key pool ----
 # Google's quota is per Cloud PROJECT, not per key: extra keys only multiply
 # quota if each comes from a separate project (up to 10 per Google account).
 # List them in aria_keys.json as "GEMINI_API_KEYS": ["AIza...", ...],
@@ -357,7 +361,7 @@ def _key_quarantine(i, key, code):
              "key too new, API not enabled in its Cloud project, or a copy typo")
     add_log(f"Gemini key #{i + 1} ({_key_mask(key)}) rejected by Google (HTTP {code}) - "
             f"quarantined 1h. Usual cause: {cause}.")
-# --- Secret redaction (v9.9) ---
+# --- Secret redaction ---
 # Credentials must never leak into the HUD action stream, the chat DB, the
 # markdown master log, or persisted history. _redact() scrubs every known
 # secret value; add_log() and log_conversation() apply it to everything.
@@ -387,7 +391,7 @@ GITHUB_STATUS = "ARMED" if GITHUB_ARMED else "NO KEY"  # refined by startup chec
 
 
 def _ensure_bridge_token():
-    """Phone-bridge login token, persisted in aria_keys.json (v8.0)."""
+    """Phone-bridge login token, persisted in aria_keys.json."""
     if _KEYS_BROKEN:
         # Never overwrite a file we couldn't parse - back it up and use a
         # session-only token instead.
@@ -432,9 +436,9 @@ PHONE_BRIDGE_PORT = 8777
 
 MAX_TOOL_OUTPUT = 2000
 HISTORY_TURNS = 10
-AGENT_LOOP_TIME_BUDGET_S = 600  # v9.15: per-request agent-loop time budget (replaces the 20-turn cap)
-_SUSPENDED_TURN = None  # v9.15: {"contents": [...], "user_prompt": ...} while a turn is suspended
-_AWAITING_CONTINUE = False  # v9.15: True while she has asked "Should I keep going?"
+AGENT_LOOP_TIME_BUDGET_S = 600  # per-request agent-loop time budget (replaces the 20-turn cap)
+_SUSPENDED_TURN = None  # {"contents": [...], "user_prompt": ...} while a turn is suspended
+_AWAITING_CONTINUE = False  # True while she has asked "Should I keep going?"
 CHAT_PRUNE_DAYS = 30
 VISION_SCREEN_SIZE = (800, 450)
 VISION_CAM_SIZE = (640, 480)
@@ -447,7 +451,7 @@ CHAT_LOG_FILE = os.path.join(WORKSPACE_DIR, "chat_history.md")
 DB_LOCK = threading.Lock()
 
 # ============================================================
-# v9.10 MEMORY SPINE — one unbroken thread across sessions
+# MEMORY SPINE — one unbroken thread across sessions
 # ============================================================
 # Every chat turn, memory save/forget, journal entry, tool call, and restart
 # appends one JSON line to memory_spine.jsonl. Nothing is ever pruned. At
@@ -511,7 +515,7 @@ def _spine_digest(events):
         elif t == "tool":
             lines.append("tool %s" % e.get("name", ""))
         elif t == "restart":
-            lines.append("restart v%s" % e.get("version", "?"))
+            lines.append("restart")
         elif t == "ptt":
             lines.append("push-to-talk %.1fs" % float(e.get("seconds") or 0))
     return lines
@@ -582,7 +586,7 @@ def _spine_write_resume_card():
 
 
 atexit.register(_spine_write_resume_card)
-spine_append("restart", {"version": "9.18"})  # the spine opens on every boot
+spine_append("restart", {})  # the spine opens on every boot
 
 tts = pyttsx3.init()          # fallback voice; Edge TTS preferred (see speech worker)
 tts.setProperty('rate', 170)
@@ -590,23 +594,23 @@ recognizer = sr.Recognizer()
 
 CURRENT_STATE = "idle"
 HUD_MODE = "visor"
-SUBTITLE_TEXT = "A.R.I.A. v9.8 online. All subsystems nominal."
-LOG_STREAM = ["A.R.I.A. Kernel 6.0 loaded.", "Edge voice, semantic memory, scheduler armed."]
+SUBTITLE_TEXT = "A.R.I.A. online. All subsystems nominal."
+LOG_STREAM = ["A.R.I.A. Kernel loaded.", "Edge voice, semantic memory, scheduler armed."]
 DISPLAY_CHAT_LOG = []
-CHAT_SCROLL = 0  # v9.5: tactical chat log scroll offset (lines from bottom)
+CHAT_SCROLL = 0  # tactical chat log scroll offset (lines from bottom)
 BUSY_PROCESSING = False
 # Module globals used by handle_action and the background loops. They must
-# live up here: v7.5 fixed a crash where they sat after the __main__ loop
+# live up here: fixed a crash where they sat after the __main__ loop
 # and did not exist when the first directive ran (NameError).
 STOP_WORDS = {"stop", "quiet", "shut up", "enough", "silence",
               "stop talking", "hush", "be quiet", "cut it out"}
 LAST_ACTIVITY = time.time()
 FACE_TRACKING = False
 SERVO_PAN, SERVO_TILT = 90, 45
-SERVO_POS = {"pan": 90, "tilt": 45}  # face tracker eases from here (v7.6)
+SERVO_POS = {"pan": 90, "tilt": 45}  # face tracker eases from here
 HARDWARE_CONNECTED = False
 
-# --- v7.2 idle face animation state ---
+# --- idle face animation state ---
 _FACE = {
     "eye_dx": 0.0, "eye_dy": 0.0,      # current pupil offset
     "eye_tdx": 0.0, "eye_tdy": 0.0,    # glance target
@@ -639,9 +643,9 @@ def _blink_squash(now):
         t = 1.0 - (_FACE["blink_until"] - now) / 0.18
         return max(0.08, abs(math.cos(t * math.pi)))
     return 1.0
-# --- end v7.2 idle face ---
+# --- end idle face ---
 
-# --- v7.11 girly face palette (BGR) ---
+# --- girly face palette (BGR) ---
 PINK = (170, 90, 255)        # waveform mouth, lashes, iris rings
 PINK_DEEP = (110, 45, 190)   # soft pink eye glow
 LINER = (70, 25, 120)        # dark plum eyeliner
@@ -685,7 +689,7 @@ except ImportError:
 
 
 def add_log(msg):
-    msg = _redact(msg)  # v9.9: secrets never reach the HUD stream
+    msg = _redact(msg)  # secrets never reach the HUD stream
     LOG_STREAM.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     if len(LOG_STREAM) > 8:
         LOG_STREAM.pop(0)
@@ -722,7 +726,7 @@ def init_databases():
         cur.execute('''CREATE TABLE IF NOT EXISTS scheduled_tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT,
             prompt TEXT, interval_s INTEGER, next_run TEXT, created TEXT)''')
-        # v9.10: pruning retired — the spine keeps the full thread, and the
+        # pruning retired — the spine keeps the full thread, and the
         # DB now keeps every chat row, like the markdown log always did.
         # cur.execute("DELETE FROM chat_history WHERE timestamp < datetime('now', ?)",
         #             (f"-{CHAT_PRUNE_DAYS} days",))
@@ -767,7 +771,7 @@ def _pack_embedding(vec):
 
 
 def memory_save(category: str, key: str, value: str):
-    # v9.10: every save joins the spine; the key feeds the resume card.
+    # every save joins the spine; the key feeds the resume card.
     spine_append("memory_save", {"category": category, "key": key,
                                  "value": value})
     _SPINE_BOOT_KEYS.append(key)
@@ -833,14 +837,14 @@ def memory_get_all() -> str:
 
 def log_conversation(sender: str, message: str):
     global CHAT_SCROLL
-    message = _redact(message)  # v9.9: secrets never reach the DB or markdown log
-    spine_append("chat", {"sender": sender, "message": message})  # v9.10
+    message = _redact(message)  # secrets never reach the DB or markdown log
+    spine_append("chat", {"sender": sender, "message": message})
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     ts_short = datetime.now().strftime("%H:%M:%S")
     DISPLAY_CHAT_LOG.append((ts_short, sender, message))
     if len(DISPLAY_CHAT_LOG) > 60:
         DISPLAY_CHAT_LOG.pop(0)
-    CHAT_SCROLL = 0  # v9.5: new message snaps the log back to the bottom
+    CHAT_SCROLL = 0  # new message snaps the log back to the bottom
     with DB_LOCK:
         try:
             conn = sqlite3.connect(DB_PATH)
@@ -1018,7 +1022,7 @@ def tool_send_email(to: str, subject: str, body: str) -> str:
     msg["To"] = to
     msg["Subject"] = subject or "(no subject)"
     msg.set_content(body or "")
-    # v9.9: transient SMTP failures retry once before giving up.
+    # transient SMTP failures retry once before giving up.
     _smtp_err = None
     for _sa in range(2):
         try:
@@ -1157,7 +1161,7 @@ def tool_set_reminder(delay_seconds: int, message: str) -> str:
     return f"Reminder set (#{tid}): I'll say '{message}' in {delay_seconds} seconds."
 
 
-# v9.13: a recurring "morning brief" gets the deterministic brief kind —
+# a recurring "morning brief" gets the deterministic brief kind —
 # scheduler_loop speaks tool_briefing() directly instead of asking the model,
 # so the brief can never come back as a bare echoed "morning brief".
 _BRIEF_PROMPT_RE = re.compile(r"morning\s*brief", re.I)
@@ -1186,7 +1190,7 @@ def tool_cancel_scheduled(task_id: int) -> str:
             if sched_cancel(int(task_id)) else f"No task #{task_id} found.")
 
 
-# --- stale-target guard (v8.7) ---
+# --- stale-target guard ---
 # The model never saw its own confirmation turns in CONVERSATION_HISTORY
 # (function calls lived only in a discarded per-turn copy), so a new "open X"
 # request could be answered with the PREVIOUS request's target. This guard
@@ -1223,7 +1227,7 @@ def _stale_target_check(fn_name, args):
     return None
 
 
-# --- risky-tool bookkeeping (v9.4: no confirmation step, per Alek) ---
+# --- risky-tool bookkeeping (no confirmation step, per Alek) ---
 def _risky_description(fn_name, args):
     return {
         "run_python_code": f"run Python code ({str(args.get('code', ''))[:80]}...)",
@@ -1242,17 +1246,17 @@ RISKY_TOOLS = {"run_python_code", "gui_click", "gui_type",
 
 def execute_tool(fn_name: str, args: dict, preauthorized: bool = False):
     """Dispatch one tool. Returns (result_text, needs_confirm_bool)."""
-    global CURRENT_STATE  # v9.9: working-face state
-    spine_append("tool", {"name": fn_name,  # v9.10: tool calls join the spine
+    global CURRENT_STATE  # working-face state
+    spine_append("tool", {"name": fn_name,  # tool calls join the spine
                           "args": str(args)[:300]})
-    # v9.8: duplicate-call blocking - same function + same args twice in one
+    # duplicate-call blocking - same function + same args twice in one
     # turn returns the earlier result instead of re-executing.
     _sig = _call_signature(fn_name, args)
     if _sig in _TURN_CALLS:
         return (f"[Duplicate call blocked: {fn_name} already ran with these "
                 f"arguments this turn. Earlier result: {_TURN_CALLS[_sig][:600]}]",
                 False)
-    # v9.8: argument repair - required params from the declaration are checked
+    # argument repair - required params from the declaration are checked
     # before dispatch so the model can retry instead of crashing.
     _missing = _missing_required_args(fn_name, args)
     if _missing:
@@ -1267,13 +1271,13 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False):
             return _nudge, False
         if fn_name == "open_app_or_url":
             LAST_OPEN_TARGET = args.get("target", "")
-        # v9.4: no confirmation step - execute immediately, as asked.
-        # v8.7: record the action so future turns know what was done.
+        # no confirmation step - execute immediately, as asked.
+        # record the action so future turns know what was done.
         CONVERSATION_HISTORY.append(
             {"role": "model",
              "parts": [{"text": "[Executed: "
                                  + _redact(_risky_description(fn_name, args)) + "]"}]})
-    _face_before = CURRENT_STATE  # v9.9: working face while a tool runs
+    _face_before = CURRENT_STATE  # working face while a tool runs
     if _face_before in ("idle", "thinking"):
         CURRENT_STATE = "working"
         draw_hud()
@@ -1395,17 +1399,17 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False):
     except Exception as e:
         r = f"[Tool Error: {e}]"
     finally:
-        if CURRENT_STATE == "working":  # v9.9: restore the face after the tool
+        if CURRENT_STATE == "working":  # restore the face after the tool
             CURRENT_STATE = _face_before
             draw_hud()
     if len(r) > MAX_TOOL_OUTPUT:
         r = r[:MAX_TOOL_OUTPUT] + f"\n...[output truncated, {len(r)} chars total]"
-    _TURN_CALLS[_sig] = r  # v9.8: remember for duplicate-call blocking
+    _TURN_CALLS[_sig] = r  # remember for duplicate-call blocking
     return r, False
 
 
 # ============================================================
-# v9.9 BOUNDED WORKFLOW SKILLS (Leon-inspired)
+# BOUNDED WORKFLOW SKILLS (Leon-inspired)
 # ============================================================
 # Reusable multi-step procedures with HARD caps: a skill gets max_calls tool
 # calls, then it stops and reports what it found. Evidence rules per skill:
@@ -1784,7 +1788,7 @@ def apply_led_scanlines(canvas, x1, y1, x2, y2):
 
 
 # ============================================================
-# v9.12 FACE ON THE PHONE BRIDGE — face-only MJPEG stream
+# FACE ON THE PHONE BRIDGE — face-only MJPEG stream
 # ============================================================
 # draw_hud() renders a 1280x720 frame. The face lives in the center:
 # eyes at (520,235) and (760,235); the listening pulse reaches radius ~76;
@@ -1797,7 +1801,7 @@ _FACE_FPS_MIN_GAP = 0.08  # ~12 fps max encode rate
 
 
 def _publish_face_frame(canvas):
-    """v9.12: crop the face and stash a JPEG for the phone bridge.
+    """Crop the face and stash a JPEG for the phone bridge.
 
     Called from draw_hud() in visor mode only. Throttled so the HUD loop
     never burns CPU on encoding; every failure is swallowed — the HUD
@@ -1819,7 +1823,7 @@ def _publish_face_frame(canvas):
 
 
 def _face_mjpeg_chunk(jpg):
-    """v9.12: one multipart frame for the MJPEG stream. Pure bytes logic."""
+    """One multipart frame for the MJPEG stream. Pure bytes logic."""
     return (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
             + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n")
 
@@ -1855,7 +1859,7 @@ def draw_hud():
     battery = psutil.sensors_battery()
     bat_str = f"{battery.percent}%" if battery else "AC"
 
-    cv2.putText(canvas, "A.R.I.A. // AUTONOMOUS ROBOTIC INTELLIGENCE AGENT v9.12", (30, 40),
+    cv2.putText(canvas, "A.R.I.A. // AUTONOMOUS ROBOTIC INTELLIGENCE AGENT", (30, 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, CYAN, 2, cv2.LINE_AA)
     sys_stats = f"TIME: {now_str}  |  CPU: {cpu_usage}%  |  MEM: {mem_usage}%  |  PWR: {bat_str}"
     cv2.putText(canvas, sys_stats, (650, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
@@ -1927,7 +1931,7 @@ def draw_hud():
             else:
                 rendered_lines.append([(320, header, header_color)])
             rendered_lines.append([])
-        # v9.5: scrollable window - J scrolls to older lines, K back toward new
+        # scrollable window - J scrolls to older lines, K back toward new
         max_scroll = max(0, len(rendered_lines) - 14)
         CHAT_SCROLL = max(0, min(CHAT_SCROLL, max_scroll))
         if CHAT_SCROLL:
@@ -1972,7 +1976,7 @@ def draw_hud():
                 bar_h = int(abs(np.sin(wt + i * 0.5)) * 8) + 2
                 cv2.line(canvas, (bar_x, 388 - bar_h), (bar_x, 388 + bar_h), PINK, 2)
         elif CURRENT_STATE == "listening":
-            # v9.9: animated - the ring breathes while she listens.
+            # animated - the ring breathes while she listens.
             pulse = int(6 * np.sin(time.time() * 4))
             for ex, side in ((lx, -1), (rx, 1)):
                 cv2.circle(canvas, (ex, cy), 70 + pulse, (255, 80, 255), -1)
@@ -1982,7 +1986,7 @@ def draw_hud():
                 cv2.circle(canvas, (ex - 8, cy - 10), 8, (255, 255, 255), -1)
                 apply_led_scanlines(canvas, ex - 70, cy - 70, ex + 70, cy + 70)
         elif CURRENT_STATE == "thinking":
-            # v9.9: animated - pupils dart as she thinks, dots bounce above.
+            # animated - pupils dart as she thinks, dots bounce above.
             t = time.time()
             dart = int(np.sin(t * 3.1) * 14)
             for ex, tilt, dy in ((lx, -12, -15), (rx, 8, -5)):
@@ -1994,7 +1998,7 @@ def draw_hud():
                 bounce = int(abs(np.sin(t * 4 + i * 1.1)) * 12)
                 cv2.circle(canvas, (600 + i * 40, 130 - bounce), 8, AMBER, -1)
         elif CURRENT_STATE == "working":
-            # v9.9: animated - amber radar sweep while a tool runs.
+            # animated - amber radar sweep while a tool runs.
             t = time.time()
             sweep = int((t * 240) % 120) - 60
             for ex in (lx, rx):
@@ -2047,7 +2051,7 @@ def draw_hud():
     if SHOW_COMMANDS:
         _draw_commands_overlay(canvas)
     if HUD_MODE == "visor":
-        _publish_face_frame(canvas)  # v9.12: face-only phone stream
+        _publish_face_frame(canvas)  # face-only phone stream
     cv2.imshow("A.R.I.A. - Autonomous Robotic Intelligence Agent", canvas)
     # no waitKey here — main loop owns event pumping
 
@@ -2058,12 +2062,12 @@ def draw_hud():
 _SPEECH_QUEUE = queue.Queue()
 _EDGE_READY = False
 # Defined up here — BEFORE any thread starts — because the speech worker
-# touches it on its very first utterance. (v7.4: it used to live ~600 lines
+# touches it on its very first utterance. (it used to live ~600 lines
 # further down, and an early utterance killed the speech thread with
 # NameError, muting A.R.I.A. completely.)
 _SPEECH_STOP = threading.Event()
 # Defined up here — BEFORE any thread starts — because the speech worker
-# touches it on its very first utterance. (v7.4: it used to live ~600 lines
+# touches it on its very first utterance. (it used to live ~600 lines
 # further down, and an early utterance killed the speech thread with
 # NameError, muting A.R.I.A. completely.)
 
@@ -2116,7 +2120,7 @@ def _init_voice():
         print("[ARIA] Voice: using system fallback (pyttsx3)", flush=True)
         add_log("Voice: system fallback (mixer)")
         return
-    _probe_ok = False  # v9.9: retry the probe 3x before giving up on Edge
+    _probe_ok = False  # retry the probe 3x before giving up on Edge
     for _attempt in range(1, 4):
         try:
             import asyncio
@@ -2160,7 +2164,7 @@ def _speak_edge(text):
 
 
 def _init_voice_safe():
-    # Voice init must never wedge or kill the speech thread (v7.3).
+    # Voice init must never wedge or kill the speech thread.
     try:
         _init_voice()
     except Exception as e:
@@ -2170,15 +2174,15 @@ def _init_voice_safe():
 
 def _speech_worker():
     # Pure drain loop. Voice init runs separately (see _speech_supervisor)
-    # so a slow Edge probe can never stall speech (v7.3).
+    # so a slow Edge probe can never stall speech.
     while True:
         text = _SPEECH_QUEUE.get()
         _SPEECH_STOP.clear()
         try:
             global SUBTITLE_TEXT, CURRENT_STATE
-            SUBTITLE_TEXT = _hud(text)  # v9.18: Hershey fonts draw
-            # ASCII only; _hud maps curly quotes/dashes/etc. so the
-            # subtitle line can never render '???'
+            SUBTITLE_TEXT = _hud(text)  # Hershey fonts draw ASCII only;
+            # _hud maps curly quotes/dashes/etc. so the subtitle
+            # line can never render '???'
             CURRENT_STATE = "speaking"
             draw_hud()
             if _EDGE_READY:
@@ -2205,7 +2209,7 @@ def _speech_worker():
 
 def _speech_supervisor():
     # Starts voice init in the background, then keeps the speech worker
-    # alive: if the worker ever exits, it is restarted LOUDLY. (v7.4 — a
+    # alive: if the worker ever exits, it is restarted LOUDLY. (— a
     # silently dead speech thread used to mean total, permanent muteness.)
     threading.Thread(target=_init_voice_safe, daemon=True).start()
     while True:
@@ -2237,7 +2241,7 @@ def _gemini_call(system_instruction, contents, include_tools=True, tool_decls=No
     payload = {"systemInstruction": {"parts": [{"text": system_instruction}]},
                "contents": contents}
     if include_tools:
-        # v9.8: run_agent passes progressively-loaded toolkits; other callers
+        # run_agent passes progressively-loaded toolkits; other callers
         # keep the full static declaration.
         payload["tools"] = tool_decls if tool_decls is not None else TOOLS_DECLARATION
     body = json.dumps(payload).encode("utf-8")
@@ -2259,7 +2263,7 @@ def _gemini_call(system_instruction, contents, include_tools=True, tool_decls=No
         req = urllib.request.Request(url, data=body,
                                      headers={"Content-Type": "application/json"})
         try:
-            # v9.9: transient network drops (DNS, reset, timeout) retry with
+            # transient network drops (DNS, reset, timeout) retry with
             # backoff instead of killing the turn.
             _net_err = None
             for _nr in range(3):
@@ -2306,7 +2310,7 @@ def _gemini_call(system_instruction, contents, include_tools=True, tool_decls=No
     return None
 
 
-# ---------------- Voice command shortcuts (v9.3) ----------------
+# ---------------- Voice command shortcuts ----------------
 # Fixed phrases that fire instantly, with no confirmation step.
 # Map normalized phrase -> (target, spoken acknowledgement).
 _SHORTCUTS = {
@@ -2327,8 +2331,8 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
     BUSY_PROCESSING = True
     LAST_USER_MESSAGE = user_prompt or ""
     _TURN_NUDGED = False
-    _LOADED_TOOLKITS = {"core"}  # v9.8: progressive tool loading starts with core
-    _TURN_CALLS = {}             # v9.8: per-turn duplicate-call registry
+    _LOADED_TOOLKITS = {"core"}  # progressive tool loading starts with core
+    _TURN_CALLS = {}             # per-turn duplicate-call registry
     CURRENT_STATE = "thinking"
     draw_hud()
     say = ((lambda t: reply_sink.append(t))
@@ -2336,7 +2340,7 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
 
     now_time = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
     known_memories = memory_get_all()
-    unbroken_thread = _spine_unbroken_thread()  # v9.10: resume the thread
+    unbroken_thread = _spine_unbroken_thread()  # resume the thread
 
     system_instruction = (
         f"Your soul - who you are. Embody it fully:\n{ARIA_SOUL}\n"
@@ -2349,14 +2353,14 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
         "execution, GUI automation, GitHub pushes and repo creation, physical "
         "neck servos, and a scheduler — you can set one-shot spoken reminders "
         "and recurring autonomous tasks with set_reminder / set_recurring_task. "
-        "New in v7.0: read full web pages (fetch_url), use the Windows clipboard, "
+        "Also: read full web pages (fetch_url), use the Windows clipboard, "
         "control windows (list/focus/minimize/close) and media keys, look up Magic "
         "cards via Scryfall (mtg_card — the user is a Commander player), watch "
         "product prices and alert on drops (watch_price — checked hourly), and toggle "
         "camera face-tracking for the neck servos. The user can say 'stop' to "
         "interrupt your speech instantly. While idle you consolidate the day's chat "
         "into lasting memories on your own. "
-        "New in v8.0: Spotify voice control (spotify \u2014 play/pause/skip, "
+        "Also: Spotify voice control (spotify \u2014 play/pause/skip, "
         "search, or play a spotify: URI (opens it and starts playback); if the user names a playlist, "
         "remember its URI with save_memory (category 'playlist', key the playlist name) "
         "so 'play my driving playlist' works later), a morning briefing (morning_briefing \u2014 today's "
@@ -2367,7 +2371,7 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
         "Commander deck advice (mtg_advice \u2014 the user plays high-power "
         "Commander), toggleable break reminders, and full voice chat from "
         "the phone bridge (bridge_token shows its login token). "
-        "New in v9.3: voice command shortcuts \u2014 the phrase 'let's play some magic' "
+        "Voice command shortcuts \u2014 the phrase 'let's play some magic' "
         "opens the Convoke lobby instantly, no confirmation needed. Voice notes: "
         "when the user says 'note to self' / 'take a note' / 'jot this down', call "
         "take_note; when they ask 'what were my notes [day]', call read_notes. "
@@ -2407,7 +2411,7 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
 
     log_conversation("User", user_prompt)
 
-    # v9.3: voice command shortcuts fire instantly, no confirmation.
+    # voice command shortcuts fire instantly, no confirmation.
     _sc = _SHORTCUTS.get(_normalize_shortcut(user_prompt or ""))
     if _sc:
         _sc_target, _sc_say = _sc
@@ -2423,7 +2427,7 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
         return
 
     if _resume_from is not None:
-        # v9.15: resume a suspended turn — continue the same reasoning chain.
+        # resume a suspended turn — continue the same reasoning chain.
         contents = (list(_resume_from["contents"])
                     + [{"role": "user", "parts": [{"text":
                         "[Continuing the previous task — pick up exactly where you left off.]"}]}])
@@ -2436,18 +2440,18 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
                                                                   "data": b64_image}}]}
         contents = contents[:-1] + [last]
 
-    _loop_deadline = time.monotonic() + AGENT_LOOP_TIME_BUDGET_S  # v9.15: fresh budget per request
+    _loop_deadline = time.monotonic() + AGENT_LOOP_TIME_BUDGET_S  # fresh budget per request
     try:
         while True:
             if time.monotonic() > _loop_deadline:
-                # v9.15: budget spent — suspend the turn in memory and ASK.
+                # budget spent — suspend the turn in memory and ASK.
                 _SUSPENDED_TURN = {"contents": contents, "user_prompt": user_prompt}
                 _AWAITING_CONTINUE = True
                 add_log("Agent loop: 10-minute budget reached; turn suspended")
                 say("I've been working on this for ten minutes. Should I keep going?")
                 return
             data = _gemini_call(system_instruction, contents,
-                               tool_decls=_toolkit_declarations())  # v9.8
+                               tool_decls=_toolkit_declarations())
             if not data:
                 say("API rate limit encountered. Standing by.")
                 return
@@ -2466,7 +2470,7 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
                 if len(CONVERSATION_HISTORY) > HISTORY_TURNS:
                     CONVERSATION_HISTORY = CONVERSATION_HISTORY[-HISTORY_TURNS:]
                 say(final_text)
-                _SUSPENDED_TURN = None  # v9.15: turn finished — nothing left to resume
+                _SUSPENDED_TURN = None  # turn finished — nothing left to resume
                 _AWAITING_CONTINUE = False
                 if reply_sink is not None:
                     reply_sink.append(final_text)
@@ -2477,7 +2481,7 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
             response_parts = []
             _risky = any(fc["name"] in RISKY_TOOLS for fc in function_calls)
             if len(function_calls) > 1 and not _risky:
-                # v8.0: independent tools run in parallel
+                # independent tools run in parallel
                 from concurrent.futures import ThreadPoolExecutor
                 def _run_one(fc):
                     add_log(f"Tool: {fc['name']} (parallel)")
@@ -2521,7 +2525,7 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
 # 9. SCHEDULER ENGINE (runs in background; tasks persist in SQLite)
 # =====================================================================
 def _fire_brief(tid, interval_s):
-    """v9.13: fire a morning-brief task deterministically — compute
+    """Fire a morning-brief task deterministically — compute
     tool_briefing() and speak it (or queue it if she's busy). The model is
     never involved. Reschedules next_run exactly like interval tasks; legacy
     interval-kind brief tasks are upgraded to "brief" here."""
@@ -2567,7 +2571,7 @@ def scheduler_loop():
                     else:
                         _SPEECH_QUEUE.put(prompt)
                 elif kind == "brief" or _BRIEF_PROMPT_RE.search(prompt or ""):
-                    # v9.13: deterministic morning brief — the model is not
+                    # deterministic morning brief — the model is not
                     # involved, so it can't echo the prompt back. Legacy
                     # interval-kind brief tasks are caught here too and
                     # upgraded to "brief" inside _fire_brief.
@@ -2713,7 +2717,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self._send(200, BRIDGE_HTML.encode(), "text/html")
 
     def _serve_face_jpg(self):
-        """v9.12: the single latest face frame (debugging / thumbnails)."""
+        """The single latest face frame (debugging / thumbnails)."""
         with _FACE_FRAME["lock"]:
             jpg = _FACE_FRAME["jpeg"]
         if jpg is None:
@@ -2722,7 +2726,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self._send(200, jpg, "image/jpeg")
 
     def _stream_face_mjpeg(self):
-        """v9.12: MJPEG stream of her face for the phone bridge page.
+        """MJPEG stream of her face for the phone bridge page.
 
         One thread per viewer (ThreadingHTTPServer); idle-cheap: the loop
         only sleeps and copies the latest stored frame. Exits cleanly when
@@ -2793,7 +2797,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             reply = ""
         self._send(200, json.dumps({"reply": [reply]}).encode())
 
-# ---------------- HTTPS for the phone bridge (v8.0) ----------------
+# ---------------- HTTPS for the phone bridge ----------------
 # iOS only grants mic access on secure origins, so the bridge serves TLS
 # with a self-signed cert. The cert is bundled below (generated 2026-09-26,
 # valid 10 years) - no extra packages needed. First iPhone visit shows
@@ -2900,7 +2904,7 @@ threading.Thread(target=start_bridge, daemon=True).start()
 # =====================================================================
 # 11. PROACTIVE HEARTBEAT
 # =====================================================================
-# --- Heartbeat decline learning (v9.9) ---
+# --- Heartbeat decline learning ---
 # A dismissed proactive nudge teaches that nudge type to stay quiet: each
 # decline doubles the quiet period (1d -> 2d -> 4d, capped at 7d).
 _HEARTBEAT_MEM_FILE = os.path.join(WORKSPACE_DIR, "heartbeat_memory.json")
@@ -2951,7 +2955,7 @@ def _looks_like_decline(user_text):
 
 
 def _looks_like_continue(user_text):
-    """True when the user is asking to resume a suspended turn (v9.15)."""
+    """True when the user is asking to resume a suspended turn."""
     t = (user_text or "").lower().strip()
     if len(t) > 60:
         return False
@@ -2961,7 +2965,7 @@ def _looks_like_continue(user_text):
 
 
 def _looks_like_yes(user_text):
-    """Bare affirmative — reuses the confirmation yes-set (v9.15 continue-ask)."""
+    """Bare affirmative — reuses the confirmation yes-set (continue-ask)."""
     low = (user_text or "").lower().strip()
     if len(low) > 60:
         return False
@@ -3080,10 +3084,10 @@ def handle_action(mode="voice", typed_prompt=None):
 def _handle_transcript(user_text, mode="voice"):
     """Everything after transcription — shared by the one-shot mic and PTT.
 
-    v9.11: extracted from handle_action() so both mic paths behave identically.
+    Extracted from handle_action() so both mic paths behave identically.
     """
     global PENDING_CONFIRM, _SUSPENDED_TURN, _AWAITING_CONTINUE
-    # v9.9: heartbeat decline learning - a dismissal within 3 minutes of a
+    # heartbeat decline learning - a dismissal within 3 minutes of a
     # proactive nudge teaches that nudge type to stay quiet for a while.
     if (_LAST_PROACTIVE[0] and time.time() - _LAST_PROACTIVE[1] < 180
             and _looks_like_decline(user_text)):
@@ -3111,7 +3115,7 @@ def _handle_transcript(user_text, mode="voice"):
     elif mode == "camera" or any(k in low for k in ["look", "see", "holding", "camera"]):
         image_bytes = capture_webcam()
 
-    # v9.15: resume a suspended turn — "continue" always works; a bare
+    # resume a suspended turn — "continue" always works; a bare
     # "yes" works only while she has asked "Should I keep going?".
     # _resolve_confirmation ran above, so a pending risky-tool
     # confirmation still wins over this yes.
@@ -3122,7 +3126,7 @@ def _handle_transcript(user_text, mode="voice"):
         threading.Thread(target=run_agent, args=(user_text, image_bytes, is_screen),
                          kwargs={"_resume_from": _SUSPENDED_TURN}, daemon=True).start()
         return
-    # v9.15: a fresh directive abandons the suspended turn.
+    # a fresh directive abandons the suspended turn.
     if _SUSPENDED_TURN is not None:
         add_log("New directive abandons suspended turn")
         _SUSPENDED_TURN = None
@@ -3158,7 +3162,7 @@ def continuous_voice_listener():
             time.sleep(0.3)
 
 
-# --- v9.9: key-triggered input runs off the main thread ---
+# --- key-triggered input runs off the main thread ---
 # The main thread only draws the HUD + reads keys now; blocking mic listen
 # and console input() happen in a worker so the face never freezes.
 _KEY_INPUT_BUSY = False
@@ -3198,11 +3202,11 @@ def _typed_directive_thread():
 
 
 # ============================================================
-# v9.11 PUSH-TO-TALK — hold SPACE while talking, release when done
+# PUSH-TO-TALK — hold SPACE while talking, release when done
 # ============================================================
 # Windows-only: a daemon thread polls the physical space bar (0x20) via
 # ctypes GetAsyncKeyState every 0.05s. Rising edge starts _ptt_capture()
-# in a worker thread (the HUD never blocks — v9.9 rule); falling edge sets
+# in a worker thread (the HUD never blocks); falling edge sets
 # _PTT_STOP and the capture thread finalizes. On non-Windows (or if ctypes
 # fails) _PTT_AVAILABLE is False and the old one-shot SPACE branch stays.
 # Every exit path resets CURRENT_STATE to "idle" so the wake-word listener
@@ -3289,7 +3293,7 @@ def _ptt_join_audio(frames_list, sample_rate, sample_width):
 def _ptt_capture():
     """Record 0.25s chunks while SPACE is held; transcribe on release.
 
-    Runs in a worker thread — never on the main HUD thread (v9.9 rule).
+    Runs in a worker thread — never on the main HUD thread.
     """
     frames_list = []
     sample_rate = 16000
@@ -3321,7 +3325,7 @@ def _ptt_capture():
         add_log(f"Mic issue: {e}")
         _ptt_reset_state()
         return
-    spine_append("ptt", {"seconds": round(total_s, 1)})  # v9.11
+    spine_append("ptt", {"seconds": round(total_s, 1)})
     _ptt_reset_state()
     _handle_transcript(user_text, mode="voice")
 
@@ -3336,7 +3340,7 @@ if _PTT_AVAILABLE:
 
 
 # ============================================================
-# v9.14 LOCAL STT — faster-whisper replaces Google cloud recognition
+# LOCAL STT — faster-whisper replaces Google cloud recognition
 # ============================================================
 # Laptop install (Windows PATH uses `python`, not `py`):
 #     python -m pip install faster-whisper
@@ -3354,13 +3358,13 @@ except Exception:
 
 _FW_MODEL = None
 _FW_LOCK = threading.Lock()
-_FW_NO_SPEECH_CUTOFF = 0.6  # v9.16: drop Whisper segments above this no_speech_prob
+_FW_NO_SPEECH_CUTOFF = 0.6  # drop Whisper segments above this no_speech_prob
 
-# v9.17: local faster-whisper STT is OFF by default — the base model
+# local faster-whisper STT is OFF by default — the base model
 # was mishearing on this laptop, so Google cloud transcription is the
 # backend. Set True to re-enable local faster-whisper (needs
 # `python -m pip install faster-whisper`). False = Google cloud
-# transcription (default since v9.17). When False, _get_fw_model() is
+# transcription (default since ). When False, _get_fw_model() is
 # never called: no import attempts, no model downloads, zero overhead.
 _USE_LOCAL_STT = False
 
@@ -3393,21 +3397,21 @@ def _transcribe(audio):
 
     Prefers local faster-whisper; falls back to Google cloud recognition
     on any failure (missing package, load error, empty result, transcribe
-    error, or nothing surviving the v9.16 no-speech filter). Google-path
+    error, or nothing surviving the no-speech filter). Google-path
     exceptions propagate exactly as before, so every call site's existing
-    error handling is unchanged. v9.17: when _USE_LOCAL_STT is False
+    error handling is unchanged. When _USE_LOCAL_STT is False
     (the default), the whole local path below is skipped and Google
     cloud transcription is used directly.
     """
     if not _USE_LOCAL_STT:
-        # v9.17: Google is the STT backend. The faster-whisper path is
+        # Google is the STT backend. The faster-whisper path is
         # dormant (re-enable with _USE_LOCAL_STT = True); the model is
         # never loaded, so there are no import/download attempts here.
         return recognizer.recognize_google(audio)
     model = _get_fw_model()
     if model is not None:
         try:
-            # v9.16: vad_filter skips non-speech audio via the bundled
+            # vad_filter skips non-speech audio via the bundled
             # Silero VAD (no new dependency); condition_on_previous_text
             # stops the model riffing on its own prior output — both are
             # known hallucination amplifiers. A VAD-related exception
@@ -3416,7 +3420,7 @@ def _transcribe(audio):
             segments, _ = model.transcribe(
                 _fw_pcm(audio), language="en",
                 vad_filter=True, condition_on_previous_text=False)
-            # v9.16: drop segments Whisper itself flags as probably not
+            # drop segments Whisper itself flags as probably not
             # speech. Empty after filtering falls through to Google below
             # ("didn't catch that"), never invented words. getattr default
             # keeps older/fake segment objects without the attribute.
@@ -3430,7 +3434,7 @@ def _transcribe(audio):
     return recognizer.recognize_google(audio)
 
 
-# v9.17: the backend message follows _USE_LOCAL_STT, not _FW_AVAILABLE.
+# the backend message follows _USE_LOCAL_STT, not _FW_AVAILABLE.
 # When the flag is False there is no install hint — faster-whisper is
 # simply not needed anymore.
 _STT_BACKEND_MSG = (("local faster-whisper" if _FW_AVAILABLE
@@ -3446,9 +3450,9 @@ threading.Thread(target=continuous_voice_listener, daemon=True).start()
 # === MAIN (everything below runs only as a script, not on import) ===
 
 # ============================================================
-# v7.0 ADDITIONS — new tools, price watcher, face tracking,
+# ADDITIONS — new tools, price watcher, face tracking,
 # speech interrupt, idle memory consolidation
-# (everything from the v7.0 round EXCEPT the tip/shift logger)
+# (everything from the round EXCEPT the tip/shift logger)
 # ============================================================
 import re as _re
 import html as _html_lib
@@ -3812,7 +3816,7 @@ def interrupt_speech():
     add_log(f"Speech interrupted ({drained} queued cleared)")
 
 # ============================================================
-# v9.0 SOUL + MEMORY HABITS
+# SOUL + MEMORY HABITS
 # ============================================================
 def _script_dir():
     try:
@@ -3879,7 +3883,7 @@ JOURNAL_DIR = os.path.join(WORKSPACE_DIR, "aria_journal")
 
 def journal_write(entry: str) -> str:
     """Append a dated journal entry to aria_journal/YYYY-MM-DD.md."""
-    spine_append("journal", {"entry": entry})  # v9.10
+    spine_append("journal", {"entry": entry})
     try:
         os.makedirs(JOURNAL_DIR, exist_ok=True)
         day = datetime.now()
@@ -3890,7 +3894,7 @@ def journal_write(entry: str) -> str:
                 f.write(f"# {day.strftime('%A, %B %d, %Y')}\n\n")
             f.write(f"## {day.strftime('%I:%M %p')}\n{(entry or '').strip()}\n\n")
         add_log("Journal entry written")
-        try:  # v9.10: journal is searchable — mirror into semantic memory
+        try:  # journal is searchable — mirror into semantic memory
             stamp = day.strftime("%Y-%m-%d %H:%M:%S.%f")
             memory_save("journal", f"journal {stamp}",
                         (entry or "").strip()[:2000])
@@ -3901,7 +3905,7 @@ def journal_write(entry: str) -> str:
         return f"Journal write failed: {e}"
 
 
-# ---------------- Voice notes (v9.3) ----------------
+# ---------------- Voice notes ----------------
 def note_take(text):
     """Voice note: appended to today's journal AND saved to searchable memory."""
     text = (text or "").strip()
@@ -3952,7 +3956,7 @@ def note_read(date_str):
     return f"Notes from {day}:\n" + "\n".join(lines)
 
 
-# ---------------- DJ mode (v9.3) ----------------
+# ---------------- DJ mode ----------------
 def _tap_ctrl_s():
     """Best-effort Spotify shuffle toggle (Ctrl+S); needs Spotify focused."""
     try:
@@ -4016,7 +4020,7 @@ def tool_dj(request):
 
 def memory_forget(query: str) -> str:
     """Delete non-system memories whose key or value matches a keyword."""
-    spine_append("memory_forget", {"query": query})  # v9.10
+    spine_append("memory_forget", {"query": query})
     q = (query or "").strip().lower()
     if not q:
         return "Nothing to forget: empty query."
@@ -4093,7 +4097,7 @@ def idle_consolidation_loop():
             if not rows:
                 continue
             convo = "\n".join(f"{s}: {m[:300]}" for _, s, m in rows)
-            # v9.10: the spine backs consolidation — fold the spine tail in.
+            # the spine backs consolidation — fold the spine tail in.
             _spine_lines = _spine_digest(_spine_tail(100))
             if _spine_lines:
                 convo = convo + "\n[recent events]\n" + "\n".join(_spine_lines)
@@ -4130,7 +4134,7 @@ threading.Thread(target=face_track_loop, daemon=True).start()
 threading.Thread(target=idle_consolidation_loop, daemon=True).start()
 
 # ============================================================
-# v7.0 DECLARATIONS + system prompt update
+# DECLARATIONS + system prompt update
 # ============================================================
 TOOLS_DECLARATION[0]["function_declarations"] += [
     {"name": "run_skill", "description":
@@ -4217,7 +4221,7 @@ TOOLS_DECLARATION[0]["function_declarations"] += [
 RISKY_TOOLS.add("close_window")
 
 # ============================================================
-# v9.8 TOOLKITS - progressive tool-schema loading (Leon-inspired)
+# TOOLKITS - progressive tool-schema loading (Leon-inspired)
 # ============================================================
 # Only the "core" toolkit's schemas go to the model on every call.
 # Specialist tools live in named toolkits; the model unlocks them with
@@ -4317,7 +4321,7 @@ def tool_load_toolkit(name):
             f"{', '.join(sorted(TOOLKITS))}.")
 
 
-# ---------------- v9.8 duplicate-call blocking + argument repair ----------------
+# ---------------- duplicate-call blocking + argument repair ----------------
 def _call_signature(fn_name, args):
     try:
         blob = json.dumps(args or {}, sort_keys=True, default=str)
@@ -4511,7 +4515,7 @@ def _commands_html():
 
 
 # =====================================================================
-# 13. v8.0 UPGRADES — Spotify, briefing, timers, screenshot, OCR, photo,
+# 13. UPGRADES — Spotify, briefing, timers, screenshot, OCR, photo,
 #     file finder, volume, MTG advice, break nudges, bridge voice chat,
 #     self-check. (Download watcher dropped at Alek's request.)
 # =====================================================================
@@ -4648,7 +4652,7 @@ def _weather_now():
 
 
 def _weather_full():
-    """v9.13: full Dundalk weather from wttr.in JSON — current temp (F),
+    """Full Dundalk weather from wttr.in JSON — current temp (F),
     condition, today's high/low (F). Returns a dict, or None on any failure
     (caller falls back to _weather_now)."""
     try:
@@ -4669,7 +4673,7 @@ def _weather_full():
 
 
 def tool_briefing():
-    # v9.13: richer weather (temp + high/low from wttr.in j1, falling back to
+    # richer weather (temp + high/low from wttr.in j1, falling back to
     # the old format-string call) and a tomorrow preview. Still 3-5 sentences,
     # still fully deterministic — no model involved.
     from datetime import timedelta
@@ -4695,7 +4699,7 @@ def tool_briefing():
 def _greeting_text():
     h = datetime.now().hour
     part = "Good morning" if h < 12 else "Good afternoon" if h < 18 else "Good evening"
-    base = "A.R.I.A. version nine online."
+    base = "A.R.I.A. online."
     entries = _today_entries()
     if entries:
         return f"{part}. {base} Today: {_entries_line(entries)}."
@@ -5061,7 +5065,7 @@ def _self_check():
 
 if __name__ == "__main__":
     print("\n" + "=" * 75)
-    print(" A.R.I.A. AUTONOMOUS ROBOTIC INTELLIGENCE AGENT (v9.8)")
+    print(" A.R.I.A. AUTONOMOUS ROBOTIC INTELLIGENCE AGENT")
     print(" Edge voice | semantic memory | scheduler | confirmations | phone bridge | living face")
     print(f" Phone: {BRIDGE_SCHEME}://{lan_ip()}:{PHONE_BRIDGE_PORT}  (open on your iPhone)")
     if BRIDGE_SCHEME == "https":
@@ -5099,9 +5103,9 @@ if __name__ == "__main__":
         key = cv2.waitKey(100) & 0xFF
 
         if HUD_MODE == "chat_log" and key in (ord('j'), ord('J')):
-            CHAT_SCROLL += 5  # v9.5: scroll toward older lines
+            CHAT_SCROLL += 5  # scroll toward older lines
         elif HUD_MODE == "chat_log" and key in (ord('k'), ord('K')):
-            CHAT_SCROLL = max(0, CHAT_SCROLL - 5)  # v9.5: scroll toward newer lines
+            CHAT_SCROLL = max(0, CHAT_SCROLL - 5)  # scroll toward newer lines
         elif key == ord('h') or key == ord('H'):
             SHOW_COMMANDS = not SHOW_COMMANDS
             COMMANDS_PAGE = 0
@@ -5125,7 +5129,7 @@ if __name__ == "__main__":
                 add_log(f"Could not open log: {e}")
         elif key == ord(' '):
             if _PTT_AVAILABLE:
-                pass  # v9.11: the PTT poll thread owns SPACE on Windows
+                pass  # the PTT poll thread owns SPACE on Windows
             else:
                 _key_action_thread(handle_action, {"mode": "voice"})
         elif key == ord('s') or key == ord('S'):
