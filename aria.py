@@ -1,5 +1,5 @@
 """
-A.R.I.A. v9.8 — Autonomous Robotic Intelligence Agent
+A.R.I.A. v9.12 — Autonomous Robotic Intelligence Agent
 Powered by Gemini 3.8 Flash.
 
 New in v6.1 (everything from v6.0 kept):
@@ -99,6 +99,56 @@ New in v6.1 (everything from v6.0 kept):
  windows, mtg, memory+, admin) unlock via load_toolkit. Plus duplicate-call
  blocking (same tool + same args twice in one turn returns the earlier result)
  and argument repair (missing required params get a retry nudge, not a crash).
+ v9.9: secret redaction (credentials scrubbed from HUD stream, chat DB, markdown
+ log, and history lines); Edge voice probe retries 3x before falling back;
+ heartbeat decline learning (dismissed proactive nudges stay quiet 1/2/4/7 days);
+ bounded workflow skills via run_skill (deep_research, system_check, file_sweep)
+ with hard per-skill tool-call budgets; blocking mic/typed input moved off the
+ HUD thread so the face stays animated; Gemini network drops retry with backoff
+ and Gmail send retries once; animated thinking face, new animated working face
+ for tool runs, pulsing listening face.
+ v9.10: memory spine — one append-only event log (memory_spine.jsonl) for
+ chat, memory saves/forgets, journal entries, tool calls, and restarts;
+ nothing is ever pruned; atexit writes a where_we_left_off.md resume card
+ (last 30 chat events, this session's saved keys, pending tasks); boot
+ injects the spine tail as UNBROKEN THREAD into the system prompt;
+ chat_history DB pruning retired; journal entries are also saved into
+ searchable semantic memory (category 'journal'); idle consolidation
+ reads the spine tail too (and its chat_history query now uses the real
+ 'sender' column — it previously selected a nonexistent 'speaker').
+ v9.11: push-to-talk — hold SPACE while talking, release when done (Windows:
+ GetAsyncKeyState polls the physical key in a daemon thread; the old one-shot
+ mic stays as the non-Windows fallback); 0.25s chunks up to a 60s cap, taps
+ under 0.5s ignored; post-transcription handling extracted into
+ _handle_transcript shared by both mic paths; PTT turns logged to the spine.
+ v9.12: her face on the phone bridge — draw_hud() crops just the face
+ (FACE_CROP) and stashes a JPEG at ~12fps; the bridge serves it as an MJPEG
+ stream at /face.mjpg and a still at /face.jpg, both under the same bridge-
+ token auth as /api/* (the <img> tag carries ?token= since headers can't be
+ set on an image); the phone page shows her face up top. No new
+ dependencies; encoding never blocks or breaks the HUD.
+ v9.13: reliable morning brief — "morning brief" recurring tasks are stored
+ as kind="brief" and fired deterministically by _fire_brief, which speaks
+ tool_briefing() directly (or queues it when busy) instead of asking the
+ model, so the brief can never echo back as a bare "morning brief";
+ legacy interval-kind brief tasks are caught at fire time and upgraded;
+ tool_briefing now pulls temp/high/low from wttr.in j1 (falling back to the
+ old format string) and adds a tomorrow preview.
+ v9.14: local speech recognition — every mic path (one-shot, wake-word
+ listener, push-to-talk) now transcribes through _transcribe(), which
+ prefers faster-whisper (local "base" int8 model on CPU, lazy-loaded
+ into robot_workspace/models) and falls back to Google cloud recognition
+ on any failure; faster-whisper is optional, never a hard dependency.
+ v9.15: the agent loop's 20-turn cap is gone — replaced by a 10-minute
+ per-request time budget (AGENT_LOOP_TIME_BUDGET_S). When the budget
+ runs out between model/tool rounds the turn suspends in memory and
+ she asks "Should I keep going?"; "continue" (or a bare "yes" to
+ that question) resumes the exact same reasoning chain via
+ _resume_from, while any fresh directive abandons the suspended turn.
+ A pending risky-tool confirmation still takes precedence over the
+ continue-yes. Suspended state is in-memory only (lost on restart).
+ The duplicate-call guard and confirmation flow are unchanged; the
+ budget never interrupts a running tool call.
  HTTPS phone bridge: self-signed cert for the current LAN IP so iOS grants mic access (first iPhone visit taps through a cert warning); falls back to
  HTTPS via a bundled self-signed cert (no extra packages).
  1. EDGE TTS VOICE — en-US-AriaNeural via the free edge-tts package. Sounds
@@ -128,6 +178,7 @@ Setup: pip install opencv-python numpy pyttsx3 SpeechRecognition psutil pillow
 Keys live in aria_keys.json next to this script (auto-created on first run).
 """
 
+import atexit
 import cv2
 import numpy as np
 import pyttsx3
@@ -285,6 +336,29 @@ def _key_quarantine(i, key, code):
              "key too new, API not enabled in its Cloud project, or a copy typo")
     add_log(f"Gemini key #{i + 1} ({_key_mask(key)}) rejected by Google (HTTP {code}) - "
             f"quarantined 1h. Usual cause: {cause}.")
+# --- Secret redaction (v9.9) ---
+# Credentials must never leak into the HUD action stream, the chat DB, the
+# markdown master log, or persisted history. _redact() scrubs every known
+# secret value; add_log() and log_conversation() apply it to everything.
+def _secret_values():
+    vals = list(GEMINI_KEY_POOL or [])
+    for name in ("GEMINI_API_KEY", "GITHUB_TOKEN", "GMAIL_APP_PASSWORD",
+                 "BRIDGE_TOKEN", "bridge_token"):
+        v = os.environ.get(name) or _KEYS.get(name) or ""
+        if v:
+            vals.append(v)
+    return sorted({v for v in vals if len(v) > 6 and v != "INSERT"},
+                  key=len, reverse=True)
+
+
+def _redact(text):
+    if not text or not isinstance(text, str):
+        return text
+    for v in _secret_values():
+        text = text.replace(v, "[redacted]")
+    return text
+
+
 GITHUB_TOKEN, _GITHUB_SOURCE = _key("GITHUB_TOKEN")
 GITHUB_USERNAME = os.environ.get("GITHUB_USERNAME", _KEYS.get("GITHUB_USERNAME") or "ABerger94")
 GITHUB_ARMED = bool(GITHUB_TOKEN) and GITHUB_TOKEN != "INSERT"
@@ -337,6 +411,9 @@ PHONE_BRIDGE_PORT = 8777
 
 MAX_TOOL_OUTPUT = 2000
 HISTORY_TURNS = 10
+AGENT_LOOP_TIME_BUDGET_S = 600  # v9.15: per-request agent-loop time budget (replaces the 20-turn cap)
+_SUSPENDED_TURN = None  # v9.15: {"contents": [...], "user_prompt": ...} while a turn is suspended
+_AWAITING_CONTINUE = False  # v9.15: True while she has asked "Should I keep going?"
 CHAT_PRUNE_DAYS = 30
 VISION_SCREEN_SIZE = (800, 450)
 VISION_CAM_SIZE = (640, 480)
@@ -347,6 +424,144 @@ DB_PATH = os.path.join(WORKSPACE_DIR, "aria_memory.db")
 CHAT_LOG_FILE = os.path.join(WORKSPACE_DIR, "chat_history.md")
 
 DB_LOCK = threading.Lock()
+
+# ============================================================
+# v9.10 MEMORY SPINE — one unbroken thread across sessions
+# ============================================================
+# Every chat turn, memory save/forget, journal entry, tool call, and restart
+# appends one JSON line to memory_spine.jsonl. Nothing is ever pruned. At
+# shutdown, an atexit handler writes where_we_left_off.md; at boot, the last
+# 40 spine events are injected into the system prompt as UNBROKEN THREAD.
+# spine_append() never crashes the agent: failures go to add_log.
+SPINE_PATH = os.path.join(WORKSPACE_DIR, "memory_spine.jsonl")
+RESUME_PATH = os.path.join(WORKSPACE_DIR, "where_we_left_off.md")
+_SPINE_BOOT_KEYS = []  # memory_save keys this session (for the resume card)
+
+
+def spine_append(event_type, payload):
+    """Append one redacted event to the spine. Never raises."""
+    try:
+        evt = {"ts": datetime.now().isoformat(timespec="seconds"),
+               "type": event_type}
+        for k, v in (payload or {}).items():
+            evt[k] = _redact(v) if isinstance(v, str) else v
+        with open(SPINE_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(evt, ensure_ascii=False) + "\n")
+            f.flush()
+    except Exception as e:
+        add_log("Spine append failed: %s" % e)
+
+
+def _spine_tail(n=40):
+    """Last n spine events, oldest first. Empty list if no spine yet."""
+    try:
+        with open(SPINE_PATH, encoding="utf-8") as f:
+            lines = f.readlines()
+        out = []
+        for line in lines[-n:]:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return []
+
+
+def _spine_digest(events):
+    """One compact line per event, for prompts and consolidation."""
+    lines = []
+    for e in events:
+        t = e.get("type", "?")
+        if t == "chat":
+            lines.append("chat %s: %s" % (e.get("sender", "?"),
+                                          str(e.get("message", ""))[:160]))
+        elif t == "memory_save":
+            lines.append("saved [%s] %s: %s" % (e.get("category", ""),
+                                                e.get("key", ""),
+                                                str(e.get("value", ""))[:120]))
+        elif t == "memory_forget":
+            lines.append("forgot: %s" % e.get("query", ""))
+        elif t == "journal":
+            lines.append("journal: %s" % str(e.get("entry", ""))[:160])
+        elif t == "tool":
+            lines.append("tool %s" % e.get("name", ""))
+        elif t == "restart":
+            lines.append("restart v%s" % e.get("version", "?"))
+        elif t == "ptt":
+            lines.append("push-to-talk %.1fs" % float(e.get("seconds") or 0))
+    return lines
+
+
+def _spine_unbroken_thread(limit_chars=1500):
+    """Compact resume of the spine + resume card, for the system prompt."""
+    try:
+        text = "\n".join(_spine_digest(_spine_tail(40)))[:1200]
+        card = ""
+        try:
+            with open(RESUME_PATH, encoding="utf-8") as f:
+                card = f.read(600)
+        except Exception:
+            pass
+        out = text + ("\n--- where we left off ---\n" + card if card else "")
+        return out[:limit_chars] or "(thread just starting)"
+    except Exception:
+        return "(thread just starting)"
+
+
+def _spine_write_resume_card():
+    """Shutdown handoff: where we left off. Instant, no LLM, never fails."""
+    try:
+        head = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
+        lines = ["# Where we left off \u2014 %s" % head, ""]
+        chats = [e for e in _spine_tail(200) if e.get("type") == "chat"][-30:]
+        lines.append("## Last conversation")
+        if chats:
+            for e in chats:
+                lines.append("- **%s**: %s" % (e.get("sender", "?"),
+                                              str(e.get("message", ""))[:400]))
+        else:
+            lines.append("(no chat this session)")
+        lines.append("")
+        lines.append("## Memories saved this session")
+        if _SPINE_BOOT_KEYS:
+            for k in _SPINE_BOOT_KEYS[-30:]:
+                lines.append("- %s" % k)
+        else:
+            lines.append("(none)")
+        lines.append("")
+        lines.append("## Pending scheduled tasks")
+        rows = []
+        try:
+            with DB_LOCK:
+                conn = sqlite3.connect(DB_PATH)
+                rows = conn.execute(
+                    "SELECT id, kind, prompt, next_run FROM scheduled_tasks"
+                    " ORDER BY next_run").fetchall()
+                conn.close()
+        except Exception:
+            rows = []
+        if rows:
+            for rid, kind, prompt, nxt in rows:
+                lines.append("- #%s [%s] %s: %s"
+                             % (rid, kind, nxt, str(prompt or "")[:160]))
+        else:
+            lines.append("(none)")
+        lines.append("")
+        with open(RESUME_PATH, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+    except Exception as e:
+        try:
+            add_log("Resume card failed: %s" % e)
+        except Exception:
+            pass
+
+
+atexit.register(_spine_write_resume_card)
+spine_append("restart", {"version": "9.15"})  # the spine opens on every boot
 
 tts = pyttsx3.init()          # fallback voice; Edge TTS preferred (see speech worker)
 tts.setProperty('rate', 170)
@@ -449,6 +664,7 @@ except ImportError:
 
 
 def add_log(msg):
+    msg = _redact(msg)  # v9.9: secrets never reach the HUD stream
     LOG_STREAM.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     if len(LOG_STREAM) > 8:
         LOG_STREAM.pop(0)
@@ -485,8 +701,10 @@ def init_databases():
         cur.execute('''CREATE TABLE IF NOT EXISTS scheduled_tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT,
             prompt TEXT, interval_s INTEGER, next_run TEXT, created TEXT)''')
-        cur.execute("DELETE FROM chat_history WHERE timestamp < datetime('now', ?)",
-                    (f"-{CHAT_PRUNE_DAYS} days",))
+        # v9.10: pruning retired — the spine keeps the full thread, and the
+        # DB now keeps every chat row, like the markdown log always did.
+        # cur.execute("DELETE FROM chat_history WHERE timestamp < datetime('now', ?)",
+        #             (f"-{CHAT_PRUNE_DAYS} days",))
         conn.commit()
         conn.close()
 
@@ -528,6 +746,10 @@ def _pack_embedding(vec):
 
 
 def memory_save(category: str, key: str, value: str):
+    # v9.10: every save joins the spine; the key feeds the resume card.
+    spine_append("memory_save", {"category": category, "key": key,
+                                 "value": value})
+    _SPINE_BOOT_KEYS.append(key)
     vec = _embed(f"{key}: {value}")
     with DB_LOCK:
         conn = sqlite3.connect(DB_PATH)
@@ -590,6 +812,8 @@ def memory_get_all() -> str:
 
 def log_conversation(sender: str, message: str):
     global CHAT_SCROLL
+    message = _redact(message)  # v9.9: secrets never reach the DB or markdown log
+    spine_append("chat", {"sender": sender, "message": message})  # v9.10
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     ts_short = datetime.now().strftime("%H:%M:%S")
     DISPLAY_CHAT_LOG.append((ts_short, sender, message))
@@ -773,19 +997,25 @@ def tool_send_email(to: str, subject: str, body: str) -> str:
     msg["To"] = to
     msg["Subject"] = subject or "(no subject)"
     msg.set_content(body or "")
-    try:
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as s:
-            s.starttls()
-            s.login(user, pw)
-            s.send_message(msg)
-        add_log(f"Email sent to {to}: {subject}")
-        return f"Email sent to {to}: '{subject}'."
-    except smtplib.SMTPAuthenticationError:
-        return ("Gmail rejected the login. The app password is wrong or was revoked - "
-                "ask the user to generate a fresh one at myaccount.google.com/apppasswords "
-                "and call gmail_setup again.")
-    except Exception as e:
-        return f"Could not send email: {e}"
+    # v9.9: transient SMTP failures retry once before giving up.
+    _smtp_err = None
+    for _sa in range(2):
+        try:
+            with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as s:
+                s.starttls()
+                s.login(user, pw)
+                s.send_message(msg)
+            add_log(f"Email sent to {to}: {subject}")
+            return f"Email sent to {to}: '{subject}'."
+        except smtplib.SMTPAuthenticationError:
+            return ("Gmail rejected the login. The app password is wrong or was revoked - "
+                    "ask the user to generate a fresh one at myaccount.google.com/apppasswords "
+                    "and call gmail_setup again.")
+        except Exception as e:
+            _smtp_err = e
+            add_log(f"Email send attempt {_sa + 1}/2 failed ({type(e).__name__}) - retrying...")
+            time.sleep(3)
+    return f"Could not send email after 2 attempts: {_smtp_err}"
 
 
 def tool_write_file(filename: str, content: str) -> str:
@@ -906,9 +1136,19 @@ def tool_set_reminder(delay_seconds: int, message: str) -> str:
     return f"Reminder set (#{tid}): I'll say '{message}' in {delay_seconds} seconds."
 
 
+# v9.13: a recurring "morning brief" gets the deterministic brief kind —
+# scheduler_loop speaks tool_briefing() directly instead of asking the model,
+# so the brief can never come back as a bare echoed "morning brief".
+_BRIEF_PROMPT_RE = re.compile(r"morning\s*brief", re.I)
+
+
 def tool_set_recurring(interval_seconds: int, prompt: str) -> str:
-    tid = sched_add("interval", prompt, interval_s=max(60, int(interval_seconds)))
-    add_log(f"Recurring task #{tid} every {interval_seconds}s")
+    kind = "brief" if _BRIEF_PROMPT_RE.search(prompt or "") else "interval"
+    tid = sched_add(kind, prompt, interval_s=max(60, int(interval_seconds)))
+    add_log(f"Recurring task #{tid} every {interval_seconds}s (kind={kind})")
+    if kind == "brief":
+        return (f"Morning-brief task set (#{tid}): I'll speak your morning brief "
+                f"every {interval_seconds} seconds.")
     return (f"Recurring task set (#{tid}): I'll run '{prompt}' "
             f"every {interval_seconds} seconds.")
 
@@ -981,6 +1221,9 @@ RISKY_TOOLS = {"run_python_code", "gui_click", "gui_type",
 
 def execute_tool(fn_name: str, args: dict, preauthorized: bool = False):
     """Dispatch one tool. Returns (result_text, needs_confirm_bool)."""
+    global CURRENT_STATE  # v9.9: working-face state
+    spine_append("tool", {"name": fn_name,  # v9.10: tool calls join the spine
+                          "args": str(args)[:300]})
     # v9.8: duplicate-call blocking - same function + same args twice in one
     # turn returns the earlier result instead of re-executing.
     _sig = _call_signature(fn_name, args)
@@ -1008,7 +1251,11 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False):
         CONVERSATION_HISTORY.append(
             {"role": "model",
              "parts": [{"text": "[Executed: "
-                                 + _risky_description(fn_name, args) + "]"}]})
+                                 + _redact(_risky_description(fn_name, args)) + "]"}]})
+    _face_before = CURRENT_STATE  # v9.9: working face while a tool runs
+    if _face_before in ("idle", "thinking"):
+        CURRENT_STATE = "working"
+        draw_hud()
     try:
         if fn_name == "web_search":
             r = tool_web_search(args.get("query", ""))
@@ -1116,6 +1363,8 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False):
             r = commands_hide()
         elif fn_name == "load_toolkit":
             r = tool_load_toolkit(args.get("toolkit", ""))
+        elif fn_name == "run_skill":
+            r = tool_run_skill(args.get("skill_name", ""), args.get("objective", ""))
         elif fn_name == "gmail_setup":
             r = tool_gmail_setup(args.get("gmail_user", ""), args.get("app_password", ""))
         elif fn_name == "send_email":
@@ -1124,10 +1373,156 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False):
             r = f"Unknown tool: {fn_name}"
     except Exception as e:
         r = f"[Tool Error: {e}]"
+    finally:
+        if CURRENT_STATE == "working":  # v9.9: restore the face after the tool
+            CURRENT_STATE = _face_before
+            draw_hud()
     if len(r) > MAX_TOOL_OUTPUT:
         r = r[:MAX_TOOL_OUTPUT] + f"\n...[output truncated, {len(r)} chars total]"
     _TURN_CALLS[_sig] = r  # v9.8: remember for duplicate-call blocking
     return r, False
+
+
+# ============================================================
+# v9.9 BOUNDED WORKFLOW SKILLS (Leon-inspired)
+# ============================================================
+# Reusable multi-step procedures with HARD caps: a skill gets max_calls tool
+# calls, then it stops and reports what it found. Evidence rules per skill:
+# a skill must say what it checked and cite it, never invent findings.
+class _SkillBudgetExceeded(Exception):
+    pass
+
+
+_SKILL_STATE = threading.local()
+
+
+def _skill_call(fn_name, args):
+    """Tool dispatcher for skills: enforces the per-skill call budget."""
+    rem = getattr(_SKILL_STATE, "remaining", 0)
+    if rem <= 0:
+        raise _SkillBudgetExceeded("skill budget exhausted")
+    _SKILL_STATE.remaining = rem - 1
+    result, _ = execute_tool(fn_name, args or {}, preauthorized=True)
+    return result
+
+
+def _skill_deep_research(objective, call):
+    """Bounded web research: up to 4 searches, cited summary, no invention."""
+    queries = [objective,
+               objective + " explained",
+               objective + " latest news",
+               objective + " details"]
+    findings, used = [], []
+    for q in queries:
+        try:
+            r = call("web_search", {"query": q})
+        except _SkillBudgetExceeded:
+            break
+        used.append(q)
+        if r and "No web results" not in r and "Search error" not in r:
+            findings.append(r[:1200])
+        if len(findings) >= 3:
+            break
+    if not findings:
+        return ("Research on '%s': no results from %d searches (%s). "
+                "Nothing to report - not inventing findings."
+                % (objective, len(used), "; ".join(used)))
+    return ("Research on '%s' (%d searches: %s):\n\n%s"
+            % (objective, len(used), "; ".join(used),
+               "\n\n".join(findings)))
+
+
+def _skill_system_check(objective, call):
+    """Laptop health report: CPU, memory, disk, battery, network."""
+    cpu = psutil.cpu_percent(interval=1)
+    mem = psutil.virtual_memory()
+    disk = psutil.disk_usage(os.path.expanduser("~"))
+    battery = psutil.sensors_battery()
+    try:
+        s = socket.create_connection(("8.8.8.8", 53), timeout=5)
+        s.close()
+        net = "online"
+    except Exception:
+        net = "OFFLINE"
+    bat = f"{battery.percent}%{' (charging)' if battery.power_plugged else ''}" \
+        if battery else "no battery sensor"
+    return ("System check: CPU %s%%, memory %s%% (%s), disk %s%% free, "
+            "battery %s, network %s."
+            % (cpu, mem.percent,
+               f"{mem.used // 1073741824}G/{mem.total // 1073741824}G used",
+               100 - disk.percent, bat, net))
+
+
+def _skill_file_sweep(objective, call):
+    """Scan the workspace: list files, read up to 3 matching the objective."""
+    words = [w.lower() for w in re.findall(r"[a-zA-Z]{3,}", objective)]
+    try:
+        listing = call("list_workspace", {})
+    except _SkillBudgetExceeded:
+        return "File sweep: budget exhausted before listing."
+    read, notes = [], []
+    for line in listing.splitlines():
+        name = line.strip().lower()
+        if name and any(w in name for w in words):
+            try:
+                content = call("read_file", {"filename": line.strip()})
+            except _SkillBudgetExceeded:
+                break
+            read.append(line.strip())
+            notes.append(f"--- {line.strip()} ---\n{content[:1500]}")
+        if len(read) >= 3:
+            break
+    if not read:
+        return ("File sweep for '%s': no workspace files matched "
+                "(checked: %s)." % (objective, listing[:300]))
+    return ("File sweep for '%s': read %d file(s) (%s):\n\n%s"
+            % (objective, len(read), ", ".join(read), "\n\n".join(notes)))
+
+
+SKILLS = {
+    "deep_research": {
+        "description": ("Bounded web research on the objective: up to 4 searches, "
+                        "returns a cited summary. Never invents findings."),
+        "max_calls": 8, "run": _skill_deep_research},
+    "system_check": {
+        "description": ("Quick laptop health report: CPU, memory, disk, battery, "
+                        "network. Objective is ignored."),
+        "max_calls": 2, "run": _skill_system_check},
+    "file_sweep": {
+        "description": ("Scan the workspace for files matching the objective, "
+                        "read up to 3, return digested contents."),
+        "max_calls": 5, "run": _skill_file_sweep},
+}
+
+
+def tool_run_skill(skill_name, objective):
+    """Run a bounded workflow skill: deep_research, system_check, file_sweep."""
+    global CURRENT_STATE
+    name = (skill_name or "").strip().lower()
+    sk = SKILLS.get(name)
+    if not sk:
+        return (f"Unknown skill '{skill_name}'. Available: "
+                f"{', '.join(sorted(SKILLS))}.")
+    if not (objective or "").strip():
+        return f"Give me an objective for the '{name}' skill to work on."
+    _SKILL_STATE.remaining = sk["max_calls"]
+    _prev_face = CURRENT_STATE
+    if _prev_face in ("idle", "thinking"):
+        CURRENT_STATE = "working"
+        draw_hud()
+    try:
+        add_log(f"Skill '{name}' started (budget {sk['max_calls']} calls)")
+        return sk["run"]((objective or "").strip(), _skill_call)
+    except _SkillBudgetExceeded:
+        return (f"Skill '{name}' hit its step budget ({sk['max_calls']} calls) - "
+                "stopping with what it found so far.")
+    except Exception as e:
+        return f"Skill '{name}' failed: {e}"
+    finally:
+        _SKILL_STATE.remaining = 0
+        if CURRENT_STATE == "working":
+            CURRENT_STATE = _prev_face
+            draw_hud()
 
 
 TOOLS_DECLARATION = [
@@ -1367,6 +1762,47 @@ def apply_led_scanlines(canvas, x1, y1, x2, y2):
             canvas[y, max(0, x1):min(canvas.shape[1], x2)] // 2
 
 
+# ============================================================
+# v9.12 FACE ON THE PHONE BRIDGE — face-only MJPEG stream
+# ============================================================
+# draw_hud() renders a 1280x720 frame. The face lives in the center:
+# eyes at (520,235) and (760,235); the listening pulse reaches radius ~76;
+# thinking dots float up to y~102; the working radar arc dips to y~420;
+# the speaking waveform spans x 448..832, y 332..408. FACE_CROP (x, y, w, h)
+# frames just the face, excluding the subsystem/action/subtitle panels.
+FACE_CROP = (430, 95, 420, 350)
+_FACE_FRAME = {"jpeg": None, "lock": threading.Lock(), "last": 0.0}
+_FACE_FPS_MIN_GAP = 0.08  # ~12 fps max encode rate
+
+
+def _publish_face_frame(canvas):
+    """v9.12: crop the face and stash a JPEG for the phone bridge.
+
+    Called from draw_hud() in visor mode only. Throttled so the HUD loop
+    never burns CPU on encoding; every failure is swallowed — the HUD
+    must never break because of the stream.
+    """
+    try:
+        now = time.time()
+        if now - _FACE_FRAME["last"] < _FACE_FPS_MIN_GAP:
+            return
+        _FACE_FRAME["last"] = now
+        x, y, w, h = FACE_CROP
+        crop = canvas[y:y + h, x:x + w]
+        ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        if ok:
+            with _FACE_FRAME["lock"]:
+                _FACE_FRAME["jpeg"] = buf.tobytes()
+    except Exception:
+        pass
+
+
+def _face_mjpeg_chunk(jpg):
+    """v9.12: one multipart frame for the MJPEG stream. Pure bytes logic."""
+    return (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+            + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n")
+
+
 def draw_hud():
     global CURRENT_STATE, HUD_MODE, CHAT_SCROLL
     w, h = 1280, 720
@@ -1398,7 +1834,7 @@ def draw_hud():
     battery = psutil.sensors_battery()
     bat_str = f"{battery.percent}%" if battery else "AC"
 
-    cv2.putText(canvas, "A.R.I.A. // AUTONOMOUS ROBOTIC INTELLIGENCE AGENT v9.8", (30, 40),
+    cv2.putText(canvas, "A.R.I.A. // AUTONOMOUS ROBOTIC INTELLIGENCE AGENT v9.12", (30, 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, CYAN, 2, cv2.LINE_AA)
     sys_stats = f"TIME: {now_str}  |  CPU: {cpu_usage}%  |  MEM: {mem_usage}%  |  PWR: {bat_str}"
     cv2.putText(canvas, sys_stats, (650, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
@@ -1515,19 +1951,41 @@ def draw_hud():
                 bar_h = int(abs(np.sin(wt + i * 0.5)) * 8) + 2
                 cv2.line(canvas, (bar_x, 388 - bar_h), (bar_x, 388 + bar_h), PINK, 2)
         elif CURRENT_STATE == "listening":
+            # v9.9: animated - the ring breathes while she listens.
+            pulse = int(6 * np.sin(time.time() * 4))
             for ex, side in ((lx, -1), (rx, 1)):
-                cv2.circle(canvas, (ex, cy), 70, (255, 80, 255), -1)
-                cv2.circle(canvas, (ex, cy), 70, LINER, 2)
+                cv2.circle(canvas, (ex, cy), 70 + pulse, (255, 80, 255), -1)
+                cv2.circle(canvas, (ex, cy), 70 + pulse, LINER, 2)
                 _draw_lashes(canvas, ex, cy, 70, 70, side)
                 cv2.circle(canvas, (ex, cy), 24, (40, 10, 60), -1)  # pupils lock on you
                 cv2.circle(canvas, (ex - 8, cy - 10), 8, (255, 255, 255), -1)
                 apply_led_scanlines(canvas, ex - 70, cy - 70, ex + 70, cy + 70)
         elif CURRENT_STATE == "thinking":
+            # v9.9: animated - pupils dart as she thinks, dots bounce above.
+            t = time.time()
+            dart = int(np.sin(t * 3.1) * 14)
             for ex, tilt, dy in ((lx, -12, -15), (rx, 8, -5)):
                 cv2.ellipse(canvas, (ex, cy + dy), (48, 68), tilt, 0, 360, (0, 100, 200), -1)
                 cv2.ellipse(canvas, (ex, cy + dy), (42, 60), tilt, 0, 360, AMBER, -1)
-                cv2.circle(canvas, (ex - 12, cy + dy - 20), 7, (255, 255, 255), -1)
-                apply_led_scanlines(canvas, ex - 60, cy + dy - 70, ex + 60, cy + dy + 70)
+                cv2.circle(canvas, (ex + dart - 12, cy + dy - 20), 7, (255, 255, 255), -1)
+                apply_led_scanlines(canvas, ex - 60, cy + dy - 70, ex + 60, cy + 70)
+            for i in range(3):
+                bounce = int(abs(np.sin(t * 4 + i * 1.1)) * 12)
+                cv2.circle(canvas, (600 + i * 40, 130 - bounce), 8, AMBER, -1)
+        elif CURRENT_STATE == "working":
+            # v9.9: animated - amber radar sweep while a tool runs.
+            t = time.time()
+            sweep = int((t * 240) % 120) - 60
+            for ex in (lx, rx):
+                cv2.ellipse(canvas, (ex, cy), (58, 78), 0, 0, 360, (20, 60, 90), -1)
+                cv2.ellipse(canvas, (ex, cy), (58, 78), 0, 0, 360, AMBER, 2)
+                cv2.line(canvas, (ex - 52, cy + sweep), (ex + 52, cy + sweep), AMBER, 2)
+                px = ex + int(np.sin(t * 5) * 20)
+                cv2.circle(canvas, (px, cy), 16, AMBER, -1)
+                cv2.circle(canvas, (px - 5, cy - 6), 5, (255, 255, 255), -1)
+                apply_led_scanlines(canvas, ex - 60, cy - 80, ex + 60, cy + 80)
+            arc = int((t * 180) % 360)
+            cv2.ellipse(canvas, (640, 400), (70, 20), 0, arc, arc + 120, AMBER, 3)
         elif CURRENT_STATE == "coding":
             for ex in (lx, rx):
                 cv2.rectangle(canvas, (ex - 55, cy - 65), (ex + 55, cy + 65), (0, 100, 40), -1)
@@ -1561,12 +2019,14 @@ def draw_hud():
         cv2.putText(canvas, line, (40, start_y + idx * line_height),
                     cv2.FONT_HERSHEY_SIMPLEX, font_scale, WHITE_TEXT, 1, cv2.LINE_AA)
 
-    controls = "CONTROLS: [H] Commands  |  [C] Chat Log  |  [L] Open Log  |  [SPACE] Voice  |  [S] Screen  |  [Q] Exit"
+    controls = "CONTROLS: [H] Commands  |  [C] Chat Log  |  [L] Open Log  |  [SPACE] Hold to talk  |  [S] Screen  |  [Q] Exit"
     cv2.putText(canvas, controls, (40, 692), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
                 (130, 140, 150), 1, cv2.LINE_AA)
 
     if SHOW_COMMANDS:
         _draw_commands_overlay(canvas)
+    if HUD_MODE == "visor":
+        _publish_face_frame(canvas)  # v9.12: face-only phone stream
     cv2.imshow("A.R.I.A. - Autonomous Robotic Intelligence Agent", canvas)
     # no waitKey here — main loop owns event pumping
 
@@ -1635,20 +2095,31 @@ def _init_voice():
         print("[ARIA] Voice: using system fallback (pyttsx3)", flush=True)
         add_log("Voice: system fallback (mixer)")
         return
-    try:
-        import asyncio
-        probe = os.path.join(WORKSPACE_DIR, "_voice_probe.mp3")
-        asyncio.run(asyncio.wait_for(
-            edge_tts.Communicate("Voice check.", EDGE_TTS_VOICE).save(probe),
-            timeout=20))
-        print("[ARIA] Voice: Edge TTS synthesis OK — new voice is LIVE", flush=True)
+    _probe_ok = False  # v9.9: retry the probe 3x before giving up on Edge
+    for _attempt in range(1, 4):
+        try:
+            import asyncio
+            probe = os.path.join(WORKSPACE_DIR, "_voice_probe.mp3")
+            asyncio.run(asyncio.wait_for(
+                edge_tts.Communicate("Voice check.", EDGE_TTS_VOICE).save(probe),
+                timeout=20))
+            _probe_ok = True
+            break
+        except Exception as _e:
+            print(f"[ARIA] Voice: Edge probe attempt {_attempt}/3 failed "
+                  f"({type(_e).__name__}) -- retrying...", flush=True)
+            time.sleep(3)
+    if _probe_ok:
+        print("[ARIA] Voice: Edge TTS synthesis OK -- new voice is LIVE", flush=True)
         _EDGE_READY = True
         add_log("Voice: Edge TTS (AriaNeural)")
-    except Exception:
-        print("[ARIA] Voice: Edge TTS synthesis FAILED — full traceback:", flush=True)
+    else:
+        print("[ARIA] Voice: Edge TTS synthesis FAILED after 3 attempts -- "
+              "full traceback:", flush=True)
         traceback.print_exc()
         print("[ARIA] Voice: using system fallback (pyttsx3)", flush=True)
         add_log("Voice: system fallback (synthesis)")
+
 
 
 def _speak_edge(text):
@@ -1765,8 +2236,28 @@ def _gemini_call(system_instruction, contents, include_tools=True, tool_decls=No
         req = urllib.request.Request(url, data=body,
                                      headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+            # v9.9: transient network drops (DNS, reset, timeout) retry with
+            # backoff instead of killing the turn.
+            _net_err = None
+            for _nr in range(3):
+                try:
+                    with urllib.request.urlopen(req, timeout=60) as resp:
+                        return json.loads(resp.read().decode("utf-8"))
+                except urllib.error.HTTPError:
+                    raise
+                except (urllib.error.URLError, TimeoutError, ConnectionError,
+                        socket.timeout) as _ne:
+                    _net_err = _ne
+                    _wait_nr = 2 * (_nr + 1)
+                    add_log(f"Gemini network drop ({type(_ne).__name__}) - "
+                            f"retry {_nr + 1}/3 in {_wait_nr}s...")
+                    draw_hud()
+                    time.sleep(_wait_nr)
+            _last_err = _net_err
+            _key_cooldown(idx, 30)
+            add_log(f"Gemini key #{idx + 1} unreachable after 3 tries - rotating...")
+            draw_hud()
+            continue
         except urllib.error.HTTPError as e:
             if e.code == 429:
                 _key_cooldown(idx, 60)
@@ -1806,9 +2297,10 @@ def _normalize_shortcut(text):
 
 
 def run_agent(user_prompt, image_bytes=None, is_screen=False,
-              reply_sink=None, preauthorized=False, silent=False):
+              reply_sink=None, preauthorized=False, silent=False, _resume_from=None):
     global CONVERSATION_HISTORY, CURRENT_STATE, BUSY_PROCESSING, PENDING_CONFIRM
     global LAST_USER_MESSAGE, _TURN_NUDGED, _LOADED_TOOLKITS, _TURN_CALLS
+    global _SUSPENDED_TURN, _AWAITING_CONTINUE
     BUSY_PROCESSING = True
     LAST_USER_MESSAGE = user_prompt or ""
     _TURN_NUDGED = False
@@ -1821,6 +2313,7 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
 
     now_time = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
     known_memories = memory_get_all()
+    unbroken_thread = _spine_unbroken_thread()  # v9.10: resume the thread
 
     system_instruction = (
         f"Your soul - who you are. Embody it fully:\n{ARIA_SOUL}\n"
@@ -1828,6 +2321,7 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
         "the user's laptop. "
         f"Current time: {now_time}. "
         f"Known persistent memories:\n{known_memories}\n"
+        f"UNBROKEN THREAD (recent events across sessions):\n{unbroken_thread}\n"
         "Capabilities: live web search, semantic persistent memory, Python code "
         "execution, GUI automation, GitHub pushes and repo creation, physical "
         "neck servos, and a scheduler — you can set one-shot spoken reminders "
@@ -1905,7 +2399,13 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
         draw_hud()
         return
 
-    contents = list(CONVERSATION_HISTORY)
+    if _resume_from is not None:
+        # v9.15: resume a suspended turn — continue the same reasoning chain.
+        contents = (list(_resume_from["contents"])
+                    + [{"role": "user", "parts": [{"text":
+                        "[Continuing the previous task — pick up exactly where you left off.]"}]}])
+    else:
+        contents = list(CONVERSATION_HISTORY)
     if image_bytes:
         b64_image = base64.b64encode(image_bytes).decode("utf-8")
         last = {"role": "user",
@@ -1913,8 +2413,16 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
                                                                   "data": b64_image}}]}
         contents = contents[:-1] + [last]
 
+    _loop_deadline = time.monotonic() + AGENT_LOOP_TIME_BUDGET_S  # v9.15: fresh budget per request
     try:
-        for _ in range(20):
+        while True:
+            if time.monotonic() > _loop_deadline:
+                # v9.15: budget spent — suspend the turn in memory and ASK.
+                _SUSPENDED_TURN = {"contents": contents, "user_prompt": user_prompt}
+                _AWAITING_CONTINUE = True
+                add_log("Agent loop: 10-minute budget reached; turn suspended")
+                say("I've been working on this for ten minutes. Should I keep going?")
+                return
             data = _gemini_call(system_instruction, contents,
                                tool_decls=_toolkit_declarations())  # v9.8
             if not data:
@@ -1935,6 +2443,8 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
                 if len(CONVERSATION_HISTORY) > HISTORY_TURNS:
                     CONVERSATION_HISTORY = CONVERSATION_HISTORY[-HISTORY_TURNS:]
                 say(final_text)
+                _SUSPENDED_TURN = None  # v9.15: turn finished — nothing left to resume
+                _AWAITING_CONTINUE = False
                 if reply_sink is not None:
                     reply_sink.append(final_text)
                 return
@@ -1987,6 +2497,27 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
 # =====================================================================
 # 9. SCHEDULER ENGINE (runs in background; tasks persist in SQLite)
 # =====================================================================
+def _fire_brief(tid, interval_s):
+    """v9.13: fire a morning-brief task deterministically — compute
+    tool_briefing() and speak it (or queue it if she's busy). The model is
+    never involved. Reschedules next_run exactly like interval tasks; legacy
+    interval-kind brief tasks are upgraded to "brief" here."""
+    from datetime import timedelta
+    nxt = (datetime.now() + timedelta(seconds=interval_s or 3600))
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("UPDATE scheduled_tasks SET next_run = ?, kind = 'brief' WHERE id = ?",
+                     (nxt.strftime("%Y-%m-%d %H:%M:%S"), tid))
+        conn.commit()
+        conn.close()
+    text = tool_briefing()
+    add_log(f"Morning brief spoken (#{tid})")
+    if not BUSY_PROCESSING:
+        speak(text)
+    else:
+        _SPEECH_QUEUE.put(text)
+
+
 def scheduler_loop():
     time.sleep(5)
     while True:
@@ -2012,6 +2543,12 @@ def scheduler_loop():
                         speak(prompt)
                     else:
                         _SPEECH_QUEUE.put(prompt)
+                elif kind == "brief" or _BRIEF_PROMPT_RE.search(prompt or ""):
+                    # v9.13: deterministic morning brief — the model is not
+                    # involved, so it can't echo the prompt back. Legacy
+                    # interval-kind brief tasks are caught here too and
+                    # upgraded to "brief" inside _fire_brief.
+                    _fire_brief(tid, interval_s)
                 else:
                     from datetime import timedelta
                     nxt = (datetime.now() + timedelta(seconds=interval_s or 3600))
@@ -2049,6 +2586,7 @@ button{padding:12px 18px;border-radius:8px;border:0;background:#ff5fa2;color:#ff
 font-weight:bold;font-size:16px}#talk{width:100%;padding:16px;touch-action:none;
 user-select:none;-webkit-user-select:none}</style></head><body>
 <h2>A.R.I.A. // Phone Bridge</h2>
+<div style="text-align:center;margin-bottom:12px"><img id="face" alt="A.R.I.A." style="border-radius:12px;max-width:100%;width:320px;border:1px solid #2a3138"></div>
 <div style="margin-bottom:12px"><a href="/commands" style="color:#ff5fa2">Command reference</a></div>
 <div id="log"></div>
 <form onsubmit="return send()"><input id="t" placeholder="Directive..."
@@ -2088,6 +2626,8 @@ const buf=await r.arrayBuffer();
 new Audio(URL.createObjectURL(new Blob([buf],{type:'audio/mpeg'}))).play();}
 catch(err){alert('Voice failed: '+err.message);}
 talk.textContent='Hold to talk';refresh();}
+function mountFace(){ensureToken();if(token){document.getElementById('face').src='/face.mjpg?token='+encodeURIComponent(token);}}
+mountFace();
 setInterval(refresh,3000);refresh();
 </script></body></html>"""
 
@@ -2132,10 +2672,58 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return
             self._send(404, b'{"error":"not found"}')
             return
+        if self.path.startswith("/face.mjpg"):
+            if not self._authed():
+                self._send(401, b'{"error":"bad or missing bridge token"}')
+                return
+            self._stream_face_mjpeg()
+            return
+        if self.path.startswith("/face.jpg"):
+            if not self._authed():
+                self._send(401, b'{"error":"bad or missing bridge token"}')
+                return
+            self._serve_face_jpg()
+            return
         if self.path == "/commands" or self.path.startswith("/commands?"):
             self._send(200, _commands_html().encode(), "text/html")
             return
         self._send(200, BRIDGE_HTML.encode(), "text/html")
+
+    def _serve_face_jpg(self):
+        """v9.12: the single latest face frame (debugging / thumbnails)."""
+        with _FACE_FRAME["lock"]:
+            jpg = _FACE_FRAME["jpeg"]
+        if jpg is None:
+            self._send(503, b'{"error":"face not ready yet"}')
+            return
+        self._send(200, jpg, "image/jpeg")
+
+    def _stream_face_mjpeg(self):
+        """v9.12: MJPEG stream of her face for the phone bridge page.
+
+        One thread per viewer (ThreadingHTTPServer); idle-cheap: the loop
+        only sleeps and copies the latest stored frame. Exits cleanly when
+        the phone disconnects. Protocol-agnostic — works over plain HTTP
+        now and HTTPS later with zero changes.
+        """
+        self.send_response(200)
+        self.send_header("Content-Type",
+                         "multipart/x-mixed-replace; boundary=frame")
+        self.end_headers()
+        try:
+            while True:
+                with _FACE_FRAME["lock"]:
+                    jpg = _FACE_FRAME["jpeg"]
+                if jpg is None:
+                    time.sleep(0.2)
+                    continue
+                self.wfile.write(_face_mjpeg_chunk(jpg))
+                self.wfile.flush()
+                time.sleep(0.1)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception:
+            pass
 
     def do_POST(self):
         if not (self.path == "/api/ask" or self.path.startswith("/api/ask?")
@@ -2289,6 +2877,89 @@ threading.Thread(target=start_bridge, daemon=True).start()
 # =====================================================================
 # 11. PROACTIVE HEARTBEAT
 # =====================================================================
+# --- Heartbeat decline learning (v9.9) ---
+# A dismissed proactive nudge teaches that nudge type to stay quiet: each
+# decline doubles the quiet period (1d -> 2d -> 4d, capped at 7d).
+_HEARTBEAT_MEM_FILE = os.path.join(WORKSPACE_DIR, "heartbeat_memory.json")
+_LAST_PROACTIVE = [None, 0.0]  # [nudge_type, timestamp]
+
+
+def _heartbeat_mem_load():
+    try:
+        with open(_HEARTBEAT_MEM_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _heartbeat_mem_save(mem):
+    try:
+        with open(_HEARTBEAT_MEM_FILE, "w", encoding="utf-8") as f:
+            json.dump(mem, f, indent=2)
+    except Exception:
+        pass
+
+
+def _proactive_say(nudge_type, text):
+    """Speak a proactive nudge unless it was declined recently."""
+    mem = _heartbeat_mem_load()
+    entry = mem.get(nudge_type, {})
+    if entry.get("suppressed_until", 0) > time.time():
+        add_log(f"Heartbeat: '{nudge_type}' nudge suppressed (declined before)")
+        return False
+    if not BUSY_PROCESSING:
+        speak(text)
+        _LAST_PROACTIVE[0] = nudge_type
+        _LAST_PROACTIVE[1] = time.time()
+        return True
+    return False
+
+
+_DISMISS_RE = re.compile(
+    r"\b(shut up|not now|leave me alone|go away|be quiet|cut it out|not interested)\b"
+    r"|^(no|nope|nah|stop|quiet|enough|later)\b", re.IGNORECASE)
+
+
+def _looks_like_decline(user_text):
+    t = (user_text or "").strip()
+    if len(t) > 60:
+        return False
+    return bool(_DISMISS_RE.search(t))
+
+
+def _looks_like_continue(user_text):
+    """True when the user is asking to resume a suspended turn (v9.15)."""
+    t = (user_text or "").lower().strip()
+    if len(t) > 60:
+        return False
+    return bool(re.match(
+        r"^(continue|keep going|go on|proceed|resume|carry on|"
+        r"pick up where you left off|keep it going)\b", t))
+
+
+def _looks_like_yes(user_text):
+    """Bare affirmative — reuses the confirmation yes-set (v9.15 continue-ask)."""
+    low = (user_text or "").lower().strip()
+    if len(low) > 60:
+        return False
+    words = re.findall(r"[a-z']+", low)
+    first = words[0] if words else ""
+    return first in _YES_FIRST_WORDS or low.startswith(("do it", "go ahead"))
+
+
+def _record_proactive_decline(nudge_type):
+    mem = _heartbeat_mem_load()
+    entry = mem.get(nudge_type, {"declines": 0})
+    declines = entry.get("declines", 0) + 1
+    quiet_days = min(2 ** (declines - 1), 7)  # 1, 2, 4, then 7 cap
+    entry.update({"declines": declines,
+                  "last_decline": datetime.now().isoformat(timespec="seconds"),
+                  "suppressed_until": time.time() + quiet_days * 86400})
+    mem[nudge_type] = entry
+    _heartbeat_mem_save(mem)
+    add_log(f"Heartbeat: '{nudge_type}' declined ({declines}x) - quiet {quiet_days}d")
+
+
 def proactive_heartbeat_loop():
     time.sleep(10)
     last_battery_alert = False
@@ -2299,15 +2970,16 @@ def proactive_heartbeat_loop():
             if (battery and not battery.power_plugged and battery.percent < 20
                     and not last_battery_alert):
                 last_battery_alert = True
-                if not BUSY_PROCESSING:
-                    speak(f"Allen, battery level is at {battery.percent}%. "
-                          "Please connect to AC power.")
+                _proactive_say("battery",
+                                 f"Allen, battery level is at {battery.percent}%. "
+                                 "Please connect to AC power.")
             elif battery and battery.power_plugged:
                 last_battery_alert = False
             if BREAK_REMINDERS and (time.time() - session_start) / 3600 >= 1.5:
                 session_start = time.time()
-                if not BUSY_PROCESSING and (time.time() - LAST_ACTIVITY) < 5400:
-                    speak("You have been at it a while, stretch and get some water.")
+                if (time.time() - LAST_ACTIVITY) < 5400:
+                    _proactive_say("break", "You have been at it a while, "
+                                            "stretch and get some water.")
         except Exception as e:
             add_log(f"Heartbeat err: {e}")
         time.sleep(30)
@@ -2358,7 +3030,7 @@ def _resolve_confirmation(user_text, reply_sink=None):
 
 
 def handle_action(mode="voice", typed_prompt=None):
-    global CURRENT_STATE, LAST_ACTIVITY, PENDING_CONFIRM
+    global CURRENT_STATE, LAST_ACTIVITY
     LAST_ACTIVITY = time.time()
     if typed_prompt:
         user_text = typed_prompt
@@ -2371,7 +3043,7 @@ def handle_action(mode="voice", typed_prompt=None):
             with sr.Microphone() as source:
                 recognizer.adjust_for_ambient_noise(source, duration=0.5)
                 audio = recognizer.listen(source, timeout=6, phrase_time_limit=10)
-                user_text = recognizer.recognize_google(audio)
+                user_text = _transcribe(audio)
                 add_log(f"Acoustic: '{user_text[:25]}...'")
         except Exception as e:
             add_log(f"Mic issue: {e}")
@@ -2379,6 +3051,21 @@ def handle_action(mode="voice", typed_prompt=None):
             draw_hud()
             return
 
+    _handle_transcript(user_text, mode=mode)
+
+
+def _handle_transcript(user_text, mode="voice"):
+    """Everything after transcription — shared by the one-shot mic and PTT.
+
+    v9.11: extracted from handle_action() so both mic paths behave identically.
+    """
+    global PENDING_CONFIRM, _SUSPENDED_TURN, _AWAITING_CONTINUE
+    # v9.9: heartbeat decline learning - a dismissal within 3 minutes of a
+    # proactive nudge teaches that nudge type to stay quiet for a while.
+    if (_LAST_PROACTIVE[0] and time.time() - _LAST_PROACTIVE[1] < 180
+            and _looks_like_decline(user_text)):
+        _record_proactive_decline(_LAST_PROACTIVE[0])
+        _LAST_PROACTIVE[0] = None
     if re.match(r"(stop|quiet|shut up|enough|silence|stop talking|hush|be quiet|cut it out)\b",
                user_text.lower().strip()):
         was_pending = PENDING_CONFIRM is not None
@@ -2401,6 +3088,23 @@ def handle_action(mode="voice", typed_prompt=None):
     elif mode == "camera" or any(k in low for k in ["look", "see", "holding", "camera"]):
         image_bytes = capture_webcam()
 
+    # v9.15: resume a suspended turn — "continue" always works; a bare
+    # "yes" works only while she has asked "Should I keep going?".
+    # _resolve_confirmation ran above, so a pending risky-tool
+    # confirmation still wins over this yes.
+    if _SUSPENDED_TURN is not None and (
+            _looks_like_continue(user_text)
+            or (_AWAITING_CONTINUE and _looks_like_yes(user_text))):
+        add_log("Resuming suspended turn")
+        threading.Thread(target=run_agent, args=(user_text, image_bytes, is_screen),
+                         kwargs={"_resume_from": _SUSPENDED_TURN}, daemon=True).start()
+        return
+    # v9.15: a fresh directive abandons the suspended turn.
+    if _SUSPENDED_TURN is not None:
+        add_log("New directive abandons suspended turn")
+        _SUSPENDED_TURN = None
+        _AWAITING_CONTINUE = False
+
     threading.Thread(target=run_agent, args=(user_text, image_bytes, is_screen),
                      daemon=True).start()
 
@@ -2412,7 +3116,7 @@ def continuous_voice_listener():
             if not BUSY_PROCESSING and CURRENT_STATE == "idle":
                 try:
                     audio = recognizer.listen(source, timeout=3, phrase_time_limit=8)
-                    transcript = recognizer.recognize_google(audio).lower()
+                    transcript = _transcribe(audio).lower()
                     if "aria" in transcript:
                         add_log(f"Wake: '{transcript[:25]}'")
                         cleaned = transcript.replace("hey aria", "").replace("aria", "").strip()
@@ -2429,6 +3133,252 @@ def continuous_voice_listener():
                 except Exception:
                     pass
             time.sleep(0.3)
+
+
+# --- v9.9: key-triggered input runs off the main thread ---
+# The main thread only draws the HUD + reads keys now; blocking mic listen
+# and console input() happen in a worker so the face never freezes.
+_KEY_INPUT_BUSY = False
+
+
+def _key_input_worker(fn, kwargs):
+    global _KEY_INPUT_BUSY
+    try:
+        fn(**kwargs)
+    finally:
+        _KEY_INPUT_BUSY = False
+
+
+def _key_action_thread(fn, kwargs):
+    global _KEY_INPUT_BUSY
+    if _KEY_INPUT_BUSY or BUSY_PROCESSING:
+        add_log("Still working - hold on.")
+        return
+    _KEY_INPUT_BUSY = True
+    threading.Thread(target=_key_input_worker, args=(fn, kwargs),
+                     daemon=True).start()
+
+
+def _typed_directive_thread():
+    global CURRENT_STATE
+    CURRENT_STATE = "listening"
+    draw_hud()
+    try:
+        prompt = input("\nEnter directive: ")
+    except Exception:
+        prompt = ""
+    if prompt.strip():
+        handle_action(typed_prompt=prompt)
+    else:
+        CURRENT_STATE = "idle"
+        draw_hud()
+
+
+# ============================================================
+# v9.11 PUSH-TO-TALK — hold SPACE while talking, release when done
+# ============================================================
+# Windows-only: a daemon thread polls the physical space bar (0x20) via
+# ctypes GetAsyncKeyState every 0.05s. Rising edge starts _ptt_capture()
+# in a worker thread (the HUD never blocks — v9.9 rule); falling edge sets
+# _PTT_STOP and the capture thread finalizes. On non-Windows (or if ctypes
+# fails) _PTT_AVAILABLE is False and the old one-shot SPACE branch stays.
+# Every exit path resets CURRENT_STATE to "idle" so the wake-word listener
+# (which requires idle) never gets stuck.
+_PTT_AVAILABLE = False
+_PTT_RECORDING = False
+_PTT_STOP = False
+_PTT_STARTED_AT = 0.0
+_PTT_MIN_SECONDS = 0.5   # taps shorter than this are noise, not speech
+_PTT_MAX_SECONDS = 60.0  # safety cap on one push-to-talk turn
+
+
+def _ptt_platform_ok():
+    """True only on Windows where the space bar can be polled."""
+    try:
+        if sys.platform != "win32":
+            return False
+        import ctypes
+        return hasattr(ctypes, "windll")
+    except Exception:
+        return False
+
+
+def _ptt_poll_loop():
+    """Daemon: poll the physical space bar; drive PTT edges."""
+    import ctypes
+    user32 = ctypes.windll.user32
+    was_down = False
+    while True:
+        try:
+            down = (user32.GetAsyncKeyState(0x20) & 0x8000) != 0
+        except Exception:
+            down = False
+        if down and not was_down:
+            _ptt_rising_edge()
+        elif not down and was_down:
+            _ptt_falling_edge()
+        was_down = down
+        time.sleep(0.05)
+
+
+def _ptt_rising_edge():
+    global _PTT_RECORDING, _PTT_STOP, _PTT_STARTED_AT
+    global CURRENT_STATE, LAST_ACTIVITY, _KEY_INPUT_BUSY
+    if _PTT_RECORDING:
+        return
+    if _KEY_INPUT_BUSY or BUSY_PROCESSING:
+        add_log("Still working - hold on.")
+        return
+    _PTT_RECORDING = True
+    _PTT_STOP = False
+    _KEY_INPUT_BUSY = True
+    _PTT_STARTED_AT = time.time()
+    LAST_ACTIVITY = time.time()
+    CURRENT_STATE = "listening"
+    draw_hud()
+    add_log("Push-to-talk: recording... (release SPACE when done)")
+    threading.Thread(target=_ptt_capture, daemon=True).start()
+
+
+def _ptt_falling_edge():
+    global _PTT_STOP
+    if _PTT_RECORDING:
+        _PTT_STOP = True
+
+
+def _ptt_reset_state():
+    """Every PTT exit path lands here: recording off, HUD back to idle."""
+    global _PTT_RECORDING, _PTT_STOP, _KEY_INPUT_BUSY, CURRENT_STATE
+    _PTT_RECORDING = False
+    _PTT_STOP = False
+    _KEY_INPUT_BUSY = False
+    CURRENT_STATE = "idle"
+    draw_hud()
+
+
+def _ptt_join_audio(frames_list, sample_rate, sample_width):
+    """Concatenate raw PCM chunks -> (sr.AudioData, seconds). Pure logic."""
+    frames = b"".join(frames_list)
+    total_s = len(frames) / float(sample_rate * sample_width)
+    return sr.AudioData(frames, sample_rate, sample_width), total_s
+
+
+def _ptt_capture():
+    """Record 0.25s chunks while SPACE is held; transcribe on release.
+
+    Runs in a worker thread — never on the main HUD thread (v9.9 rule).
+    """
+    frames_list = []
+    sample_rate = 16000
+    sample_width = 2
+    try:
+        with sr.Microphone() as source:
+            recognizer.adjust_for_ambient_noise(source, duration=0.3)
+            sample_rate = source.SAMPLE_RATE
+            sample_width = source.SAMPLE_WIDTH
+            while not _PTT_STOP:
+                if time.time() - _PTT_STARTED_AT >= _PTT_MAX_SECONDS:
+                    add_log("Push-to-talk: 60s cap reached, stopping.")
+                    break
+                frames_list.append(
+                    recognizer.record(source, duration=0.25).get_raw_data())
+    except Exception as e:
+        add_log(f"Mic issue: {e}")
+        _ptt_reset_state()
+        return
+    audio, total_s = _ptt_join_audio(frames_list, sample_rate, sample_width)
+    if total_s < _PTT_MIN_SECONDS:
+        add_log("Tap ignored - hold SPACE while you talk.")
+        _ptt_reset_state()
+        return
+    try:
+        user_text = _transcribe(audio)
+        add_log(f"Acoustic (PTT): '{user_text[:25]}...'")
+    except Exception as e:
+        add_log(f"Mic issue: {e}")
+        _ptt_reset_state()
+        return
+    spine_append("ptt", {"seconds": round(total_s, 1)})  # v9.11
+    _ptt_reset_state()
+    _handle_transcript(user_text, mode="voice")
+
+
+try:
+    _PTT_AVAILABLE = _ptt_platform_ok()
+except Exception:
+    _PTT_AVAILABLE = False
+if _PTT_AVAILABLE:
+    # The poll thread owns SPACE now; the main-loop branch stands down.
+    threading.Thread(target=_ptt_poll_loop, daemon=True).start()
+
+
+# ============================================================
+# v9.14 LOCAL STT — faster-whisper replaces Google cloud recognition
+# ============================================================
+# Laptop install (Windows PATH uses `python`, not `py`):
+#     python -m pip install faster-whisper
+# The import is optional: if faster-whisper is missing, everything keeps
+# working through Google's cloud recognizer exactly as before. The model
+# ("base", int8 on CPU) downloads once (~150MB) into robot_workspace/models
+# on first use; any load/transcribe failure falls back to Google, and the
+# backend in use is logged at startup below.
+try:
+    from faster_whisper import WhisperModel as _FwWhisperModel
+    _FW_AVAILABLE = True
+except Exception:
+    _FwWhisperModel = None
+    _FW_AVAILABLE = False
+
+_FW_MODEL = None
+_FW_LOCK = threading.Lock()
+
+
+def _get_fw_model():
+    """Lazy singleton for the local Whisper model; None on any failure."""
+    global _FW_MODEL
+    if not _FW_AVAILABLE:
+        return None
+    with _FW_LOCK:
+        if _FW_MODEL is None:
+            try:
+                _FW_MODEL = _FwWhisperModel(
+                    "base", device="cpu", compute_type="int8",
+                    download_root=os.path.join(WORKSPACE_DIR, "models"))
+            except Exception as e:
+                add_log(f"Local STT unavailable: {e}")
+                return None
+        return _FW_MODEL
+
+
+def _fw_pcm(audio):
+    """sr.AudioData -> float32 mono PCM in [-1, 1] for faster-whisper."""
+    return (np.frombuffer(audio.get_raw_data(), dtype=np.int16)
+            .astype(np.float32) / 32768.0)
+
+
+def _transcribe(audio):
+    """Transcribe sr.AudioData -> str.
+
+    Prefers local faster-whisper; falls back to Google cloud recognition
+    on any failure (missing package, load error, empty result, transcribe
+    error). Google-path exceptions propagate exactly as before, so every
+    call site's existing error handling is unchanged.
+    """
+    model = _get_fw_model()
+    if model is not None:
+        try:
+            segments, _ = model.transcribe(_fw_pcm(audio), language="en")
+            text = "".join(s.text for s in segments).strip()
+            if text:
+                return text
+        except Exception as e:
+            add_log(f"Local STT failed, falling back to Google: {e}")
+    return recognizer.recognize_google(audio)
+
+
+add_log("STT backend: " + ("local faster-whisper" if _FW_AVAILABLE
+                           else "Google cloud (python -m pip install "
+                           "faster-whisper for local STT)"))
 
 
 threading.Thread(target=continuous_voice_listener, daemon=True).start()
@@ -2870,6 +3820,7 @@ JOURNAL_DIR = os.path.join(WORKSPACE_DIR, "aria_journal")
 
 def journal_write(entry: str) -> str:
     """Append a dated journal entry to aria_journal/YYYY-MM-DD.md."""
+    spine_append("journal", {"entry": entry})  # v9.10
     try:
         os.makedirs(JOURNAL_DIR, exist_ok=True)
         day = datetime.now()
@@ -2880,6 +3831,12 @@ def journal_write(entry: str) -> str:
                 f.write(f"# {day.strftime('%A, %B %d, %Y')}\n\n")
             f.write(f"## {day.strftime('%I:%M %p')}\n{(entry or '').strip()}\n\n")
         add_log("Journal entry written")
+        try:  # v9.10: journal is searchable — mirror into semantic memory
+            stamp = day.strftime("%Y-%m-%d %H:%M:%S.%f")
+            memory_save("journal", f"journal {stamp}",
+                        (entry or "").strip()[:2000])
+        except Exception as _je:
+            add_log(f"Journal memory save failed: {_je}")
         return f"Journal entry saved to {os.path.basename(path)}"
     except Exception as e:
         return f"Journal write failed: {e}"
@@ -3000,6 +3957,7 @@ def tool_dj(request):
 
 def memory_forget(query: str) -> str:
     """Delete non-system memories whose key or value matches a keyword."""
+    spine_append("memory_forget", {"query": query})  # v9.10
     q = (query or "").strip().lower()
     if not q:
         return "Nothing to forget: empty query."
@@ -3071,11 +4029,15 @@ def idle_consolidation_loop():
             wm = _consolidation_watermark()
             with _db() as db:
                 rows = db.execute(
-                    "SELECT id,speaker,message FROM chat_history WHERE id>?"
+                    "SELECT id,sender,message FROM chat_history WHERE id>?"
                     " ORDER BY id LIMIT 40", (wm,)).fetchall()
             if not rows:
                 continue
             convo = "\n".join(f"{s}: {m[:300]}" for _, s, m in rows)
+            # v9.10: the spine backs consolidation — fold the spine tail in.
+            _spine_lines = _spine_digest(_spine_tail(100))
+            if _spine_lines:
+                convo = convo + "\n[recent events]\n" + "\n".join(_spine_lines)
             data = _gemini_call(
                 "You distill durable memories from a conversation log. Reply "
                 "with 0-3 lines, each exactly 'key: value' — a lasting fact, "
@@ -3112,6 +4074,16 @@ threading.Thread(target=idle_consolidation_loop, daemon=True).start()
 # v7.0 DECLARATIONS + system prompt update
 # ============================================================
 TOOLS_DECLARATION[0]["function_declarations"] += [
+    {"name": "run_skill", "description":
+     "Run a bounded workflow skill: a reusable multi-step procedure with a hard "
+     "cap on tool calls. Skills: deep_research (web research with cited summary), "
+     "system_check (laptop health report), file_sweep (find and digest workspace "
+     "files matching the objective). Prefer a skill over a long free-form tool "
+     "chain when the job fits one.",
+     "parameters": {"type": "OBJECT",
+                    "properties": {"skill_name": {"type": "STRING"},
+                                   "objective": {"type": "STRING"}},
+                    "required": ["skill_name", "objective"]}},
     {"name": "fetch_url", "description":
      "Fetch a web page and return its readable text (scripts/styles stripped). "
      "Use when search snippets aren't enough — articles, docs, product pages.",
@@ -3196,11 +4168,12 @@ TOOLKITS = {
     "core": {
         "summary": "everyday tools: web search, open apps/URLs, run Python code, "
                    "click/type, screenshots, screen reading, clipboard, files, "
-                   "memory save/search",
+                   "memory save/search, bounded workflow skills",
         "tools": ["web_search", "open_app_or_url", "run_python_code", "gui_click",
                   "gui_type", "save_memory", "search_memory", "take_screenshot",
                   "read_screen", "fetch_url", "clipboard_read", "clipboard_write",
-                  "find_file", "read_file", "write_file", "list_workspace"]},
+                  "find_file", "read_file", "write_file", "list_workspace",
+                  "run_skill"]},
     "comms": {
         "summary": "Gmail: store credentials, send email",
         "tools": ["gmail_setup", "send_email"]},
@@ -3316,6 +4289,7 @@ COMMAND_GUIDE = [
     ("Memory", "journal_write", "write a journal entry about today"),
     ("Web", "web_search", "search the web for Zero 2 W stock"),
     ("Web", "fetch_url", "fetch this page and summarize it"),
+    ("Web", "run_skill", "research the new Zelda DLC with deep_research"),
     ("Laptop", "open_app_or_url", "open Spotify"),
     ("Laptop", "gui_click", "click the Play button"),
     ("Laptop", "gui_type", "type hello world"),
@@ -3614,14 +4588,49 @@ def _weather_now():
         return ""
 
 
+def _weather_full():
+    """v9.13: full Dundalk weather from wttr.in JSON — current temp (F),
+    condition, today's high/low (F). Returns a dict, or None on any failure
+    (caller falls back to _weather_now)."""
+    try:
+        req = urllib.request.Request(
+            "https://wttr.in/Dundalk,Maryland?format=j1",
+            headers={"User-Agent": "ARIA-Agent/8.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            d = json.loads(r.read().decode("utf-8", errors="replace"))
+        cur = d["current_condition"][0]
+        day = d["weather"][0]
+        desc = (cur.get("weatherDesc") or [{}])[0].get("value", "").strip()
+        return {"temp_F": str(cur.get("temp_F", "")).strip(),
+                "desc": desc,
+                "high_F": str(day.get("maxtempF", "")).strip(),
+                "low_F": str(day.get("mintempF", "")).strip()}
+    except Exception:
+        return None
+
+
 def tool_briefing():
+    # v9.13: richer weather (temp + high/low from wttr.in j1, falling back to
+    # the old format-string call) and a tomorrow preview. Still 3-5 sentences,
+    # still fully deterministic — no model involved.
+    from datetime import timedelta
     now = datetime.now()
     day = now.strftime("%A, %B %d")
     entries = _today_entries()
     sched = f"You've got: {_entries_line(entries)}." if entries else "Nothing on the schedule today."
-    wx = _weather_now()
-    wxbit = f" In Dundalk it's {wx}." if wx else ""
-    return f"{day}. {sched}{wxbit}"
+    tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    t_entries = sorted([e for e in _load_schedule() if e.get("date") == tomorrow],
+                       key=lambda e: e.get("start", ""))
+    tmrw = f" Tomorrow: {_entries_line(t_entries)}." if t_entries else ""
+    wf = _weather_full()
+    if wf and wf["temp_F"]:
+        cond = f" and {wf['desc']}" if wf["desc"] else ""
+        wxbit = (f" In Dundalk it's {wf['temp_F']}{cond},"
+                 f" high of {wf['high_F']}, low of {wf['low_F']}.")
+    else:
+        wx = _weather_now()
+        wxbit = f" In Dundalk it's {wx}." if wx else ""
+    return f"{day}. {sched}{wxbit}{tmrw}"
 
 
 def _greeting_text():
@@ -4056,15 +5065,14 @@ if __name__ == "__main__":
             except Exception as e:
                 add_log(f"Could not open log: {e}")
         elif key == ord(' '):
-            handle_action(mode="voice")
+            if _PTT_AVAILABLE:
+                pass  # v9.11: the PTT poll thread owns SPACE on Windows
+            else:
+                _key_action_thread(handle_action, {"mode": "voice"})
         elif key == ord('s') or key == ord('S'):
-            handle_action(mode="screen")
+            _key_action_thread(handle_action, {"mode": "screen"})
         elif key == ord('t') or key == ord('T'):
-            CURRENT_STATE = "listening"
-            draw_hud()
-            prompt = input("\nEnter directive: ")
-            if prompt.strip():
-                handle_action(typed_prompt=prompt)
+            _key_action_thread(_typed_directive_thread, {})
         elif key == ord('q') or key == 27:
             break
 
