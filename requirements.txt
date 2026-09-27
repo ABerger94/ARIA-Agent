@@ -1,0 +1,14 @@
+opencv-python>=4.8
+numpy>=1.24
+pyttsx3>=2.90
+SpeechRecognition>=3.10
+psutil>=5.9
+Pillow>=10.0
+edge-tts>=6.1
+pygame>=2.5
+pyserial>=3.5
+pyautogui>=0.9.54
+pycaw>=20230407; sys_platform == "win32"
+aiohttp>=3.9
+requests>=2.31
+cryptography>=41.0
