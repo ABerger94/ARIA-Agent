@@ -2,6 +2,10 @@
 A.R.I.A. — Autonomous Robotic Intelligence Agent
 Powered by Gemini 3.8 Flash.
 
+ v9.21: "open the video downloader" now works — starts the local Node server
+ via start-windows.bat (port 3003) when localhost:3003 isn't responding,
+ then opens the page in the browser.
+
  v9.20: quote file paths in open_app_or_url — paths with spaces
  (e.g. "The Boy and the Heron") no longer get truncated at the first space.
 
@@ -985,6 +989,50 @@ def tool_gui_type(text: str) -> str:
     return "Typed text into active window."
 
 
+_VIDEO_DL_PORT = 3003  # video-downloader web UI port; one-line edit if it moves
+
+
+def _open_video_downloader() -> str:
+    """Open the laptop's video-downloader web UI (port 3003).
+
+    If the Node server isn't answering, hunt for start-windows.bat in the
+    known install spots and launch it, then poll briefly for the UI.
+    """
+    dl_url = f"http://localhost:{_VIDEO_DL_PORT}"
+    try:
+        urllib.request.urlopen(dl_url, timeout=2)
+        os.system(f'start "" "{dl_url}"')
+        return f"Video downloader is already running \u2014 opened {dl_url}."
+    except Exception:
+        pass
+    home = os.environ.get("USERPROFILE", "")
+    candidates = [os.path.join(d, "start-windows.bat") for d in (
+        "E:\\video-downloader-main",
+        "E:\\video-downloader",
+        os.path.join(home, "Downloads", "video-downloader-main"),
+        os.path.join(home, "Downloads", "video-downloader"),
+        "C:\\apps\\video-downloader",
+        "D:\\video-downloader-main",
+    )]
+    checked = [os.path.dirname(p) for p in candidates]
+    bat = next((p for p in candidates if os.path.isfile(p)), None)
+    if not bat:
+        return ("Couldn't find start-windows.bat \u2014 checked: " + ", ".join(checked) +
+                ". Tell me which folder the video-downloader-main files are in "
+                "and I'll remember it.")
+    os.system(f'start "" "{bat}"')
+    for _ in range(10):  # poll up to 20s; never hang the agent
+        time.sleep(2)
+        try:
+            urllib.request.urlopen(dl_url, timeout=2)
+            os.system(f'start "" "{dl_url}"')
+            return f"Video downloader started \u2014 opened {dl_url}."
+        except Exception:
+            continue
+    return (f"Started the video downloader server, but {dl_url} isn't responding yet \u2014 "
+            "give it a few more seconds and open it yourself.")
+
+
 def tool_open_app_or_url(target: str) -> str:
     add_log(f"Launching: {target}")
     try:
@@ -992,6 +1040,9 @@ def tool_open_app_or_url(target: str) -> str:
         # below; `start` needs the empty "" first arg or it eats the
         # quoted path as a window title.
         target = str(target).replace('"', "")
+        _t = (target or "").strip().lower()
+        if _t in ("video-downloader", "video downloader", "the video downloader"):
+            return _open_video_downloader()
         if target.startswith(("http://", "https://")):
             os.system(f'start "" "{target}"')
             return f"Opened URL: {target}"
@@ -1596,7 +1647,9 @@ TOOLS_DECLARATION = [
          "parameters": {"type": "OBJECT",
                         "properties": {"text": {"type": "STRING"}}, "required": ["text"]}},
         {"name": "open_app_or_url",
-         "description": "Launches a desktop app or URL. ASKS FOR CONFIRMATION FIRST.",
+         "description": "Launches a desktop app or URL. ASKS FOR CONFIRMATION FIRST. To open "
+         "the video downloader, pass target='video-downloader' \u2014 it starts the local "
+         "server via start-windows.bat if needed and opens http://localhost:3003.",
          "parameters": {"type": "OBJECT",
                         "properties": {"target": {"type": "STRING"}}, "required": ["target"]}},
         {"name": "move_head_servos",
