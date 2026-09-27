@@ -2,6 +2,10 @@
 A.R.I.A. — Autonomous Robotic Intelligence Agent
 Powered by Gemini 3.8 Flash.
 
+ v9.22: every face gets a mouth — yellow waveform ripple on
+ thinking/working/listening, green on coding (idle/speaking keep pink);
+ the working radar arc moved down to clear the mouth.
+
  v9.21: "open the video downloader" now works — starts the local Node server
  via start-windows.bat (port 3003) when localhost:3003 isn't responding,
  then opens the page in the browser.
@@ -654,6 +658,7 @@ def _blink_squash(now):
 
 # --- girly face palette (BGR) ---
 PINK = (170, 90, 255)        # waveform mouth, lashes, iris rings
+MOUTH_YELLOW = (0, 220, 255)  # waveform mouth on thinking/working/listening faces
 PINK_DEEP = (110, 45, 190)   # soft pink eye glow
 LINER = (70, 25, 120)        # dark plum eyeliner
 
@@ -668,6 +673,15 @@ def _draw_lashes(canvas, ex, cy, ew, eh, side):
         x1 = int(ex + (ew + 16) * math.cos(r))
         y1 = int(cy + (eh + 16) * math.sin(r))
         cv2.line(canvas, (x0, y0), (x1, y1), PINK, 2)
+
+
+def _draw_waveform_mouth(canvas, color, t, cx=640, my=388, bars=19, spacing=14, amp=10, thick=2):
+    """Soft idle-style waveform ripple: calm amplitude so it reads as a resting
+    mouth, not speech. Animated with time t."""
+    for i in range(-(bars // 2), bars // 2 + 1):
+        bar_x = cx + (i * spacing)
+        bar_h = int(abs(np.sin(t * 2.0 + i * 0.5)) * amp) + 2
+        cv2.line(canvas, (bar_x, my - bar_h), (bar_x, my + bar_h), color, thick)
 SERIAL_CONN = None
 PENDING_CONFIRM = None        # {"fn","args","desc"} awaiting yes/no
 LAST_OPEN_TARGET = None       # target of the most recent open_app_or_url request
@@ -1852,7 +1866,7 @@ def apply_led_scanlines(canvas, x1, y1, x2, y2):
 # ============================================================
 # draw_hud() renders a 1280x720 frame. The face lives in the center:
 # eyes at (520,235) and (760,235); the listening pulse reaches radius ~76;
-# thinking dots float up to y~102; the working radar arc dips to y~420;
+# thinking dots float up to y~102; the working radar arc dips to y~445;
 # the speaking waveform spans x 448..832, y 332..408. FACE_CROP (x, y, w, h)
 # frames just the face, excluding the subsystem/action/subtitle panels.
 FACE_CROP = (430, 95, 420, 350)
@@ -2045,6 +2059,7 @@ def draw_hud():
                 cv2.circle(canvas, (ex, cy), 24, (40, 10, 60), -1)  # pupils lock on you
                 cv2.circle(canvas, (ex - 8, cy - 10), 8, (255, 255, 255), -1)
                 apply_led_scanlines(canvas, ex - 70, cy - 70, ex + 70, cy + 70)
+            _draw_waveform_mouth(canvas, MOUTH_YELLOW, time.time())
         elif CURRENT_STATE == "thinking":
             # animated - pupils dart as she thinks, dots bounce above.
             t = time.time()
@@ -2057,6 +2072,7 @@ def draw_hud():
             for i in range(3):
                 bounce = int(abs(np.sin(t * 4 + i * 1.1)) * 12)
                 cv2.circle(canvas, (600 + i * 40, 130 - bounce), 8, AMBER, -1)
+            _draw_waveform_mouth(canvas, MOUTH_YELLOW, t)
         elif CURRENT_STATE == "working":
             # animated - amber radar sweep while a tool runs.
             t = time.time()
@@ -2069,8 +2085,9 @@ def draw_hud():
                 cv2.circle(canvas, (px, cy), 16, AMBER, -1)
                 cv2.circle(canvas, (px - 5, cy - 6), 5, (255, 255, 255), -1)
                 apply_led_scanlines(canvas, ex - 60, cy - 80, ex + 60, cy + 80)
+            _draw_waveform_mouth(canvas, MOUTH_YELLOW, t)
             arc = int((t * 180) % 360)
-            cv2.ellipse(canvas, (640, 400), (70, 20), 0, arc, arc + 120, AMBER, 3)
+            cv2.ellipse(canvas, (640, 425), (70, 20), 0, arc, arc + 120, AMBER, 3)
         elif CURRENT_STATE == "coding":
             for ex in (lx, rx):
                 cv2.rectangle(canvas, (ex - 55, cy - 65), (ex + 55, cy + 65), (0, 100, 40), -1)
@@ -2078,6 +2095,7 @@ def draw_hud():
                 cv2.putText(canvas, "</>", (ex - 35, cy + 12), cv2.FONT_HERSHEY_SIMPLEX,
                             1.1, GREEN, 2, cv2.LINE_AA)
                 apply_led_scanlines(canvas, ex - 60, cy - 70, ex + 60, cy + 70)
+            _draw_waveform_mouth(canvas, (40, 240, 120), time.time())
         elif CURRENT_STATE == "speaking":
             for ex, side in ((lx, -1), (rx, 1)):
                 cv2.ellipse(canvas, (ex, cy - 10), (52, 45), 0, 190, 350, PINK, 10)
