@@ -2,6 +2,11 @@
 A.R.I.A. — Autonomous Robotic Intelligence Agent
 Powered by Gemini 3.8 Flash.
 
+ v9.33: everything lives under the script folder — a one-time startup
+ migration moves any leftover ~/robot_workspace data (memory DB, chat
+ history, journal, models, …) into <script-dir>/workspace, never
+ overwriting files already there.
+
  v9.32: HUD subsystems panel right-aligns the status column inside the
  box — long statuses like "ARMED (1)" no longer spill past the panel edge.
 
@@ -513,6 +518,42 @@ VISION_CAM_SIZE = (640, 480)
 
 WORKSPACE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace")
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
+
+
+def _migrate_legacy_workspace():
+    """One-time move: older builds kept their data in ~/robot_workspace.
+    Moves whatever is still there into <script-dir>/workspace so everything
+    lives with the install. Never overwrites files already in the new home."""
+    import shutil
+    try:
+        legacy = os.path.join(os.path.expanduser("~"), "robot_workspace")
+    except Exception:
+        return
+    try:
+        if not os.path.isdir(legacy):
+            return
+        if os.path.abspath(legacy) == os.path.abspath(WORKSPACE_DIR):
+            return
+        moved, kept = [], []
+        for name in sorted(os.listdir(legacy)):
+            src_p = os.path.join(legacy, name)
+            dst_p = os.path.join(WORKSPACE_DIR, name)
+            if os.path.exists(dst_p):
+                kept.append(name)
+                continue
+            try:
+                shutil.move(src_p, dst_p)
+                moved.append(name)
+            except Exception:
+                kept.append(name)
+        if moved or kept:
+            print("[ARIA] Workspace migrated from %s: moved %d, left %d in place."
+                  % (legacy, len(moved), len(kept)), flush=True)
+    except Exception:
+        pass
+
+
+_migrate_legacy_workspace()
 DB_PATH = os.path.join(WORKSPACE_DIR, "aria_memory.db")
 CHAT_LOG_FILE = os.path.join(WORKSPACE_DIR, "chat_history.md")
 
