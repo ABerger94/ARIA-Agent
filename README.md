@@ -73,7 +73,7 @@ Gmail sending uses an app password, saved via ARIA's `gmail_setup` tool.
 ## Project layout
 
 ```
-aria.py                  Main program (v9.23)
+aria.py                  Main program (v9.24)
 soul.md                  Her persona — loaded into mind on every start
 requirements.txt         Python dependencies
 windows/                 Auto-start installer + watchdog (.bat)
@@ -82,6 +82,10 @@ tools/                   Helper scripts (key manager)
 
 ## Version history
 
+- **v9.24** — Self-edit auto-restart: she fingerprints her script + soul.md
+  at boot; a changed fingerprint at turn end triggers an announced,
+  compile-checked self-relaunch (deferred while confirming; a new turn
+  cancels a pending restart)
 - **v9.23** — Barge-in: any new typed, mic, PTT, wake-word, or phone-bridge
   message stops her current speech immediately; empty transcripts don't
   interrupt
