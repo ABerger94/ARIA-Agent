@@ -73,7 +73,7 @@ Gmail sending uses an app password, saved via ARIA's `gmail_setup` tool.
 ## Project layout
 
 ```
-aria.py                  Main program (v9.24)
+aria.py                  Main program (v9.25)
 soul.md                  Her persona — loaded into mind on every start
 requirements.txt         Python dependencies
 windows/                 Auto-start installer + watchdog (.bat)
@@ -82,6 +82,12 @@ tools/                   Helper scripts (key manager)
 
 ## Version history
 
+- **v9.25** — Streaming Sentence TTS & Context Diet: real-time SSE token
+  streaming from Gemini detects sentence boundaries on the fly and enqueues
+  speech instantly, cutting voice latency to <800ms; unique memory key
+  indexing with ON CONFLICT DO UPDATE; internal system keys isolated from
+  the prompt context; dynamic semantic memory retrieval injects user identity
+  and top-k semantically relevant memories.
 - **v9.24** — Self-edit auto-restart: she fingerprints her script + soul.md
   at boot; a changed fingerprint at turn end triggers an announced,
   compile-checked self-relaunch (deferred while confirming; a new turn
