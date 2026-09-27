@@ -2,6 +2,25 @@
 A.R.I.A. — Autonomous Robotic Intelligence Agent
 Powered by Gemini 3.8 Flash.
 
+ v9.30: merge her streaming chat-log fix with the v9.28 feature set —
+ her cure is kept (log the full reply text after the stream, always), with
+ one refinement: the HUD subtitle/draw stays out of silent/reply_sink turns,
+ which never touched the HUD before streaming existed. The v9.28 live
+ subsystem rows, last-tool readout, and 30-minute loop budget are restored
+ on top of her commit.
+
+ v9.29: streamed speech returns to the tactical chat log — v9.25's
+ sentence streaming bypassed speak(), so streamed replies were spoken but
+ never logged; the post-stream branch now records the full reply text.
+
+ v9.28: live HUD subsystem status tracking + agent-loop budget raise —
+ every subsystem row now reports its real state instead of a hardcoded
+ label: camera/screen reflect the last capture attempt (IDLE until first
+ use), memory runs a cached DB probe, sandbox shows RUNNING while code
+ executes, scheduler shows a live pending-task count, GitHub unchanged;
+ new last-tool row shows the most recently executed tool and its time;
+ per-request agent-loop time budget raised from 10 to 30 minutes.
+
  v9.27: pipelined parallel TTS prefetching + early clause speech emission —
  text generation feeds a dedicated prefetch synthesis worker in parallel with
  playback, eliminating the 1-2s gap between sentences; early clause boundary
@@ -476,7 +495,7 @@ PHONE_BRIDGE_PORT = 8777
 
 MAX_TOOL_OUTPUT = 2000
 HISTORY_TURNS = 10
-AGENT_LOOP_TIME_BUDGET_S = 600  # per-request agent-loop time budget (replaces the 20-turn cap)
+AGENT_LOOP_TIME_BUDGET_S = 1800  # 30-minute per-request agent-loop time budget (was 10)
 _SUSPENDED_TURN = None  # {"contents": [...], "user_prompt": ...} while a turn is suspended
 _AWAITING_CONTINUE = False  # True while she has asked "Should I keep going?"
 CHAT_PRUNE_DAYS = 30
@@ -989,6 +1008,22 @@ def log_conversation(sender: str, message: str):
         add_log(f"File log err: {e}")
 
 
+# live subsystem status tracking. draw_hud() runs at ~10 fps, so
+# every status below is a cached global — never a per-frame disk/DB hit.
+_SANDBOX_BUSY = False          # True while run_python_code is executing
+_VISION_LAST = (None, None)    # (ok: bool|None, epoch) of last webcam capture
+_SCREEN_LAST = (None, None)    # (ok: bool|None, epoch) of last screen capture
+_MEMORY_DB_OK = None           # cached semantic-memory DB probe result
+_MEMORY_DB_T = 0.0             # when the probe last ran
+_SCHED_PENDING = 0             # live count of rows in scheduled_tasks
+_LAST_TOOL = (None, None)      # (fn_name, epoch) of last executed tool
+
+
+def _sched_count_bump(delta):
+    global _SCHED_PENDING
+    _SCHED_PENDING = max(0, _SCHED_PENDING + delta)
+
+
 # --- scheduler persistence ---
 def sched_add(kind, prompt, delay_s=0, interval_s=0):
     from datetime import timedelta
@@ -1003,6 +1038,7 @@ def sched_add(kind, prompt, delay_s=0, interval_s=0):
         tid = cur.lastrowid
         conn.commit()
         conn.close()
+    _sched_count_bump(1)  # keep HUD scheduler count live
     return tid
 
 
@@ -1022,10 +1058,13 @@ def sched_cancel(task_id):
         n = conn.execute("DELETE FROM scheduled_tasks WHERE id = ?", (task_id,)).rowcount
         conn.commit()
         conn.close()
+    if n > 0:
+        _sched_count_bump(-1)  # keep HUD scheduler count live
     return n > 0
 
 
 init_databases()
+_SCHED_PENDING = len(sched_list())  # seed live scheduler task count
 
 # =====================================================================
 # 3. PHYSICAL ROBOTICS HARDWARE BRIDGE (USB Serial)
@@ -1076,18 +1115,23 @@ def tool_web_search(query: str) -> str:
 
 
 def tool_run_python(code: str) -> str:
-    add_log("Executing Python script...")
-    temp_script = os.path.join(WORKSPACE_DIR, "_temp_run.py")
-    with open(temp_script, "w", encoding="utf-8") as f:
-        f.write(code)
+    global _SANDBOX_BUSY
+    _SANDBOX_BUSY = True  # HUD sandbox row goes RUNNING
     try:
-        result = subprocess.run([sys.executable, temp_script], capture_output=True,
-                                text=True, timeout=15, cwd=WORKSPACE_DIR)
-        output = result.stdout + result.stderr
-        add_log("Execution complete.")
-        return output if output.strip() else "[Code ran with no console output]"
-    except Exception as e:
-        return f"[Execution Error: {e}]"
+        add_log("Executing Python script...")
+        temp_script = os.path.join(WORKSPACE_DIR, "_temp_run.py")
+        with open(temp_script, "w", encoding="utf-8") as f:
+            f.write(code)
+        try:
+            result = subprocess.run([sys.executable, temp_script], capture_output=True,
+                                    text=True, timeout=15, cwd=WORKSPACE_DIR)
+            output = result.stdout + result.stderr
+            add_log("Execution complete.")
+            return output if output.strip() else "[Code ran with no console output]"
+        except Exception as e:
+            return f"[Execution Error: {e}]"
+    finally:
+        _SANDBOX_BUSY = False
 
 
 def tool_gui_click(x: int, y: int) -> str:
@@ -1456,6 +1500,8 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False):
     if _face_before in ("idle", "thinking"):
         CURRENT_STATE = "working"
         draw_hud()
+    global _LAST_TOOL
+    _LAST_TOOL = (fn_name, time.time())  # HUD last-tool row
     try:
         if fn_name == "web_search":
             r = tool_web_search(args.get("query", ""))
@@ -1905,13 +1951,19 @@ _LAST_SCREEN_HASH = None
 
 
 def capture_screen():
+    global _SCREEN_LAST
     add_log("Capturing primary screen buffer...")
-    img = ImageGrab.grab()
-    img_np = np.array(img)
-    img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-    small = cv2.resize(img_bgr, VISION_SCREEN_SIZE)
-    _, buffer = cv2.imencode('.jpg', small, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
-    return buffer.tobytes()
+    try:
+        img = ImageGrab.grab()
+        img_np = np.array(img)
+        img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+        small = cv2.resize(img_bgr, VISION_SCREEN_SIZE)
+        _, buffer = cv2.imencode('.jpg', small, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+        _SCREEN_LAST = (True, time.time())  # HUD screen row goes READY
+        return buffer.tobytes()
+    except Exception:
+        _SCREEN_LAST = (False, time.time())  # HUD screen row goes ERROR
+        raise
 
 
 def capture_screen_if_changed():
@@ -1927,17 +1979,19 @@ def capture_screen_if_changed():
 
 
 def capture_webcam():
-    global LATEST_CAMERA_FRAME
+    global LATEST_CAMERA_FRAME, _VISION_LAST
     cap = cv2.VideoCapture(0)
     ret, frame = None, None
     for _ in range(3):
         ret, frame = cap.read()
     cap.release()
     if ret and frame is not None:
+        _VISION_LAST = (True, time.time())  # HUD vision row goes READY
         LATEST_CAMERA_FRAME = frame.copy()
         small = cv2.resize(frame, VISION_CAM_SIZE)
         _, buffer = cv2.imencode('.jpg', small, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
         return buffer.tobytes()
+    _VISION_LAST = (False, time.time())  # HUD vision row goes ERROR
     return None
 
 
@@ -2005,6 +2059,51 @@ def _face_mjpeg_chunk(jpg):
             + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n")
 
 
+def _memory_db_status():
+    """cached semantic-memory DB probe (at most one probe per 10 s)."""
+    global _MEMORY_DB_OK, _MEMORY_DB_T
+    now = time.time()
+    if _MEMORY_DB_OK is None or now - _MEMORY_DB_T > 10:
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            conn.execute("SELECT 1").fetchone()
+            conn.close()
+            _MEMORY_DB_OK = True
+        except Exception:
+            _MEMORY_DB_OK = False
+        _MEMORY_DB_T = now
+    return "READY" if _MEMORY_DB_OK else "ERROR"
+
+
+def _subsystem_statuses():
+    """live (name, status, ok) triples for the HUD subsystem panel."""
+    if _VISION_LAST[0] is None:
+        vision = ("Vision Optics", "IDLE", False)
+    else:
+        vision = ("Vision Optics", "READY" if _VISION_LAST[0] else "ERROR",
+                  bool(_VISION_LAST[0]))
+    if _SCREEN_LAST[0] is None:
+        screen = ("Screen Perception", "IDLE", False)
+    else:
+        screen = ("Screen Perception", "READY" if _SCREEN_LAST[0] else "ERROR",
+                  bool(_SCREEN_LAST[0]))
+    mem_stat = _memory_db_status()
+    memory = ("Semantic Memory", mem_stat, mem_stat == "READY")
+    sandbox = ("Python Sandbox", "RUNNING" if _SANDBOX_BUSY else "IDLE",
+               _SANDBOX_BUSY)
+    if _SCHED_PENDING:
+        sched = ("Scheduler", "ARMED (%d)" % _SCHED_PENDING, True)
+    else:
+        sched = ("Scheduler", "IDLE", False)
+    github = ("GitHub Tools", GITHUB_STATUS, GITHUB_STATUS == "ARMED")
+    if _LAST_TOOL[0]:
+        last = (_LAST_TOOL[0][:24],
+                time.strftime("%H:%M", time.localtime(_LAST_TOOL[1])), True)
+    else:
+        last = ("Last Tool", "--", False)
+    return [vision, screen, memory, sandbox, sched, github, last]
+
+
 def draw_hud():
     global CURRENT_STATE, HUD_MODE, CHAT_SCROLL
     w, h = 1280, 720
@@ -2047,17 +2146,8 @@ def draw_hud():
 
     cv2.putText(canvas, "[ SUBSYSTEMS ]", (35, 102), cv2.FONT_HERSHEY_SIMPLEX,
                 0.5, CYAN, 1, cv2.LINE_AA)
-    gh_stat = GITHUB_STATUS
-    modules = [
-        ("Vision Optics", "ONLINE"),
-        ("Screen Perception", "ACTIVE"),
-        ("Semantic Memory", "READY"),
-        ("Python Sandbox", "IDLE"),
-        ("Scheduler", "ARMED"),
-        ("GitHub Tools", gh_stat),
-    ]
-    for i, (mod, stat) in enumerate(modules):
-        ok = stat in ("ONLINE", "ACTIVE", "READY", "ARMED", "SAVING")
+    modules = _subsystem_statuses()  # live statuses, was hardcoded
+    for i, (mod, stat, ok) in enumerate(modules):
         dot = GREEN if ok else (160, 160, 160)
         cv2.circle(canvas, (43, 131 + i * 32), 4, dot, -1)
         cv2.putText(canvas, mod, (55, 136 + i * 32), cv2.FONT_HERSHEY_SIMPLEX,
@@ -2718,8 +2808,8 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
                 # budget spent — suspend the turn in memory and ASK.
                 _SUSPENDED_TURN = {"contents": contents, "user_prompt": user_prompt}
                 _AWAITING_CONTINUE = True
-                add_log("Agent loop: 10-minute budget reached; turn suspended")
-                say("I've been working on this for ten minutes. Should I keep going?")
+                add_log("Agent loop: 30-minute budget reached; turn suspended")
+                say("I've been working on this for thirty minutes. Should I keep going?")
                 return
             _stream_buf = [""]
             _stream_sents = []
@@ -2764,11 +2854,14 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
                 CONVERSATION_HISTORY.append({"role": "model", "parts": [{"text": final_text}]})
                 if len(CONVERSATION_HISTORY) > HISTORY_TURNS:
                     CONVERSATION_HISTORY = CONVERSATION_HISTORY[-HISTORY_TURNS:]
+                global SUBTITLE_TEXT
                 log_conversation("A.R.I.A.", final_text)
                 add_log(f"Speech: {final_text[:28]}...")
-                global SUBTITLE_TEXT
-                SUBTITLE_TEXT = _hud(final_text)
-                draw_hud()
+                if not silent:
+                    # silent/reply_sink turns never touched the HUD before
+                    # streaming existed; keep them independent of _hud.
+                    SUBTITLE_TEXT = _hud(final_text)
+                    draw_hud()
                 if not _stream_sents and not silent:
                     _SPEECH_QUEUE.put(final_text)
                 _SUSPENDED_TURN = None  # turn finished — nothing left to resume
@@ -2869,6 +2962,7 @@ def scheduler_loop():
                         conn.execute("DELETE FROM scheduled_tasks WHERE id = ?", (tid,))
                         conn.commit()
                         conn.close()
+                    _sched_count_bump(-1)  # keep HUD scheduler count live
                     add_log(f"Reminder #{tid} firing")
                     if not BUSY_PROCESSING:
                         speak(prompt)
