@@ -2,6 +2,9 @@
 A.R.I.A. — Autonomous Robotic Intelligence Agent
 Powered by Gemini 3.8 Flash.
 
+ v9.32: HUD subsystems panel right-aligns the status column inside the
+ box — long statuses like "ARMED (1)" no longer spill past the panel edge.
+
  v9.31: phone bridge text replies speak aloud on the phone — after a
  text reply arrives, the bridge page fetches its audio from the existing
  /api/say endpoint and plays it (same as hold-to-talk); a Speak replies
@@ -2158,7 +2161,8 @@ def draw_hud():
         cv2.circle(canvas, (43, 131 + i * 32), 4, dot, -1)
         cv2.putText(canvas, mod, (55, 136 + i * 32), cv2.FONT_HERSHEY_SIMPLEX,
                     0.45, (200, 200, 200), 1, cv2.LINE_AA)
-        cv2.putText(canvas, stat, (235, 136 + i * 32), cv2.FONT_HERSHEY_SIMPLEX,
+        (tw, _th), _bl = cv2.getTextSize(stat, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+        cv2.putText(canvas, stat, (275 - tw, 136 + i * 32), cv2.FONT_HERSHEY_SIMPLEX,
                     0.4, dot, 1, cv2.LINE_AA)
 
     pip_x, pip_y, pip_w, pip_h = 35, 340, 230, 115
