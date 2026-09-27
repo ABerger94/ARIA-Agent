@@ -82,6 +82,9 @@ tools/                   Helper scripts (key manager)
 
 ## Version history
 
+- **v9.29** — Streamed speech returns to the tactical chat log: v9.25's
+  sentence streaming bypassed speak(), so streamed replies were spoken but
+  never logged; the post-stream branch now records the full reply text.
 - **v9.28** — Live HUD subsystem status tracking: every subsystem row now
   reports its real state instead of a hardcoded label — camera/screen
   reflect the last capture attempt, memory runs a cached DB probe, sandbox
