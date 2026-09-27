@@ -2,6 +2,10 @@
 A.R.I.A. — Autonomous Robotic Intelligence Agent
 Powered by Gemini 3.8 Flash.
 
+ v9.23: barge-in — any new typed, mic, PTT, wake-word, or phone-bridge
+ message stops her current speech immediately (interrupt_speech now runs
+ on every input path, not just stop-words); empty transcripts don't interrupt.
+
  v9.22: every face gets a mouth — yellow waveform ripple on
  thinking/working/listening, green on coding (idle/speaking keep pink);
  the working radar arc moved down to clear the mouth.
@@ -3165,6 +3169,10 @@ def _handle_transcript(user_text, mode="voice"):
     Extracted from handle_action() so both mic paths behave identically.
     """
     global PENDING_CONFIRM, _SUSPENDED_TURN, _AWAITING_CONTINUE
+    # barge-in: a new message stops her current speech immediately.
+    # Empty transcripts (failed mic read) must not cut her off.
+    if (user_text or "").strip():
+        interrupt_speech()
     # heartbeat decline learning - a dismissal within 3 minutes of a
     # proactive nudge teaches that nudge type to stay quiet for a while.
     if (_LAST_PROACTIVE[0] and time.time() - _LAST_PROACTIVE[1] < 180
@@ -3231,6 +3239,7 @@ def continuous_voice_listener():
                                 continue
                             if _resolve_confirmation(cleaned):
                                 continue
+                            interrupt_speech()  # barge-in: stop current speech first
                             threading.Thread(target=run_agent, args=(cleaned, None, False),
                                              daemon=True).start()
                         else:
@@ -5103,6 +5112,8 @@ def _transcribe_audio(audio_bytes, mime="audio/webm"):
 
 def _bridge_process(text, silent):
     """Shared by /api/ask and /api/voice: confirmations first, then the agent."""
+    if (text or "").strip():
+        interrupt_speech()  # barge-in: new bridge input stops current speech
     sink = []
     if _resolve_confirmation(text, reply_sink=sink):
         return " ".join(sink) if sink else "Done."
