@@ -73,7 +73,7 @@ Gmail sending uses an app password, saved via ARIA's `gmail_setup` tool.
 ## Project layout
 
 ```
-aria.py                  Main program (v9.21)
+aria.py                  Main program (v9.22)
 soul.md                  Her persona — loaded into mind on every start
 requirements.txt         Python dependencies
 windows/                 Auto-start installer + watchdog (.bat)
@@ -82,6 +82,9 @@ tools/                   Helper scripts (key manager)
 
 ## Version history
 
+- **v9.22** — Every face gets a mouth: yellow waveform ripple on thinking /
+  working / listening, green on coding (idle/speaking keep pink); working
+  radar arc moved down to clear the mouth
 - **v9.21** — "Open the video downloader" shortcut: probes localhost:3003,
   starts the server via start-windows.bat when it's down, then opens the page
   (port is a one-line constant now)
