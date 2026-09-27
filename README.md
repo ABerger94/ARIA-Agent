@@ -82,6 +82,10 @@ tools/                   Helper scripts (key manager)
 
 ## Version history
 
+- **v9.30** — Merges her streaming chat-log fix with the v9.28 feature set:
+  her cure (always log the full reply text after the stream) is kept, with
+  the HUD subtitle/draw kept out of silent turns; live subsystem rows,
+  last-tool readout, and the 30-minute loop budget are restored.
 - **v9.29** — Streamed speech returns to the tactical chat log: v9.25's
   sentence streaming bypassed speak(), so streamed replies were spoken but
   never logged; the post-stream branch now records the full reply text.
