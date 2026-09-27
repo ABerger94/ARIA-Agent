@@ -2,6 +2,12 @@
 A.R.I.A. — Autonomous Robotic Intelligence Agent
 Powered by Gemini 3.8 Flash.
 
+ v9.27: pipelined parallel TTS prefetching + early clause speech emission —
+ text generation feeds a dedicated prefetch synthesis worker in parallel with
+ playback, eliminating the 1-2s gap between sentences; early clause boundary
+ detection begins vocalizing long opening sentences after the first clause
+ (>=3 words), cutting time-to-first-sound.
+
  v9.26: streaming-speech queue fix — the pre-tool speech stop now uses
  interrupt_speech() (the old inline drain skipped task_done, leaking the
  unfinished-tasks counter and leaving the stop event set, which silently
@@ -2232,19 +2238,12 @@ def draw_hud():
 
 
 # =====================================================================
-# 7. SPEECH — Edge TTS first, pyttsx3 fallback. Single worker thread.
+# 7. SPEECH — Pipelined Edge TTS with pyttsx3 fallback.
 # =====================================================================
 _SPEECH_QUEUE = queue.Queue()
+_AUDIO_PLAY_QUEUE = queue.Queue(maxsize=6)
 _EDGE_READY = False
-# Defined up here — BEFORE any thread starts — because the speech worker
-# touches it on its very first utterance. (it used to live ~600 lines
-# further down, and an early utterance killed the speech thread with
-# NameError, muting A.R.I.A. completely.)
 _SPEECH_STOP = threading.Event()
-# Defined up here — BEFORE any thread starts — because the speech worker
-# touches it on its very first utterance. (it used to live ~600 lines
-# further down, and an early utterance killed the speech thread with
-# NameError, muting A.R.I.A. completely.)
 
 
 def _select_windows_natural_voice():
@@ -2321,35 +2320,23 @@ def _init_voice():
         add_log("Voice: system fallback (synthesis)")
 
 
-
 _VOICE_ROTATION_IDX = 0
-
-def _speak_edge(text):
-    global _VOICE_ROTATION_IDX
-    import asyncio
-    import edge_tts
-    import pygame
-    _VOICE_ROTATION_IDX = (_VOICE_ROTATION_IDX + 1) % 4
-    path = os.path.join(WORKSPACE_DIR, f"_aria_voice_{_VOICE_ROTATION_IDX}.mp3")
-    asyncio.run(asyncio.wait_for(
-        edge_tts.Communicate(text, EDGE_TTS_VOICE).save(path), timeout=30))
-    try:
-        pygame.mixer.music.load(path)
-        pygame.mixer.music.play()
-        deadline = time.time() + max(10, len(text) * 0.15)
-        while (pygame.mixer.music.get_busy() and time.time() < deadline
-               and not _SPEECH_STOP.is_set()):
-            time.sleep(0.05)
-    finally:
-        try:
-            pygame.mixer.music.unload()
-        except Exception:
-            pass
+_VOICE_ROTATION_LOCK = threading.Lock()
 
 
-def _extract_sentences(text: str):
-    """Extract complete sentences from streaming text buffer without splitting decimals or abbreviations."""
+def _extract_sentences(text: str, first_clause: bool = False):
+    """Extract complete sentences from streaming text buffer without splitting decimals or abbreviations.
+    If first_clause is True, allows emitting a leading clause on comma/dash/colon when >= 3 words to cut initial voice latency.
+    """
     tokens = re.split(r'(\b(?:Mr|Mrs|Ms|Dr|Prof|vs|etc|e\.g|i\.e)\.|\d+\.\d+|[.!?]+(?:\s+|$)|[\n]+)', text)
+    if first_clause and len(tokens) == 1 and not re.search(r'[.!?\n]', text):
+        c_tokens = re.split(r'([,:;—–]+(?:\s+))', text)
+        if len(c_tokens) > 1:
+            first_part = c_tokens[0] + c_tokens[1]
+            words = first_part.strip().split()
+            if len(words) >= 3:
+                rem = "".join(c_tokens[2:])
+                return [first_part.strip()], rem
     cur = ""
     res = []
     for t in tokens:
@@ -2371,54 +2358,92 @@ def _init_voice_safe():
         add_log(f"Voice init crashed: {e}")
 
 
-def _speech_worker():
-    # Pure drain loop. Voice init runs separately (see _speech_supervisor)
-    # so a slow Edge probe can never stall speech.
+def _speech_synth_worker():
+    """Prefetch synthesizer: turns text chunks into audio in parallel with playback."""
+    global _VOICE_ROTATION_IDX
     while True:
         text = _SPEECH_QUEUE.get()
-        _SPEECH_STOP.clear()
+        if _SPEECH_STOP.is_set():
+            _SPEECH_QUEUE.task_done()
+            continue
+        if not _EDGE_READY:
+            _AUDIO_PLAY_QUEUE.put((text, None, False))
+            _SPEECH_QUEUE.task_done()
+            continue
+        with _VOICE_ROTATION_LOCK:
+            _VOICE_ROTATION_IDX = (_VOICE_ROTATION_IDX + 1) % 8
+            idx = _VOICE_ROTATION_IDX
+        path = os.path.join(WORKSPACE_DIR, f"_aria_voice_{idx}.mp3")
+        success = False
+        try:
+            import asyncio
+            import edge_tts
+            asyncio.run(asyncio.wait_for(
+                edge_tts.Communicate(text, EDGE_TTS_VOICE).save(path), timeout=25))
+            success = True
+        except Exception as e:
+            print(f"[ARIA] Voice: Edge synth failed on '{text[:20]}...' ({type(e).__name__}: {e})", flush=True)
+            add_log(f"Edge synth err: {e}")
+        if success and not _SPEECH_STOP.is_set():
+            _AUDIO_PLAY_QUEUE.put((text, path, True))
+        elif not success and not _SPEECH_STOP.is_set():
+            _AUDIO_PLAY_QUEUE.put((text, None, False))
+        _SPEECH_QUEUE.task_done()
+
+
+def _speech_play_worker():
+    """Playback worker: plays pre-synthesized audio chunks back-to-back with zero latency gap."""
+    while True:
+        item = _AUDIO_PLAY_QUEUE.get()
+        text, path, is_edge = item
+        if _SPEECH_STOP.is_set():
+            _AUDIO_PLAY_QUEUE.task_done()
+            continue
         try:
             global SUBTITLE_TEXT, CURRENT_STATE
-            SUBTITLE_TEXT = _hud(text)  # Hershey fonts draw ASCII only;
-            # _hud maps curly quotes/dashes/etc. so the subtitle
-            # line can never render '???'
+            SUBTITLE_TEXT = _hud(text)
             CURRENT_STATE = "speaking"
             draw_hud()
-            if _EDGE_READY:
+            if is_edge and path and os.path.exists(path):
+                import pygame
                 try:
-                    _speak_edge(text)
-                except Exception as e:
-                    print(f"[ARIA] Voice: Edge failed on this utterance "
-                          f"({type(e).__name__}: {e}) - using fallback voice.", flush=True)
-                    add_log(f"Edge voice err, fallback: {e}")
-                    tts.say(text)
-                    tts.runAndWait()
+                    pygame.mixer.music.load(path)
+                    pygame.mixer.music.play()
+                    deadline = time.time() + max(10, len(text) * 0.15)
+                    while (pygame.mixer.music.get_busy() and time.time() < deadline
+                           and not _SPEECH_STOP.is_set()):
+                        time.sleep(0.04)
+                finally:
+                    try:
+                        pygame.mixer.music.unload()
+                    except Exception:
+                        pass
             else:
-                print("[ARIA] Voice: Edge not ready yet - fallback voice for this one.",
-                      flush=True)
                 tts.say(text)
                 tts.runAndWait()
         except Exception as e:
-            add_log(f"Speech err: {e}")
+            add_log(f"Speech play err: {e}")
         finally:
             CURRENT_STATE = "idle"
             draw_hud()
-            _SPEECH_QUEUE.task_done()
+            _AUDIO_PLAY_QUEUE.task_done()
 
 
 def _speech_supervisor():
-    # Starts voice init in the background, then keeps the speech worker
-    # alive: if the worker ever exits, it is restarted LOUDLY. (— a
-    # silently dead speech thread used to mean total, permanent muteness.)
+    # Starts voice init in the background, then keeps the speech workers alive.
     threading.Thread(target=_init_voice_safe, daemon=True).start()
-    while True:
-        t = threading.Thread(target=_speech_worker, daemon=True,
-                             name="aria-speech")
-        t.start()
-        t.join()
-        print("[ARIA] Speech worker exited \u2014 restarting it", flush=True)
-        add_log("Speech worker exited \u2014 restarting")
-        time.sleep(1)
+
+    def _supervise(target, name):
+        while True:
+            t = threading.Thread(target=target, daemon=True, name=name)
+            t.start()
+            t.join()
+            print(f"[ARIA] {name} exited — restarting it", flush=True)
+            add_log(f"{name} exited — restarting")
+            time.sleep(1)
+
+    threading.Thread(target=_supervise, args=(_speech_synth_worker, "aria-speech-synth"), daemon=True).start()
+    threading.Thread(target=_supervise, args=(_speech_play_worker, "aria-speech-play"), daemon=True).start()
 
 
 threading.Thread(target=_speech_supervisor, daemon=True,
@@ -2429,6 +2454,7 @@ def speak(text):
     add_log(f"Speech: {text[:28]}...")
     log_conversation("A.R.I.A.", text)
     _SPEECH_QUEUE.put(text)
+
 
 # =====================================================================
 # 8. AGENT BRAIN
@@ -2711,7 +2737,7 @@ def run_agent(user_prompt, image_bytes=None, is_screen=False,
                 if _SPEECH_STOP.is_set():
                     return
                 _stream_buf[0] += chunk
-                sents, _stream_buf[0] = _extract_sentences(_stream_buf[0])
+                sents, _stream_buf[0] = _extract_sentences(_stream_buf[0], first_clause=(len(_stream_sents) == 0))
                 for s in sents:
                     if not _SPEECH_STOP.is_set():
                         _SPEECH_QUEUE.put(s)
@@ -4086,6 +4112,13 @@ def interrupt_speech():
             drained += 1
         except queue.Empty:
             break
+    while True:
+        try:
+            _AUDIO_PLAY_QUEUE.get_nowait()
+            _AUDIO_PLAY_QUEUE.task_done()
+            drained += 1
+        except queue.Empty:
+            break
     try:
         import pygame
         pygame.mixer.music.stop()
@@ -4176,7 +4209,7 @@ def _maybe_restart_after_self_edit(say):
     def _restart_waiter():
         deadline = time.time() + 120
         try:
-            while _SPEECH_QUEUE.unfinished_tasks > 0 and time.time() < deadline:
+            while (_SPEECH_QUEUE.unfinished_tasks > 0 or _AUDIO_PLAY_QUEUE.unfinished_tasks > 0) and time.time() < deadline:
                 time.sleep(0.5)
         except Exception:
             pass
