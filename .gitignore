@@ -1,5 +1,9 @@
-# Keys, memory, logs — machine-local, never commit
+# Workspace, keys, memory, logs — machine-local, never commit
+workspace/
 aria_keys.json
+credentials.json
+*.pem
+*.txt
 *.db
 *.sqlite
 *.sqlite3
@@ -11,6 +15,12 @@ __pycache__/
 *.pyc
 _voice_probe.mp3
 _aria_voice.mp3
+*.bak*
+Microsoft.Services.Store.winmd
+aria_schedule.json
+aria_add_key.py
+aria_autostart.bat
+aria_watchdog.bat
 
 # OS / editor noise
 .DS_Store

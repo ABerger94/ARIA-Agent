@@ -511,7 +511,7 @@ CHAT_PRUNE_DAYS = 30
 VISION_SCREEN_SIZE = (800, 450)
 VISION_CAM_SIZE = (640, 480)
 
-WORKSPACE_DIR = os.path.join(os.path.expanduser("~"), "robot_workspace")
+WORKSPACE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace")
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
 DB_PATH = os.path.join(WORKSPACE_DIR, "aria_memory.db")
 CHAT_LOG_FILE = os.path.join(WORKSPACE_DIR, "chat_history.md")
