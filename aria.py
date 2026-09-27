@@ -157,6 +157,14 @@ New in v6.1 (everything from v6.0 kept):
  _FW_NO_SPEECH_CUTOFF (0.6). If nothing survives filtering, the empty
  result falls through to the Google fallback exactly as before —
  silence becomes "didn't catch that", never invented words.
+ v9.17: back to Google cloud transcription — the local
+ faster-whisper "base" model was mishearing on the laptop.
+ _USE_LOCAL_STT = False is now the default: _transcribe() calls
+ recognize_google directly and _get_fw_model() is never invoked
+ (no imports, no model downloads, zero faster-whisper overhead).
+ The whole local path — VAD filter, no-previous-text conditioning,
+ no-speech filtering — stays in the file, dormant; set
+ _USE_LOCAL_STT = True to re-enable it.
  HTTPS phone bridge: self-signed cert for the current LAN IP so iOS grants mic access (first iPhone visit taps through a cert warning); falls back to
  HTTPS via a bundled self-signed cert (no extra packages).
  1. EDGE TTS VOICE — en-US-AriaNeural via the free edge-tts package. Sounds
@@ -569,7 +577,7 @@ def _spine_write_resume_card():
 
 
 atexit.register(_spine_write_resume_card)
-spine_append("restart", {"version": "9.16"})  # the spine opens on every boot
+spine_append("restart", {"version": "9.17"})  # the spine opens on every boot
 
 tts = pyttsx3.init()          # fallback voice; Edge TTS preferred (see speech worker)
 tts.setProperty('rate', 170)
@@ -3341,6 +3349,14 @@ _FW_MODEL = None
 _FW_LOCK = threading.Lock()
 _FW_NO_SPEECH_CUTOFF = 0.6  # v9.16: drop Whisper segments above this no_speech_prob
 
+# v9.17: local faster-whisper STT is OFF by default — the base model
+# was mishearing on this laptop, so Google cloud transcription is the
+# backend. Set True to re-enable local faster-whisper (needs
+# `python -m pip install faster-whisper`). False = Google cloud
+# transcription (default since v9.17). When False, _get_fw_model() is
+# never called: no import attempts, no model downloads, zero overhead.
+_USE_LOCAL_STT = False
+
 
 def _get_fw_model():
     """Lazy singleton for the local Whisper model; None on any failure."""
@@ -3372,8 +3388,15 @@ def _transcribe(audio):
     on any failure (missing package, load error, empty result, transcribe
     error, or nothing surviving the v9.16 no-speech filter). Google-path
     exceptions propagate exactly as before, so every call site's existing
-    error handling is unchanged.
+    error handling is unchanged. v9.17: when _USE_LOCAL_STT is False
+    (the default), the whole local path below is skipped and Google
+    cloud transcription is used directly.
     """
+    if not _USE_LOCAL_STT:
+        # v9.17: Google is the STT backend. The faster-whisper path is
+        # dormant (re-enable with _USE_LOCAL_STT = True); the model is
+        # never loaded, so there are no import/download attempts here.
+        return recognizer.recognize_google(audio)
     model = _get_fw_model()
     if model is not None:
         try:
@@ -3400,9 +3423,14 @@ def _transcribe(audio):
     return recognizer.recognize_google(audio)
 
 
-add_log("STT backend: " + ("local faster-whisper" if _FW_AVAILABLE
-                           else "Google cloud (python -m pip install "
-                           "faster-whisper for local STT)"))
+# v9.17: the backend message follows _USE_LOCAL_STT, not _FW_AVAILABLE.
+# When the flag is False there is no install hint — faster-whisper is
+# simply not needed anymore.
+_STT_BACKEND_MSG = (("local faster-whisper" if _FW_AVAILABLE
+                     else "Google cloud (python -m pip install "
+                     "faster-whisper for local STT)")
+                    if _USE_LOCAL_STT else "Google cloud transcription")
+add_log("STT backend: " + _STT_BACKEND_MSG)
 
 
 threading.Thread(target=continuous_voice_listener, daemon=True).start()
