@@ -73,7 +73,7 @@ Gmail sending uses an app password, saved via ARIA's `gmail_setup` tool.
 ## Project layout
 
 ```
-aria.py                  Main program (v9.19)
+aria.py                  Main program (v9.20)
 soul.md                  Her persona — loaded into mind on every start
 requirements.txt         Python dependencies
 windows/                 Auto-start installer + watchdog (.bat)
@@ -82,6 +82,9 @@ tools/                   Helper scripts (key manager)
 
 ## Version history
 
+- **v9.20** — File/app launching quotes the path (same as URLs already
+  did), so paths with spaces like "The Boy and the Heron" open correctly
+  instead of truncating at the first space
 - **v9.19** — Version numbers removed from all user-visible text and code
   (HUD, subtitles, console, spoken greeting, comments); the header
   changelog keeps the full version history
