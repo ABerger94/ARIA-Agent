@@ -73,7 +73,7 @@ Gmail sending uses an app password, saved via ARIA's `gmail_setup` tool.
 ## Project layout
 
 ```
-aria.py                  Main program (v9.25)
+aria.py                  Main program (v9.26)
 soul.md                  Her persona — loaded into mind on every start
 requirements.txt         Python dependencies
 windows/                 Auto-start installer + watchdog (.bat)
@@ -82,6 +82,11 @@ tools/                   Helper scripts (key manager)
 
 ## Version history
 
+- **v9.26** — Streaming-speech queue fix: the pre-tool speech stop now uses
+  interrupt_speech() (the old inline drain skipped task_done, leaking the
+  unfinished-tasks counter and leaving the stop event set, which silently
+  muted streaming on every tool-call turn); the stop event is cleared
+  before each fresh streaming call.
 - **v9.25** — Streaming Sentence TTS & Context Diet: real-time SSE token
   streaming from Gemini detects sentence boundaries on the fly and enqueues
   speech instantly, cutting voice latency to <800ms; unique memory key
