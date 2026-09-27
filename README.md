@@ -1,0 +1,92 @@
+# A.R.I.A. — Adaptive Robotic Intelligence Agent
+
+A Python desktop AI companion. She lives on your Windows laptop as an animated
+face in an OpenCV HUD: she talks (natural Edge TTS voice), listens (mic +
+speech recognition), remembers, and acts through a Gemini-powered agent loop
+with 50+ tools.
+
+Built by Alek Berger. Not a framework, not a demo — a finished companion.
+
+## Features
+
+- **Animated HUD face** (OpenCV) — idle, listening, speaking, thinking states,
+  waveform mouth, expressive eyes
+- **Voice in / voice out** — Edge TTS neural voice with pyttsx3 fallback;
+  speech-recognition mic input; wake word
+- **Agent brain** — Gemini function-calling loop (up to 20 turns per request)
+- **Progressive tool loading** (v9.8) — only 16 core tool schemas go to the
+  model per call; specialist toolkits (Gmail, Spotify, scheduler, GitHub,
+  vision/hardware, Windows control, MTG, memory/notes, admin) unlock on demand
+  via `load_toolkit`
+- **Duplicate-call blocking + argument repair** — the same tool with the same
+  arguments never runs twice in one request; missing arguments get a repair
+  nudge instead of a crash
+- **Durable memory** — SQLite + Markdown journal with semantic recall
+- **Scheduler** — one-shot and recurring reminders/jobs
+- **51 tools** — Spotify control, Gmail send/read, GitHub push, Windows
+  control (open apps/URLs, type, click, media keys), file search, volume,
+  MTG advice, notes, timers, and more
+- **Proactive heartbeat** — she can speak up on her own when something matters
+- **Tactical chat overlay** — `C` opens, `J`/`K` scroll history
+- **Phone bridge** (HTTPS) — talk to her from your iPhone
+- **USB-serial Arduino bridge** — hook for a future physical robot body
+
+## Requirements
+
+- Windows 10/11, Python 3.10+
+- A free [Google AI Studio](https://aistudio.google.com/) Gemini API key
+- Microphone + speakers (webcam optional, used for face tracking / vision)
+
+## Quick start
+
+```bat
+pip install -r requirements.txt
+python aria.py
+```
+
+First run creates `aria_keys.json` next to the script. Add your keys with:
+
+```bat
+python tools\aria_add_key.py
+```
+
+(or set `GEMINI_API_KEY` / `GITHUB_TOKEN` as environment variables — env vars
+take precedence over `aria_keys.json`).
+
+Gmail sending uses an app password, saved via ARIA's `gmail_setup` tool.
+
+## Auto-start on boot
+
+1. Copy `windows\aria_autostart.bat` and `windows\aria_watchdog.bat` to the
+   same folder as `aria.py`
+2. Double-click `aria_autostart.bat` once and enter your `aria.py` path
+   (e.g. `E:\ARIA\aria.py`)
+3. It installs the watchdog into your Windows Startup folder — ARIA launches
+   on every boot and restarts automatically if she crashes
+
+## Project layout
+
+```
+aria.py                  Main program (v9.8)
+soul.md                  Her persona — loaded into mind on every start
+requirements.txt         Python dependencies
+windows/                 Auto-start installer + watchdog (.bat)
+tools/                   Helper scripts (key manager)
+```
+
+## Version history
+
+- **v9.8** — Progressive tool loading, duplicate-call blocking, argument
+  repair; fixed 4 wrong required-field declarations
+- **v9.7** — Explicit "open that link from earlier" references resolve URLs
+  from conversation history
+- **v9.6** — Gmail sending via app password
+- **v8.3** — Key rotation on 5xx errors; "open Spotify" action; voice media keys
+- **v7.11** — Current face: pink waveform mouth, lash flicks, pink iris rings,
+  plum eyeliner, larger eyes
+
+## Notes
+
+- `aria_keys.json`, logs, memory DB, and journal are gitignored — they stay
+  on your machine and never get committed.
+- Tested on Windows 11 with Python 3.12.
