@@ -1,0 +1,19 @@
+# Keys, memory, logs — machine-local, never commit
+aria_keys.json
+*.db
+*.sqlite
+*.sqlite3
+*.log
+memory/
+journal/
+logs/
+__pycache__/
+*.pyc
+_voice_probe.mp3
+_aria_voice.mp3
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
