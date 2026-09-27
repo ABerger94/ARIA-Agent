@@ -12,8 +12,11 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
 - **Animated HUD face** (OpenCV) — idle, listening, speaking, thinking states,
   waveform mouth, expressive eyes
 - **Voice in / voice out** — Edge TTS neural voice with pyttsx3 fallback;
-  speech-recognition mic input; wake word
-- **Agent brain** — Gemini function-calling loop (up to 20 turns per request)
+  mic input with local Whisper transcription (v9.14, Google fallback);
+  hold-SPACE push-to-talk (v9.11); wake word
+- **Agent brain** — Gemini function-calling loop (no turn cap; 10-minute
+  budget per request — on timeout she asks "Should I keep going?" and
+  "yes"/"continue" resumes the same reasoning chain)
 - **Progressive tool loading** (v9.8) — only 16 core tool schemas go to the
   model per call; specialist toolkits (Gmail, Spotify, scheduler, GitHub,
   vision/hardware, Windows control, MTG, memory/notes, admin) unlock on demand
@@ -21,14 +24,17 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
 - **Duplicate-call blocking + argument repair** — the same tool with the same
   arguments never runs twice in one request; missing arguments get a repair
   nudge instead of a crash
-- **Durable memory** — SQLite + Markdown journal with semantic recall
+- **Durable memory** — SQLite + Markdown journal with semantic recall;
+  unbroken memory spine (v9.10): append-only log of turns, tool calls, and
+  journal entries, last session's context reloads at boot
 - **Scheduler** — one-shot and recurring reminders/jobs
 - **51 tools** — Spotify control, Gmail send/read, GitHub push, Windows
   control (open apps/URLs, type, click, media keys), file search, volume,
   MTG advice, notes, timers, and more
 - **Proactive heartbeat** — she can speak up on her own when something matters
 - **Tactical chat overlay** — `C` opens, `J`/`K` scroll history
-- **Phone bridge** (HTTPS) — talk to her from your iPhone
+- **Phone bridge** (HTTPS) — talk to her from your iPhone, with a live
+  face-only video stream (v9.12)
 - **USB-serial Arduino bridge** — hook for a future physical robot body
 
 ## Requirements
@@ -67,7 +73,7 @@ Gmail sending uses an app password, saved via ARIA's `gmail_setup` tool.
 ## Project layout
 
 ```
-aria.py                  Main program (v9.8)
+aria.py                  Main program (v9.15)
 soul.md                  Her persona — loaded into mind on every start
 requirements.txt         Python dependencies
 windows/                 Auto-start installer + watchdog (.bat)
@@ -76,6 +82,19 @@ tools/                   Helper scripts (key manager)
 
 ## Version history
 
+- **v9.15** — Loop cap removed: no turn limit, 10-minute budget per request;
+  on timeout she asks "Should I keep going?" and "yes"/"continue" resumes
+  the same reasoning chain
+- **v9.14** — Local speech recognition (faster-whisper on CPU) with silent
+  Google fallback
+- **v9.13** — Reliable morning brief: scheduled briefs run the briefing
+  routine directly instead of through the model
+- **v9.12** — Face-only video stream on the phone bridge (`/face.mjpg`)
+- **v9.11** — Push-to-talk: hold SPACE to record, release to transcribe
+- **v9.10** — Unbroken memory spine: append-only turn/tool/journal log,
+  `where_we_left_off.md` at shutdown, recent context reloads at boot
+- **v9.9** — Secret redaction, heartbeat decline learning, animated faces,
+  bounded workflow skills, key-triggered input off the main thread
 - **v9.8** — Progressive tool loading, duplicate-call blocking, argument
   repair; fixed 4 wrong required-field declarations
 - **v9.7** — Explicit "open that link from earlier" references resolve URLs
