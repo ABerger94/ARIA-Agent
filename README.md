@@ -73,7 +73,7 @@ Gmail sending uses an app password, saved via ARIA's `gmail_setup` tool.
 ## Project layout
 
 ```
-aria.py                  Main program (v9.15)
+aria.py                  Main program (v9.16)
 soul.md                  Her persona — loaded into mind on every start
 requirements.txt         Python dependencies
 windows/                 Auto-start installer + watchdog (.bat)
@@ -82,6 +82,10 @@ tools/                   Helper scripts (key manager)
 
 ## Version history
 
+- **v9.16** — Hallucination guard for local STT: voice-activity filtering
+  (Silero VAD), no conditioning on previous text, and segments the model
+  itself flags as non-speech are dropped -- silence becomes "didn't catch
+  that" instead of invented words
 - **v9.15** — Loop cap removed: no turn limit, 10-minute budget per request;
   on timeout she asks "Should I keep going?" and "yes"/"continue" resumes
   the same reasoning chain
