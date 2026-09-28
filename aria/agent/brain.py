@@ -391,8 +391,8 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
 
                 return final_text
 
-            # Execute tool calls
-            hud.set_hud_state("working")
+            # Execute tool calls — green code-eyes face (v9.34 parity)
+            hud.set_hud_state("coding")
             hud.draw_hud()
 
             response_parts = []
