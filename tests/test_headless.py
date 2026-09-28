@@ -44,10 +44,18 @@ memory = importlib.import_module("aria.memory")
 # ---- stub hardware-bound modules so dispatch/builtins can import ----
 for name in ("aria.scheduler", "aria.vision", "aria.hardware", "aria.spotify", "aria.hud"):
     sys.modules[name] = types.ModuleType(name)
+sys.modules["aria.vision"].get_face_frame_jpeg = lambda: None
 sys.modules["aria.hud"].tool_show_commands = lambda: "ok"
 sys.modules["aria.hud"].tool_hide_commands = lambda: "ok"
 builtins_mod = importlib.import_module("aria.tools.builtins")
 dispatch = importlib.import_module("aria.tools.dispatch")
+
+# stub aria.speech so the bridge module imports headlessly
+_speech = types.ModuleType("aria.speech")
+_speech.edge_tts_bytes = lambda text: b""
+_speech.transcribe_audio = lambda audio, mime: ""
+sys.modules["aria.speech"] = _speech
+bridge = importlib.import_module("aria.bridge")
 
 # 1. syntax: all files compile
 def t_compile():
@@ -116,14 +124,25 @@ def t_runpy():
     assert "timed out" in out2, out2
 check("tool_run_python exec + timeout", t_runpy)
 
-# 9. history hook receives the audit entry (main.py now passes a 1-arg lambda)
+# 9. risky tools pause for confirmation; preauthorized ones execute + audit
 def t_history_hook():
     seen = []
     dispatch.set_history_hook(seen.append)
+    pending = []
+    dispatch.set_confirm_hook(lambda fn, args, desc: pending.append((fn, desc)))
     # send_email is risky but side-effect-free here (no Gmail creds configured)
-    dispatch.execute_tool("send_email", {"to": "nobody@example.com", "subject": "t", "body": "b"})
+    res, needs_confirm = dispatch.execute_tool(
+        "send_email", {"to": "nobody@example.com", "subject": "t", "body": "b"})
+    assert needs_confirm is True, (res, needs_confirm)
+    assert "confirmation" in res.lower(), res
+    assert pending and pending[0][0] == "send_email", pending
+    assert not any("send email" in str(e) for e in seen), seen
+    # preauthorized risky tool executes immediately and fires the audit hook
+    dispatch.execute_tool(
+        "send_email", {"to": "nobody@example.com", "subject": "t", "body": "b"},
+        preauthorized=True)
     assert any("send email" in str(e) for e in seen), seen
-check("history hook receives [Executed: ...] audit entry", t_history_hook)
+check("risky tool confirmation gate + preauthorized audit entry", t_history_hook)
 
 # 10. duplicate-call blocking
 def t_dup():
@@ -200,6 +219,32 @@ def t_skill():
     r = dispatch.execute_tool("run_skill", {"skill_name": "nope", "objective": "x"})
     assert isinstance(r[0], str) and len(r[0]) > 0
 check("run_skill unknown skill handled", t_skill)
+
+# 20. bridge auth: header / cookie / query token validated; cookie hardened;
+#     page no longer puts tokens in media URLs
+def t_bridge_auth():
+    h = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
+    tok = bridge.BRIDGE_TOKEN
+    assert tok, "bridge token should be generated"
+    h.path = "/"
+    h.headers = {"X-Bridge-Token": tok}
+    assert h._authed() is True
+    h.headers = {"X-Bridge-Token": "wrong"}
+    assert h._authed() is False
+    h.headers = {"Cookie": "other=1; aria_bridge_token=" + tok}
+    assert h._authed() is True
+    h.headers = {}
+    h.path = "/?token=" + tok
+    assert h._authed() is True
+    h.path = "/?token=wrong"
+    assert h._authed() is False
+    h.path = "/"
+    assert h._authed() is False
+    c = h._bridge_cookie()
+    assert "HttpOnly" in c and "SameSite=Strict" in c and c.startswith("aria_bridge_token="), c
+    assert "?token=" not in bridge.BRIDGE_HTML, "media URLs must not carry the token"
+    assert "token" in bridge.BRIDGE_LOGIN_HTML.lower(), "login page must ask for the token"
+check("bridge auth (header/cookie/query) + cookie flags + no token in media URLs", t_bridge_auth)
 
 print(f"\n{sum(1 for _, s, _ in results if s=='PASS')}/{len(results)} passed")
 fails = [r for r in results if r[1] != "PASS"]

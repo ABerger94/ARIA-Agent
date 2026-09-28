@@ -16,7 +16,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional, Callable, Any
 
-from aria.config import PHONE_BRIDGE_PORT, BRIDGE_TOKEN, ROOT_DIR, WORKSPACE_DIR, add_log, lan_ip
+from aria.config import PHONE_BRIDGE_PORT, BRIDGE_TOKEN, ROOT_DIR, WORKSPACE_DIR, add_log, lan_ip, get_setting
 from aria.vision import get_face_frame_jpeg
 from aria.speech import edge_tts_bytes, transcribe_audio
 from aria.tools.schemas import COMMAND_GUIDE
@@ -184,22 +184,10 @@ autocomplete="off"><button>Send</button></form>
 <button id="talk">Hold to talk</button>
 <button id="spk" style="width:100%;margin-top:8px">Speak replies: ON</button>
 <script>
-let token=new URLSearchParams(window.location.search).get('token')||localStorage.getItem('aria_bridge_token')||'';
-if(token){localStorage.setItem('aria_bridge_token',token);}
-function ensureToken(){
-  if(!token){
-    token=prompt('Bridge token (shown in ARIA console / commands):')||'';
-    if(token) localStorage.setItem('aria_bridge_token',token);
-  }
-}
 async function api(path,opts){
-  ensureToken();opts=opts||{};
-  opts.headers=Object.assign({},opts.headers,{'X-Bridge-Token':token});
+  opts=opts||{};
   const r=await fetch(path,opts);
-  if(r.status===401){
-    localStorage.removeItem('aria_bridge_token');token='';
-    alert('Bad bridge token - check ARIA console and reload.');
-  }
+  if(r.status===401){ location.href='/'; }
   return r;
 }
 let spkOn=localStorage.getItem('spk')!=='0';
@@ -222,7 +210,7 @@ async function refreshLog(){
 }
 refreshLog();
 setInterval(refreshLog,3000);
-document.getElementById('face').src='/face.mjpg?token='+encodeURIComponent(token||localStorage.getItem('aria_bridge_token')||'');
+document.getElementById('face').src='/face.mjpg';
 async function send(){
   const i=document.getElementById('t');const t=i.value.trim();
   if(!t)return false;i.value='';add('you',t);
@@ -230,7 +218,7 @@ async function send(){
   if(r.ok){
     const d=await r.json();(d.reply||[]).forEach(s=>{
       add('aria',s);
-      if(spkOn&&s)new Audio('/api/say?text='+encodeURIComponent(s)+'&token='+encodeURIComponent(token)).play().catch(e=>console.log(e));
+      if(spkOn&&s)new Audio('/api/say?text='+encodeURIComponent(s)).play().catch(e=>console.log(e));
     });
   }
   return false;
@@ -239,7 +227,6 @@ let mr=null,chunks=[];
 const talkBtn=document.getElementById('talk');
 talkBtn.onpointerdown=async(e)=>{
   e.preventDefault();
-  ensureToken();
   chunks=[];
   try{
     const stream=await navigator.mediaDevices.getUserMedia({audio:true});
@@ -282,6 +269,30 @@ talkBtn.onpointerdown=async(e)=>{
 };
 talkBtn.onpointerup=(e)=>{e.preventDefault();if(mr&&mr.state==='recording')mr.stop();};
 talkBtn.onpointercancel=talkBtn.onpointerup;
+</script></body></html>"""
+
+
+BRIDGE_LOGIN_HTML = """<!DOCTYPE html><html><head><meta name="viewport"
+content="width=device-width,initial-scale=1"><title>A.R.I.A. Bridge - Login</title>
+<style>body{background:#0b0e12;color:#e8f4ff;font-family:sans-serif;margin:0;padding:16px}
+h2{color:#ff5fa2}p{color:#9fb2c3;font-size:14px}
+form{display:flex;gap:8px;margin-top:24px}input{flex:1;padding:12px;border-radius:8px;border:1px
+solid #2a3138;background:#14181d;color:#fff;font-size:16px}
+button{padding:12px 18px;border-radius:8px;border:0;background:#ff5fa2;color:#fff;
+font-weight:bold;font-size:16px}</style></head><body>
+<h2>A.R.I.A. // Phone Bridge</h2>
+<p>Enter your bridge token to connect. Find it in the ARIA console, or ask ARIA for it.</p>
+<form onsubmit="return login()"><input id="t" type="password" placeholder="Bridge token..."
+autocomplete="off"><button>Connect</button></form>
+<script>
+async function login(){
+  const t=document.getElementById('t').value;
+  const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({token:t})});
+  if(r.ok){location.href='/';}
+  else{document.getElementById('t').value='';alert('Bad bridge token.');}
+  return false;
+}
 </script></body></html>"""
 
 
@@ -340,12 +351,35 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Expose-Headers", "*")
         self.end_headers()
 
-    def _authed(self):
+    def _token_from_request(self) -> str:
+        # 1. Explicit header (API clients, page fetch calls).
         tok = self.headers.get("X-Bridge-Token", "")
+        # 2. HttpOnly auth cookie (set by /api/login; sent automatically by
+        #    <img> and <audio> tags, so media URLs carry no token).
+        if not tok:
+            for part in self.headers.get("Cookie", "").split(";"):
+                if "=" in part:
+                    k, v = part.split("=", 1)
+                    if k.strip() == "aria_bridge_token":
+                        tok = urllib.parse.unquote(v.strip())
+                        break
+        # 3. Query param (legacy bookmarks; still validated, never generated
+        #    by the page anymore).
         if not tok and "?" in self.path:
             qs = self.path.split("?", 1)[1]
-            tok = dict(p.split("=", 1) for p in qs.split("&") if "=" in p).get("token", "")
-        return bool(BRIDGE_TOKEN) and tok == BRIDGE_TOKEN
+            tok = urllib.parse.unquote_plus(
+                dict(p.split("=", 1) for p in qs.split("&") if "=" in p).get("token", ""))
+        return tok
+
+    def _authed(self):
+        return bool(BRIDGE_TOKEN) and self._token_from_request() == BRIDGE_TOKEN
+
+    def _bridge_cookie(self) -> str:
+        cookie = ("aria_bridge_token=" + urllib.parse.quote(BRIDGE_TOKEN or "", safe="")
+                  + "; HttpOnly; Path=/; SameSite=Strict")
+        if BRIDGE_SCHEME == "https":
+            cookie += "; Secure"
+        return cookie
 
     def do_GET(self):
         if self.path.startswith("/api/"):
@@ -393,13 +427,56 @@ class BridgeHandler(BaseHTTPRequestHandler):
             except Exception:
                 return
 
-        if self.path == "/commands" or self.path.startswith("/commands?"):
+        path = self.path.split("?", 1)[0]
+        if path == "/":
+            if self._authed():
+                self._send(200, BRIDGE_HTML.encode("utf-8"), "text/html")
+                return
+            # One-time upgrade: a valid legacy ?token= bookmark becomes a
+            # cookie, then redirects to the clean URL.
+            qs = self.path.split("?", 1)[1] if "?" in self.path else ""
+            qtok = urllib.parse.unquote_plus(
+                dict(p.split("=", 1) for p in qs.split("&") if "=" in p).get("token", ""))
+            if BRIDGE_TOKEN and qtok == BRIDGE_TOKEN:
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.send_header("Set-Cookie", self._bridge_cookie())
+                self.end_headers()
+                return
+            self._send(200, BRIDGE_LOGIN_HTML.encode("utf-8"), "text/html")
+            return
+
+        if path == "/commands":
+            if not self._authed():
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.end_headers()
+                return
             self._send(200, _commands_html().encode("utf-8"), "text/html")
             return
 
-        self._send(200, BRIDGE_HTML.encode("utf-8"), "text/html")
+        self._send(404, b'{"error":"not found"}')
 
     def do_POST(self):
+        if self.path.startswith("/api/login"):
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                tok = json.loads(self.rfile.read(length).decode("utf-8")).get("token", "")
+            except Exception:
+                tok = ""
+            if BRIDGE_TOKEN and tok == BRIDGE_TOKEN:
+                body = b'{"ok":true}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Set-Cookie", self._bridge_cookie())
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                if BRIDGE_TOKEN:
+                    add_log("Bridge: failed login attempt.")
+                self._send(401, b'{"error":"bad bridge token"}')
+            return
         if not (self.path.startswith("/api/ask") or self.path.startswith("/api/voice")):
             self.send_response(404)
             self.end_headers()
@@ -453,7 +530,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
 def start_bridge_server(port: int = PHONE_BRIDGE_PORT) -> ThreadingHTTPServer:
     global _BRIDGE_SERVER
     ensure_bridge_cert()
-    srv = ThreadingHTTPServer(("0.0.0.0", port), BridgeHandler)
+    # Configurable bind host ("phone_bridge_host" setting). Defaults to all
+    # interfaces because the phone reaches the bridge over the LAN; set to
+    # 127.0.0.1 to lock it to this machine only. Every route requires the
+    # bridge token regardless of bind address.
+    host = get_setting("phone_bridge_host", "0.0.0.0")
+    srv = ThreadingHTTPServer((host, port), BridgeHandler)
     _BRIDGE_SERVER = srv
     if BRIDGE_SCHEME == "https" and BRIDGE_CERT and BRIDGE_KEY:
         try:

@@ -204,7 +204,7 @@ def _ensure_bridge_token():
 BRIDGE_TOKEN = _ensure_bridge_token()
 
 # Models and constants
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "gemini-3.8-flash"
 EMBED_MODEL = "models/gemini-embedding-001"
 EDGE_TTS_VOICE = "en-US-AriaNeural"
 PHONE_BRIDGE_PORT = 8777
