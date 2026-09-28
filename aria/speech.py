@@ -102,7 +102,7 @@ def init_pyttsx3(on_log: Optional[Callable[[str], None]] = None):
 _FW_AVAILABLE = False
 _FW_MODEL = None
 _FW_LOCK = threading.Lock()
-_FW_NO_SPEECH_CUTOFF = 0.6
+_FW_NO_SPEECH_CUTOFF = 0.45
 
 try:
     from faster_whisper import WhisperModel as _FwWhisperModel
@@ -166,7 +166,7 @@ def ptt_join_audio(frames_list: List[bytes], sample_rate: int, sample_width: int
 
 
 def transcribe(audio: sr.AudioData, recognizer: sr.Recognizer, use_local_stt: bool = False, on_log: Optional[Callable[[str], None]] = None) -> str:
-    """Transcribe sr.AudioData to text. Prefers faster-whisper if enabled, falls back to Google."""
+    """Transcribe sr.AudioData to text. Prefers faster-whisper with strict VAD filtering, falls back to Google on STT failure."""
     if not use_local_stt:
         try:
             return recognizer.recognize_google(audio)
@@ -179,21 +179,14 @@ def transcribe(audio: sr.AudioData, recognizer: sr.Recognizer, use_local_stt: bo
             pcm = fw_pcm(audio)
             segments, _ = model.transcribe(
                 pcm, language="en",
-                initial_prompt="Aria, Hey Aria.",
-                vad_filter=True, condition_on_previous_text=False
+                initial_prompt="Aria.",
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=400, threshold=0.5),
+                condition_on_previous_text=False
             )
             kept = [s for s in segments if getattr(s, "no_speech_prob", 0.0) <= _FW_NO_SPEECH_CUTOFF]
             text = " ".join(s.text.strip() for s in kept).strip()
-            if not text:
-                segments_raw, _ = model.transcribe(
-                    pcm, language="en",
-                    initial_prompt="Aria, Hey Aria.",
-                    vad_filter=False, condition_on_previous_text=False
-                )
-                kept_raw = [s for s in segments_raw if getattr(s, "no_speech_prob", 0.0) <= _FW_NO_SPEECH_CUTOFF]
-                text = " ".join(s.text.strip() for s in kept_raw).strip()
-            if text:
-                return text
+            return text
         except Exception as e:
             if on_log:
                 on_log(f"Local STT failed, falling back to Google: {e}")
@@ -420,6 +413,24 @@ class SpeechManager:
         self.log(f"Speech interrupted ({drained} queued cleared)")
         return drained
 
+    def is_speaking(self) -> bool:
+        """Check if speech audio is currently playing or queued."""
+        if not self.speech_queue.empty() or not self.audio_play_queue.empty():
+            return True
+        try:
+            import pygame
+            if pygame.mixer.get_init() and pygame.mixer.music.get_busy():
+                return True
+        except Exception:
+            pass
+        return False
+
+    def wait_until_done(self, timeout: float = 6.0):
+        """Block until speech queue and playback finish."""
+        deadline = time.time() + timeout
+        while self.is_speaking() and time.time() < deadline:
+            time.sleep(0.05)
+
 
 def edge_tts_bytes(text: str, whisper_mode: bool = False) -> bytes:
     """Synthesize with Edge TTS directly into in-memory MP3 bytes."""
@@ -474,6 +485,12 @@ def speak(text: str, whisper_mode: bool = False):
 
 def interrupt_speech() -> int:
     return _DEFAULT_SPEECH_MANAGER.interrupt()
+
+def is_speaking() -> bool:
+    return _DEFAULT_SPEECH_MANAGER.is_speaking()
+
+def wait_until_done(timeout: float = 6.0):
+    return _DEFAULT_SPEECH_MANAGER.wait_until_done(timeout)
 
 def start_speech_worker():
     return _DEFAULT_SPEECH_MANAGER.start()

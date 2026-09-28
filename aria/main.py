@@ -455,14 +455,21 @@ def _console_input_loop():
 def _extract_wake_command(text: str) -> Tuple[bool, str]:
     """Detect if wake word is present and extract following command.
     Matches variations: Aria, Hey Aria, Hi Aria, Hello Aria, Ok Aria, Arya, etc.
+    Avoids false triggering on isolated common words like 'area'.
     """
     if not text:
         return False, ""
     low = text.lower().strip()
-    match = re.search(r'\b(?:(?:hey|hi|hello|ok|okay|yo)\s+)?(?:aria|arya|ahria|auria|area)\b', low)
+    pattern = r'\b(?:(?:hey|hi|hello|ok|okay|yo)\s+)?(?:aria|arya|ahria|auria)\b|\b(?:hey|hi|hello|ok|okay|yo)\s+area\b'
+    match = re.search(pattern, low)
     if not match:
         return False, ""
     
+    # Wake word must occur near the start of the utterance (within first 3 words)
+    prefix = low[:match.start()].strip()
+    if prefix and len(prefix.split()) > 3:
+        return False, ""
+
     end_pos = match.end()
     cleaned = low[end_pos:].strip(" ,.-!?:;—–\t\n")
     return True, cleaned
@@ -477,15 +484,19 @@ def continuous_voice_listener():
       2. Conversational wake: e.g. "Hey Aria" -> responds "I'm listening", enters listening state,
          and captures the user's follow-up directive without requiring wake-word repetition.
       3. Barge-in / interruption: cutting off ARIA when user speaks stop words.
-      4. Auto-reconnection: cleanly re-arms if microphone hardware resets or drops.
+      4. Self-hearing suppression: skips processing while ARIA herself is speaking.
+      5. Auto-reconnection: cleanly re-arms if microphone hardware resets or drops.
     """
     global EXCITED_UNTIL, EXCITED_REVERT, VOICE_LISTENER_ONLINE
     
     wake_rec = sr.Recognizer()
-    wake_rec.pause_threshold = 0.6
+    wake_rec.pause_threshold = 0.8
     wake_rec.phrase_threshold = 0.3
-    wake_rec.non_speaking_duration = 0.4
+    wake_rec.non_speaking_duration = 0.5
     wake_rec.dynamic_energy_threshold = True
+    wake_rec.energy_threshold = 300
+    wake_rec.dynamic_energy_adjustment_damping = 0.15
+    wake_rec.dynamic_energy_ratio = 1.5
 
     while RUNNING:
         try:
@@ -493,12 +504,14 @@ def continuous_voice_listener():
                 VOICE_LISTENER_ONLINE = True
                 try:
                     wake_rec.adjust_for_ambient_noise(source, duration=0.8)
+                    if wake_rec.energy_threshold < 250:
+                        wake_rec.energy_threshold = 250
                 except Exception:
                     pass
                 add_log("Wake-word listener armed ('Aria' / 'Hey Aria').")
                 
                 while RUNNING:
-                    # While PTT recording or ARIA is busy thinking/working/coding, yield
+                    # While PTT recording, ARIA busy, or ARIA speaking/thinking, yield
                     if _PTT_RECORDING or agent.BUSY_PROCESSING or hud.CURRENT_STATE in ("thinking", "working", "coding"):
                         time.sleep(0.2)
                         continue
@@ -524,12 +537,13 @@ def continuous_voice_listener():
                     transcript_lower = transcript.lower()
 
                     # Barge-in stop check while ARIA is speaking
-                    if hud.CURRENT_STATE == "speaking":
+                    if hud.CURRENT_STATE == "speaking" or speech.is_speaking():
                         if any(stop_w in transcript_lower for stop_w in speech.STOP_WORDS):
                             speech.interrupt_speech()
                             hud.set_hud_state("idle")
                             add_log("Barge-in: speech halted.")
-                            continue
+                        # Do not process wake word commands from speech coming out of ARIA's own speakers
+                        continue
 
                     # Check for wake word
                     is_wake, cleaned_cmd = _extract_wake_command(transcript)
@@ -551,6 +565,8 @@ def continuous_voice_listener():
                         speech.interrupt_speech()
                         hud.set_hud_state("excited")
                         speech.speak("I'm listening.")
+                        speech.wait_until_done(timeout=3.0)
+                        time.sleep(0.15)
                         hud.set_hud_state("listening")
                         try:
                             follow_audio = wake_rec.listen(source, timeout=6.0, phrase_time_limit=12.0)
