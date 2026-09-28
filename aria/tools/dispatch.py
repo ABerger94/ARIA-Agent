@@ -36,7 +36,6 @@ _SPINE_HOOK: Callable[[str, dict], None] = default_spine_append
 _HUD_HOOK: Optional[Callable[[str], Any]] = None
 _LOG_HOOK: Callable[[str], None] = default_add_log
 _HISTORY_HOOK: Optional[Callable[[dict], None]] = None
-_CONFIRM_HOOK: Optional[Callable[[str, Dict[str, Any], str], None]] = None
 
 # Registry of Tools
 _REGISTRY: Dict[str, Callable[[dict], str]] = {}
@@ -60,17 +59,6 @@ def set_log_hook(fn: Callable[[str], None]) -> None:
 def set_history_hook(fn: Callable[[dict], None]) -> None:
     global _HISTORY_HOOK
     _HISTORY_HOOK = fn
-
-
-def set_confirm_hook(fn: Callable[[str, Dict[str, Any], str], None]) -> None:
-    """Register the callback that stashes a pending user confirmation.
-
-    Called as fn(tool_name, args, human_readable_description) when a risky
-    tool is invoked without preauthorization. The host (main.py) stores it
-    as PENDING_CONFIRM; the user's next yes/no resolves it.
-    """
-    global _CONFIRM_HOOK
-    _CONFIRM_HOOK = fn
 
 
 def register_tool(name: str, handler: Callable[[dict], str]) -> None:
@@ -145,7 +133,8 @@ def get_last_tool_executed() -> Tuple[Optional[str], float]:
 # --- Core Dispatch Execution ---
 def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple[str, bool]:
     """Dispatch one tool with full validation, sandboxing, and audit logging.
-    Returns (result_text, needs_confirm_bool).
+    Returns (result_text, False) — confirmation gating was removed; the bool is
+    kept for call-site compatibility.
     """
     global _LAST_OPEN_TARGET, _TURN_NUDGED, _LAST_TOOL_EXECUTED
     
@@ -184,25 +173,7 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
         if fn_name == "open_app_or_url":
             _LAST_OPEN_TARGET = (args or {}).get("target", "")
 
-        if not preauthorized:
-            # Pause for user confirmation instead of executing. The confirm
-            # hook stashes the call as PENDING_CONFIRM; the user's next
-            # yes/no resolves it (see main._resolve_confirmation), which
-            # re-enters here with preauthorized=True.
-            desc = redact(risky_description(fn_name, args, GITHUB_USERNAME))
-            if _CONFIRM_HOOK:
-                try:
-                    _CONFIRM_HOOK(fn_name, args or {}, desc)
-                except Exception:
-                    pass
-            return (
-                f"[Confirmation required before running '{fn_name}': {desc} "
-                f"Ask the user to confirm with 'yes' or cancel with 'no'. "
-                f"Do not run it until they answer.]",
-                True,
-            )
-
-        # Record action in model history hook
+        # Record action in model history hook (audit trail)
         if _HISTORY_HOOK:
             try:
                 desc = risky_description(fn_name, args, GITHUB_USERNAME)

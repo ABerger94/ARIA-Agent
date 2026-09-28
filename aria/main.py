@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 from datetime import datetime
-from typing import Optional, List, Dict, Any, Tuple, Callable
+from typing import Optional, List, Tuple, Callable
 
 import cv2
 import numpy as np
@@ -37,14 +37,12 @@ import aria.bridge as bridge
 import aria.agent as agent
 from aria.tools.dispatch import (
     execute_tool, set_log_hook, set_hud_hook, set_history_hook, set_spine_hook,
-    set_confirm_hook
 )
 
 # Global runtime flags
 RUNNING: bool = True
 EXCITED_UNTIL: float = 0.0   # wake-up burst expiry timestamp
 EXCITED_REVERT: str = "idle"  # state to return to after the burst
-PENDING_CONFIRM: Optional[Dict[str, Any]] = None
 WHISPER_MODE: bool = bool(get_setting("whisper_mode", False))
 VOICE_LISTENER_ONLINE: bool = False
 
@@ -67,7 +65,6 @@ def _init_wiring():
     speech.set_speech_state_hook(lambda st: hud.set_hud_state(st))
     set_spine_hook(memory.spine_append)
     set_history_hook(lambda entry: agent.CONVERSATION_HISTORY.append(entry))
-    set_confirm_hook(_store_pending_confirm)
 
     # 2. Chat history listener
     memory.register_chat_listener(lambda ts, sender, msg: hud.DISPLAY_CHAT_LOG.append((ts, sender, msg)))
@@ -137,71 +134,8 @@ def toggle_whisper_mode() -> bool:
     return set_whisper_mode(not WHISPER_MODE)
 
 
-_YES_FIRST_WORDS = {"yes", "yeah", "yep", "yup", "y", "sure", "ok", "okay",
-                    "confirmed", "affirmative", "absolutely", "definitely"}
-
-
-def _store_pending_confirm(fn_name: str, args: Dict[str, Any], desc: str) -> None:
-    """Confirm-hook target: stash a risky tool call awaiting the user's yes/no."""
-    global PENDING_CONFIRM
-    if PENDING_CONFIRM:
-        add_log(f"Superseded pending confirm: {PENDING_CONFIRM.get('fn')}")
-    PENDING_CONFIRM = {"fn": fn_name, "args": args, "desc": desc}
-    add_log(f"Confirmation requested: {desc}")
-
-
-_NO_FIRST_WORDS = {"no", "nope", "nah", "cancel", "dont", "abort"}
-
-
-def _resolve_confirmation(user_text: str, say_fn: Callable[[str], None]) -> bool:
-    """Resolve a pending risky-tool confirmation from the user's reply.
-
-    Returns True when the message answered the confirmation (yes -> execute,
-    explicit no -> cancel). Returns False when the message was unrelated: the
-    stale pending confirm is dropped and the message flows to the brain normally
-    instead of being swallowed.
-    """
-    global PENDING_CONFIRM
-    if not PENDING_CONFIRM:
-        return False
-    low = user_text.lower().strip()
-    words = re.findall(r"[a-z']+", low)
-    first = words[0] if words else ""
-    pc = PENDING_CONFIRM
-
-    if first in _YES_FIRST_WORDS or low.startswith(("do it", "go ahead")):
-        PENDING_CONFIRM = None
-        memory.log_conversation("User", user_text)
-        add_log(f"Confirmed: {pc['fn']}")
-        res, _ = execute_tool(pc["fn"], pc["args"], preauthorized=True)
-        say_fn(f"Confirmed. {res[:300]}")
-        agent.CONVERSATION_HISTORY.append({
-            "role": "model",
-            "parts": [{"text": f"[Confirmed and executed: {pc.get('desc', pc['fn'])}]"}]
-        })
-        return True
-
-    if first in _NO_FIRST_WORDS or low.startswith(("never mind", "don't", "do not")):
-        PENDING_CONFIRM = None
-        memory.log_conversation("User", user_text)
-        add_log(f"Cancelled: {pc['fn']}")
-        say_fn("Cancelled. Nothing was done.")
-        agent.CONVERSATION_HISTORY.append({
-            "role": "model",
-            "parts": [{"text": f"[Cancelled by user: {pc.get('desc', pc['fn'])}]"}]
-        })
-        return True
-
-    # Unrelated message: drop the stale confirm, let the message through.
-    PENDING_CONFIRM = None
-    add_log(f"Pending confirm for {pc['fn']} dropped (user changed subject).")
-    return False
-
-
 def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silent: bool = False) -> str:
     """Central action pipeline invoked from voice, PTT, HUD typed commands, or Phone Bridge."""
-    global PENDING_CONFIRM
-    agent.LAST_ACTIVITY = time.time()
     agent.proactive.mood_note_interaction()
 
     say = (lambda t: None) if silent else speech.speak
@@ -214,18 +148,10 @@ def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silen
 
     # 1. Stop words
     if any(low == w or low.startswith(w + " ") for w in speech.STOP_WORDS):
-        was_pending = PENDING_CONFIRM is not None
-        PENDING_CONFIRM = None
         speech.interrupt_speech()
-        if was_pending:
-            add_log("Pending action cancelled by stop command.")
         return "Interrupted."
 
-    # 2. Confirmation resolution
-    if _resolve_confirmation(user_text, say):
-        return "Confirmation resolved."
-
-    # 3. Whisper mode voice commands
+    # 2. Whisper mode voice commands
     if "whisper mode" in low or "whisper on" in low or "whisper off" in low:
         on = "off" not in low and ("on" in low or not WHISPER_MODE)
         set_whisper_mode(on)

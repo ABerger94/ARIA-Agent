@@ -124,25 +124,17 @@ def t_runpy():
     assert "timed out" in out2, out2
 check("tool_run_python exec + timeout", t_runpy)
 
-# 9. risky tools pause for confirmation; preauthorized ones execute + audit
+# 9. risky tools execute immediately and fire the audit hook
 def t_history_hook():
     seen = []
     dispatch.set_history_hook(seen.append)
-    pending = []
-    dispatch.set_confirm_hook(lambda fn, args, desc: pending.append((fn, desc)))
     # send_email is risky but side-effect-free here (no Gmail creds configured)
     res, needs_confirm = dispatch.execute_tool(
         "send_email", {"to": "nobody@example.com", "subject": "t", "body": "b"})
-    assert needs_confirm is True, (res, needs_confirm)
-    assert "confirmation" in res.lower(), res
-    assert pending and pending[0][0] == "send_email", pending
-    assert not any("send email" in str(e) for e in seen), seen
-    # preauthorized risky tool executes immediately and fires the audit hook
-    dispatch.execute_tool(
-        "send_email", {"to": "nobody@example.com", "subject": "t", "body": "b"},
-        preauthorized=True)
+    assert needs_confirm is False, (res, needs_confirm)
+    assert "confirmation" not in res.lower(), res
     assert any("send email" in str(e) for e in seen), seen
-check("risky tool confirmation gate + preauthorized audit entry", t_history_hook)
+check("risky tool executes immediately + audit entry", t_history_hook)
 
 # 10. duplicate-call blocking
 def t_dup():
