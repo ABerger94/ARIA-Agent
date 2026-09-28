@@ -306,8 +306,69 @@ def _ptt_poll_loop():
 
 
 def _on_hud_mouse(event, x, y, flags, param):
-    """Handle mouse clicks on HUD interactive buttons."""
+    """Handle mouse clicks and wheel on HUD interactive buttons."""
+    # Mouse wheel support for paging commands or scrolling chat
+    if event == getattr(cv2, "EVENT_MOUSEWHEEL", 10):
+        if hud.SHOW_COMMANDS:
+            if flags > 0:
+                hud.commands_prev_page()
+            else:
+                hud.commands_next_page()
+            return
+        elif hud.HUD_MODE == "chat_log":
+            if flags > 0:
+                hud.CHAT_SCROLL = max(0, hud.CHAT_SCROLL - 1)
+            else:
+                hud.CHAT_SCROLL = max(0, hud.CHAT_SCROLL + 1)
+            return
+
+    if event == cv2.EVENT_RBUTTONDOWN:
+        # Right click anywhere on directive bar pastes from clipboard
+        ix, iy, iw, ih = hud._INPUT_BAR
+        if ix <= x <= ix + iw and iy <= y <= iy + ih:
+            pasted = hud.get_clipboard_text()
+            if pasted:
+                hud.TYPING_ACTIVE = True
+                hud.TYPING_BUFFER += pasted
+                add_log(f"Pasted from clipboard ({len(pasted)} chars).")
+            else:
+                add_log("Clipboard empty or non-text.")
+            return
+
     if event == cv2.EVENT_LBUTTONDOWN:
+        # If commands overlay is visible, intercept clicks on overlay buttons
+        if hud.SHOW_COMMANDS:
+            # Prev page button
+            px, py, pw, ph = hud._COMMANDS_PREV_BTN
+            if px <= x <= px + pw and py <= y <= py + ph:
+                hud.commands_prev_page()
+                return
+
+            # Next page button
+            nx, ny, nw, nh = hud._COMMANDS_NEXT_BTN
+            if nx <= x <= nx + nw and ny <= y <= ny + nh:
+                hud.commands_next_page()
+                return
+
+            # Close button
+            cx, cy, cw, ch = hud._COMMANDS_CLOSE_BTN
+            if cx <= x <= cx + cw and cy <= y <= cy + ch:
+                hud.SHOW_COMMANDS = False
+                return
+
+            # Top right X button
+            xx, xy, xw, xh = hud._COMMANDS_X_BTN
+            if xx <= x <= xx + xw and xy <= y <= xy + xh:
+                hud.SHOW_COMMANDS = False
+                return
+
+            # Clicking anywhere outside overlay bounds closes it
+            if not (36 <= x <= 1244 and 52 <= y <= 700):
+                hud.SHOW_COMMANDS = False
+                return
+
+            return
+
         # Whisper button
         bx, by, bw, bh = hud._WHISPER_BTN
         if bx <= x <= bx + bw and by <= y <= by + bh:
@@ -315,11 +376,55 @@ def _on_hud_mouse(event, x, y, flags, param):
             speech.speak(f"Whisper mode {'on' if on else 'off'}.")
             return
 
-        # Directive input bar
+        # Directive input bar buttons:
+        # 1. PASTE button
+        px, py, pw, ph = hud._INPUT_PASTE_BTN
+        if px <= x <= px + pw and py <= y <= py + ph:
+            pasted = hud.get_clipboard_text()
+            hud.TYPING_ACTIVE = True
+            if pasted:
+                hud.TYPING_BUFFER += pasted
+                add_log(f"Pasted from clipboard ({len(pasted)} chars).")
+            else:
+                add_log("Clipboard empty or non-text.")
+            return
+
+        # 2. SEND button
+        sx, sy, sw, sh = hud._INPUT_SEND_BTN
+        if sx <= x <= sx + sw and sy <= y <= sy + sh:
+            prompt = hud.TYPING_BUFFER.strip()
+            if prompt:
+                hud.TYPING_ACTIVE = False
+                hud.TYPING_BUFFER = ""
+                add_log(f"Typed directive: '{prompt[:35]}...'")
+                threading.Thread(target=handle_action, args=("voice", prompt), daemon=True).start()
+            else:
+                add_log("Directive is empty — paste or type text first.")
+            return
+
+        # 3. CLEAR button
+        cx, cy, cw, ch = hud._INPUT_CLEAR_BTN
+        if cx <= x <= cx + cw and cy <= y <= cy + ch:
+            hud.TYPING_BUFFER = ""
+            add_log("Directive buffer cleared.")
+            return
+
+        # 4. ESC / Toggle Typing button
+        ex, ey, ew, eh = hud._INPUT_ESC_BTN
+        if ex <= x <= ex + ew and ey <= y <= ey + eh:
+            if hud.TYPING_ACTIVE:
+                hud.TYPING_ACTIVE = False
+                hud.TYPING_BUFFER = ""
+                add_log("Typing cancelled.")
+            else:
+                hud.TYPING_ACTIVE = True
+                add_log("Typing mode engaged.")
+            return
+
+        # Directive input bar body click
         ix, iy, iw, ih = hud._INPUT_BAR
         if ix <= x <= ix + iw and iy <= y <= iy + ih:
             hud.TYPING_ACTIVE = True
-            hud.TYPING_BUFFER = ""
             add_log("Typing mode engaged.")
             return
 
@@ -511,16 +616,50 @@ def main():
             frame = hud.draw_hud()
             cv2.imshow(win_name, frame)
 
-            key = cv2.waitKey(30) & 0xFF
-            if key != 255:
-                if key in (ord('x'), ord('X')) and hud.CURRENT_STATE == "speaking":
+            key_raw = cv2.waitKeyEx(30)
+            if key_raw != -1:
+                key = key_raw & 0xFF
+                is_left = (key_raw in (0x250000, 2424832, 65361)) or (key_raw >> 16 == 0x25)
+                is_right = (key_raw in (0x270000, 2555904, 65363)) or (key_raw >> 16 == 0x27)
+                is_up = (key_raw in (0x260000, 2490368, 65362)) or (key_raw >> 16 == 0x26)
+                is_down = (key_raw in (0x280000, 2621440, 65364)) or (key_raw >> 16 == 0x28)
+
+                # Check modifier keys via Windows API
+                is_ctrl = False
+                is_shift = False
+                try:
+                    is_ctrl = bool(ctypes.windll.user32.GetAsyncKeyState(0x11) & 0x8000)
+                    is_shift = bool(ctypes.windll.user32.GetAsyncKeyState(0x10) & 0x8000)
+                except Exception:
+                    pass
+
+                # Universal paste shortcut: Ctrl+V or Shift+Insert
+                is_paste = (key == 22) or (key in (ord('v'), ord('V')) and is_ctrl) or (key_raw in (45, 0x2D0000) and is_shift)
+
+                if is_paste:
+                    pasted = hud.get_clipboard_text()
+                    hud.TYPING_ACTIVE = True
+                    if pasted:
+                        hud.TYPING_BUFFER += pasted
+                        agent.LAST_ACTIVITY = time.time()
+                        add_log(f"Pasted from clipboard ({len(pasted)} chars).")
+                    else:
+                        add_log("Clipboard empty or non-text.")
+                elif key in (ord('x'), ord('X')) and hud.CURRENT_STATE == "speaking" and not hud.TYPING_ACTIVE:
                     # X: cut her off — stop speech immediately. Only fires while
-                    # she's actually talking, so typing the letter x is unaffected.
+                    # she's actually talking and not currently typing.
                     drained = speech.interrupt_speech()
                     hud.set_hud_state("idle")
                     add_log("Speech cut off." if not drained
                             else f"Speech cut off ({drained} queued cleared).")
                     agent.LAST_ACTIVITY = time.time()
+                elif hud.SHOW_COMMANDS:
+                    if is_left or is_up:
+                        hud.commands_prev_page()
+                    elif is_right or is_down:
+                        hud.commands_next_page()
+                    elif key in (ord('h'), ord('H'), 27):  # H or ESC closes commands
+                        hud.SHOW_COMMANDS = False
                 elif hud.TYPING_ACTIVE:
                     if key in (13, 10):  # Enter: submit directive
                         prompt = hud.TYPING_BUFFER.strip()
@@ -537,8 +676,8 @@ def main():
                         hud.TYPING_BUFFER = hud.TYPING_BUFFER[:-1]
                     elif key == 21:  # Ctrl+U: clear buffer
                         hud.TYPING_BUFFER = ""
-                    elif 32 <= key <= 126:  # Printable character (including space)
-                        hud.TYPING_BUFFER += chr(key)
+                    elif 32 <= key_raw <= 126 and not is_ctrl:  # Printable character (including space)
+                        hud.TYPING_BUFFER += chr(key_raw)
                         agent.LAST_ACTIVITY = time.time()
                 else:
                     if key in (ord('q'), ord('Q'), 27):  # ESC or Q
@@ -546,18 +685,17 @@ def main():
                         break
                     elif key in (ord('t'), ord('T'), 13):  # T or Enter: activate typing
                         hud.TYPING_ACTIVE = True
-                        hud.TYPING_BUFFER = ""
                         add_log("Typing mode: type your directive and press Enter.")
-                    elif key in (ord('v'), ord('V')):
+                    elif key in (ord('v'), ord('V')) and not is_ctrl:
                         hud.HUD_MODE = "chat_log" if hud.HUD_MODE == "visor" else "visor"
                     elif key in (ord('w'), ord('W')):
                         on = toggle_whisper_mode()
                         speech.speak(f"Whisper mode {'on' if on else 'off'}.")
                     elif key in (ord('h'), ord('H')):
                         hud.SHOW_COMMANDS = not hud.SHOW_COMMANDS
-                    elif key in (ord('j'), ord('J')):
+                    elif key in (ord('j'), ord('J')) or is_down:
                         hud.CHAT_SCROLL = max(0, hud.CHAT_SCROLL + 1)
-                    elif key in (ord('k'), ord('K')):
+                    elif key in (ord('k'), ord('K')) or is_up:
                         hud.CHAT_SCROLL = max(0, hud.CHAT_SCROLL - 1)
 
     except KeyboardInterrupt:

@@ -46,6 +46,29 @@ import aria.hud as hud
 HISTORY_TURNS = 12
 CONVERSATION_HISTORY: List[Dict[str, Any]] = []
 
+PARALLEL_SAFE_TOOLS = {
+    "fetch_url", "web_search", "read_file", "find_file",
+    "search_memory", "read_screen", "list_workspace", "list_windows",
+    "mtg_card", "list_price_watches", "read_notes", "clipboard_read"
+}
+
+
+def _compact_conversation_history():
+    """Ensure history stays strictly bounded by both turn count and total token/character budget."""
+    global CONVERSATION_HISTORY
+    if len(CONVERSATION_HISTORY) > HISTORY_TURNS:
+        CONVERSATION_HISTORY = CONVERSATION_HISTORY[-HISTORY_TURNS:]
+    MAX_HISTORY_CHARS = 24000
+    total_chars = 0
+    for item in reversed(CONVERSATION_HISTORY):
+        for p in item.get("parts", []):
+            if isinstance(p, dict) and "text" in p:
+                total_chars += len(p["text"])
+        if total_chars > MAX_HISTORY_CHARS:
+            idx = CONVERSATION_HISTORY.index(item)
+            CONVERSATION_HISTORY = CONVERSATION_HISTORY[idx + 1:]
+            break
+
 BUSY_PROCESSING: bool = False
 LAST_USER_MESSAGE: str = ""
 LAST_ACTIVITY: float = time.time()
@@ -312,8 +335,7 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
     # 2. Append to history & memory logs
     prompt_label = "User (Screen View): " if is_screen else "User: "
     CONVERSATION_HISTORY.append({"role": "user", "parts": [{"text": f"{prompt_label}{user_prompt}"}]})
-    if len(CONVERSATION_HISTORY) > HISTORY_TURNS:
-        CONVERSATION_HISTORY = CONVERSATION_HISTORY[-HISTORY_TURNS:]
+    _compact_conversation_history()
 
     log_conversation("User", user_prompt)
 
@@ -377,8 +399,7 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                 text_parts = [p["text"] for p in model_parts if "text" in p and not p.get("thought", False)]
                 final_text = "".join(text_parts).strip() if text_parts else "Directive executed."
                 CONVERSATION_HISTORY.append({"role": "model", "parts": [{"text": final_text}]})
-                if len(CONVERSATION_HISTORY) > HISTORY_TURNS:
-                    CONVERSATION_HISTORY = CONVERSATION_HISTORY[-HISTORY_TURNS:]
+                _compact_conversation_history()
 
                 hud.set_hud_subtitle(final_text)
                 log_conversation("A.R.I.A.", final_text)
@@ -396,7 +417,9 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
             hud.draw_hud()
 
             response_parts = []
-            if len(function_calls) > 1:
+            all_parallel_safe = len(function_calls) > 1 and all(fc.get("name") in PARALLEL_SAFE_TOOLS for fc in function_calls)
+
+            if all_parallel_safe:
                 def _run_one(fc):
                     fname = fc["name"]
                     fargs = fc.get("args", {})
@@ -404,17 +427,17 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                     res, _ = execute_tool(fname, fargs, preauthorized=preauthorized)
                     return fname, res
 
-                with ThreadPoolExecutor(max_workers=4) as ex:
+                with ThreadPoolExecutor(max_workers=min(len(function_calls), 4)) as ex:
                     outs = list(ex.map(_run_one, function_calls))
                 for fname, res in outs:
                     response_parts.append({"functionResponse": {"name": fname, "response": {"output": res}}})
             else:
-                fc = function_calls[0]
-                fname = fc["name"]
-                fargs = fc.get("args", {})
-                add_log(f"Tool: {fname}")
-                res, _ = execute_tool(fname, fargs, preauthorized=preauthorized)
-                response_parts.append({"functionResponse": {"name": fname, "response": {"output": res}}})
+                for fc in function_calls:
+                    fname = fc["name"]
+                    fargs = fc.get("args", {})
+                    add_log(f"Tool: {fname}")
+                    res, _ = execute_tool(fname, fargs, preauthorized=preauthorized)
+                    response_parts.append({"functionResponse": {"name": fname, "response": {"output": res}}})
 
             contents.append({"role": "user", "parts": response_parts})
             hud.set_hud_state("thinking")

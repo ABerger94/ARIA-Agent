@@ -236,7 +236,28 @@ def _tk_root():
 
 
 def tool_clipboard_read() -> str:
-    """Read plain text from Windows clipboard."""
+    """Read plain text from Windows clipboard with win32 API and tkinter fallback."""
+    try:
+        import win32clipboard
+        import win32con
+        for _ in range(5):
+            try:
+                win32clipboard.OpenClipboard()
+                try:
+                    if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+                        data = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+                        return data if data else "[Clipboard is empty or holds non-text data]"
+                    return "[Clipboard is empty or holds non-text data]"
+                finally:
+                    win32clipboard.CloseClipboard()
+            except Exception:
+                time.sleep(0.04)
+        return "[Clipboard busy or unavailable]"
+    except ImportError:
+        pass
+    except Exception as e:
+        return f"[Clipboard unavailable: {e}]"
+
     try:
         r = _tk_root()
         try:
@@ -250,7 +271,27 @@ def tool_clipboard_read() -> str:
 
 
 def tool_clipboard_write(text: str) -> str:
-    """Copy text into Windows clipboard."""
+    """Copy text into Windows clipboard with win32 API and tkinter fallback."""
+    try:
+        import win32clipboard
+        import win32con
+        for _ in range(5):
+            try:
+                win32clipboard.OpenClipboard()
+                try:
+                    win32clipboard.EmptyClipboard()
+                    win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
+                    return f"Copied {len(text)} chars to clipboard."
+                finally:
+                    win32clipboard.CloseClipboard()
+            except Exception:
+                time.sleep(0.04)
+        return "[Clipboard busy or write failed]"
+    except ImportError:
+        pass
+    except Exception as e:
+        return f"[Clipboard write failed: {e}]"
+
     try:
         r = _tk_root()
         try:

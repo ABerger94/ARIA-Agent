@@ -136,7 +136,7 @@ def tool_run_skill(skill_name: str,
     
     prev_face = None
     if state_callback:
-        prev_face = state_callback("working")
+        prev_face = state_callback("coding")
     try:
         if log_callback:
             log_callback(f"Skill '{name}' started (budget {sk['max_calls']} calls)")

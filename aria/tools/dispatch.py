@@ -187,7 +187,7 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
     prev_face = None
     if _HUD_HOOK:
         try:
-            prev_face = _HUD_HOOK("working")
+            prev_face = _HUD_HOOK("coding")
         except Exception:
             pass
     _LAST_TOOL_EXECUTED = (fn_name, time.time())

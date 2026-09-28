@@ -7,6 +7,7 @@ faster-whisper and Google cloud STT, and speech interrupt control.
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 import queue
 import re
@@ -228,13 +229,10 @@ class SpeechManager:
         probe_ok = False
         for attempt in range(1, 4):
             try:
-                probe = os.path.join(self.workspace_dir, "_voice_probe.mp3")
-                asyncio.run(asyncio.wait_for(
-                    edge_tts.Communicate("Voice check.", self.voice).save(probe),
-                    timeout=20
-                ))
-                probe_ok = True
-                break
+                b = edge_tts_bytes("Voice check.")
+                if b:
+                    probe_ok = True
+                    break
             except Exception as e:
                 time.sleep(3)
 
@@ -255,30 +253,24 @@ class SpeechManager:
                 self.speech_queue.task_done()
                 continue
 
-            with self._voice_rotation_lock:
-                self._voice_rotation_idx = (self._voice_rotation_idx + 1) % 8
-                idx = self._voice_rotation_idx
-
-            path = os.path.join(self.workspace_dir, f"_aria_voice_{idx}.mp3")
+            audio_buf = None
             success = False
             try:
-                import edge_tts
-                asyncio.run(asyncio.wait_for(
-                    edge_tts.Communicate(text, self.voice, **self._whisper_edge_kwargs()).save(path),
-                    timeout=25
-                ))
-                success = True
+                raw_bytes = edge_tts_bytes(text, whisper_mode=self.whisper_mode)
+                if raw_bytes:
+                    audio_buf = io.BytesIO(raw_bytes)
+                    success = True
             except Exception as e:
                 self.log(f"Edge synth err: {e}")
 
             if not self.speech_stop.is_set():
-                self.audio_play_queue.put((text, path if success else None, success))
+                self.audio_play_queue.put((text, audio_buf, success))
             self.speech_queue.task_done()
 
     def _play_worker(self):
         while True:
             item = self.audio_play_queue.get()
-            text, path, is_edge = item
+            text, audio_buf, is_edge = item
             if self.speech_stop.is_set():
                 self.audio_play_queue.task_done()
                 continue
@@ -288,10 +280,12 @@ class SpeechManager:
                 if self.on_state:
                     self.on_state("speaking")
 
-                if is_edge and path and os.path.exists(path):
+                if is_edge and audio_buf:
                     import pygame
                     try:
-                        pygame.mixer.music.load(path)
+                        if hasattr(audio_buf, "seek"):
+                            audio_buf.seek(0)
+                        pygame.mixer.music.load(audio_buf)
                         pygame.mixer.music.play()
                         deadline = time.time() + max(10, len(text) * 0.15)
                         while pygame.mixer.music.get_busy() and time.time() < deadline and not self.speech_stop.is_set():
@@ -457,4 +451,4 @@ def set_speech_state_hook(fn):
 
 def transcribe_local_or_cloud(audio: sr.AudioData, recognizer_inst: Optional[sr.Recognizer] = None) -> str:
     r = recognizer_inst if recognizer_inst is not None else sr.Recognizer()
-    return transcribe(audio, r)
+    return transcribe(audio, r, use_local_stt=fw_is_available())

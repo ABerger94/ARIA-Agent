@@ -68,6 +68,51 @@ DIM = (150, 160, 170)
 # Buttons
 _WHISPER_BTN = (580, 52, 105, 22)
 _INPUT_BAR = (35, 646, 1210, 28)
+_COMMANDS_PREV_BTN = (560, 656, 110, 28)
+_COMMANDS_NEXT_BTN = (810, 656, 110, 28)
+_COMMANDS_CLOSE_BTN = (1110, 656, 105, 28)
+_COMMANDS_X_BTN = (1205, 60, 28, 24)
+
+# Directive Input Bar & Action Buttons
+_INPUT_PASTE_BTN = (965, 648, 70, 24)
+_INPUT_SEND_BTN = (1041, 648, 66, 24)
+_INPUT_CLEAR_BTN = (1113, 648, 54, 24)
+_INPUT_ESC_BTN = (1173, 648, 66, 24)
+
+
+def get_clipboard_text() -> str:
+    """Safely fetch plain text from Windows clipboard via win32 or tkinter."""
+    try:
+        import win32clipboard
+        import win32con
+        for _ in range(3):
+            try:
+                win32clipboard.OpenClipboard()
+                try:
+                    if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+                        data = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+                        return data if isinstance(data, str) else ""
+                    return ""
+                finally:
+                    win32clipboard.CloseClipboard()
+            except Exception:
+                time.sleep(0.02)
+    except Exception:
+        pass
+    try:
+        import tkinter as tk
+        r = tk.Tk()
+        r.withdraw()
+        try:
+            return r.clipboard_get()
+        except Exception:
+            return ""
+        finally:
+            r.destroy()
+    except Exception:
+        pass
+    return ""
+
 
 # State tracking
 CURRENT_STATE = "idle"
@@ -116,7 +161,9 @@ def add_hud_log(msg: str):
 
 def set_hud_state(state: str):
     global CURRENT_STATE
+    prev = CURRENT_STATE
     CURRENT_STATE = state
+    return prev
 
 
 def set_hud_subtitle(text: str):
@@ -208,9 +255,19 @@ def _draw_commands_overlay(canvas: np.ndarray):
     cv2.addWeighted(dim, 0.88, canvas, 0.12, 0, canvas)
     cv2.rectangle(canvas, (36, 52), (1244, 700), (15, 17, 22), -1)
     cv2.rectangle(canvas, (36, 52), (1244, 700), (45, 50, 60), 1)
+
+    # Top-right close [X]
+    xx, xy, xw, xh = _COMMANDS_X_BTN
+    cv2.rectangle(canvas, (xx, xy), (xx + xw, xy + xh), (25, 28, 36), -1)
+    cv2.rectangle(canvas, (xx, xy), (xx + xw, xy + xh), BORDER, 1)
+    cv2.putText(canvas, "X", (xx + 8, xy + 17), cv2.FONT_HERSHEY_SIMPLEX, 0.45, DIM, 1, cv2.LINE_AA)
+
     cv2.putText(canvas, "COMMANDS - say what you see", (60, 88),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, CYAN, 2, cv2.LINE_AA)
-    page = COMMANDS_PAGES[COMMANDS_PAGE % len(COMMANDS_PAGES)]
+
+    total_pages = max(1, len(COMMANDS_PAGES))
+    cur_page_idx = COMMANDS_PAGE % total_pages
+    page = COMMANDS_PAGES[cur_page_idx]
     for col, rows in enumerate(page):
         x = 70 + col * 590
         y = 126
@@ -227,8 +284,52 @@ def _draw_commands_overlay(canvas: np.ndarray):
                 cv2.putText(canvas, '- "' + b[:48] + '"', (x + tw, y),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, WHITE_TEXT, 1, cv2.LINE_AA)
                 y += 21
-    footer = f"H: close  |  PAGE {COMMANDS_PAGE + 1}/{len(COMMANDS_PAGES)} (LEFT/RIGHT arrows to flip)"
-    cv2.putText(canvas, footer, (60, 680), cv2.FONT_HERSHEY_SIMPLEX, 0.42, DIM, 1, cv2.LINE_AA)
+
+    # Bottom navigation bar
+    cv2.putText(canvas, "LEFT/RIGHT arrows or click buttons to flip  |  Press H or ESC to close",
+                (60, 675), cv2.FONT_HERSHEY_SIMPLEX, 0.38, DIM, 1, cv2.LINE_AA)
+
+    # Prev button [< PREV]
+    px, py, pw, ph = _COMMANDS_PREV_BTN
+    cv2.rectangle(canvas, (px, py), (px + pw, py + ph), (28, 32, 42), -1)
+    cv2.rectangle(canvas, (px, py), (px + pw, py + ph), CYAN, 1)
+    cv2.putText(canvas, "< PREV", (px + 22, py + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.45, CYAN, 1, cv2.LINE_AA)
+
+    # Page indicator
+    page_text = f"PAGE {cur_page_idx + 1} / {total_pages}"
+    tw = cv2.getTextSize(page_text, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)[0][0]
+    mid_x = (px + pw) + (810 - (px + pw) - tw) // 2
+    cv2.putText(canvas, page_text, (mid_x, 675), cv2.FONT_HERSHEY_SIMPLEX, 0.42, WHITE_TEXT, 1, cv2.LINE_AA)
+
+    # Next button [NEXT >]
+    nx, ny, nw, nh = _COMMANDS_NEXT_BTN
+    cv2.rectangle(canvas, (nx, ny), (nx + nw, ny + nh), (28, 32, 42), -1)
+    cv2.rectangle(canvas, (nx, ny), (nx + nw, ny + nh), CYAN, 1)
+    cv2.putText(canvas, "NEXT >", (nx + 24, ny + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.45, CYAN, 1, cv2.LINE_AA)
+
+    # Close button [CLOSE [H]]
+    cx, cy, cw, ch = _COMMANDS_CLOSE_BTN
+    cv2.rectangle(canvas, (cx, cy), (cx + cw, cy + ch), (35, 22, 30), -1)
+    cv2.rectangle(canvas, (cx, cy), (cx + cw, cy + ch), PINK, 1)
+    cv2.putText(canvas, "CLOSE [H]", (cx + 15, cy + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.42, PINK, 1, cv2.LINE_AA)
+
+
+def commands_next_page() -> int:
+    global COMMANDS_PAGES, COMMANDS_PAGE
+    if not COMMANDS_PAGES:
+        COMMANDS_PAGES = _build_commands_pages()
+    if COMMANDS_PAGES:
+        COMMANDS_PAGE = (COMMANDS_PAGE + 1) % len(COMMANDS_PAGES)
+    return COMMANDS_PAGE
+
+
+def commands_prev_page() -> int:
+    global COMMANDS_PAGES, COMMANDS_PAGE
+    if not COMMANDS_PAGES:
+        COMMANDS_PAGES = _build_commands_pages()
+    if COMMANDS_PAGES:
+        COMMANDS_PAGE = (COMMANDS_PAGE - 1) % len(COMMANDS_PAGES)
+    return COMMANDS_PAGE
 
 
 def tool_show_commands() -> str:
@@ -310,11 +411,14 @@ def draw_hud() -> np.ndarray:
             canvas[pip_y:pip_y + pip_h, pip_x:pip_x + pip_w] = thumb
         except Exception:
             pass
-    cv2.circle(canvas, (pip_x + pip_w // 2, pip_y + pip_h // 2), 15, CYAN, 1)
-    cv2.line(canvas, (pip_x + pip_w // 2 - 25, pip_y + pip_h // 2),
-             (pip_x + pip_w // 2 + 25, pip_y + pip_h // 2), CYAN, 1)
-    cv2.line(canvas, (pip_x + pip_w // 2, pip_y + pip_h // 2 - 25),
-             (pip_x + pip_w // 2, pip_y + pip_h // 2 + 25), CYAN, 1)
+    # Optic PIP crosshairs (80% transparent / 20% opacity)
+    pip_roi = canvas[pip_y:pip_y + pip_h, pip_x:pip_x + pip_w]
+    overlay = pip_roi.copy()
+    cx, cy = pip_w // 2, pip_h // 2
+    cv2.circle(overlay, (cx, cy), 15, CYAN, 1)
+    cv2.line(overlay, (cx - 25, cy), (cx + 25, cy), CYAN, 1)
+    cv2.line(overlay, (cx, cy - 25), (cx, cy + 25), CYAN, 1)
+    canvas[pip_y:pip_y + pip_h, pip_x:pip_x + pip_w] = cv2.addWeighted(overlay, 0.2, pip_roi, 0.8, 0)
     cv2.putText(canvas, "CAM_01 // OPTIC PIP", (pip_x + 5, pip_y + pip_h - 8),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, CYAN, 1, cv2.LINE_AA)
 
@@ -454,29 +558,69 @@ def draw_hud() -> np.ndarray:
 
     # Interactive Directive / Typing Input Bar
     ix, iy, iw, ih = _INPUT_BAR
+    clean_buf = hud_ascii(TYPING_BUFFER).replace("\r", "").replace("\n", " ").replace("\t", " ")
+
     if TYPING_ACTIVE:
         cv2.rectangle(canvas, (ix, iy), (ix + iw, iy + ih), (22, 28, 34), -1)
         cv2.rectangle(canvas, (ix, iy), (ix + iw, iy + ih), CYAN, 2)
-        cursor = "_" if int(time.time() * 2.5) % 2 == 0 else " "
-        display_txt = TYPING_BUFFER[-75:] if len(TYPING_BUFFER) > 75 else TYPING_BUFFER
-        cv2.putText(canvas, "[ DIRECTIVE ] >", (ix + 12, iy + 19),
+        tag = f"[ DIRECTIVE ({len(clean_buf)}) ] >" if len(clean_buf) > 0 else "[ DIRECTIVE ] >"
+        cv2.putText(canvas, tag, (ix + 10, iy + 19),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.42, CYAN, 1, cv2.LINE_AA)
-        cv2.putText(canvas, f"{display_txt}{cursor}", (ix + 145, iy + 19),
+
+        cursor = "_" if int(time.time() * 2.5) % 2 == 0 else " "
+        disp = clean_buf[-68:] if len(clean_buf) > 68 else clean_buf
+        tag_w = 175 if len(clean_buf) > 0 else 145
+        cv2.putText(canvas, f"{disp}{cursor}", (ix + tag_w, iy + 19),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.44, WHITE_TEXT, 1, cv2.LINE_AA)
-        cv2.putText(canvas, "[ENTER] Send  |  [ESC] Cancel", (ix + iw - 225, iy + 19),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, DIM, 1, cv2.LINE_AA)
     else:
         cv2.rectangle(canvas, (ix, iy), (ix + iw, iy + ih), (10, 12, 16), -1)
         cv2.rectangle(canvas, (ix, iy), (ix + iw, iy + ih), BORDER, 1)
-        cv2.putText(canvas, "[ DIRECTIVE ]", (ix + 12, iy + 19),
+        cv2.putText(canvas, "[ DIRECTIVE ]", (ix + 10, iy + 19),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.42, (100, 120, 130), 1, cv2.LINE_AA)
-        cv2.putText(canvas, "Press [T] or click here to type a message...", (ix + 145, iy + 19),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (110, 120, 130), 1, cv2.LINE_AA)
-        cv2.putText(canvas, "[T] Type", (ix + iw - 80, iy + 19),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, DIM, 1, cv2.LINE_AA)
+        if clean_buf:
+            disp = clean_buf[-68:] if len(clean_buf) > 68 else clean_buf
+            cv2.putText(canvas, disp, (ix + 145, iy + 19),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 210, 220), 1, cv2.LINE_AA)
+        else:
+            cv2.putText(canvas, "Press [T] / click to type, or Ctrl+V / Right-Click / [PASTE] to paste directive...",
+                        (ix + 145, iy + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (110, 120, 130), 1, cv2.LINE_AA)
+
+    # Interactive Action Buttons on Directive Bar
+    # PASTE button
+    px, py, pw, ph = _INPUT_PASTE_BTN
+    cv2.rectangle(canvas, (px, py), (px + pw, py + ph), (28, 42, 54), -1)
+    cv2.rectangle(canvas, (px, py), (px + pw, py + ph), CYAN if TYPING_ACTIVE else (100, 140, 160), 1)
+    cv2.putText(canvas, "PASTE", (px + 12, py + 16),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.38, CYAN if TYPING_ACTIVE else (180, 200, 215), 1, cv2.LINE_AA)
+
+    # SEND button
+    sx, sy, sw, sh = _INPUT_SEND_BTN
+    send_ready = bool(clean_buf.strip())
+    send_bg = (20, 52, 28) if send_ready else (16, 24, 18)
+    send_border = GREEN if send_ready else (40, 70, 45)
+    send_txt_color = GREEN if send_ready else (80, 120, 90)
+    cv2.rectangle(canvas, (sx, sy), (sx + sw, sy + sh), send_bg, -1)
+    cv2.rectangle(canvas, (sx, sy), (sx + sw, sy + sh), send_border, 1)
+    cv2.putText(canvas, "SEND", (sx + 13, sy + 16),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.38, send_txt_color, 1, cv2.LINE_AA)
+
+    # CLR button
+    cx, cy, cw, ch = _INPUT_CLEAR_BTN
+    cv2.rectangle(canvas, (cx, cy), (cx + cw, cy + ch), (26, 28, 32), -1)
+    cv2.rectangle(canvas, (cx, cy), (cx + cw, cy + ch), BORDER, 1)
+    cv2.putText(canvas, "CLR", (cx + 12, cy + 16),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.36, DIM, 1, cv2.LINE_AA)
+
+    # ESC / Toggle Typing button
+    ex, ey, ew, eh = _INPUT_ESC_BTN
+    cv2.rectangle(canvas, (ex, ey), (ex + ew, ey + eh), (32, 22, 22) if TYPING_ACTIVE else (24, 26, 30), -1)
+    cv2.rectangle(canvas, (ex, ey), (ex + ew, ey + eh), (90, 70, 130) if TYPING_ACTIVE else BORDER, 1)
+    esc_label = "ESC" if TYPING_ACTIVE else "[T]"
+    cv2.putText(canvas, esc_label, (ex + 18, ey + 16),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.36, DIM, 1, cv2.LINE_AA)
 
     # Bottom status bar
-    status_bar = f"STATUS: {CURRENT_STATE.upper()}  |  [T] TYPE  |  PRESS [SPACE] PTT  |  [X] CUT  |  [V] VISOR/LOG  |  [W] WHISPER  |  [H] COMMANDS"
+    status_bar = f"STATUS: {CURRENT_STATE.upper()}  |  [T] TYPE  |  [CTRL+V] PASTE  |  [ENTER] SEND  |  [SPACE] PTT  |  [X] CUT  |  [V] VISOR  |  [H] COMMANDS"
     cv2.putText(canvas, status_bar, (35, 700), cv2.FONT_HERSHEY_SIMPLEX, 0.36, DIM, 1, cv2.LINE_AA)
 
     # Optional commands overlay

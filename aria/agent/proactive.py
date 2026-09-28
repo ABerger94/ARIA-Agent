@@ -87,6 +87,25 @@ def proactive_say(nudge_type: str, text: str, speak_fn: Callable[[str], None],
     return False
 
 
+def _get_user_name() -> str:
+    try:
+        with DB_LOCK:
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            cur.execute("SELECT value FROM memory WHERE key = 'name' OR key = 'user_name' ORDER BY key ASC LIMIT 1")
+            r = cur.fetchone()
+            conn.close()
+            if r and r[0]:
+                val = r[0].strip()
+                m = re.search(r"name is ([A-Za-z0-9_\-]+)", val)
+                if m:
+                    return m.group(1)
+                return val
+    except Exception:
+        pass
+    return "Alek"
+
+
 def proactive_heartbeat_loop(speak_fn: Callable[[str], None],
                              is_busy_fn: Callable[[], bool],
                              is_whisper_fn: Callable[[], bool],
@@ -99,7 +118,8 @@ def proactive_heartbeat_loop(speak_fn: Callable[[str], None],
             battery = psutil.sensors_battery()
             if battery and not battery.power_plugged and battery.percent < 20 and not last_battery_alert:
                 last_battery_alert = True
-                proactive_say("battery", f"Allen, battery level is at {battery.percent}%. Please connect to AC power.",
+                user_name = _get_user_name()
+                proactive_say("battery", f"{user_name}, battery level is at {battery.percent}%. Please connect to AC power.",
                               speak_fn, is_busy_fn, is_whisper_fn)
             elif battery and battery.power_plugged:
                 last_battery_alert = False
