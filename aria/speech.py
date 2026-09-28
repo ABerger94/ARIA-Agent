@@ -16,6 +16,7 @@ import threading
 import time
 from typing import Callable, Optional, Tuple, List
 
+import audioop
 import numpy as np
 import speech_recognition as sr
 
@@ -137,8 +138,24 @@ def get_fw_model(workspace_dir: str = WORKSPACE_DIR, on_log: Optional[Callable[[
 
 
 def fw_pcm(audio: sr.AudioData) -> np.ndarray:
-    """sr.AudioData -> float32 mono PCM in [-1, 1] for faster-whisper."""
-    return (np.frombuffer(audio.get_raw_data(), dtype=np.int16).astype(np.float32) / 32768.0)
+    """sr.AudioData -> float32 mono PCM at 16000Hz in [-1, 1] for faster-whisper."""
+    raw = audio.get_raw_data()
+    sample_rate = audio.sample_rate
+    sample_width = audio.sample_width
+
+    if sample_width != 2:
+        try:
+            raw = audioop.lin2lin(raw, sample_width, 2)
+        except Exception:
+            pass
+
+    if sample_rate != 16000 and sample_rate > 0:
+        try:
+            raw, _ = audioop.ratecv(raw, 2, 1, sample_rate, 16000, None)
+        except Exception:
+            pass
+
+    return (np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0)
 
 
 def ptt_join_audio(frames_list: List[bytes], sample_rate: int, sample_width: int) -> Tuple[sr.AudioData, float]:
@@ -151,24 +168,40 @@ def ptt_join_audio(frames_list: List[bytes], sample_rate: int, sample_width: int
 def transcribe(audio: sr.AudioData, recognizer: sr.Recognizer, use_local_stt: bool = False, on_log: Optional[Callable[[str], None]] = None) -> str:
     """Transcribe sr.AudioData to text. Prefers faster-whisper if enabled, falls back to Google."""
     if not use_local_stt:
-        return recognizer.recognize_google(audio)
+        try:
+            return recognizer.recognize_google(audio)
+        except Exception:
+            return ""
 
     model = get_fw_model(on_log=on_log)
     if model is not None:
         try:
+            pcm = fw_pcm(audio)
             segments, _ = model.transcribe(
-                fw_pcm(audio), language="en",
+                pcm, language="en",
+                initial_prompt="Aria, Hey Aria.",
                 vad_filter=True, condition_on_previous_text=False
             )
             kept = [s for s in segments if getattr(s, "no_speech_prob", 0.0) <= _FW_NO_SPEECH_CUTOFF]
-            text = "".join(s.text for s in kept).strip()
+            text = " ".join(s.text.strip() for s in kept).strip()
+            if not text:
+                segments_raw, _ = model.transcribe(
+                    pcm, language="en",
+                    initial_prompt="Aria, Hey Aria.",
+                    vad_filter=False, condition_on_previous_text=False
+                )
+                kept_raw = [s for s in segments_raw if getattr(s, "no_speech_prob", 0.0) <= _FW_NO_SPEECH_CUTOFF]
+                text = " ".join(s.text.strip() for s in kept_raw).strip()
             if text:
                 return text
         except Exception as e:
             if on_log:
                 on_log(f"Local STT failed, falling back to Google: {e}")
 
-    return recognizer.recognize_google(audio)
+    try:
+        return recognizer.recognize_google(audio)
+    except Exception:
+        return ""
 
 
 # ---------------- SpeechManager ----------------

@@ -45,6 +45,7 @@ EXCITED_UNTIL: float = 0.0   # wake-up burst expiry timestamp
 EXCITED_REVERT: str = "idle"  # state to return to after the burst
 PENDING_CONFIRM: Optional[Dict[str, Any]] = None
 WHISPER_MODE: bool = bool(get_setting("whisper_mode", False))
+VOICE_LISTENER_ONLINE: bool = False
 
 _PTT_AVAILABLE: bool = False
 _PTT_RECORDING: bool = False
@@ -87,7 +88,10 @@ def get_subsystem_statuses() -> List[Tuple[str, str, bool]]:
     """Live (name, status, is_ok) for the HUD subsystem display."""
     v_stat = vision.get_vision_status()
     h_stat = hardware.get_hardware_status()
-    
+
+    # 0. Voice Pathway
+    voice_entry = ("Voice Pathway", "ARMED" if VOICE_LISTENER_ONLINE else "OFFLINE", VOICE_LISTENER_ONLINE)
+
     # 1. Vision
     v_ok = v_stat["vision_last"][0]
     v_str = "READY" if v_ok else ("ERROR" if v_ok is False else "IDLE")
@@ -115,7 +119,7 @@ def get_subsystem_statuses() -> List[Tuple[str, str, bool]]:
     gh_ok = bool(GITHUB_USERNAME and GITHUB_TOKEN and GITHUB_TOKEN != "INSERT")
     gh_entry = ("GitHub Tools", "ARMED" if gh_ok else "OFFLINE", gh_ok)
 
-    return [vision_entry, screen_entry, mem_entry, hw_entry, sched_entry, gh_entry]
+    return [voice_entry, vision_entry, screen_entry, mem_entry, hw_entry, sched_entry, gh_entry]
 
 
 def set_whisper_mode(on: bool) -> bool:
@@ -448,49 +452,122 @@ def _console_input_loop():
             time.sleep(0.5)
 
 
-def continuous_voice_listener():
-    """Always-on wake-word mic loop (restored from v9.34).
-
-    While ARIA is idle, the mic stays open. Any transcript containing
-    "aria" is treated as a command: the wake word is stripped and the
-    rest runs through handle_action("voice", ...), with barge-in so a
-    new command cuts off current speech. A bare "Aria" with nothing
-    after it gets "I'm listening."
+def _extract_wake_command(text: str) -> Tuple[bool, str]:
+    """Detect if wake word is present and extract following command.
+    Matches variations: Aria, Hey Aria, Hi Aria, Hello Aria, Ok Aria, Arya, etc.
     """
-    global EXCITED_UNTIL, EXCITED_REVERT
-    try:
-        with sr.Microphone(sample_rate=16000) as source:
-            recognizer.adjust_for_ambient_noise(source, duration=1.0)
-            add_log("Wake-word listener armed ('Aria' + command).")
-            while RUNNING:
+    if not text:
+        return False, ""
+    low = text.lower().strip()
+    match = re.search(r'\b(?:(?:hey|hi|hello|ok|okay|yo)\s+)?(?:aria|arya|ahria|auria|area)\b', low)
+    if not match:
+        return False, ""
+    
+    end_pos = match.end()
+    cleaned = low[end_pos:].strip(" ,.-!?:;—–\t\n")
+    return True, cleaned
+
+
+def continuous_voice_listener():
+    """Always-on wake-word mic loop.
+    
+    Monitors microphone for 'Aria' / 'Hey Aria' and phonetic variants.
+    Handles:
+      1. Combined wake + directive: e.g. "Aria, open Spotify" -> runs directive immediately.
+      2. Conversational wake: e.g. "Hey Aria" -> responds "I'm listening", enters listening state,
+         and captures the user's follow-up directive without requiring wake-word repetition.
+      3. Barge-in / interruption: cutting off ARIA when user speaks stop words.
+      4. Auto-reconnection: cleanly re-arms if microphone hardware resets or drops.
+    """
+    global EXCITED_UNTIL, EXCITED_REVERT, VOICE_LISTENER_ONLINE
+    
+    wake_rec = sr.Recognizer()
+    wake_rec.pause_threshold = 0.6
+    wake_rec.phrase_threshold = 0.3
+    wake_rec.non_speaking_duration = 0.4
+    wake_rec.dynamic_energy_threshold = True
+
+    while RUNNING:
+        try:
+            with sr.Microphone() as source:
+                VOICE_LISTENER_ONLINE = True
                 try:
-                    if agent.BUSY_PROCESSING or hud.CURRENT_STATE != "idle":
-                        time.sleep(0.3)
+                    wake_rec.adjust_for_ambient_noise(source, duration=0.8)
+                except Exception:
+                    pass
+                add_log("Wake-word listener armed ('Aria' / 'Hey Aria').")
+                
+                while RUNNING:
+                    # While PTT recording or ARIA is busy thinking/working/coding, yield
+                    if _PTT_RECORDING or agent.BUSY_PROCESSING or hud.CURRENT_STATE in ("thinking", "working", "coding"):
+                        time.sleep(0.2)
                         continue
+
+                    # Listen for acoustic phrase
                     try:
-                        audio = recognizer.listen(source, timeout=3, phrase_time_limit=8)
+                        audio = wake_rec.listen(source, timeout=2.5, phrase_time_limit=8.0)
                     except sr.WaitTimeoutError:
                         continue
+                    except Exception:
+                        time.sleep(0.2)
+                        continue
+
+                    # Transcribe
                     try:
-                        transcript = speech.transcribe_local_or_cloud(audio, recognizer).lower()
+                        transcript = speech.transcribe_local_or_cloud(audio, wake_rec).strip()
                     except Exception:
                         continue
-                    if "aria" in transcript:
-                        add_log(f"Wake: '{transcript[:25]}'")
-                        cleaned = transcript.replace("hey aria", "").replace("aria", "").strip()
-                        hud.set_hud_state("excited")  # she perks up hearing her name
-                        EXCITED_UNTIL = time.time() + 2.2
-                        EXCITED_REVERT = "idle" if cleaned else "listening"
-                        if cleaned:
-                            speech.interrupt_speech()  # barge-in: stop current speech first
-                            handle_action("voice", typed_prompt=cleaned)
-                        else:
-                            speech.speak("I'm listening.")
-                except Exception as e:
-                    add_log(f"Wake listener error: {e}")
-                    time.sleep(0.3)
-    except Exception as e:
-        add_log(f"Wake listener unavailable: {e}")
+
+                    if not transcript:
+                        continue
+
+                    transcript_lower = transcript.lower()
+
+                    # Barge-in stop check while ARIA is speaking
+                    if hud.CURRENT_STATE == "speaking":
+                        if any(stop_w in transcript_lower for stop_w in speech.STOP_WORDS):
+                            speech.interrupt_speech()
+                            hud.set_hud_state("idle")
+                            add_log("Barge-in: speech halted.")
+                            continue
+
+                    # Check for wake word
+                    is_wake, cleaned_cmd = _extract_wake_command(transcript)
+                    if not is_wake:
+                        continue
+
+                    add_log(f"Wake: '{transcript[:30]}'")
+
+                    # Case 1: Single turn with command ('Aria, open Spotify')
+                    if cleaned_cmd:
+                        speech.interrupt_speech()
+                        hud.set_hud_state("excited")
+                        EXCITED_UNTIL = time.time() + 1.5
+                        EXCITED_REVERT = "thinking"
+                        threading.Thread(target=handle_action, args=("voice", cleaned_cmd), daemon=True).start()
+
+                    # Case 2: Conversational wake ('Aria' / 'Hey Aria' alone)
+                    else:
+                        speech.interrupt_speech()
+                        hud.set_hud_state("excited")
+                        speech.speak("I'm listening.")
+                        hud.set_hud_state("listening")
+                        try:
+                            follow_audio = wake_rec.listen(source, timeout=6.0, phrase_time_limit=12.0)
+                            follow_cmd = speech.transcribe_local_or_cloud(follow_audio, wake_rec).strip()
+                            if follow_cmd:
+                                add_log(f"Voice directive: '{follow_cmd[:35]}'")
+                                hud.set_hud_state("thinking")
+                                threading.Thread(target=handle_action, args=("voice", follow_cmd), daemon=True).start()
+                            else:
+                                hud.set_hud_state("idle")
+                        except (sr.WaitTimeoutError, Exception):
+                            hud.set_hud_state("idle")
+
+        except Exception as e:
+            VOICE_LISTENER_ONLINE = False
+            add_log(f"Wake listener reset: {e}")
+            time.sleep(2.0)
 
 
 def _greeting_text():
