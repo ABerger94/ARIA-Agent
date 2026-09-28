@@ -11,6 +11,7 @@ import cv2
 WHITE = (232, 232, 240)
 PINK = (150, 80, 255)
 PINK_DEEP = (95, 45, 185)
+PINK_BRIGHT = (190, 140, 255)
 DARK = (12, 12, 18)
 VISOR = (28, 28, 44)
 CYAN = (255, 255, 0)
@@ -94,6 +95,10 @@ def _head(c, ox, oy, t, eye="open", mouth="smile", bob=0):
             bh = 1 + int(abs(math.sin(t * 12 + i * 0.9)) * 2)
             _r(c, ox, oy, 5 + i, 9 + y0 + (3 - bh), 1, bh,
                CYAN if i % 2 == 0 else PINK)
+    elif mouth == "talk":
+        # smile flashes bright pink while speaking
+        _r(c, ox, oy, 6, 10 + y0, 4, 1,
+           PINK_BRIGHT if (t * 6) % 2 < 1 else PINK_DEEP)
     else:  # smile
         _r(c, ox, oy, 6, 10 + y0, 4, 1, PINK_DEEP)
 
@@ -241,7 +246,7 @@ def draw_pixel_aria(canvas, state, t):
         _legs(canvas, ox, oy, bob=bounce)
         _torso(canvas, ox, oy, t, bob=bounce, accent=accent)
         _arms_down(canvas, ox, oy, bob=bounce)
-        _head(canvas, ox, oy, t, eye="happy", mouth="wave", bob=bounce)
+        _head(canvas, ox, oy, t, eye="happy", mouth="talk", bob=bounce)
     elif state == "listening":
         lean = int(round(math.sin(t * 1.4)))
         _legs(canvas, ox, oy, bob=0)
