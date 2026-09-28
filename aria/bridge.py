@@ -6,9 +6,11 @@ live MJPEG cyber-face stream, and web dashboard over HTTP / TLS HTTPS.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import ssl
+import subprocess
 import sys
 import tempfile
 import threading
@@ -74,12 +76,125 @@ def set_chat_log_provider(fn: Callable[[], Any]):
     _CHAT_LOG_CALL = fn
 
 
+def _der_len(n: int) -> bytes:
+    if n < 128:
+        return bytes((n,))
+    lb = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return bytes((0x80 | len(lb),)) + lb
+
+
+def _der_int(raw: bytes) -> bytes:
+    raw = raw.lstrip(b"\x00") or b"\x00"
+    if raw[0] & 0x80:
+        raw = b"\x00" + raw
+    return b"\x02" + _der_len(len(raw)) + raw
+
+
+def _der_read_len(buf: bytes, pos: int) -> tuple[int, int]:
+    first = buf[pos]
+    if first < 128:
+        return first, pos + 1
+    n = first & 0x7F
+    return int.from_bytes(buf[pos + 1:pos + 1 + n], "big"), pos + 1 + n
+
+
+def _der_read_seq_of_ints(der: bytes) -> list[int]:
+    """Parse DER SEQUENCE of INTEGERs; raises on anything malformed."""
+    pos = 0
+    if der[pos] != 0x30:
+        raise ValueError("DER: not a SEQUENCE")
+    ln, pos = _der_read_len(der, pos + 1)
+    end = pos + ln
+    out = []
+    while pos < end:
+        if der[pos] != 0x02:
+            raise ValueError("DER: expected INTEGER")
+        iln, pos = _der_read_len(der, pos + 1)
+        out.append(int.from_bytes(der[pos:pos + iln], "big"))
+        pos += iln
+    if pos != end:
+        raise ValueError("DER: trailing bytes")
+    return out
+
+
+def _pem_wrap(der: bytes, label: str) -> bytes:
+    b64 = base64.b64encode(der).decode("ascii")
+    lines = "\n".join(b64[i:i + 64] for i in range(0, len(b64), 64))
+    return f"-----BEGIN {label}-----\n{lines}\n-----END {label}-----\n".encode("ascii")
+
+
+# Windows-only: build the self-signed cert with PowerShell/.NET so a broken
+# `cryptography` install can't block per-machine cert generation. Emits 9
+# base64 lines on stdout: cert DER, then RSA n/e/d/p/q/dp/dq/qinv.
+_PS_CERT_SCRIPT = (
+    "$ErrorActionPreference='Stop';"
+    "$cert=New-SelfSignedCertificate -DnsName 'aria-bridge','localhost' "
+    "-CertStoreLocation 'Cert:\\CurrentUser\\My' -KeyExportPolicy Exportable "
+    "-KeyLength 2048 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddYears(10) "
+    "-TextExtension @('2.5.29.17={text}DNS=aria-bridge&DNS=localhost&IPAddress=127.0.0.1');"
+    "try{"
+    "[Convert]::ToBase64String($cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert));"
+    "$p=[System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($cert).ExportParameters($true);"
+    "[Convert]::ToBase64String($p.Modulus);"
+    "[Convert]::ToBase64String($p.Exponent);"
+    "[Convert]::ToBase64String($p.D);"
+    "[Convert]::ToBase64String($p.P);"
+    "[Convert]::ToBase64String($p.Q);"
+    "[Convert]::ToBase64String($p.DP);"
+    "[Convert]::ToBase64String($p.DQ);"
+    "[Convert]::ToBase64String($p.InverseQ)"
+    "}finally{"
+    "$s=New-Object System.Security.Cryptography.X509Certificates.X509Store('My','CurrentUser');"
+    "$s.Open('ReadWrite');$s.Remove($cert);$s.Close()}"
+)
+
+
+def _generate_machine_cert_powershell(cert_p: str, key_p: str) -> bool:
+    """Windows-only fallback: self-signed cert via PowerShell/.NET.
+
+    Used when `cryptography` can't be imported (e.g. its native DLLs fail to
+    load). Needs no third-party packages: New-SelfSignedCertificate ships with
+    Windows 10/11. Raises on any problem; caller falls back to the bundled cert.
+    """
+    if sys.platform != "win32":
+        return False
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+         "-Command", _PS_CERT_SCRIPT],
+        capture_output=True, text=True, timeout=90,
+    )
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr.strip() or f"powershell exit {r.returncode}")[-300:])
+    lines = [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+    if len(lines) < 9:
+        raise RuntimeError(f"unexpected powershell output ({len(lines)} lines)")
+    cert_der = base64.b64decode(lines[-9])
+    nums = [int.from_bytes(base64.b64decode(x), "big") for x in lines[-8:]]
+    body = b"".join([_der_int(b"\x00")] +
+                     [_der_int(n.to_bytes((n.bit_length() + 7) // 8 or 1, "big"))
+                      for n in nums])
+    key_der = b"\x30" + _der_len(len(body)) + body
+    # Round-trip check: the DER must decode to version 0 + the 8 inputs.
+    if _der_read_seq_of_ints(key_der) != [0] + nums:
+        raise RuntimeError("generated key failed DER round-trip check")
+    if not cert_der.startswith(b"\x30"):
+        raise RuntimeError("generated cert is not DER")
+    with open(cert_p, "wb") as f:
+        f.write(_pem_wrap(cert_der, "CERTIFICATE"))
+    with open(key_p, "wb") as f:
+        f.write(_pem_wrap(key_der, "RSA PRIVATE KEY"))
+    return True
+
+
 def _generate_machine_cert(cert_p: str, key_p: str) -> bool:
     """Generate a unique self-signed cert for THIS machine.
 
     The old bundled cert/key was identical on every deployment, so anyone
     with the repo could MITM any ARIA instance. A per-machine cert stored
     in the (gitignored) workspace dir fixes that.
+
+    Preferred path is `cryptography`; on Windows, if that is unavailable or
+    broken, falls back to PowerShell/.NET so no third-party package is needed.
     """
     try:
         import ipaddress
@@ -118,14 +233,24 @@ def _generate_machine_cert(cert_p: str, key_p: str) -> bool:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
         return True
     except Exception as e:
-        hint = (" - installed but its native libraries failed to load. Fix: reinstall "
-                "with the SAME python that runs ARIA "
-                "(python -m pip install --force-reinstall --no-cache-dir cryptography); "
-                "if it persists, install the Microsoft Visual C++ Redistributable"
-                if "dll" in str(e).lower() else "")
-        add_log(f"Bridge: cert gen python: {sys.executable}")
-        add_log(f"Bridge: per-machine cert generation failed ({e}){hint}")
-        return False
+        crypto_err = e
+    # Windows fallback: PowerShell/.NET needs no third-party packages.
+    if sys.platform == "win32":
+        try:
+            if _generate_machine_cert_powershell(cert_p, key_p):
+                add_log("Bridge: generated unique per-machine HTTPS cert "
+                        "(Windows native fallback).")
+                return True
+        except Exception as e2:
+            add_log(f"Bridge: Windows native cert fallback failed ({e2})")
+    hint = (" - installed but its native libraries failed to load. Fix: reinstall "
+            "with the SAME python that runs ARIA "
+            "(python -m pip install --force-reinstall --no-cache-dir cryptography); "
+            "if it persists, install the Microsoft Visual C++ Redistributable"
+            if "dll" in str(crypto_err).lower() else "")
+    add_log(f"Bridge: cert gen python: {sys.executable}")
+    add_log(f"Bridge: per-machine cert generation failed ({crypto_err}){hint}")
+    return False
 
 
 def ensure_bridge_cert():
