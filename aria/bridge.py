@@ -126,12 +126,13 @@ def _pem_wrap(der: bytes, label: str) -> bytes:
 # Windows-only: build the self-signed cert with PowerShell/.NET so a broken
 # `cryptography` install can't block per-machine cert generation. Emits 9
 # base64 lines on stdout: cert DER, then RSA n/e/d/p/q/dp/dq/qinv.
+# NOTE: -DnsName already creates the SAN extension; do NOT also pass
+# -TextExtension with OID 2.5.29.17 (duplicate extension -> cmdlet throws).
 _PS_CERT_SCRIPT = (
     "$ErrorActionPreference='Stop';"
     "$cert=New-SelfSignedCertificate -DnsName 'aria-bridge','localhost' "
     "-CertStoreLocation 'Cert:\\CurrentUser\\My' -KeyExportPolicy Exportable "
-    "-KeyLength 2048 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddYears(10) "
-    "-TextExtension @('2.5.29.17={text}DNS=aria-bridge&DNS=localhost&IPAddress=127.0.0.1');"
+    "-KeyLength 2048 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddYears(10);"
     "try{"
     "[Convert]::ToBase64String($cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert));"
     "$p=[System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($cert).ExportParameters($true);"
@@ -144,8 +145,10 @@ _PS_CERT_SCRIPT = (
     "[Convert]::ToBase64String($p.DQ);"
     "[Convert]::ToBase64String($p.InverseQ)"
     "}finally{"
+    "try{"
     "$s=New-Object System.Security.Cryptography.X509Certificates.X509Store('My','CurrentUser');"
-    "$s.Open('ReadWrite');$s.Remove($cert);$s.Close()}"
+    "$s.Open('ReadWrite');$s.Remove($cert);$s.Close()"
+    "}catch{}}"
 )
 
 
@@ -242,7 +245,11 @@ def _generate_machine_cert(cert_p: str, key_p: str) -> bool:
                         "(Windows native fallback).")
                 return True
         except Exception as e2:
-            add_log(f"Bridge: Windows native cert fallback failed ({e2})")
+            # Chunked so the GUI's narrow action stream shows all of it.
+            msg = str(e2)[:300]
+            add_log("Bridge: Windows native cert fallback failed:")
+            for i in range(0, len(msg), 60):
+                add_log("Bridge: > " + msg[i:i + 60])
     hint = (" - installed but its native libraries failed to load. Fix: reinstall "
             "with the SAME python that runs ARIA "
             "(python -m pip install --force-reinstall --no-cache-dir cryptography); "
