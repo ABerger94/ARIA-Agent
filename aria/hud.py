@@ -476,7 +476,7 @@ def draw_hud() -> np.ndarray:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.36, DIM, 1, cv2.LINE_AA)
 
     # Bottom status bar
-    status_bar = f"STATUS: {CURRENT_STATE.upper()}  |  [T] TYPE  |  PRESS [SPACE] PTT  |  [V] VISOR/LOG  |  [W] WHISPER  |  [H] COMMANDS"
+    status_bar = f"STATUS: {CURRENT_STATE.upper()}  |  [T] TYPE  |  PRESS [SPACE] PTT  |  [X] CUT  |  [V] VISOR/LOG  |  [W] WHISPER  |  [H] COMMANDS"
     cv2.putText(canvas, status_bar, (35, 700), cv2.FONT_HERSHEY_SIMPLEX, 0.36, DIM, 1, cv2.LINE_AA)
 
     # Optional commands overlay

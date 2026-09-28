@@ -512,7 +512,15 @@ def main():
 
             key = cv2.waitKey(30) & 0xFF
             if key != 255:
-                if hud.TYPING_ACTIVE:
+                if key in (ord('x'), ord('X')) and hud.CURRENT_STATE == "speaking":
+                    # X: cut her off — stop speech immediately. Only fires while
+                    # she's actually talking, so typing the letter x is unaffected.
+                    drained = speech.interrupt_speech()
+                    hud.set_hud_state("idle")
+                    add_log("Speech cut off." if not drained
+                            else f"Speech cut off ({drained} queued cleared).")
+                    agent.LAST_ACTIVITY = time.time()
+                elif hud.TYPING_ACTIVE:
                     if key in (13, 10):  # Enter: submit directive
                         prompt = hud.TYPING_BUFFER.strip()
                         hud.TYPING_ACTIVE = False

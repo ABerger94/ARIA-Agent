@@ -262,7 +262,7 @@ def build_system_instruction(user_prompt: str) -> str:
         "reminders and recurring autonomous tasks with set_reminder / set_recurring_task. Also: read full web pages (fetch_url), "
         "use the Windows clipboard, control windows (list/focus/minimize/close) and media keys, look up Magic cards via Scryfall "
         "(mtg_card — the user is a Commander player), watch product prices and alert on drops (watch_price — checked hourly), "
-        "and toggle camera face-tracking for the neck servos. The user can say 'stop' to interrupt your speech instantly. "
+        "and toggle camera face-tracking for the neck servos. The user can say 'stop' or press X to interrupt your speech instantly. "
         "While idle you consolidate the day's chat into lasting memories on your own. Also: Spotify voice control (spotify — "
         "play/pause/skip, search, or play a spotify: URI; remember playlist URIs with save_memory), morning briefing (morning_briefing), "
         "quick spoken timers (set_timer), screenshots (take_screenshot), screen reading via vision (read_screen), webcam photos (take_photo), "
