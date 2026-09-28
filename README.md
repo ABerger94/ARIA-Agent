@@ -82,6 +82,11 @@ tools/                   Helper scripts (key manager)
 
 ## Version history
 
+- **v9.34** — Whisper mode (softer/quieter voice, 1–2 sentence replies, no
+  heartbeat chatter except the low-battery safety alert; toggled by voice,
+  HUD button, or the W key; persisted) and a mood system (energy/warmth
+  axes, one HUD mood word, flavors greetings and idle-face tempo only —
+  never facts or answers)
 - **v9.33** — Everything lives under the script folder: a one-time startup
   migration moves any leftover ~/robot_workspace data (memory DB, chat
   history, journal, models, …) into <script-dir>/workspace, never
