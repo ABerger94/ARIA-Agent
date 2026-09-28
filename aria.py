@@ -2,6 +2,20 @@
 A.R.I.A. — Autonomous Robotic Intelligence Agent
 Powered by Gemini 3.8 Flash.
 
+ v9.34: whisper mode + mood system — whisper toggles by voice
+ ("whisper mode on/off"), the WHISPER HUD button (click, or the W key),
+ and persists in workspace/settings.json; when on, Edge TTS drops to a
+ softer profile (rate -10%, pitch -8Hz, volume -60%; pyttsx3 fallback
+ lowered too), replies are capped to their shortest complete form (1-2
+ sentences; code/URLs/paths get a char cap instead of sentence-splitting
+ so nothing breaks mid-link), and heartbeat chatter is held — the
+ low-battery alert still speaks (safety). Mood: energy follows a
+ time-of-day baseline (peaks mid-morning, troughs in the small hours),
+ warmth rises +8 per user interaction and decays 5/hour idle, persisted
+ in workspace/mood.json; the HUD shows one mood word (sleepy/quiet/
+ playful/bright/calm, documented precedence), which flavors the startup
+ greeting and biases idle-face tempo only — never facts, tools, or
+ answers.
  v9.33: everything lives under the script folder — a one-time startup
  migration moves any leftover ~/robot_workspace data (memory DB, chat
  history, journal, models, …) into <script-dir>/workspace, never
@@ -735,15 +749,21 @@ def _update_idle_face(now):
     if f["next_glance"] == 0.0:  # first call: stagger the timers
         f["next_glance"] = now + 0.5
         f["next_blink"] = now + random.uniform(2.5, 4.0)
+    # Mood biases idle tempo only — never expression meaning. Sleepy drifts
+    # narrower and blinks slower; bright/playful glances wider, blinks faster.
+    _mw = _mood_word_cached()
+    _gx = 12 if _mw == "sleepy" else 26 if _mw in ("bright", "playful") else 22
+    _br = ((4.5, 9.0) if _mw == "sleepy" else (2.5, 6.0)
+           if _mw in ("bright", "playful") else (3.0, 7.0))
     if now >= f["next_glance"]:
-        f["eye_tdx"] = random.uniform(-22, 22)
+        f["eye_tdx"] = random.uniform(-_gx, _gx)
         f["eye_tdy"] = random.uniform(-16, 16)
         f["next_glance"] = now + random.uniform(2.0, 5.0)
     f["eye_dx"] += (f["eye_tdx"] - f["eye_dx"]) * 0.18  # ease, ~10 fps
     f["eye_dy"] += (f["eye_tdy"] - f["eye_dy"]) * 0.18
     if now >= f["next_blink"]:
         f["blink_until"] = now + 0.18
-        f["next_blink"] = now + random.uniform(3.0, 7.0)
+        f["next_blink"] = now + random.uniform(*_br)
 
 
 def _blink_squash(now):
@@ -2191,7 +2211,17 @@ def draw_hud():
     cv2.putText(canvas, sys_stats, (650, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
                 (160, 170, 180), 1, cv2.LINE_AA)
     cv2.putText(canvas, f"PHONE BRIDGE: http://{lan_ip()}:{PHONE_BRIDGE_PORT}  (LAN only)",
-                (30, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (130, 140, 150), 1, cv2.LINE_AA)
+                (30, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (120, 170, 200), 1, cv2.LINE_AA)
+    # Whisper toggle button (click it, or press W) + live mood word.
+    bx, by, bw, bh = _WHISPER_BTN
+    _wcol = GREEN if WHISPER_MODE else (110, 120, 135)
+    cv2.rectangle(canvas, (bx, by), (bx + bw, by + bh), PANEL_BG, -1)
+    cv2.rectangle(canvas, (bx, by), (bx + bw, by + bh), _wcol, 1)
+    cv2.putText(canvas, "WHISPER " + ("ON" if WHISPER_MODE else "OFF"),
+                (bx + 9, by + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                _wcol, 1, cv2.LINE_AA)
+    cv2.putText(canvas, "MOOD: " + _mood_word_cached().upper(), (990, 64),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.38, (170, 190, 200), 1, cv2.LINE_AA)
     cv2.line(canvas, (20, 72), (1260, 72), CYAN, 1)
 
     cv2.putText(canvas, "[ SUBSYSTEMS ]", (35, 102), cv2.FONT_HERSHEY_SIMPLEX,
@@ -2366,7 +2396,7 @@ def draw_hud():
         cv2.putText(canvas, line, (40, start_y + idx * line_height),
                     cv2.FONT_HERSHEY_SIMPLEX, font_scale, WHITE_TEXT, 1, cv2.LINE_AA)
 
-    controls = "CONTROLS: [H] Commands  |  [C] Chat Log  |  [L] Open Log  |  [SPACE] Hold to talk  |  [S] Screen  |  [Q] Exit"
+    controls = "CONTROLS: [H] Commands  |  [C] Chat Log  |  [L] Open Log  |  [SPACE] Hold to talk  |  [S] Screen  |  [W] Whisper  |  [Q] Exit"
     cv2.putText(canvas, controls, (40, 692), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
                 (130, 140, 150), 1, cv2.LINE_AA)
 
@@ -2520,7 +2550,7 @@ def _speech_synth_worker():
             import asyncio
             import edge_tts
             asyncio.run(asyncio.wait_for(
-                edge_tts.Communicate(text, EDGE_TTS_VOICE).save(path), timeout=25))
+                edge_tts.Communicate(text, EDGE_TTS_VOICE, **_whisper_edge_kwargs()).save(path), timeout=25))
             success = True
         except Exception as e:
             print(f"[ARIA] Voice: Edge synth failed on '{text[:20]}...' ({type(e).__name__}: {e})", flush=True)
@@ -2560,8 +2590,21 @@ def _speech_play_worker():
                     except Exception:
                         pass
             else:
-                tts.say(text)
-                tts.runAndWait()
+                # Whisper mode lowers the fallback voice too (restored after).
+                if WHISPER_MODE:
+                    _v0 = tts.getProperty("volume")
+                    _r0 = tts.getProperty("rate")
+                    try:
+                        tts.setProperty("volume", min(float(_v0), 0.4))
+                        tts.setProperty("rate", max(60, int(_r0) - 40))
+                        tts.say(text)
+                        tts.runAndWait()
+                    finally:
+                        tts.setProperty("volume", _v0)
+                        tts.setProperty("rate", _r0)
+                else:
+                    tts.say(text)
+                    tts.runAndWait()
         except Exception as e:
             add_log(f"Speech play err: {e}")
         finally:
@@ -2592,6 +2635,9 @@ threading.Thread(target=_speech_supervisor, daemon=True,
 
 
 def speak(text):
+    # Whisper mode caps replies to their shortest complete form.
+    if WHISPER_MODE:
+        text = _whisper_shorten(text)
     add_log(f"Speech: {text[:28]}...")
     log_conversation("A.R.I.A.", text)
     _SPEECH_QUEUE.put(text)
@@ -3395,6 +3441,11 @@ def _proactive_say(nudge_type, text):
     if entry.get("suppressed_until", 0) > time.time():
         add_log(f"Heartbeat: '{nudge_type}' nudge suppressed (declined before)")
         return False
+    # Whisper mode holds heartbeat chatter — except the low-battery
+    # alert, which always speaks (safety).
+    if WHISPER_MODE and nudge_type != "battery":
+        add_log(f"Heartbeat: '{nudge_type}' nudge held (whisper mode)")
+        return False
     if not BUSY_PROCESSING:
         speak(text)
         _LAST_PROACTIVE[0] = nudge_type
@@ -3477,6 +3528,228 @@ threading.Thread(target=proactive_heartbeat_loop, daemon=True).start()
 
 
 # =====================================================================
+# WHISPER MODE + MOOD SYSTEM
+# =====================================================================
+# Whisper mode: a softer TTS profile, replies capped to their shortest
+# complete form (1-2 sentences), and heartbeat chatter held (the
+# low-battery alert still speaks — safety). Toggled by voice
+# ("whisper mode on/off"), the WHISPER button on the HUD (click, or the
+# W key), and persisted in workspace/settings.json.
+# Mood: two slow axes (energy, warmth), each 0-100, persisted in
+# workspace/mood.json. Energy follows a time-of-day baseline; warmth
+# rises on user interaction and decays with inactivity. The HUD shows one
+# mood word: sleepy / quiet / playful / bright / calm. Mood flavors the
+# startup greeting and biases idle-face tempo ONLY — it never touches
+# facts, tools, or answers.
+# =====================================================================
+
+_SETTINGS_FILE = os.path.join(WORKSPACE_DIR, "settings.json")
+
+
+def _settings_load():
+    """Workspace settings dict ({} when missing or corrupt)."""
+    try:
+        with open(_SETTINGS_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+            return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _settings_save(d):
+    try:
+        os.makedirs(WORKSPACE_DIR, exist_ok=True)
+        with open(_SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=2)
+    except Exception:
+        pass
+
+
+def _get_setting(key, default=None):
+    return _settings_load().get(key, default)
+
+
+def _set_setting(key, value):
+    d = _settings_load()
+    d[key] = value
+    _settings_save(d)
+
+
+WHISPER_MODE = bool(_get_setting("whisper_mode", False))
+
+
+def set_whisper_mode(on):
+    """Set whisper mode on/off; persists to workspace settings."""
+    global WHISPER_MODE
+    WHISPER_MODE = bool(on)
+    _set_setting("whisper_mode", WHISPER_MODE)
+    add_log("Whisper mode %s" % ("ON" if WHISPER_MODE else "OFF"))
+    try:
+        draw_hud()
+    except Exception:
+        pass
+    return WHISPER_MODE
+
+
+def toggle_whisper_mode():
+    return set_whisper_mode(not WHISPER_MODE)
+
+
+# Edge TTS whisper profile (rate/pitch/volume are all valid Communicate
+# kwargs): slightly slower, lower, much quieter.
+_WHISPER_EDGE_KWARGS = {"rate": "-10%", "pitch": "-8Hz", "volume": "-60%"}
+
+
+def _whisper_edge_kwargs():
+    return dict(_WHISPER_EDGE_KWARGS) if WHISPER_MODE else {}
+
+
+_WHISPER_CMD_RE = re.compile(
+    r"^\s*whisper(?:\s+mode)?(?:\s+(on|off))?\s*[.!?]?\s*$", re.IGNORECASE)
+
+
+def _match_whisper_command(text):
+    """'whisper mode on'->'on', 'whisper mode off'->'off',
+    'whisper mode'/'whisper'->'toggle', anything else->None."""
+    m = _WHISPER_CMD_RE.match(text or "")
+    if not m:
+        return None
+    return m.group(1).lower() if m.group(1) else "toggle"
+
+
+# Never sentence-split code/URLs/paths — a broken URL or code fragment is
+# worse than a long reply. Those get a hard char cap with a marker instead.
+_CODEY_RE = re.compile(
+    r"https?://|www\.|```|\.(py|txt|json|md|bat|js|html)\b|[A-Za-z]:\\|/[\w\-.]+/[\w\-.]+"
+)
+
+
+def _whisper_shorten(text, max_sentences=2, hard_cap=240):
+    """Cap a reply to its shortest complete form for whisper mode."""
+    t = (text or "").strip()
+    if not t:
+        return t
+    if _CODEY_RE.search(t):
+        return (t[:hard_cap].rstrip() + " …[shortened]"
+                if len(t) > hard_cap else t)
+    sents, _rem = _extract_sentences(t)
+    if not sents:
+        return (t[:hard_cap].rstrip() + " …[shortened]"
+                if len(t) > hard_cap else t)
+    short = " ".join(sents[:max_sentences]).strip()
+    return short if short else t
+
+
+# ---------------- Mood system ----------------
+_MOOD_FILE = os.path.join(WORKSPACE_DIR, "mood.json")
+
+# Energy baseline keyframes: (hour, energy 0-100). Linear interpolation
+# between keyframes; peaks mid-morning, troughs in the small hours.
+_MOOD_ENERGY_KEYS = [(0, 15), (4, 15), (6, 50), (8, 70), (10, 90),
+                     (14, 75), (18, 55), (22, 25), (24, 15)]
+
+
+def _mood_energy_baseline(hour):
+    h = max(0.0, min(24.0, float(hour)))
+    keys = _MOOD_ENERGY_KEYS
+    for (h0, e0), (h1, e1) in zip(keys, keys[1:]):
+        if h0 <= h <= h1:
+            frac = 0.0 if h1 == h0 else (h - h0) / (h1 - h0)
+            return e0 + (e1 - e0) * frac
+    return float(keys[-1][1])
+
+
+def _mood_load():
+    try:
+        with open(_MOOD_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+            return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _mood_save(d):
+    try:
+        os.makedirs(WORKSPACE_DIR, exist_ok=True)
+        with open(_MOOD_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=2)
+    except Exception:
+        pass
+
+
+def _mood_state(now=None):
+    """(energy, warmth). Energy = time-of-day baseline (not persisted).
+    Warmth = persisted interaction state, decaying 5/hour idle."""
+    now = now if now is not None else time.time()
+    _dt = datetime.now()
+    energy = _mood_energy_baseline(_dt.hour + _dt.minute / 60.0)
+    d = _mood_load()
+    warmth = float(d.get("warmth", 50.0))
+    idle_h = max(0.0, (now - float(d.get("updated_at", now))) / 3600.0)
+    warmth = max(0.0, warmth - 5.0 * idle_h)
+    return energy, warmth
+
+
+def _mood_note_interaction(now=None):
+    """A user spoke: warmth +8 (cap 100), inactivity clock resets."""
+    now = now if now is not None else time.time()
+    energy, warmth = _mood_state(now=now)
+    warmth = min(100.0, warmth + 8.0)
+    _mood_save({"warmth": warmth, "updated_at": now,
+                "last_interaction": now})
+    return energy, warmth
+
+
+def _mood_word(energy=None, warmth=None, last_interaction=None, now=None):
+    """One mood word. Precedence is deliberate: sleepy > quiet >
+    playful > bright > calm. Flavors greetings and idle-face tempo ONLY —
+    never facts, tools, or answers."""
+    now = now if now is not None else time.time()
+    if energy is None or warmth is None:
+        energy, warmth = _mood_state(now=now)
+    if last_interaction is None:
+        last_interaction = float(_mood_load().get("last_interaction", 0.0))
+    recent_banter = (now - last_interaction) < 600  # 10 minutes
+    if energy < 35:
+        return "sleepy"
+    if warmth < 35:
+        return "quiet"
+    if energy >= 65 and warmth >= 65 and recent_banter:
+        return "playful"
+    if energy >= 65 and warmth >= 65:
+        return "bright"
+    return "calm"
+
+
+_MOOD_WORD_CACHE = {"word": "calm", "t": 0.0}
+
+
+def _mood_word_cached(ttl=60.0):
+    """HUD-rate mood word (recomputed at most every ttl seconds)."""
+    now = time.time()
+    if now - _MOOD_WORD_CACHE["t"] > ttl:
+        try:
+            _MOOD_WORD_CACHE["word"] = _mood_word(now=now)
+        except Exception:
+            pass
+        _MOOD_WORD_CACHE["t"] = now
+    return _MOOD_WORD_CACHE["word"]
+
+
+# Whisper toggle button rect on the 1280x720 HUD canvas (x, y, w, h).
+_WHISPER_BTN = (1140, 44, 110, 28)
+
+
+def _hud_mouse(event, x, y, flags, param):
+    """HUD click handling: the WHISPER toggle button."""
+    if event == cv2.EVENT_LBUTTONDOWN:
+        bx, by, bw, bh = _WHISPER_BTN
+        if bx <= x <= bx + bw and by <= y <= by + bh:
+            _wn = toggle_whisper_mode()
+            speak("Whisper mode on." if _wn else "Whisper mode off.")
+
+
+# =====================================================================
 # 12. VOICE DISPATCHER (+ confirmation resolution)
 # =====================================================================
 _YES_FIRST_WORDS = {"yes", "yeah", "yep", "yup", "y", "sure", "ok", "okay",
@@ -3548,6 +3821,9 @@ def _handle_transcript(user_text, mode="voice"):
     Extracted from handle_action() so both mic paths behave identically.
     """
     global PENDING_CONFIRM, _SUSPENDED_TURN, _AWAITING_CONTINUE
+    # Any user utterance is a mood interaction event (warmth +8, clock reset).
+    if (user_text or "").strip():
+        _mood_note_interaction()
     # barge-in: a new message stops her current speech immediately.
     # Empty transcripts (failed mic read) must not cut her off.
     if (user_text or "").strip():
@@ -3567,6 +3843,13 @@ def _handle_transcript(user_text, mode="voice"):
             add_log("Pending action cancelled by stop command")
         return
     if _resolve_confirmation(user_text):
+        return
+
+    # Whisper-mode voice command — intercepted before the agent sees it.
+    _wc = _match_whisper_command(user_text)
+    if _wc is not None:
+        _wn = toggle_whisper_mode() if _wc == "toggle" else set_whisper_mode(_wc == "on")
+        speak("Whisper mode on." if _wn else "Whisper mode off.")
         return
 
     image_bytes = None
@@ -5280,10 +5563,13 @@ def _unique_greeting():
                 last = r[0] if r else ""
         except Exception:
             pass
+        mood_word = _mood_word()
         data = _gemini_call(
             "You write A.R.I.A.'s spoken startup greeting for Alek. One or two "
             "sentences, warm, direct, a little playful - in her voice. Vary the "
             "opening; don't always start with 'Good morning/afternoon/evening'. "
+            f"Her current mood is '{mood_word}' - let it flavor the greeting "
+            "lightly (never theatrical; it changes nothing factual). "
             "Make it different from her previous greeting, quoted below. Reply "
             "with ONLY the greeting text, no quotes.",
             [{"role": "user", "parts": [{"text":
@@ -5561,7 +5847,7 @@ def _edge_tts_bytes(text):
 
     async def _gen():
         chunks = []
-        async for chunk in edge_tts.Communicate(text, EDGE_TTS_VOICE).stream():
+        async for chunk in edge_tts.Communicate(text, EDGE_TTS_VOICE, **_whisper_edge_kwargs()).stream():
             if chunk.get("type") == "audio":
                 chunks.append(chunk["data"])
         return b"".join(chunks)
@@ -5637,11 +5923,17 @@ if __name__ == "__main__":
     print("  - [C]        : Toggle tactical chat-log HUD view")
     print("  - [L]        : Open master chat log (non-blocking)")
     print("  - [T]        : Type a directive")
+    print("  - [W]        : Toggle whisper mode")
     print("  - [Q]        : Disengage / shutdown")
     print("=" * 75 + "\n")
 
     _self_check()
     draw_hud()
+    try:
+        cv2.setMouseCallback("A.R.I.A. - Autonomous Robotic Intelligence Agent",
+                             _hud_mouse)
+    except Exception as e:
+        add_log(f"HUD mouse unavailable: {e}")
     threading.Thread(target=_keys_startup_report, daemon=True).start()
     def _greet_when_ready():
         for _ in range(250):  # up to ~25s for the Edge voice
@@ -5692,6 +5984,9 @@ if __name__ == "__main__":
             _key_action_thread(handle_action, {"mode": "screen"})
         elif key == ord('t') or key == ord('T'):
             _key_action_thread(_typed_directive_thread, {})
+        elif key == ord('w') or key == ord('W'):
+            _wstate = toggle_whisper_mode()
+            speak("Whisper mode on." if _wstate else "Whisper mode off.")
         elif key == ord('q') or key == 27:
             break
 
