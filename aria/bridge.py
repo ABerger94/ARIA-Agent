@@ -117,7 +117,10 @@ def _generate_machine_cert(cert_p: str, key_p: str) -> bool:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
         return True
     except Exception as e:
-        add_log(f"Bridge: per-machine cert generation failed ({e})")
+        hint = (" - installed but its native libraries failed to load; "
+                "run: pip install --force-reinstall --no-cache-dir cryptography"
+                if "dll" in str(e).lower() else "")
+        add_log(f"Bridge: per-machine cert generation failed ({e}){hint}")
         return False
 
 
