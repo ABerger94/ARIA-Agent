@@ -19,6 +19,7 @@ from typing import Optional, List, Tuple, Dict, Any
 import cv2
 import numpy as np
 import psutil
+from aria.pixel_avatar import draw_pixel_aria
 
 from aria.config import PHONE_BRIDGE_PORT, GITHUB_USERNAME, GITHUB_TOKEN
 from aria.vision import publish_face_frame, LATEST_CAMERA_FRAME
@@ -72,6 +73,7 @@ _INPUT_BAR = (35, 646, 1210, 28)
 CURRENT_STATE = "idle"
 HUD_MODE = "visor"  # "visor" or "chat_log"
 CHAT_SCROLL = 0
+USE_PIXEL_AVATAR = True  # pixel-person face; set False to restore v9.34 eyes
 SHOW_COMMANDS = False
 TYPING_ACTIVE: bool = False
 TYPING_BUFFER: str = ""
@@ -352,7 +354,9 @@ def draw_hud() -> np.ndarray:
     else:
         # Visor mode (v9.33 Cyber-girl Face)
         lx, rx, cy = 520, 760, 235
-        if CURRENT_STATE == "idle":
+        if USE_PIXEL_AVATAR:
+            draw_pixel_aria(canvas, CURRENT_STATE, time.time())
+        elif CURRENT_STATE == "idle":
             now = time.time()
             _update_idle_face(now)
             squash = _blink_squash(now)
