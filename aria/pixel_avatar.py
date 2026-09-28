@@ -288,22 +288,13 @@ def _zzz(c, ox, oy, t):
 
 
 def _sleep_zzz(c, ox, oy, t):
-    """Big bubble Z's that read like a real 'Z' (💤 style), not pixel mush."""
+    """Two little Z's drifting up beside her head while she's sleepy."""
     for i in range(2):
         rise = (t * 2.5 + i * 5) % 5
-        zx, zy = 19 + i * 8, -6 - int(rise)
-        cx, cy = ox + zx * S, oy + zy * S
-        r = 10 * S // 3  # bubble radius
-        # bubble: dark ring, darker fill so it reads as a badge
-        cv2.circle(c, (cx, cy), r, DARK, 2, cv2.LINE_AA)
-        cv2.circle(c, (cx, cy), r - 2, VISOR, -1)
-        # bold Z glyph: top bar, diagonal, bottom bar
-        zs = 4 * S // 3  # half-width of the Z
-        th = max(2, S // 4)
-        y0, y1 = cy - zs, cy + zs
-        cv2.line(c, (cx - zs, y0), (cx + zs, y0), WHITE, th, cv2.LINE_AA)
-        cv2.line(c, (cx + zs, y0), (cx - zs, y1), WHITE, th, cv2.LINE_AA)
-        cv2.line(c, (cx - zs, y1), (cx + zs, y1), WHITE, th, cv2.LINE_AA)
+        zx, zy = 15 + i * 6, -2 - int(rise)
+        _r(c, ox, oy, zx, zy, 3, 1, ACCENT_DIM)
+        _r(c, ox, oy, zx + 1, zy + 1, 1, 1, ACCENT_DIM)
+        _r(c, ox, oy, zx, zy + 2, 3, 1, ACCENT_DIM)
 
 
 def draw_pixel_aria(canvas, state, t):
