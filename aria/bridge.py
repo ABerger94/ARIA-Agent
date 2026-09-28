@@ -241,8 +241,6 @@ def _generate_machine_cert(cert_p: str, key_p: str) -> bool:
     if sys.platform == "win32":
         try:
             if _generate_machine_cert_powershell(cert_p, key_p):
-                add_log("Bridge: generated unique per-machine HTTPS cert "
-                        "(Windows native fallback).")
                 return True
         except Exception as e2:
             # Chunked so the GUI's narrow action stream shows all of it.
