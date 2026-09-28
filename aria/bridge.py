@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import ssl
+import sys
 import tempfile
 import threading
 import time
@@ -122,7 +123,8 @@ def _generate_machine_cert(cert_p: str, key_p: str) -> bool:
                 "(python -m pip install --force-reinstall --no-cache-dir cryptography); "
                 "if it persists, install the Microsoft Visual C++ Redistributable"
                 if "dll" in str(e).lower() else "")
-        add_log(f"Bridge: per-machine cert generation failed ({e}){hint}")
+        add_log(f"Bridge: per-machine cert generation failed ({e}){hint} "
+                f"[python={sys.executable}]")
         return False
 
 
