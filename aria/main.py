@@ -339,10 +339,103 @@ def _console_input_loop():
             time.sleep(0.5)
 
 
+def continuous_voice_listener():
+    """Always-on wake-word mic loop (restored from v9.34).
+
+    While ARIA is idle, the mic stays open. Any transcript containing
+    "aria" is treated as a command: the wake word is stripped and the
+    rest runs through handle_action("voice", ...), with barge-in so a
+    new command cuts off current speech. A bare "Aria" with nothing
+    after it gets "I'm listening."
+    """
+    try:
+        with sr.Microphone(sample_rate=16000) as source:
+            recognizer.adjust_for_ambient_noise(source, duration=1.0)
+            add_log("Wake-word listener armed ('Aria' + command).")
+            while RUNNING:
+                try:
+                    if agent.BUSY_PROCESSING or hud.CURRENT_STATE != "idle":
+                        time.sleep(0.3)
+                        continue
+                    try:
+                        audio = recognizer.listen(source, timeout=3, phrase_time_limit=8)
+                    except sr.WaitTimeoutError:
+                        continue
+                    try:
+                        transcript = speech.transcribe_local_or_cloud(audio, recognizer).lower()
+                    except Exception:
+                        continue
+                    if "aria" in transcript:
+                        add_log(f"Wake: '{transcript[:25]}'")
+                        cleaned = transcript.replace("hey aria", "").replace("aria", "").strip()
+                        if cleaned:
+                            speech.interrupt_speech()  # barge-in: stop current speech first
+                            handle_action("voice", typed_prompt=cleaned)
+                        else:
+                            speech.speak("I'm listening.")
+                except Exception as e:
+                    add_log(f"Wake listener error: {e}")
+                    time.sleep(0.3)
+    except Exception as e:
+        add_log(f"Wake listener unavailable: {e}")
+
+
+def _greeting_text():
+    """Template startup greeting used when the model is unreachable (offline)."""
+    h = datetime.now().hour
+    part = "Good morning" if h < 12 else "Good afternoon" if h < 18 else "Good evening"
+    base = "A.R.I.A. online."
+    entries = scheduler._today_entries()
+    if entries:
+        return f"{part}. {base} Today: {scheduler._entries_line(entries)}."
+    return f"{part}. {base} Nothing on the schedule today."
+
+
+def _unique_greeting():
+    """Startup greeting, written fresh by the model every boot.
+
+    Soul-aware, schedule-aware, and told not to repeat the previous greeting
+    (stored as a system memory). Falls back to the template greeting offline.
+    """
+    fallback = _greeting_text()
+    try:
+        entries = scheduler._today_entries()
+        sched = scheduler._entries_line(entries) if entries else "nothing on the schedule"
+        h = datetime.now().hour
+        part = "morning" if h < 12 else "afternoon" if h < 18 else "evening"
+        last = memory.memory_get("system", "_last_greeting")
+        mood = agent.mood_word()
+        text = agent.gemini_text(
+            "You write A.R.I.A.'s spoken startup greeting for Alek. One or two "
+            "sentences, warm, direct, a little playful - in her voice. Vary the "
+            "opening; don't always start with 'Good morning/afternoon/evening'. "
+            f"Her current mood is '{mood}' - let it flavor the greeting "
+            "lightly (never theatrical; it changes nothing factual). "
+            "Make it different from her previous greeting, quoted below. Reply "
+            "with ONLY the greeting text, no quotes.",
+            [{"role": "user", "parts": [{"text":
+                f"It's {part}. Today's schedule: {sched}. "
+                f"Previous greeting (do not repeat): {last or 'none yet'}."}]}])
+        text = (text or "").strip().strip('"').strip()
+        if text and len(text) < 400 and not text.startswith("["):
+            try:
+                memory.memory_save("system", "_last_greeting", text[:300])
+            except Exception as e:
+                add_log(f"Greeting generated but not stored: {e}")
+            return text
+    except Exception as e:
+        add_log(f"Unique greeting failed, using template: {e}")
+    return fallback
+
+
 def start_all():
     """Initialize and boot all ARIA agent subsystems."""
     global _PTT_AVAILABLE
     print("[ARIA] Initializing OS subsystems...", flush=True)
+
+    # 0. Databases first — creates the memory tables on a fresh workspace.
+    #    Idempotent (CREATE TABLE IF NOT EXISTS), so it is safe every boot.
+    memory.init_databases()
 
     # 1. Wire internal hooks
     _init_wiring()
@@ -384,10 +477,23 @@ def start_all():
     if sys.stdin and hasattr(sys.stdin, "readline"):
         threading.Thread(target=_console_input_loop, daemon=True).start()
 
-    # 7. Spoken greeting
-    greeting = f"A.R.I.A. online. Systems synchronized."
-    add_log(greeting)
-    speech.speak(greeting)
+    # 6b. Wake-word listener — always-on mic, "Aria" + command.
+    threading.Thread(target=continuous_voice_listener, daemon=True).start()
+
+    # 7. Spoken greeting — unique every boot. Runs in a background thread so
+    # the model call and the voice-ready wait never block startup.
+    def _greet_when_ready():
+        try:
+            for _ in range(250):  # up to ~25s for the Edge voice
+                if speech.voice_ready():
+                    break
+                time.sleep(0.1)
+            greeting = _unique_greeting()
+            add_log(f"Greeting: {greeting}")
+            speech.speak(greeting)
+        except Exception as e:
+            add_log(f"Greeting thread failed: {e}")
+    threading.Thread(target=_greet_when_ready, daemon=True).start()
 
 
 def main():

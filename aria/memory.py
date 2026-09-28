@@ -250,6 +250,20 @@ def memory_save(category: str, key: str, value: str):
     add_log(f"Memory saved: [{key}]")
 
 
+def memory_get(category: str, key: str) -> str:
+    """Read a single memory value by category+key. Returns "" when absent."""
+    try:
+        with DB_LOCK:
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            r = cur.execute("SELECT value FROM memory WHERE category=? AND key=?",
+                            (category, key)).fetchone()
+            conn.close()
+        return r[0] if r else ""
+    except Exception:
+        return ""
+
+
 def memory_search_semantic(query: str, top_k: int = 5) -> str:
     """Search memories by meaning. Falls back to keyword search."""
     qvec = _embed(query)

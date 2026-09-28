@@ -437,6 +437,11 @@ _SPEECH_QUEUE = _DEFAULT_SPEECH_MANAGER.speech_queue
 _AUDIO_PLAY_QUEUE = _DEFAULT_SPEECH_MANAGER.audio_play_queue
 _SPEECH_STOP = _DEFAULT_SPEECH_MANAGER.speech_stop
 
+def voice_ready() -> bool:
+    """True once the Edge voice probe has succeeded (greeting uses her real voice)."""
+    return _DEFAULT_SPEECH_MANAGER.edge_ready
+
+
 def speak(text: str, whisper_mode: bool = False):
     return _DEFAULT_SPEECH_MANAGER.speak(text, whisper_mode)
 
