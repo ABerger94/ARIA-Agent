@@ -9,33 +9,42 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
 
 ## Features
 
-- **Animated HUD face** (OpenCV) — idle, listening, speaking, thinking states,
-  waveform mouth, expressive eyes
-- **Voice in / voice out** — Edge TTS neural voice with pyttsx3 fallback;
-  mic input with local Whisper transcription (v9.14, Google fallback);
-  hold-SPACE push-to-talk (v9.11); wake word
-- **Agent brain** — Gemini function-calling loop (no turn cap; 30-minute
-  budget per request — on timeout she asks "Should I keep going?" and
-  "yes"/"continue" resumes the same reasoning chain)
-- **Progressive tool loading** (v9.8) — only 16 core tool schemas go to the
-  model per call; specialist toolkits (Gmail, Spotify, scheduler, GitHub,
+- **Animated HUD Face & Pixel Avatar** (OpenCV) — expressive pixel avatar
+  with animated idle, listening, speaking, thinking, tool-running (code-eyes),
+  and sleepy states; waveform mouth; twin ear antennae with synchronous pulsing
+  tips and ear twitches; customizable HUD color themes (`aria/theme.cfg`).
+- **Voice In / Voice Out** — Edge TTS neural voice with sentence boundary
+  streaming and pipelined TTS synthesis prefetch; instant speech interruption
+  barge-in via the `X` key or voice; mic input with local Whisper
+  transcription (`faster-whisper` on CPU, Google fallback); hold-SPACE
+  push-to-talk; wake-word listener with acoustic echo suppression and false-wake
+  rejection.
+- **Whisper Mode & Mood Engine** — toggleable whisper mode (W key, voice, or HUD)
+  for softer volume, concise replies, and quieted heartbeats; mood system
+  (energy/warmth axes) flavoring idle facial tempo and greetings.
+- **Agent Brain** — Gemini function-calling loop (no arbitrary turn cap;
+  30-minute reasoning budget per request — on timeout she asks "Should I keep
+  going?" and "yes"/"continue" resumes the active chain).
+- **Progressive Tool Loading** — only 16 core tool schemas go to the model
+  per call; specialist toolkits (Gmail, Spotify, scheduler, GitHub,
   vision/hardware, Windows control, MTG, memory/notes, admin) unlock on demand
-  via `load_toolkit`
-- **Duplicate-call blocking + argument repair** — the same tool with the same
-  arguments never runs twice in one request; missing arguments get a repair
-  nudge instead of a crash
-- **Durable memory** — SQLite + Markdown journal with semantic recall;
-  unbroken memory spine (v9.10): append-only log of turns, tool calls, and
-  journal entries, last session's context reloads at boot
-- **Scheduler** — one-shot and recurring reminders/jobs
-- **51 tools** — Spotify control, Gmail send/read, GitHub push, Windows
-  control (open apps/URLs, type, click, media keys), file search, volume,
-  MTG advice, notes, timers, and more
-- **Proactive heartbeat** — she can speak up on her own when something matters
-- **Tactical chat overlay** — `C` opens, `J`/`K` scroll history
-- **Phone bridge** (HTTPS) — talk to her from your iPhone, with a live
-  face-only video stream (v9.12)
-- **USB-serial Arduino bridge** — hook for a future physical robot body
+  via `load_toolkit`.
+- **Durable Memory & Spine** — SQLite semantic vector memory + Markdown journal;
+  unbroken memory spine (`memory_spine.jsonl`) logging turns, tool invocations,
+  and journal entries; session context (`where_we_left_off.md`) automatically
+  restored at boot.
+- **Hot Package Self-Restart** — she can edit her own codebase or `soul.md`;
+  the launcher fingerprints the entire modular `aria/` package and cleanly
+  re-executes on verified modifications.
+- **Scheduler & Proactive Heartbeat** — one-shot and recurring reminders/jobs;
+  autonomous background heartbeat when important events or tasks occur.
+- **Phone Bridge (HTTPS)** — secure mobile companion web app with live HUD
+  video stream (`/face.mjpg`), mobile microphone PTT, text chat, and spoken audio
+  playback on your phone.
+- **50+ Built-in Tools** — Spotify control & DJ mode, Windows desktop automation
+  (apps, URLs, mouse clicks, keystrokes, window focus, media keys), file search,
+  Gmail send/read, GitHub repository operations, MTG Commander lookups, servo neck
+  hardware control, and vision screen-reading.
 
 ## Requirements
 
@@ -73,8 +82,22 @@ Gmail sending uses an app password, saved via ARIA's `gmail_setup` tool.
 ## Project layout
 
 ```
-aria.py                  Main program (v9.27)
-soul.md                  Her persona — loaded into mind on every start
+aria.py                  Root entrypoint / launcher
+aria/                    Modular system package
+  agent/                 Gemini agent loop, streaming, prompt engineering
+  hud.py                 OpenCV HUD, subsystem status rows, overlay renderer
+  pixel_avatar.py        Pixel-person avatar, animated expressions, ear antennae
+  theme.cfg              HUD color theme definitions
+  speech.py              Edge TTS streaming prefetch, Whisper STT, echo suppression
+  bridge.py              HTTPS phone bridge server & live MJPEG face stream
+  memory.py              SQLite semantic vector memory, journal, and memory spine
+  scheduler.py           Autonomous scheduler, reminders, proactive heartbeat
+  spotify.py             Desktop Spotify player control & DJ mode
+  hardware.py            Servo neck & serial hardware drivers
+  vision.py              Camera capture, face tracking, screen analysis
+  tools/                 Core tools & on-demand specialist toolkits
+workspace/               Runtime data (memory DB, spine, models, mood, chat logs)
+soul.md                  Her persona & standing directives — loaded on boot
 requirements.txt         Python dependencies
 windows/                 Auto-start installer + watchdog (.bat)
 tools/                   Helper scripts (key manager)
@@ -82,11 +105,25 @@ tools/                   Helper scripts (key manager)
 
 ## Version history
 
+- **v9.36** — Voice pipeline & false wake hardening: removed noisy VAD
+  bypass, eliminated self-hearing mic echo during TTS playback, and enforced
+  strict wake phrase recognition confidence; audio resampling and wake lock
+  handling optimizations.
+- **v9.35** — Pixel Avatar face overhaul & modular refactor:
+  - Refactored monolithic codebase into the modular `aria/` package; hot
+    self-restart watcher upgraded to fingerprint the full package tree.
+  - New Pixel-person avatar HUD with expressive face states: idle, listening,
+    speaking waveform mouth, thinking / green code-eyes face during model tool
+    calls, and floating diagonal sleepy Z's.
+  - Twin ear antennae with synchronized pulsating tips and twitch animations.
+  - HUD color themes configurable via `theme.cfg`.
+  - Instant speech barge-in via the `X` key to cut off active TTS playback.
+  - Phone bridge audio reply playback fixes and mobile stability improvements.
 - **v9.34** — Whisper mode (softer/quieter voice, 1–2 sentence replies, no
   heartbeat chatter except the low-battery safety alert; toggled by voice,
   HUD button, or the W key; persisted) and a mood system (energy/warmth
   axes, one HUD mood word, flavors greetings and idle-face tempo only —
-  never facts or answers)
+  never facts or answers).
 - **v9.33** — Everything lives under the script folder: a one-time startup
   migration moves any leftover ~/robot_workspace data (memory DB, chat
   history, journal, models, …) into <script-dir>/workspace, never
