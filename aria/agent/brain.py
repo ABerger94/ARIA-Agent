@@ -50,7 +50,10 @@ BUSY_PROCESSING: bool = False
 LAST_USER_MESSAGE: str = ""
 LAST_ACTIVITY: float = time.time()
 
-# Auto-restart tracking
+# Auto-restart tracking — watches every .py file in the aria/ package plus
+# the launcher stub. (v9.34 watched a single monolith script; the refactor
+# narrowed the watch to sys.argv[0], so a git pull touching aria/*.py never
+# triggered a restart.)
 def _file_sha256(path: Optional[str]) -> Optional[str]:
     if not path or not os.path.isfile(path):
         return None
@@ -60,8 +63,26 @@ def _file_sha256(path: Optional[str]) -> Optional[str]:
     except Exception:
         return None
 
+
+def _watched_source_files() -> List[str]:
+    """Every Python source file that makes up ARIA: the package + the stub."""
+    pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    files: List[str] = []
+    for root, _dirs, names in os.walk(pkg_dir):
+        for n in names:
+            if n.endswith(".py"):
+                files.append(os.path.join(root, n))
+    if _RUNNING_SCRIPT and _RUNNING_SCRIPT not in files:
+        files.append(_RUNNING_SCRIPT)
+    return sorted(files)
+
+
+def _snapshot_hashes() -> Dict[str, Optional[str]]:
+    return {p: _file_sha256(p) for p in _watched_source_files()}
+
+
 _RUNNING_SCRIPT = os.path.abspath(sys.argv[0] or "") if os.path.isfile(sys.argv[0] or "") else None
-_BOOT_HASH_SCRIPT = _file_sha256(_RUNNING_SCRIPT)
+_BOOT_HASHES = _snapshot_hashes()
 _BOOT_HASH_SOUL = _file_sha256(SOUL_PATH)
 _RESTART_TIMER: Optional[threading.Timer] = None
 
@@ -80,21 +101,23 @@ def _restart_process():
 
 def _maybe_restart_after_self_edit(say_fn: Callable[[str], None]):
     global _RESTART_TIMER
-    cur_script = _file_sha256(_RUNNING_SCRIPT)
+    cur = _snapshot_hashes()
+    changed = [p for p in cur if cur[p] != _BOOT_HASHES.get(p)]
+    changed += [p for p in _BOOT_HASHES if p not in cur]  # deleted files
     cur_soul = _file_sha256(SOUL_PATH)
-    script_changed = bool(_BOOT_HASH_SCRIPT and cur_script and cur_script != _BOOT_HASH_SCRIPT)
     soul_changed = bool(_BOOT_HASH_SOUL and cur_soul and cur_soul != _BOOT_HASH_SOUL)
 
-    if not (script_changed or soul_changed):
+    if not changed and not soul_changed:
         return
 
-    if script_changed and _RUNNING_SCRIPT:
-        try:
-            py_compile.compile(_RUNNING_SCRIPT, doraise=True)
-        except Exception as e:
-            add_log(f"Self-restart blocked: syntax error: {e}")
-            say_fn(f"My code changed but the new version has a syntax error: {e}")
-            return
+    for p in changed:
+        if p.endswith(".py") and os.path.isfile(p):
+            try:
+                py_compile.compile(p, doraise=True)
+            except Exception as e:
+                add_log(f"Self-restart blocked: syntax error in {os.path.basename(p)}: {e}")
+                say_fn(f"My code changed but the new version has a syntax error: {e}")
+                return
 
     say_fn("My code changed — restarting now to load the new version.")
     add_log("Self-restart armed.")
