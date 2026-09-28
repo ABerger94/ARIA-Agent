@@ -46,10 +46,12 @@ def _presence(c, t):
 
 def _head(c, ox, oy, t, eye="open", mouth="smile", bob=0):
     y0 = bob
-    # antenna stem + tip (tip light pulses)
-    _r(c, ox, oy, 7, -5 + y0, 2, 5, GRAY_DK)
+    # twin antennae (like ears), tips pulse in sync
     tip = CYAN if (t * 2) % 2 < 1 else PINK
-    _r(c, ox, oy, 6, -7 + y0, 4, 2, tip)
+    _r(c, ox, oy, 3, -5 + y0, 2, 5, GRAY_DK)
+    _r(c, ox, oy, 11, -5 + y0, 2, 5, GRAY_DK)
+    _r(c, ox, oy, 2, -7 + y0, 3, 2, tip)
+    _r(c, ox, oy, 11, -7 + y0, 3, 2, tip)
     # helmet shell
     _r(c, ox, oy, 0, 0 + y0, 16, 12, DARK)
     _r(c, ox, oy, 1, 1 + y0, 14, 10, WHITE)
@@ -192,7 +194,7 @@ def _typing_hands(c, ox, oy, t, bob=0):
 
 
 def _think_bubble(c, ox, oy, t, bob=0):
-    bx, by = 13, -8 + bob
+    bx, by = 14, -8 + bob
     _r(c, ox, oy, bx, by, 9, 6, DARK)
     _r(c, ox, oy, bx + 1, by + 1, 7, 4, WHITE)
     for i in range(3):
