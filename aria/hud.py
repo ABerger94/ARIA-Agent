@@ -19,7 +19,9 @@ from typing import Optional, List, Tuple, Dict, Any
 import cv2
 import numpy as np
 import psutil
-from aria.pixel_avatar import draw_pixel_aria
+from aria.pixel_avatar import draw_pixel_aria, theme_colors, load_theme
+
+load_theme()  # restore Alek's saved HUD color theme
 
 from aria.config import PHONE_BRIDGE_PORT, GITHUB_USERNAME, GITHUB_TOKEN
 from aria.vision import publish_face_frame, LATEST_CAMERA_FRAME
@@ -350,6 +352,7 @@ def draw_hud() -> np.ndarray:
     global CURRENT_STATE, HUD_MODE, CHAT_SCROLL
     w, h = 1280, 720
     canvas = np.zeros((h, w, 3), dtype=np.uint8)
+    ACC, ACC2 = theme_colors()  # HUD chrome follows the avatar color theme
 
     # Grid background
     for x in range(0, w, 80):
@@ -372,7 +375,7 @@ def draw_hud() -> np.ndarray:
     bat_str = f"{battery.percent}%" if battery else "AC"
 
     cv2.putText(canvas, "A.R.I.A. // AUTONOMOUS ROBOTIC INTELLIGENCE AGENT", (30, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.65, CYAN, 2, cv2.LINE_AA)
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65, ACC, 2, cv2.LINE_AA)
     sys_stats = f"TIME: {now_str}  |  CPU: {cpu_usage}%  |  MEM: {mem_usage}%  |  PWR: {bat_str}"
     cv2.putText(canvas, sys_stats, (650, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 170, 180), 1, cv2.LINE_AA)
     cv2.putText(canvas, f"PHONE BRIDGE: https://{lan_ip()}:{PHONE_BRIDGE_PORT}  (LAN only)",
@@ -390,10 +393,10 @@ def draw_hud() -> np.ndarray:
     mood_str = "MOOD: " + (_MOOD_CALLBACK().upper() if _MOOD_CALLBACK else "CALM")
     (mw, _), _ = cv2.getTextSize(mood_str, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
     cv2.putText(canvas, mood_str, (bx - 20 - mw, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (170, 190, 200), 1, cv2.LINE_AA)
-    cv2.line(canvas, (20, 72), (1260, 72), CYAN, 1)
+    cv2.line(canvas, (20, 72), (1260, 72), ACC, 1)
 
     # Subsystems
-    cv2.putText(canvas, "[ SUBSYSTEMS ]", (35, 102), cv2.FONT_HERSHEY_SIMPLEX, 0.5, CYAN, 1, cv2.LINE_AA)
+    cv2.putText(canvas, "[ SUBSYSTEMS ]", (35, 102), cv2.FONT_HERSHEY_SIMPLEX, 0.5, ACC, 1, cv2.LINE_AA)
     modules = _SUBSYSTEMS_CALLBACK() if _SUBSYSTEMS_CALLBACK else []
     for i, (mod, stat, ok) in enumerate(modules):
         dot = GREEN if ok else (160, 160, 160)
@@ -423,7 +426,7 @@ def draw_hud() -> np.ndarray:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, CYAN, 1, cv2.LINE_AA)
 
     # Action Stream
-    cv2.putText(canvas, "[ ACTION STREAM ]", (1015, 102), cv2.FONT_HERSHEY_SIMPLEX, 0.5, CYAN, 1, cv2.LINE_AA)
+    cv2.putText(canvas, "[ ACTION STREAM ]", (1015, 102), cv2.FONT_HERSHEY_SIMPLEX, 0.5, ACC, 1, cv2.LINE_AA)
     stream_y = 132
     for log in LOG_STREAM[-6:]:
         for line in textwrap.wrap(hud_ascii(log), width=32)[:2]:
@@ -436,7 +439,7 @@ def draw_hud() -> np.ndarray:
     # Face or Chat Log
     if HUD_MODE == "chat_log":
         cv2.rectangle(canvas, (300, 76), (980, 460), (12, 14, 18), -1)
-        cv2.rectangle(canvas, (300, 76), (980, 460), CYAN, 1)
+        cv2.rectangle(canvas, (300, 76), (980, 460), ACC, 1)
         cv2.putText(canvas, "[ TACTICAL CHAT LOG // RECENT TRANSCRIPT ]", (320, 104),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, CYAN, 1, cv2.LINE_AA)
         rendered_lines = []
@@ -549,7 +552,7 @@ def draw_hud() -> np.ndarray:
 
     # Subtitles panel
     cv2.putText(canvas, "[ DIRECTIVE / SYNTHESIS // SUBTITLE STREAM ]", (35, 510),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, CYAN, 1, cv2.LINE_AA)
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACC, 1, cv2.LINE_AA)
     sub_y = 536
     lines = textwrap.wrap(SUBTITLE_TEXT, width=105)[:4]
     for line in lines:
@@ -620,7 +623,7 @@ def draw_hud() -> np.ndarray:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.36, DIM, 1, cv2.LINE_AA)
 
     # Bottom status bar
-    status_bar = f"STATUS: {CURRENT_STATE.upper()}  |  [T] TYPE  |  [CTRL+V] PASTE  |  [ENTER] SEND  |  [SPACE] PTT  |  [X] CUT  |  [V] VISOR  |  [H] COMMANDS"
+    status_bar = f"STATUS: {CURRENT_STATE.upper()}  |  [T] TYPE  |  [ENTER] SEND  |  [SPACE] PTT  |  [X] CUT  |  [C] COLORS  |  [V] VISOR  |  [H] COMMANDS"
     cv2.putText(canvas, status_bar, (35, 700), cv2.FONT_HERSHEY_SIMPLEX, 0.36, DIM, 1, cv2.LINE_AA)
 
     # Optional commands overlay
