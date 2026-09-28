@@ -291,10 +291,12 @@ def _sleep_zzz(c, ox, oy, t):
     """Two little Z's drifting up beside her head while she's sleepy."""
     for i in range(2):
         rise = (t * 2.5 + i * 5) % 5
-        zx, zy = 15 + i * 6, -2 - int(rise)
-        _r(c, ox, oy, zx, zy, 3, 1, ACCENT_DIM)
-        _r(c, ox, oy, zx + 1, zy + 1, 1, 1, ACCENT_DIM)
-        _r(c, ox, oy, zx, zy + 2, 3, 1, ACCENT_DIM)
+        zx, zy = 15 + i * 8, -4 - int(rise)
+        _r(c, ox, oy, zx, zy, 4, 1, ACCENT_DIM)        # top bar
+        _r(c, ox, oy, zx + 3, zy + 1, 1, 1, ACCENT_DIM)  # diagonal
+        _r(c, ox, oy, zx + 2, zy + 2, 1, 1, ACCENT_DIM)  # diagonal
+        _r(c, ox, oy, zx + 1, zy + 3, 1, 1, ACCENT_DIM)  # diagonal
+        _r(c, ox, oy, zx, zy + 4, 4, 1, ACCENT_DIM)    # bottom bar
 
 
 def draw_pixel_aria(canvas, state, t):
