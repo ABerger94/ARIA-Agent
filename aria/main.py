@@ -32,6 +32,7 @@ import aria.vision as vision
 import aria.scheduler as scheduler
 import aria.spotify as spotify
 import aria.hud as hud
+import aria.pixel_avatar as pixel_avatar
 import aria.bridge as bridge
 import aria.agent as agent
 from aria.tools.dispatch import (
@@ -40,6 +41,8 @@ from aria.tools.dispatch import (
 
 # Global runtime flags
 RUNNING: bool = True
+EXCITED_UNTIL: float = 0.0   # wake-up burst expiry timestamp
+EXCITED_REVERT: str = "idle"  # state to return to after the burst
 PENDING_CONFIRM: Optional[Dict[str, Any]] = None
 WHISPER_MODE: bool = bool(get_setting("whisper_mode", False))
 
@@ -349,6 +352,7 @@ def continuous_voice_listener():
     new command cuts off current speech. A bare "Aria" with nothing
     after it gets "I'm listening."
     """
+    global EXCITED_UNTIL, EXCITED_REVERT
     try:
         with sr.Microphone(sample_rate=16000) as source:
             recognizer.adjust_for_ambient_noise(source, duration=1.0)
@@ -369,6 +373,9 @@ def continuous_voice_listener():
                     if "aria" in transcript:
                         add_log(f"Wake: '{transcript[:25]}'")
                         cleaned = transcript.replace("hey aria", "").replace("aria", "").strip()
+                        hud.set_hud_state("excited")  # she perks up hearing her name
+                        EXCITED_UNTIL = time.time() + 2.2
+                        EXCITED_REVERT = "idle" if cleaned else "listening"
                         if cleaned:
                             speech.interrupt_speech()  # barge-in: stop current speech first
                             handle_action("voice", typed_prompt=cleaned)
@@ -511,6 +518,10 @@ def main():
             frame = hud.draw_hud()
             cv2.imshow(win_name, frame)
 
+            # wake-up burst expiry: settle back once her excited moment passes
+            if hud.CURRENT_STATE == "excited" and time.time() >= EXCITED_UNTIL:
+                hud.set_hud_state(EXCITED_REVERT)
+
             key = cv2.waitKey(30) & 0xFF
             if key != 255:
                 if key in (ord('x'), ord('X')) and hud.CURRENT_STATE == "speaking":
@@ -520,6 +531,11 @@ def main():
                     hud.set_hud_state("idle")
                     add_log("Speech cut off." if not drained
                             else f"Speech cut off ({drained} queued cleared).")
+                    agent.LAST_ACTIVITY = time.time()
+                elif key in (ord('c'), ord('C')) and not hud.TYPING_ACTIVE:
+                    # C: cycle HUD color theme. Guarded so typing 'c' is unaffected.
+                    name = pixel_avatar.cycle_theme()
+                    add_log(f"Color theme: {name}.")
                     agent.LAST_ACTIVITY = time.time()
                 elif hud.TYPING_ACTIVE:
                     if key in (13, 10):  # Enter: submit directive
