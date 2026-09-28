@@ -59,6 +59,7 @@ def _init_wiring():
     register_log_listener(hud.add_hud_log)
     set_log_hook(add_log)
     set_hud_hook(lambda st: hud.set_hud_state(st))
+    speech.set_speech_state_hook(lambda st: hud.set_hud_state(st))
     set_spine_hook(memory.spine_append)
     set_history_hook(lambda: agent.CONVERSATION_HISTORY)
 

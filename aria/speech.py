@@ -451,6 +451,10 @@ def interrupt_speech() -> int:
 def start_speech_worker():
     return _DEFAULT_SPEECH_MANAGER.start()
 
+def set_speech_state_hook(fn):
+    """Wire HUD state updates (speaking/idle) from the speech playback worker."""
+    _DEFAULT_SPEECH_MANAGER.on_state = fn
+
 def transcribe_local_or_cloud(audio: sr.AudioData, recognizer_inst: Optional[sr.Recognizer] = None) -> str:
     r = recognizer_inst if recognizer_inst is not None else sr.Recognizer()
     return transcribe(audio, r)
