@@ -21,7 +21,7 @@ from typing import Optional, Callable, Any
 
 from aria.config import PHONE_BRIDGE_PORT, BRIDGE_TOKEN, ROOT_DIR, WORKSPACE_DIR, add_log, lan_ip, get_setting
 from aria.vision import get_face_frame_jpeg
-from aria.speech import edge_tts_bytes, transcribe_audio
+from aria.speech import tts_bytes_for_bridge, transcribe_audio
 from aria.tools.schemas import COMMAND_GUIDE
 
 BRIDGE_SCHEME = "http"
@@ -330,7 +330,39 @@ async function api(path,opts){
 let spkOn=localStorage.getItem('spk')!=='0';
 function updateSpkBtn(){document.getElementById('spk').innerText='Speak replies: '+(spkOn?'ON':'OFF');}
 updateSpkBtn();
-document.getElementById('spk').onclick=()=>{spkOn=!spkOn;localStorage.setItem('spk',spkOn?'1':'0');updateSpkBtn();};
+let actx=null,curSrc=null,voiceErrT=null;
+function ensureAudio(){
+  if(!actx){try{actx=new (window.AudioContext||window.webkitAudioContext)();}catch(e){return null;}}
+  if(actx.state==='suspended'){actx.resume();}
+  return actx;
+}
+document.addEventListener('pointerdown',()=>{ensureAudio();});
+function voiceError(){
+  const b=document.getElementById('spk');
+  b.innerText='Speak replies: ERROR - tap for details';
+  b.onclick=()=>{alert('Voice synthesis failed on the PC. Check the ARIA action stream for "Bridge TTS failed".');updateSpkBtn();document.getElementById('spk').onclick=spkToggle;};
+  clearTimeout(voiceErrT);
+  voiceErrT=setTimeout(()=>{document.getElementById('spk').onclick=spkToggle;updateSpkBtn();},8000);
+}
+function spkToggle(){spkOn=!spkOn;localStorage.setItem('spk',spkOn?'1':'0');updateSpkBtn();}
+document.getElementById('spk').onclick=spkToggle;
+async function playAudio(buf){
+  if(!spkOn||!buf||!buf.byteLength)return;
+  const ctx=ensureAudio();
+  if(!ctx)throw new Error('no audio context');
+  if(curSrc){try{curSrc.stop();}catch(e){}curSrc=null;}
+  const audio=await ctx.decodeAudioData(buf);
+  const src=ctx.createBufferSource();src.buffer=audio;src.connect(ctx.destination);src.start();
+  curSrc=src;
+}
+async function playReply(text){
+  if(!spkOn||!text)return;
+  try{
+    const r=await api('/api/say?text='+encodeURIComponent(text.slice(0,500)));
+    if(!r.ok)throw new Error('tts http '+r.status);
+    await playAudio(await r.arrayBuffer());
+  }catch(e){console.log('voice:',e);voiceError();}
+}
 const logEl=document.getElementById('log');
 function add(s,m){
   const d=document.createElement('div');
@@ -355,7 +387,7 @@ async function send(){
   if(r.ok){
     const d=await r.json();(d.reply||[]).forEach(s=>{
       add('aria',s);
-      if(spkOn&&s)new Audio('/api/say?text='+encodeURIComponent(s)).play().catch(e=>console.log(e));
+      playReply(s);
     });
   }
   return false;
@@ -384,16 +416,17 @@ talkBtn.onpointerdown=async(e)=>{
       try{
         const r=await api('/api/voice',{method:'POST',headers:{'Content-Type':recType},body:blob});
         if(r.ok){
-          const wav=await r.blob();
+          const buf=await r.arrayBuffer();
           const transcript=decodeURIComponent(r.headers.get('X-Transcript')||'');
           const reply=decodeURIComponent(r.headers.get('X-Reply')||'');
           if(transcript)add('you',transcript);
           if(reply)add('aria',reply);
-          if(spkOn&&wav.size>0){
-            new Audio(URL.createObjectURL(wav)).play().catch(e=>console.log(e));
-          }
+          try{await playAudio(buf);}catch(e){console.log('voice:',e);voiceError();}
         }else{
-          alert('Voice request failed: '+r.status);
+          let rd={};try{rd=await r.json();}catch(e){}
+          if(rd.reply)add('aria',rd.reply);
+          voiceError();
+          if(!rd.reply)alert('Voice request failed: '+r.status);
         }
       }catch(err){alert('Voice error: '+err);}
       talkBtn.innerText='Hold to talk';
@@ -535,9 +568,20 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     self._send(400, b'{"error":"missing text"}')
                     return
                 try:
-                    self._send(200, edge_tts_bytes(text[:500]), "audio/mpeg")
+                    audio, ctype = tts_bytes_for_bridge(text[:500])
                 except Exception as e:
-                    self._send(500, json.dumps({"error": str(e)[:200]}).encode("utf-8"))
+                    add_log(f"Bridge TTS failed: {e}")
+                    self._send(500, json.dumps(
+                        {"error": f"tts unavailable: {str(e)[:150]}"}).encode("utf-8"))
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(audio)))
+                self.send_header("X-TTS-Engine", "edge" if ctype == "audio/mpeg" else "sapi")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Expose-Headers", "X-TTS-Engine")
+                self.end_headers()
+                self.wfile.write(audio)
                 return
             self._send(404, b'{"error":"not found"}')
             return
@@ -634,19 +678,21 @@ class BridgeHandler(BaseHTTPRequestHandler):
             add_log(f"Bridge voice: {text[:30]}")
             reply = _BRIDGE_PROCESS_CALL(text, True) if _BRIDGE_PROCESS_CALL else ""
             try:
-                audio_out = edge_tts_bytes(reply[:2000])
+                audio_out, ctype = tts_bytes_for_bridge(reply[:2000])
             except Exception as e:
-                self._send(500, json.dumps({"error": f"tts failed: {e}", "reply": reply[:500]}).encode("utf-8"))
+                add_log(f"Bridge TTS failed: {e}")
+                self._send(500, json.dumps({"error": f"tts failed: {str(e)[:150]}", "reply": reply[:500]}).encode("utf-8"))
                 return
             self.send_response(200)
-            self.send_header("Content-Type", "audio/mpeg")
+            self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(audio_out)))
+            self.send_header("X-TTS-Engine", "edge" if ctype == "audio/mpeg" else "sapi")
             self.send_header("X-Transcript", urllib.parse.quote(text[:300]))
             self.send_header("X-Reply", urllib.parse.quote(reply[:500]))
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "*")
-            self.send_header("Access-Control-Expose-Headers", "*")
+            self.send_header("Access-Control-Expose-Headers", "X-TTS-Engine, X-Transcript, X-Reply")
             self.end_headers()
             self.wfile.write(audio_out)
             return

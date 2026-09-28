@@ -53,6 +53,7 @@ dispatch = importlib.import_module("aria.tools.dispatch")
 # stub aria.speech so the bridge module imports headlessly
 _speech = types.ModuleType("aria.speech")
 _speech.edge_tts_bytes = lambda text: b""
+_speech.tts_bytes_for_bridge = lambda text: (b"ID3fake", "audio/mpeg")
 _speech.transcribe_audio = lambda audio, mime: ""
 sys.modules["aria.speech"] = _speech
 bridge = importlib.import_module("aria.bridge")
@@ -237,6 +238,52 @@ def t_bridge_auth():
     assert "?token=" not in bridge.BRIDGE_HTML, "media URLs must not carry the token"
     assert "token" in bridge.BRIDGE_LOGIN_HTML.lower(), "login page must ask for the token"
 check("bridge auth (header/cookie/query) + cookie flags + no token in media URLs", t_bridge_auth)
+
+# 21. bridge TTS: /api/say uses tts_bytes_for_bridge (loud errors, real ctype);
+#     page plays replies via WebAudio with a visible error state
+def t_bridge_tts():
+    import re
+    html = bridge.BRIDGE_HTML
+    assert "playReply" in html and "decodeAudioData" in html, "page must use WebAudio playback"
+    assert "voiceError" in html, "page must surface TTS failures visibly"
+    assert "new Audio('/api/say" not in html, "old silent <audio> path must be gone"
+    src = open(os.path.join(PKG, "bridge.py")).read()
+    m = re.search(r'if self\.path\.startswith\("/api/say"\):(.*?)(?=\n            self\._send\(404)', src, re.S)
+    assert m, "/api/say handler missing"
+    body = m.group(1)
+    assert "tts_bytes_for_bridge" in body, "say must use the loud TTS helper"
+    assert re.search(r'self\._send\(500', body), "say must return 500 (not silent 200) on TTS failure"
+    assert "edge_tts_bytes(text" not in body, "say must not use the silent helper"
+check("bridge TTS wiring: loud /api/say + WebAudio page playback", t_bridge_tts)
+
+# 22. tts_bytes_for_bridge contract: edge ok / edge fail loud / sapi fallback.
+#     Loads the REAL aria/speech.py (bypassing the stub used for the bridge).
+def t_tts_contract():
+    import unittest.mock as mock
+    import importlib.util
+    if "speech_recognition" not in sys.modules:
+        sys.modules["speech_recognition"] = types.ModuleType("speech_recognition")
+    spec = importlib.util.spec_from_file_location(
+        "aria_speech_real", os.path.join(PKG, "speech.py"))
+    sp = importlib.util.module_from_spec(spec)
+    sys.modules["aria_speech_real"] = sp
+    spec.loader.exec_module(sp)
+    sp._edge_tts_bytes_strict = lambda *a, **k: (_ for _ in ()).throw(ImportError("no pkg"))
+    try:
+        sp.tts_bytes_for_bridge("hi")
+        raise AssertionError("must raise, never return silent empty")
+    except RuntimeError as e:
+        assert "edge-tts failed" in str(e), e
+    sp._sapi_tts_wav = lambda text, timeout=60: b"RIFFfakex"
+    with mock.patch.object(sp.sys, "platform", "win32"):
+        data, ctype = sp.tts_bytes_for_bridge("hi")
+        assert ctype == "audio/wav" and data, (ctype, len(data))
+    sp._edge_tts_bytes_strict = lambda *a, **k: b"ID3x"
+    data, ctype = sp.tts_bytes_for_bridge("hi")
+    assert ctype == "audio/mpeg" and data, (ctype, len(data))
+    sp._edge_tts_bytes_strict = lambda *a, **k: (_ for _ in ()).throw(Exception("down"))
+    assert sp.edge_tts_bytes("hi") == b"", "desktop wrapper must stay silent-safe"
+check("tts_bytes_for_bridge: loud failure, SAPI fallback, edge passthrough", t_tts_contract)
 
 print(f"\n{sum(1 for _, s, _ in results if s=='PASS')}/{len(results)} passed")
 fails = [r for r in results if r[1] != "PASS"]

@@ -432,13 +432,10 @@ class SpeechManager:
             time.sleep(0.05)
 
 
-def edge_tts_bytes(text: str, whisper_mode: bool = False) -> bytes:
-    """Synthesize with Edge TTS directly into in-memory MP3 bytes."""
+def _edge_tts_bytes_strict(text: str, whisper_mode: bool = False) -> bytes:
+    """Edge TTS synthesis that raises on failure (ImportError, network, timeout)."""
     import asyncio
-    try:
-        import edge_tts
-    except ImportError:
-        return b""
+    import edge_tts  # raises ImportError when the package is missing
 
     kwargs = WHISPER_EDGE_KWARGS if whisper_mode else {}
 
@@ -449,10 +446,81 @@ def edge_tts_bytes(text: str, whisper_mode: bool = False) -> bytes:
                 chunks.append(chunk["data"])
         return b"".join(chunks)
 
+    data = asyncio.run(asyncio.wait_for(_gen(), timeout=max(30, int(len(text) * 0.1))))
+    if not data:
+        raise RuntimeError("edge-tts returned empty audio")
+    return data
+
+
+def edge_tts_bytes(text: str, whisper_mode: bool = False) -> bytes:
+    """Synthesize with Edge TTS directly into in-memory MP3 bytes.
+
+    Never raises: returns b"" on any failure so desktop playback can fall
+    back to pyttsx3. Callers that need the failure reason (phone bridge)
+    should use tts_bytes_for_bridge instead.
+    """
     try:
-        return asyncio.run(asyncio.wait_for(_gen(), timeout=max(30, int(len(text) * 0.1))))
+        return _edge_tts_bytes_strict(text, whisper_mode)
     except Exception:
         return b""
+
+
+def _sapi_tts_wav(text: str, timeout: int = 60) -> bytes:
+    """Offline Windows fallback: synthesize with a SAPI voice via PowerShell
+    into WAV bytes. Separate process, so it never conflicts with the desktop
+    pyttsx3 engine. Returns b"" on failure."""
+    import subprocess
+    import tempfile
+    script = (
+        "$ErrorActionPreference='Stop';"
+        "$out=$args[0];$text=$args[1];"
+        "Add-Type -AssemblyName System.Speech;"
+        "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer;"
+        "try{"
+        "$v=$s.GetInstalledVoices()|Where-Object{$_.VoiceInfo.Gender -eq 'Female'}|Select-Object -First 1;"
+        "if($v){$s.SelectVoice($v.VoiceInfo.Name)};"
+        "$s.SetOutputToWaveFile($out);"
+        "$s.Speak($text)"
+        "}finally{$s.Dispose()}"
+    )
+    fd, path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-Command", script, path, text[:1000]],
+            capture_output=True, timeout=timeout)
+        if r.returncode != 0 or not os.path.exists(path) or os.path.getsize(path) < 1000:
+            return b""
+        with open(path, "rb") as f:
+            return f.read()
+    except Exception:
+        return b""
+    finally:
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+
+
+def tts_bytes_for_bridge(text: str) -> Tuple[bytes, str]:
+    """TTS for the phone bridge: (audio_bytes, content_type).
+
+    Edge TTS first; offline Windows SAPI voice as fallback. Raises
+    RuntimeError with the underlying reason when nothing produces audio —
+    the bridge turns that into a real error response instead of silence.
+    """
+    edge_err = ""
+    try:
+        return _edge_tts_bytes_strict(text), "audio/mpeg"
+    except Exception as e:
+        edge_err = str(e) or type(e).__name__
+    if sys.platform == "win32":
+        wav = _sapi_tts_wav(text)
+        if wav:
+            return wav, "audio/wav"
+        raise RuntimeError(f"edge-tts failed ({edge_err}); SAPI fallback failed")
+    raise RuntimeError(f"edge-tts failed ({edge_err})")
 
 
 def transcribe_audio(audio_bytes: bytes, mime: str = "audio/webm") -> str:
