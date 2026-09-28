@@ -133,15 +133,21 @@ def _update_idle_face(now: float):
     if f["next_glance"] == 0.0:  # first call: stagger the timers
         f["next_glance"] = now + 0.5
         f["next_blink"] = now + random.uniform(2.5, 4.0)
+    # Mood biases idle tempo only — never expression meaning. Sleepy drifts
+    # narrower and blinks slower; bright/playful glances wider, blinks faster.
+    _mw = (_MOOD_CALLBACK().lower() if _MOOD_CALLBACK else "calm")
+    _gx = 12 if _mw == "sleepy" else 26 if _mw in ("bright", "playful") else 22
+    _br = ((4.5, 9.0) if _mw == "sleepy" else (2.5, 6.0)
+           if _mw in ("bright", "playful") else (3.0, 7.0))
     if now >= f["next_glance"]:
-        f["eye_tdx"] = random.uniform(-22, 22)
+        f["eye_tdx"] = random.uniform(-_gx, _gx)
         f["eye_tdy"] = random.uniform(-16, 16)
         f["next_glance"] = now + random.uniform(2.0, 5.0)
     f["eye_dx"] += (f["eye_tdx"] - f["eye_dx"]) * 0.18  # ease, ~10 fps
     f["eye_dy"] += (f["eye_tdy"] - f["eye_dy"]) * 0.18
     if now >= f["next_blink"]:
         f["blink_until"] = now + 0.18
-        f["next_blink"] = now + random.uniform(3.0, 7.0)
+        f["next_blink"] = now + random.uniform(*_br)
 
 
 def _blink_squash(now: float) -> float:
@@ -159,22 +165,20 @@ def _draw_lashes(canvas: np.ndarray, ex: int, cy: int, ew: int, eh: int, side: i
         r = math.radians(a)
         x0 = int(ex + ew * math.cos(r))
         y0 = int(cy + eh * math.sin(r))
-        x1 = int(ex + (ew + 12) * math.cos(r + 0.08 * side))
-        y1 = int(cy + (eh + 12) * math.sin(r) - 6)
-        cv2.line(canvas, (x0, y0), (x1, y1), LINER, 2, cv2.LINE_AA)
-        cv2.line(canvas, (x0, y0), (x1 - 1 * side, y1 + 1), PINK, 1, cv2.LINE_AA)
+        x1 = int(ex + (ew + 16) * math.cos(r))
+        y1 = int(cy + (eh + 16) * math.sin(r))
+        cv2.line(canvas, (x0, y0), (x1, y1), PINK, 2)
 
 
 def _draw_waveform_mouth(canvas: np.ndarray, color: Tuple[int, int, int], t: float,
                          cx: int = 640, my: int = 388, bars: int = 19, spacing: int = 14,
                          amp: int = 10, thick: int = 2):
-    """Animated horizontal waveform mouth centered at (cx, my)."""
-    half = bars // 2
-    for i in range(-half, half + 1):
-        x = cx + (i * spacing)
-        dist = 1.0 - (abs(i) / (half + 1)) * 0.4
-        h = int(abs(np.sin(t * 3.5 + i * 0.4)) * amp * dist) + 2
-        cv2.line(canvas, (x, my - h), (x, my + h), color, thick)
+    """Soft idle-style waveform ripple: calm amplitude so it reads as a resting
+    mouth, not speech. Animated with time t."""
+    for i in range(-(bars // 2), bars // 2 + 1):
+        bar_x = cx + (i * spacing)
+        bar_h = int(abs(np.sin(t * 2.0 + i * 0.5)) * amp) + 2
+        cv2.line(canvas, (bar_x, my - bar_h), (bar_x, my + bar_h), color, thick)
 
 
 def _build_commands_pages():
@@ -410,13 +414,16 @@ def draw_hud() -> np.ndarray:
             arc = int((t * 180) % 360)
             cv2.ellipse(canvas, (640, 425), (70, 20), 0, arc, arc + 120, AMBER, 3)
         elif CURRENT_STATE == "coding":
+            t = time.time()
+            glow = int(20 + 12 * np.sin(t * 2.0))  # subtle breathing glow — just a bit
             for ex in (lx, rx):
                 cv2.rectangle(canvas, (ex - 55, cy - 65), (ex + 55, cy + 65), (0, 100, 40), -1)
+                cv2.rectangle(canvas, (ex - 58, cy - 68), (ex + 58, cy + 68), (0, glow, 0), 1)
                 cv2.rectangle(canvas, (ex - 50, cy - 60), (ex + 50, cy + 60), GREEN, 2)
                 cv2.putText(canvas, "</>", (ex - 35, cy + 12), cv2.FONT_HERSHEY_SIMPLEX,
                             1.1, GREEN, 2, cv2.LINE_AA)
                 apply_led_scanlines(canvas, ex - 60, cy - 70, ex + 60, cy + 70)
-            _draw_waveform_mouth(canvas, (40, 240, 120), time.time())
+            _draw_waveform_mouth(canvas, (40, 240, 120), t)
         elif CURRENT_STATE == "speaking":
             for ex, side in ((lx, -1), (rx, 1)):
                 cv2.ellipse(canvas, (ex, cy - 10), (52, 45), 0, 190, 350, PINK, 10)
