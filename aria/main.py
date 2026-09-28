@@ -76,11 +76,7 @@ def _init_wiring():
     hud.set_mood_callback(lambda: agent.mood_word())
     hud.set_subsystems_callback(get_subsystem_statuses)
 
-    # 6. Live engine hooks
-    agent.live.set_live_hooks(
-        state_hook=lambda st: hud.set_hud_state(st),
-        hud_hook=lambda: hud.draw_hud()
-    )
+
 
 
 def get_subsystem_statuses() -> List[Tuple[str, str, bool]]:
@@ -115,11 +111,7 @@ def get_subsystem_statuses() -> List[Tuple[str, str, bool]]:
     gh_ok = bool(GITHUB_USERNAME and GITHUB_TOKEN and GITHUB_TOKEN != "INSERT")
     gh_entry = ("GitHub Tools", "ARMED" if gh_ok else "OFFLINE", gh_ok)
 
-    # 7. Live Engine
-    live_on = agent.GEMINI_LIVE_MODE and agent.LIVE_AVAILABLE
-    live_entry = ("Gemini Live", "ACTIVE" if live_on else "STANDBY", live_on)
-
-    return [vision_entry, screen_entry, mem_entry, hw_entry, sched_entry, gh_entry, live_entry]
+    return [vision_entry, screen_entry, mem_entry, hw_entry, sched_entry, gh_entry]
 
 
 def set_whisper_mode(on: bool) -> bool:
@@ -203,14 +195,6 @@ def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silen
         say(ack)
         return ack
 
-    # 4. Gemini live voice commands
-    if "gemini live" in low or "live mode" in low:
-        on = "off" not in low and ("on" in low or not agent.GEMINI_LIVE_MODE)
-        agent.set_gemini_live_mode(on, ARIA_SOUL)
-        hud.GEMINI_LIVE_MODE = on
-        ack = f"Gemini Live {'on' if on else 'off'}."
-        say(ack)
-        return ack
 
     # 5. Multimodal context attachment
     image_bytes = None
@@ -260,8 +244,6 @@ def _ptt_capture():
     frames = []
     sample_rate = 16000
     sample_width = 2
-    bridge_live = agent.get_live_bridge(ARIA_SOUL) if agent.GEMINI_LIVE_MODE else None
-    live_active = bridge_live is not None and getattr(bridge_live, "is_ready", lambda: False)()
 
     try:
         with sr.Microphone(sample_rate=16000) as source:
@@ -276,8 +258,6 @@ def _ptt_capture():
                 if not raw_chunk:
                     continue
                 frames.append(raw_chunk)
-                if live_active:
-                    bridge_live.send_audio_chunk(raw_chunk)
     except Exception as e:
         add_log(f"Mic issue: {e}")
         _ptt_reset_state()
@@ -290,13 +270,6 @@ def _ptt_capture():
         _ptt_reset_state()
         return
 
-    if live_active:
-        add_log("PTT committed to Gemini Live.")
-        bridge_live.commit_turn()
-        memory.spine_append("ptt", {"seconds": round(total_s, 1), "live": True})
-        _ptt_reset_state()
-        return
-
     audio_data = sr.AudioData(raw_audio, sample_rate, sample_width)
     try:
         user_text = speech.transcribe_local_or_cloud(audio_data)
@@ -306,7 +279,7 @@ def _ptt_capture():
         _ptt_reset_state()
         return
 
-    memory.spine_append("ptt", {"seconds": round(total_s, 1), "live": False})
+    memory.spine_append("ptt", {"seconds": round(total_s, 1)})
     _ptt_reset_state()
     handle_action("voice", typed_prompt=user_text)
 
@@ -334,16 +307,7 @@ def _ptt_poll_loop():
 def _on_hud_mouse(event, x, y, flags, param):
     """Handle mouse clicks on HUD interactive buttons."""
     if event == cv2.EVENT_LBUTTONDOWN:
-        # Live button (480, 52, 100, 22)
-        lx, ly, lw, lh = hud._LIVE_BTN
-        if lx <= x <= lx + lw and ly <= y <= ly + lh:
-            on = not agent.GEMINI_LIVE_MODE
-            agent.set_gemini_live_mode(on, ARIA_SOUL)
-            hud.GEMINI_LIVE_MODE = on
-            speech.speak(f"Gemini Live {'on' if on else 'off'}.")
-            return
-
-        # Whisper button (590, 52, 105, 22)
+        # Whisper button
         bx, by, bw, bh = hud._WHISPER_BTN
         if bx <= x <= bx + bw and by <= y <= by + bh:
             on = toggle_whisper_mode()
@@ -474,11 +438,6 @@ def main():
                     elif key in (ord('w'), ord('W')):
                         on = toggle_whisper_mode()
                         speech.speak(f"Whisper mode {'on' if on else 'off'}.")
-                    elif key in (ord('g'), ord('G')):
-                        on = not agent.GEMINI_LIVE_MODE
-                        agent.set_gemini_live_mode(on, ARIA_SOUL)
-                        hud.GEMINI_LIVE_MODE = on
-                        speech.speak(f"Gemini Live {'on' if on else 'off'}.")
                     elif key in (ord('h'), ord('H')):
                         hud.SHOW_COMMANDS = not hud.SHOW_COMMANDS
                     elif key in (ord('j'), ord('J')):

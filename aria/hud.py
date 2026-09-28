@@ -65,8 +65,7 @@ LINER = (70, 25, 120)
 DIM = (150, 160, 170)
 
 # Buttons
-_LIVE_BTN = (480, 52, 100, 22)
-_WHISPER_BTN = (590, 52, 105, 22)
+_WHISPER_BTN = (580, 52, 105, 22)
 _INPUT_BAR = (35, 646, 1210, 28)
 
 # State tracking
@@ -83,8 +82,6 @@ LOG_STREAM: List[str] = []
 DISPLAY_CHAT_LOG: List[Tuple[str, str, str]] = []
 
 WHISPER_MODE = False
-GEMINI_LIVE_MODE = False
-LIVE_AVAILABLE = True
 
 _FACE = {
     "eye_dx": 0.0, "eye_dy": 0.0,
@@ -274,14 +271,6 @@ def draw_hud() -> np.ndarray:
     cv2.putText(canvas, f"PHONE BRIDGE: https://{lan_ip()}:{PHONE_BRIDGE_PORT}  (LAN only)",
                 (30, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (120, 170, 200), 1, cv2.LINE_AA)
 
-    # Live Toggle
-    lx, ly, lw, lh = _LIVE_BTN
-    _lcol = CYAN if (GEMINI_LIVE_MODE and LIVE_AVAILABLE) else (110, 120, 135)
-    cv2.rectangle(canvas, (lx, ly), (lx + lw, ly + lh), PANEL_BG, -1)
-    cv2.rectangle(canvas, (lx, ly), (lx + lw, ly + lh), _lcol, 1)
-    cv2.putText(canvas, "LIVE " + ("ON" if GEMINI_LIVE_MODE else "OFF"),
-                (lx + 12, ly + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.42, _lcol, 1, cv2.LINE_AA)
-
     # Whisper Toggle
     bx, by, bw, bh = _WHISPER_BTN
     _wcol = GREEN if WHISPER_MODE else (110, 120, 135)
@@ -293,7 +282,7 @@ def draw_hud() -> np.ndarray:
     # Mood String
     mood_str = "MOOD: " + (_MOOD_CALLBACK().upper() if _MOOD_CALLBACK else "CALM")
     (mw, _), _ = cv2.getTextSize(mood_str, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
-    cv2.putText(canvas, mood_str, (lx - 20 - mw, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (170, 190, 200), 1, cv2.LINE_AA)
+    cv2.putText(canvas, mood_str, (bx - 20 - mw, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (170, 190, 200), 1, cv2.LINE_AA)
     cv2.line(canvas, (20, 72), (1260, 72), CYAN, 1)
 
     # Subsystems
@@ -476,7 +465,7 @@ def draw_hud() -> np.ndarray:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.36, DIM, 1, cv2.LINE_AA)
 
     # Bottom status bar
-    status_bar = f"STATUS: {CURRENT_STATE.upper()}  |  [T] TYPE  |  PRESS [SPACE] PTT  |  [V] VISOR/LOG  |  [G] LIVE  |  [W] WHISPER  |  [H] COMMANDS"
+    status_bar = f"STATUS: {CURRENT_STATE.upper()}  |  [T] TYPE  |  PRESS [SPACE] PTT  |  [V] VISOR/LOG  |  [W] WHISPER  |  [H] COMMANDS"
     cv2.putText(canvas, status_bar, (35, 700), cv2.FONT_HERSHEY_SIMPLEX, 0.36, DIM, 1, cv2.LINE_AA)
 
     # Optional commands overlay

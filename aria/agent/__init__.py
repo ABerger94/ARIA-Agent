@@ -1,7 +1,7 @@
 """
 ARIA Agent Intelligence Subsystem.
 Central brain, system prompt formulation, streaming LLM execution,
-instant voice shortcuts, live multimodal WebSockets, and proactive behaviors.
+instant voice shortcuts, and proactive behaviors.
 """
 
 from aria.agent.brain import (
@@ -14,12 +14,6 @@ from aria.agent.brain import (
     LAST_ACTIVITY
 )
 from aria.agent.shortcuts import check_voice_shortcut, normalize_shortcut
-from aria.agent.live import (
-    get_live_bridge,
-    set_gemini_live_mode,
-    GEMINI_LIVE_MODE,
-    LIVE_AVAILABLE
-)
 from aria.agent.proactive import (
     proactive_say,
     proactive_heartbeat_loop,
@@ -41,10 +35,6 @@ __all__ = [
     "LAST_ACTIVITY",
     "check_voice_shortcut",
     "normalize_shortcut",
-    "get_live_bridge",
-    "set_gemini_live_mode",
-    "GEMINI_LIVE_MODE",
-    "LIVE_AVAILABLE",
     "proactive_say",
     "proactive_heartbeat_loop",
     "idle_consolidation_loop",
