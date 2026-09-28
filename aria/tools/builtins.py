@@ -728,9 +728,9 @@ def tool_gemini_keys(action: str = "status", key: str = "") -> str:
             return "No Gemini API keys configured. Add one with the gemini_keys tool (action: add)."
         lines = []
         for i, k in enumerate(GEMINI_KEY_POOL):
-            quar = _KEY_QUARANTINE_UNTIL.get(i, 0) - now
+            quar = _KEY_QUARANTINE_UNTIL.get(k, 0) - now
             if quar > 0:
-                qcode = _KEY_QUARANTINE_CODE.get(i)
+                qcode = _KEY_QUARANTINE_CODE.get(k)
                 why = f"HTTP {qcode}" if qcode else "key rejected by Google"
                 state = f"QUARANTINED ({int(quar)}s left - {why})"
             else:

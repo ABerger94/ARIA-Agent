@@ -124,10 +124,10 @@ def quarantine_key(key, duration_s=KEY_QUARANTINE_DURATION_S, code=429):
     if not key:
         return
     _KEY_QUARANTINE_UNTIL[key] = datetime.now().timestamp() + duration_s
+    _KEY_QUARANTINE_CODE[key] = code
     if key in GEMINI_KEY_POOL:
-        i = GEMINI_KEY_POOL.index(key)
-        _KEY_QUARANTINE_CODE[i] = code
-    return i if key in GEMINI_KEY_POOL else None
+        return GEMINI_KEY_POOL.index(key)
+    return None
 
 
 def get_quarantined_keys_info():
@@ -137,7 +137,7 @@ def get_quarantined_keys_info():
         until = _KEY_QUARANTINE_UNTIL.get(k, 0)
         if until > now:
             mins = int((until - now) / 60) + 1
-            code = _KEY_QUARANTINE_CODE.get(i, 429)
+            code = _KEY_QUARANTINE_CODE.get(k, 429)
             active[i] = (mins, code, key_mask(k))
     return active
 
@@ -204,7 +204,7 @@ def _ensure_bridge_token():
 BRIDGE_TOKEN = _ensure_bridge_token()
 
 # Models and constants
-MODEL_NAME = "gemini-3.8-flash"
+MODEL_NAME = "gemini-2.5-flash"
 EMBED_MODEL = "models/gemini-embedding-001"
 EDGE_TTS_VOICE = "en-US-AriaNeural"
 PHONE_BRIDGE_PORT = 8777

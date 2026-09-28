@@ -107,15 +107,23 @@ def tool_run_python(code: str,
                     timeout: int = 15,
                     busy_callback: Optional[Callable[[bool], None]] = None,
                     log_callback: Optional[Callable[[str], None]] = None) -> str:
-    """Execute Python code in isolated subprocess inside workspace directory."""
+    """Execute Python code in an isolated subprocess inside the workspace directory.
+
+    NOTE: this is process isolation only — the code runs with the same
+    interpreter, user, and filesystem access as ARIA itself. Treat it as
+    ARIA acting, not as an untrusted sandbox.
+    """
+    import tempfile
     if busy_callback:
         busy_callback(True)
+    temp_script = None
     try:
         if log_callback:
             log_callback("Executing Python script...")
         os.makedirs(workspace_dir, exist_ok=True)
-        temp_script = os.path.join(workspace_dir, "_temp_run.py")
-        with open(temp_script, "w", encoding="utf-8") as f:
+        fd, temp_script = tempfile.mkstemp(suffix=".py", prefix="_aria_run_",
+                                           dir=workspace_dir)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(code)
         try:
             result = subprocess.run(
@@ -134,5 +142,10 @@ def tool_run_python(code: str,
         except Exception as e:
             return f"[Execution Error: {e}]"
     finally:
+        if temp_script:
+            try:
+                os.remove(temp_script)
+            except OSError:
+                pass
         if busy_callback:
             busy_callback(False)

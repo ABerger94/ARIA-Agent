@@ -25,7 +25,7 @@ from typing import Optional, Callable, List, Dict, Any, Tuple
 
 from aria.config import (
     ARIA_SOUL, MODEL_NAME, GEMINI_API_KEY, GEMINI_KEY_POOL,
-    WORKSPACE_DIR, ROOT_DIR, SOUL_PATH,
+    WORKSPACE_DIR, ROOT_DIR, SOUL_PATH, KEY_QUARANTINE_DURATION_S,
     get_gemini_key, quarantine_key, add_log
 )
 from aria.memory import (
@@ -232,7 +232,7 @@ def gemini_call(system_instruction: str, contents: List[Dict[str, Any]],
                     time.sleep(2 * (nr + 1))
 
             last_err = net_err
-            quarantine_key(key, "network_drop")
+            quarantine_key(key, KEY_QUARANTINE_DURATION_S, "network_drop")
             add_log("Gemini network drop - rotating key...")
             continue
         except urllib.error.HTTPError as e:

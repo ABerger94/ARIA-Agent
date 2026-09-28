@@ -16,7 +16,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional, Callable, Any
 
-from aria.config import PHONE_BRIDGE_PORT, BRIDGE_TOKEN, ROOT_DIR, add_log, lan_ip
+from aria.config import PHONE_BRIDGE_PORT, BRIDGE_TOKEN, ROOT_DIR, WORKSPACE_DIR, add_log, lan_ip
 from aria.vision import get_face_frame_jpeg
 from aria.speech import edge_tts_bytes, transcribe_audio
 from aria.tools.schemas import COMMAND_GUIDE
@@ -73,8 +73,72 @@ def set_chat_log_provider(fn: Callable[[], Any]):
     _CHAT_LOG_CALL = fn
 
 
+def _generate_machine_cert(cert_p: str, key_p: str) -> bool:
+    """Generate a unique self-signed cert for THIS machine.
+
+    The old bundled cert/key was identical on every deployment, so anyone
+    with the repo could MITM any ARIA instance. A per-machine cert stored
+    in the (gitignored) workspace dir fixes that.
+    """
+    try:
+        import ipaddress
+        import datetime as _dt
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "aria-bridge")])
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(name)
+            .issuer_name(name)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(_dt.datetime.now(_dt.timezone.utc))
+            .not_valid_after(_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=3650))
+            .add_extension(
+                x509.SubjectAlternativeName([
+                    x509.DNSName("aria-bridge"),
+                    x509.DNSName("localhost"),
+                    x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+                ]),
+                critical=False,
+            )
+            .sign(key, hashes.SHA256())
+        )
+        with open(key_p, "wb") as f:
+            f.write(key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.TraditionalOpenSSL,
+                serialization.NoEncryption()))
+        with open(cert_p, "wb") as f:
+            f.write(cert.public_bytes(serialization.Encoding.PEM))
+        return True
+    except Exception as e:
+        add_log(f"Bridge: per-machine cert generation failed ({e})")
+        return False
+
+
 def ensure_bridge_cert():
     global BRIDGE_SCHEME, BRIDGE_CERT, BRIDGE_KEY
+    # 1. Prefer a per-machine cert in the workspace dir (unique, gitignored).
+    try:
+        os.makedirs(WORKSPACE_DIR, exist_ok=True)
+        mcert, mkey = (os.path.join(WORKSPACE_DIR, "aria_bridge_machine.pem"),
+                       os.path.join(WORKSPACE_DIR, "aria_bridge_machine_key.pem"))
+        if not (os.path.exists(mcert) and os.path.exists(mkey)):
+            if _generate_machine_cert(mcert, mkey):
+                add_log("Bridge: generated unique per-machine HTTPS cert.")
+        if os.path.exists(mcert) and os.path.exists(mkey):
+            BRIDGE_SCHEME, BRIDGE_CERT, BRIDGE_KEY = "https", mcert, mkey
+            return
+    except Exception:
+        pass
+    # 2. Fall back to the bundled cert (shared across deployments — weaker).
+    add_log("Bridge: WARNING - using bundled shared cert; install 'cryptography' "
+            "for a unique per-machine certificate.")
     dirs = [ROOT_DIR, tempfile.gettempdir()]
     for d in dirs:
         base = os.path.join(d, "aria_bridge_bundled")
