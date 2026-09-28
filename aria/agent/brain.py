@@ -102,8 +102,10 @@ def _restart_process():
 def _maybe_restart_after_self_edit(say_fn: Callable[[str], None]):
     global _RESTART_TIMER
     cur = _snapshot_hashes()
+    # Deleted files are skipped: v9.34 never restarted on deletion, and the
+    # running process still holds the module in memory. Restarting into a
+    # tree with a missing module would just crash the new process at import.
     changed = [p for p in cur if cur[p] != _BOOT_HASHES.get(p)]
-    changed += [p for p in _BOOT_HASHES if p not in cur]  # deleted files
     cur_soul = _file_sha256(SOUL_PATH)
     soul_changed = bool(_BOOT_HASH_SOUL and cur_soul and cur_soul != _BOOT_HASH_SOUL)
 
