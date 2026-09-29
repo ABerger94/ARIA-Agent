@@ -396,15 +396,10 @@ function unlockAudio(){
       bg.play().catch(()=>{});
     }
   }catch(e){}
-  try{
-    // iOS routes Web Audio through the "ambient" session, which the
-    // Ring/Silent switch mutes. Promote to "playback" so the WebAudio
-    // fallback stays audible with the switch on. WebKit-only; no-op
-    // elsewhere. Re-asserted on every gesture — WebKit can reset it
-    // after interruptions (calls, Siri, app switch). Recording flips it
-    // to "playAndRecord" for the capture duration (see talk button).
-    setAudioSessionType('playback');
-  }catch(e){}
+  // NOTE: the audio session category is NOT set here. It is set at the
+  // point of use instead — 'playback' in playAudio(), 'playAndRecord'
+  // around hold-to-talk capture. Setting it globally per-gesture raced
+  // with getUserMedia and broke recording on iOS.
   try{
     const ctx=ensureAudio();
     if(ctx){
@@ -486,6 +481,8 @@ function playViaWebAudio(buf){
 function playAudio(buf,mime){
   return new Promise((resolve)=>{
     if(!spkOn||!buf||!buf.byteLength){resolve();return;}
+    // iOS: 'playback' keeps output audible with the Ring/Silent switch on.
+    setAudioSessionType('playback');
     unlockAudio();
     const st=document.getElementById('astat');
     if(st)st.innerText='Audio: playing...';
