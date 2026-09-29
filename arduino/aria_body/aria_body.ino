@@ -7,8 +7,12 @@
  *   3. (Phase 2) Plug continuous-rotation wheel servos into D5 / D6.
  *   4. Power the servos from a 4xAA battery pack into the shield's servo
  *      power terminal block (NOT from USB — servos brown-out USB power).
- *   5. Flash this sketch once via Arduino IDE (Tools > Board > Arduino Nano,
+ *   5. Optional face: 1.3" SH1106 OLED (128x64, I2C) on SDA=A4 / SCL=A5.
+ *      Set FACE_OLED to 0 to build without the display.
+ *   6. Flash this sketch once via Arduino IDE (Tools > Board > Arduino Nano,
  *      Processor > ATmega328P (Old Bootloader) for most clones).
+ *      With FACE_OLED=1, install the "U8g2" library first
+ *      (Sketch > Include Library > Manage Libraries > search "U8g2").
  *
  * Serial protocol @ 115200 baud, one command per line:
  *   P<pan>T<tilt>\n    head servos — pan 0-180, tilt 0-90.  e.g. "P90T45"
@@ -19,7 +23,65 @@
  * Matches aria/hardware.py (send_servo_command / send_drive_command).
  */
 
+// ---- Face: animated OLED eyes + smile (optional) ----
+#define FACE_OLED 1   // set to 0 to build without the display
+
 #include <Servo.h>
+
+#if FACE_OLED
+#include <U8g2lib.h>
+// 1.3" 128x64 SH1106 OLED over I2C (e.g. Inland KS0056 set to I2C mode).
+// Nano I2C pins: SDA = A4, SCL = A5. Page-buffer mode keeps RAM use tiny.
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+static const uint8_t EYE_W = 26, EYE_H = 34, EYE_R = 7, EYE_Y = 6;
+static const uint8_t EYE_LX = 24, EYE_RX = 78;
+
+int pupTX = 0, pupTY = 0;   // pupil target offset (px)
+int pupX = 0, pupY = 0;     // pupil current offset, eased toward target
+unsigned long faceLast = 0;
+const unsigned long FACE_MS = 60;      // face redraw cadence
+unsigned long blinkAt = 3000;          // next scheduled blink (ms)
+unsigned long blinkEnd = 0;            // current blink release time (ms)
+
+// Declared below with the motion state; faceTick reads the head targets.
+extern int panTgt, tiltTgt;
+
+void faceTick(unsigned long now) {
+  if (now - faceLast < FACE_MS) return;
+  faceLast = now;
+
+  // Pupils follow where the head is told to look — eyes glance with the neck.
+  pupTX = map(panTgt, 0, 180, -8, 8);
+  pupTY = map(tiltTgt, 0, 90, 5, -5);
+  pupX += (pupTX - pupX) / 2;
+  pupY += (pupTY - pupY) / 2;
+
+  if (now >= blinkAt) {                // schedule the next blink
+    blinkEnd = now + 140;
+    blinkAt = now + 2500UL + random(2500UL);
+  }
+  bool closed = now < blinkEnd;
+
+  u8g2.firstPage();
+  do {
+    if (closed) {
+      // blink: eyes become thin lines
+      u8g2.drawBox(EYE_LX, EYE_Y + EYE_H / 2 - 2, EYE_W, 4);
+      u8g2.drawBox(EYE_RX, EYE_Y + EYE_H / 2 - 2, EYE_W, 4);
+    } else {
+      u8g2.drawRBox(EYE_LX, EYE_Y, EYE_W, EYE_H, EYE_R);
+      u8g2.drawRBox(EYE_RX, EYE_Y, EYE_W, EYE_H, EYE_R);
+      u8g2.setDrawColor(0);            // pupils punch out of the white eyes
+      u8g2.drawBox(EYE_LX + EYE_W / 2 - 5 + pupX, EYE_Y + EYE_H / 2 - 7 + pupY, 10, 14);
+      u8g2.drawBox(EYE_RX + EYE_W / 2 - 5 + pupX, EYE_Y + EYE_H / 2 - 7 + pupY, 10, 14);
+      u8g2.setDrawColor(1);
+    }
+    // smile
+    u8g2.drawCircle(64, 46, 12, U8G2_DRAW_LOWER_LEFT | U8G2_DRAW_LOWER_RIGHT);
+  } while (u8g2.nextPage());
+}
+#endif
 
 // ---- Pin map (PWM-capable pins on the Nano) ----
 static const uint8_t PIN_PAN    = 9;    // head pan servo (SG90)
@@ -89,6 +151,10 @@ void handleLine(char *line) {
 
 void setup() {
   Serial.begin(115200);
+#if FACE_OLED
+  u8g2.begin();
+  randomSeed(analogRead(A0));
+#endif
   panServo.attach(PIN_PAN);
   tiltServo.attach(PIN_TILT);
   wheelL.attach(PIN_WHEEL_L);
@@ -130,6 +196,11 @@ void loop() {
       tiltServo.write(tiltCur);
     }
   }
+
+#if FACE_OLED
+  // --- animated face: eyes track the head, blink on their own ---
+  faceTick(now);
+#endif
 
   // --- heartbeat LED (1 Hz) so you can see it's alive ---
   digitalWrite(PIN_LED, (millis() / 500) % 2 == 0 ? HIGH : LOW);

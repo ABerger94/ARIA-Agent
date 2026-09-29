@@ -56,7 +56,9 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
 - **Robot Body** — Arduino Nano firmware (`arduino/aria_body/aria_body.ino`)
   driving a pan/tilt head (`P<pos>T<pos>`) and differential-drive wheels
   (`W<l>,<r>`) over a no-solder Nano + sensor shield, with a dedicated stop
-  command (`S`). `drive_wheels` / `body_stop` tools, `ARIA_BODY_SERIAL_URL`
+  command (`S`) and an animated OLED face — eyes that blink and glance where
+  the head turns, plus a smile (1.3" SH1106 I2C display, U8g2 library).
+  `drive_wheels` / `body_stop` tools, `ARIA_BODY_SERIAL_URL`
   for network serial, and `sim/robot_sim.py`, a virtual body for testing
   without hardware. Her eyes select via `ARIA_BODY_CAMERA`: USB index, IP
   camera URL, or `bridge`. Full build guide in `docs/ROBOT_BODY.md`.
