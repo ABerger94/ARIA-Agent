@@ -170,6 +170,37 @@ still reach ARIA from your phone through the phone bridge.
 - [ ] Phone bridge: `/face.mjpg` now shows the body's point of view.
 - [ ] Phase 2: "drive forward for 2 seconds" → `drive_wheels` → auto-stops.
 
+### Phase 3: the phone face (optional)
+
+An old Android phone (e.g. the SP555D) makes a better robot head than a bare
+webcam: screen for a face/display, front camera for eyes, mic + speaker for
+voice — all over WiFi, no extra USB cables to the moving head.
+
+**Mechanical.** The phone (~150 g) is too heavy for the SG90 tilt servo, so
+swap the *tilt* servo for a metal-gear MG90S (same size, same plug, same PWM —
+drop-in, ~$10). Pan can stay an SG90. Clamp the phone in a universal tripod
+mount and bolt the mount to the tilt platform (one drilled hole + 1/4"-20
+bolt, or strong double-sided tape for a reversible fit). Keep the phone's
+charger plugged in — the battery won't survive a day of streaming otherwise.
+
+**Phone setup.** Factory reset, skip Google sign-in, connect to your WiFi,
+install **IP Webcam** (free) and start its server — note the phone's IP.
+Open ARIA's phone bridge page in the phone's Chrome for mic + speaker + the
+on-screen interface.
+
+**ARIA setup.** Point her eyes at the phone instead of the USB webcam:
+
+```
+# Windows
+set ARIA_BODY_CAMERA=http://<phone-ip>:8080/video
+# Linux/macOS
+export ARIA_BODY_CAMERA=http://<phone-ip>:8080/video
+```
+
+`open_body_camera()` in `aria/vision.py` accepts a stream URL or a USB index,
+so face tracking and snapshots work unchanged — she literally sees through
+the phone. The bridge handles hearing and voice.
+
 ## Troubleshooting
 
 | Symptom | Fix |
