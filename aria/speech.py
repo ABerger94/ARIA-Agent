@@ -99,10 +99,6 @@ def init_pyttsx3(on_log: Optional[Callable[[str], None]] = None):
 
 # ---------------- Local STT (faster-whisper) ----------------
 
-# v9.17: Google cloud transcription is the default. The local faster-whisper
-# path stays in the file, dormant unless this flag is flipped to True.
-_USE_LOCAL_STT = False
-
 _FW_AVAILABLE = False
 _FW_MODEL = None
 _FW_LOCK = threading.Lock()
@@ -591,4 +587,4 @@ def set_speech_state_hook(fn):
 
 def transcribe_local_or_cloud(audio: sr.AudioData, recognizer_inst: Optional[sr.Recognizer] = None) -> str:
     r = recognizer_inst if recognizer_inst is not None else sr.Recognizer()
-    return transcribe(audio, r, use_local_stt=(_USE_LOCAL_STT and fw_is_available()))
+    return transcribe(audio, r, use_local_stt=fw_is_available())
