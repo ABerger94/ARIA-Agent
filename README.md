@@ -3,7 +3,9 @@
 A Python desktop AI companion. She lives on your Windows laptop as an animated
 face in an OpenCV HUD: she talks (natural Edge TTS voice), listens (mic +
 speech recognition), remembers, and acts through a Gemini-powered agent loop
-with 50+ tools.
+with 54 tools. Her phone bridge turns any phone into her face, voice, and
+eyes — and an Arduino robot body gives her a pan/tilt head, with
+differential-drive wheels as the next phase.
 
 Built by Alek Berger. Not a framework, not a demo — a finished companion.
 
@@ -13,38 +15,55 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
   with animated idle, listening, speaking, thinking, tool-running (code-eyes),
   and sleepy states; waveform mouth; twin ear antennae with synchronous pulsing
   tips and ear twitches; customizable HUD color themes (`aria/theme.cfg`).
+  The HUD subsystem box reports live status for every subsystem, including
+  which camera her eyes use (`[bridge]`, `[cam N]`, or `[net]`).
 - **Voice In / Voice Out** — Edge TTS neural voice with sentence boundary
   streaming and pipelined TTS synthesis prefetch; instant speech interruption
-  barge-in via the `X` key or voice; mic input with local Whisper
-  transcription (`faster-whisper` on CPU, Google fallback); hold-SPACE
-  push-to-talk; wake-word listener with acoustic echo suppression and false-wake
-  rejection.
+  barge-in via the `X` key or voice; desktop mic input prefers local
+  faster-whisper transcription when installed, with Google cloud fallback;
+  hold-SPACE push-to-talk; wake-word listener loop.
 - **Whisper Mode & Mood Engine** — toggleable whisper mode (W key, voice, or HUD)
   for softer volume, concise replies, and quieted heartbeats; mood system
   (energy/warmth axes) flavoring idle facial tempo and greetings.
 - **Agent Brain** — Gemini function-calling loop (no arbitrary turn cap;
   30-minute reasoning budget per request — on timeout she asks "Should I keep
   going?" and "yes"/"continue" resumes the active chain).
-- **Progressive Tool Loading** — only 16 core tool schemas go to the model
+- **Progressive Tool Loading** — only 17 core tool schemas go to the model
   per call; specialist toolkits (Gmail, Spotify, scheduler, GitHub,
   vision/hardware, Windows control, MTG, memory/notes, admin) unlock on demand
-  via `load_toolkit`.
+  via `load_toolkit`. 54 tools total across 10 toolkits.
 - **Durable Memory & Spine** — SQLite semantic vector memory + Markdown journal;
   unbroken memory spine (`memory_spine.jsonl`) logging turns, tool invocations,
   and journal entries; session context (`where_we_left_off.md`) automatically
   restored at boot.
 - **Hot Package Self-Restart** — she can edit her own codebase or `soul.md`;
-  the launcher fingerprints the entire modular `aria/` package and cleanly
-  re-executes on verified modifications.
+  the agent fingerprints every `.py` file in the `aria/` package plus
+  `soul.md` at boot and cleanly re-executes on verified modifications.
 - **Scheduler & Proactive Heartbeat** — one-shot and recurring reminders/jobs;
   autonomous background heartbeat when important events or tasks occur.
-- **Phone Bridge (HTTPS)** — secure mobile companion web app with live HUD
-  video stream (`/face.mjpg`), mobile microphone PTT, text chat, and spoken audio
-  playback on your phone.
-- **50+ Built-in Tools** — Spotify control & DJ mode, Windows desktop automation
+- **Phone Bridge (HTTPS)** — secure mobile companion web app (token login +
+  cookie auth, per-machine self-signed certificate, reachable over Tailscale)
+  with a sleek minimal UI: her big pixel face as the hero, Face / Eyes / Full
+  view modes, and fullscreen face mode for the mounted phone (tap to exit).
+  The bridge page can be her camera: tap Camera ON and the phone streams its
+  front (or rear, via the flip switch) camera to the laptop as
+  `ARIA_BODY_CAMERA=bridge`. Eyes mode shows the live camera view
+  (`/phone_cam.mjpg`); "Describe what you see" snapshots a frame and has her
+  narrate it (`/api/look`). Hold-to-talk and tap-to-talk voice, text
+  directives, settings (speak replies, test audio, camera), and a toggleable
+  conversation log. Spoken replies use Edge TTS first with offline Windows
+  SAPI as fallback.
+- **Robot Body** — Arduino Nano firmware (`arduino/aria_body/aria_body.ino`)
+  driving a pan/tilt head (`P<pos>T<pos>`) and differential-drive wheels
+  (`W<l>,<r>`) over a no-solder Nano + sensor shield, with a dedicated stop
+  command (`S`). `drive_wheels` / `body_stop` tools, `ARIA_BODY_SERIAL_URL`
+  for network serial, and `sim/robot_sim.py`, a virtual body for testing
+  without hardware. Her eyes select via `ARIA_BODY_CAMERA`: USB index, IP
+  camera URL, or `bridge`. Full build guide in `docs/ROBOT_BODY.md`.
+- **54 Built-in Tools** — Spotify control & DJ mode, Windows desktop automation
   (apps, URLs, mouse clicks, keystrokes, window focus, media keys), file search,
-  Gmail send/read, GitHub repository operations, MTG Commander lookups, servo neck
-  hardware control, and vision screen-reading.
+  Gmail send/read, GitHub repository operations, MTG Commander lookups, robot
+  head/wheel control, vision screen-reading and camera description, and more.
 
 ## Requirements
 
@@ -70,6 +89,10 @@ take precedence over `aria_keys.json`).
 
 Gmail sending uses an app password, saved via ARIA's `gmail_setup` tool.
 
+To give her the phone face: on the laptop `set ARIA_BODY_CAMERA=bridge`,
+open the bridge page on the phone (see Bridge URL printed at startup), log in
+with your bridge token, and tap Camera ON in the ⚙ settings panel.
+
 ## Auto-start on boot
 
 1. Copy `windows\aria_autostart.bat` and `windows\aria_watchdog.bat` to the
@@ -84,18 +107,26 @@ Gmail sending uses an app password, saved via ARIA's `gmail_setup` tool.
 ```
 aria.py                  Root entrypoint / launcher
 aria/                    Modular system package
-  agent/                 Gemini agent loop, streaming, prompt engineering
+  agent/                 Gemini agent loop, streaming, prompt engineering,
+                         self-edit auto-restart watcher
   hud.py                 OpenCV HUD, subsystem status rows, overlay renderer
   pixel_avatar.py        Pixel-person avatar, animated expressions, ear antennae
   theme.cfg              HUD color theme definitions
-  speech.py              Edge TTS streaming prefetch, Whisper STT, echo suppression
-  bridge.py              HTTPS phone bridge server & live MJPEG face stream
+  speech.py              Edge TTS streaming prefetch, Whisper/Google STT,
+                         bridge TTS + transcription
+  bridge.py              HTTPS phone bridge server: face/eyes UI, live MJPEG
+                         streams, voice + camera endpoints
   memory.py              SQLite semantic vector memory, journal, and memory spine
   scheduler.py           Autonomous scheduler, reminders, proactive heartbeat
   spotify.py             Desktop Spotify player control & DJ mode
-  hardware.py            Servo neck & serial hardware drivers
-  vision.py              Camera capture, face tracking, screen analysis
+  hardware.py            Arduino serial: servo head, drive wheels, body tools
+  vision.py              Camera capture (USB / IP / bridge), face tracking,
+                         screen analysis, phone-frame ingest
   tools/                 Core tools & on-demand specialist toolkits
+arduino/aria_body/       Nano firmware: P/T head, W wheels, S stop protocol
+sim/robot_sim.py         Virtual robot body (TCP) for hardware-free testing
+docs/ROBOT_BODY.md       No-solder robot body build guide
+tests/test_headless.py   Headless test suite (no camera/mic/hardware needed)
 workspace/               Runtime data (memory DB, spine, models, mood, chat logs)
 soul.md                  Her persona & standing directives — loaded on boot
 requirements.txt         Python dependencies
@@ -104,6 +135,36 @@ tools/                   Helper scripts (key manager)
 ```
 
 ## Version history
+
+### Since v9.36
+
+- **Robot body** — Arduino Nano firmware with eased pan/tilt head, timed
+  differential-drive wheels, and dedicated stop; `drive_wheels` / `body_stop`
+  agent tools; `ARIA_BODY_SERIAL_URL` for network serial; `sim/robot_sim.py`
+  virtual body; full no-solder build guide in `docs/ROBOT_BODY.md`; wheels
+  chosen over tracks for the mobile base.
+- **Body camera sources** — `ARIA_BODY_CAMERA` accepts a USB index, an IP
+  camera stream URL, or `bridge` (frames uploaded by the phone bridge page);
+  snapshots and face tracking work on all three; HUD subsystem box shows the
+  active source (`[bridge]` / `[cam N]` / `[net]`).
+- **Bridge-page camera** — the phone bridge streams its own camera
+  (480x360 JPEG, ~3 fps) to `POST /api/camframe`; one phone is now her face,
+  voice, and eyes with no extra apps; front/rear flip switch in the header.
+- **Bridge redesign** — sleek minimal dark UI: her pixel face as the hero,
+  Face / Eyes / ⛶ Full segmented control, fullscreen face mode for the
+  mounted phone (tap to exit), live Eyes viewer (`/phone_cam.mjpg`),
+  "Describe what you see" snapshot narration (`POST /api/look`),
+  hold-to-talk + tap-to-talk, ⚙ settings panel (speak replies, test audio,
+  camera), toggleable conversation log, UTF-8 header icons.
+- **Bridge hardening** — token login page + HttpOnly SameSite cookie auth on
+  all routes, unknown paths 404, configurable bind host, per-machine
+  self-signed certificate (PowerShell/.NET fallback when `cryptography` is
+  broken), loud TTS failures surfacing the real engine error, Edge-first
+  TTS with offline SAPI fallback, no `?token=` in media URLs.
+- **Bridge confirmation gating removed** — risky tools now execute immediately
+  with an audit log instead of pausing for yes/no.
+- `.gitattributes` normalizes line endings to LF (prevents CRLF/LF merge
+  conflicts on Windows).
 
 - **v9.36** — Voice pipeline & false wake hardening: removed noisy VAD
   bypass, eliminated self-hearing mic echo during TTS playback, and enforced
@@ -219,3 +280,7 @@ tools/                   Helper scripts (key manager)
 - `aria_keys.json`, logs, memory DB, and journal are gitignored — they stay
   on your machine and never get committed.
 - Tested on Windows 11 with Python 3.12.
+- The v9.17/v9.14 changelog entries predate the current STT behavior: the
+  desktop mic now prefers local faster-whisper whenever it is installed,
+  falling back to Google cloud transcription, and the bridge's voice
+  messages are transcribed by Gemini.
