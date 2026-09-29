@@ -94,6 +94,7 @@ def get_subsystem_statuses() -> List[Tuple[str, str, bool]]:
     # 1. Vision
     v_ok = v_stat["vision_last"][0]
     v_str = "READY" if v_ok else ("ERROR" if v_ok is False else "IDLE")
+    v_str = f"{v_str} [{vision.body_camera_label()}]"
     vision_entry = ("Vision Optics", v_str, bool(v_ok))
 
     # 2. Screen
@@ -428,12 +429,6 @@ def _extract_wake_command(text: str) -> Tuple[bool, str]:
 
     end_pos = match.end()
     cleaned = low[end_pos:].strip(" ,.-!?:;—–\t\n")
-    while cleaned:
-        rem_match = re.match(r'^(?:(?:hey|hi|hello|ok|okay|yo)\s+)?(?:aria|arya|ahria|auria|area)\b[ ,.\-!?:;—–\t\n]*', cleaned)
-        if rem_match:
-            cleaned = cleaned[rem_match.end():].strip(" ,.-!?:;—–\t\n")
-        else:
-            break
     return True, cleaned
 
 
@@ -456,7 +451,7 @@ def continuous_voice_listener():
     wake_rec.phrase_threshold = 0.3
     wake_rec.non_speaking_duration = 0.5
     wake_rec.dynamic_energy_threshold = True
-    wake_rec.energy_threshold = 400
+    wake_rec.energy_threshold = 300
     wake_rec.dynamic_energy_adjustment_damping = 0.15
     wake_rec.dynamic_energy_ratio = 1.5
 
@@ -466,8 +461,8 @@ def continuous_voice_listener():
                 VOICE_LISTENER_ONLINE = True
                 try:
                     wake_rec.adjust_for_ambient_noise(source, duration=0.8)
-                    if wake_rec.energy_threshold < 400:
-                        wake_rec.energy_threshold = 400
+                    if wake_rec.energy_threshold < 250:
+                        wake_rec.energy_threshold = 250
                 except Exception:
                     pass
                 add_log("Wake-word listener armed ('Aria' / 'Hey Aria').")
