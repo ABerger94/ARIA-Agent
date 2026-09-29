@@ -24,17 +24,23 @@ from aria.hardware import send_servo_command, SERVO_POS
 VISION_SCREEN_SIZE = (800, 450)
 VISION_CAM_SIZE = (640, 480)
 
-# Robot body camera: the head-mounted USB webcam, or a network camera URL.
+# Robot body camera: the head-mounted USB webcam, a network camera URL, or
+# frames uploaded live by the Phone Bridge page.
 # Set ARIA_BODY_CAMERA=1 (etc.) when the laptop's built-in cam should stay
 # index 0 and the body's webcam is the second device — or set it to a stream
 # URL (e.g. the IP Webcam app on ARIA's face phone:
-# ARIA_BODY_CAMERA=http://192.168.1.42:8080/video). See docs/ROBOT_BODY.md.
+# ARIA_BODY_CAMERA=http://192.168.1.42:8080/video) — or set it to "bridge"
+# to use the bridge page's own camera (tap "Camera: ON" on the phone).
+# See docs/ROBOT_BODY.md.
 BODY_CAMERA_RAW = os.environ.get("ARIA_BODY_CAMERA", "0").strip()
 
 
 def _body_camera_source():
-    """USB camera index (int) or network stream URL (str) for the body camera."""
+    """USB camera index (int), network stream URL (str), or "bridge" for
+    frames uploaded by the Phone Bridge page."""
     raw = BODY_CAMERA_RAW
+    if raw.lower() == "bridge":
+        return "bridge"
     if raw.lower().startswith(("http://", "https://")):
         return raw
     try:
@@ -43,9 +49,40 @@ def _body_camera_source():
         return 0
 
 
+class BridgeCamera:
+    """cv2.VideoCapture-compatible shim reading frames uploaded by the
+    Phone Bridge page (ARIA_BODY_CAMERA=bridge)."""
+
+    def __init__(self):
+        self._last_ok = 0.0
+
+    def isOpened(self):
+        return (time.time() - _PHONE_CAM["last"]) < 10.0
+
+    def read(self):
+        jpg = get_phone_frame_jpeg()
+        if not jpg:
+            return False, None
+        try:
+            frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+        except Exception:
+            return False, None
+        if frame is None:
+            return False, None
+        self._last_ok = time.time()
+        return True, frame
+
+    def release(self):
+        pass
+
+
 def open_body_camera():
-    """OpenCV capture for the body camera — USB index or network stream."""
-    return cv2.VideoCapture(_body_camera_source())
+    """OpenCV capture for the body camera — USB index, network stream, or
+    the Phone Bridge page's uploaded frames."""
+    src = _body_camera_source()
+    if src == "bridge":
+        return BridgeCamera()
+    return cv2.VideoCapture(src)
 
 LATEST_CAMERA_FRAME: Optional[np.ndarray] = None
 _LAST_SCREEN_HASH: Optional[str] = None
@@ -56,6 +93,29 @@ FACE_TRACKING: bool = False
 FACE_CROP = (430, 95, 420, 350)
 _FACE_FRAME = {"jpeg": None, "lock": threading.Lock(), "last": 0.0}
 _FACE_FPS_MIN_GAP = 0.08  # ~12 fps max encode rate
+
+# Latest camera frame uploaded by the Phone Bridge page (ARIA_BODY_CAMERA=bridge).
+_PHONE_CAM = {"jpeg": None, "lock": threading.Lock(), "last": 0.0}
+_PHONE_CAM_FPS_MIN_GAP = 0.15  # ~6 fps max ingest rate
+
+
+def publish_phone_frame(jpeg: bytes) -> bool:
+    """Store the latest camera frame uploaded by the Phone Bridge page."""
+    if not jpeg or len(jpeg) < 100 or jpeg[:2] != b"\xff\xd8":
+        return False
+    now = time.time()
+    if now - _PHONE_CAM["last"] < _PHONE_CAM_FPS_MIN_GAP:
+        return True  # throttled, not an error
+    with _PHONE_CAM["lock"]:
+        _PHONE_CAM["jpeg"] = bytes(jpeg)
+        _PHONE_CAM["last"] = now
+    return True
+
+
+def get_phone_frame_jpeg() -> Optional[bytes]:
+    """Retrieve the latest Phone Bridge camera frame."""
+    with _PHONE_CAM["lock"]:
+        return _PHONE_CAM["jpeg"]
 
 _VISION_TEXT_CALL: Optional[Callable[[str, Any], str]] = None
 

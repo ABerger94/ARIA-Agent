@@ -1,7 +1,7 @@
 import os
 """Headless test harness for ARIA-Agent on Linux (no cv2/mic/TTS).
 Bypasses aria/__init__.py's eager imports; stubs hardware-bound modules."""
-import sys, types, traceback
+import sys, types, traceback, threading
 
 PKG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "aria")
 pkg = types.ModuleType("aria")
@@ -45,6 +45,7 @@ memory = importlib.import_module("aria.memory")
 for name in ("aria.scheduler", "aria.vision", "aria.hardware", "aria.spotify", "aria.hud"):
     sys.modules[name] = types.ModuleType(name)
 sys.modules["aria.vision"].get_face_frame_jpeg = lambda: None
+sys.modules["aria.vision"].publish_phone_frame = lambda jpeg: True
 sys.modules["aria.hud"].tool_show_commands = lambda: "ok"
 sys.modules["aria.hud"].tool_hide_commands = lambda: "ok"
 builtins_mod = importlib.import_module("aria.tools.builtins")
@@ -375,6 +376,11 @@ def t_body_protocol():
         assert vis.count("cap = open_body_camera()") == 2, "both capture paths must use the body camera"
         assert "http://" in vis and "_body_camera_source" in vis
 
+        # bridge-page camera: page uploads frames, vision serves them as a capture
+        assert "publish_phone_frame" in vis and "BridgeCamera" in vis
+        brg = open(os.path.join(PKG, "bridge.py")).read()
+        assert "/api/camframe" in brg and "facingMode" in brg and "Camera: OFF" in brg
+
         # camera source parsing: URL stays a string, digits become int, junk -> 0
         # (extracted from the real source via AST so the headless suite never
         # needs cv2/numpy just to test parsing)
@@ -392,10 +398,31 @@ def t_body_protocol():
         for raw, expected in [
             ("http://192.168.1.42:8080/video", "http://192.168.1.42:8080/video"),
             ("https://example.com/cam", "https://example.com/cam"),
+            ("bridge", "bridge"), ("BRIDGE", "bridge"),
             ("1", 1), ("0", 0), ("bogus", 0), ("", 0),
         ]:
             ns["BODY_CAMERA_RAW"] = raw
             assert parse() == expected, (raw, parse())
+
+        # publish_phone_frame: rejects non-JPEG/tiny bodies, stores latest frame
+        fn2_src = next(
+            (ast.get_source_segment(vis, n) for n in ast.walk(tree)
+             if isinstance(n, ast.FunctionDef) and n.name == "publish_phone_frame"),
+            None,
+        )
+        assert fn2_src, "missing publish_phone_frame"
+        ns2: dict = {
+            "time": time, "threading": threading,
+            "_PHONE_CAM": {"jpeg": None, "lock": threading.Lock(), "last": 0.0},
+            "_PHONE_CAM_FPS_MIN_GAP": 0.15,
+        }
+        exec(compile(fn2_src, "<test>", "exec"), ns2)
+        pub = ns2["publish_phone_frame"]
+        assert pub(b"not a jpeg") is False
+        assert pub(b"\xff\xd8" + b"\x00" * 50) is False  # too short to be real
+        good = b"\xff\xd8\xff\xe0" + b"\x00" * 200
+        assert pub(good) is True
+        assert ns2["_PHONE_CAM"]["jpeg"] == good
     finally:
         for m in ("serial", "serial.tools", "serial.tools.list_ports"):
             sys.modules.pop(m, None)
