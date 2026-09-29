@@ -128,6 +128,42 @@ sits still, or while it moves.
 
 ## Test procedure
 
+### Testing with zero hardware: the virtual body
+
+`sim/robot_sim.py` is a software stand-in for the Arduino — it speaks the exact
+same `P/T/W/S` protocol over TCP, so ARIA can't tell the difference.
+
+Terminal 1 (either laptop):
+
+```
+python sim/robot_sim.py --port 9999
+```
+
+Terminal 2 — point ARIA at it instead of a COM port:
+
+```
+# Windows
+set ARIA_BODY_SERIAL_URL=socket://127.0.0.1:9999
+# Linux/macOS
+export ARIA_BODY_SERIAL_URL=socket://127.0.0.1:9999
+```
+
+Then start ARIA and use `move_head`, `drive_wheels`, `body_stop` normally.
+Every command shows up live in terminal 1 with timestamps and wheel state,
+e.g. `[21:14:23] DRIVE [L▲ +60 R▼ -60]`. Unset the variable to go back to
+real USB serial. Across a LAN, replace `127.0.0.1` with the sim machine's IP —
+handy if one laptop ends up being the robot's permanent host.
+
+### The second-laptop play
+
+Honestly the best use of a spare laptop: make it the robot's dedicated brain.
+Install Python + `pip install -r requirements.txt`, pull this repo, set
+`ARIA_BODY_CAMERA` if the webcam isn't index 0, and leave ARIA running there.
+The robot tethers to it via USB; your main machine stays free, and you can
+still reach ARIA from your phone through the phone bridge.
+
+### With real hardware
+
 - [ ] Serial Monitor: `P90T45` centers the head; servos move smoothly (eased).
 - [ ] ARIA: "look left" moves the physical head.
 - [ ] ARIA: "follow my face" tracks your face on the body webcam.
