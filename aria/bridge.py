@@ -22,7 +22,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional, Callable, Any
 
 from aria.config import PHONE_BRIDGE_PORT, BRIDGE_TOKEN, ROOT_DIR, WORKSPACE_DIR, add_log, lan_ip, get_setting
-from aria.vision import get_face_frame_jpeg, publish_phone_frame
+from aria.vision import (
+    get_face_frame_jpeg, publish_phone_frame, get_phone_frame_jpeg,
+    get_phone_frame_status, describe_phone_view,
+)
 from aria.speech import tts_bytes_for_bridge, transcribe_audio
 from aria.tools.schemas import COMMAND_GUIDE
 
@@ -318,54 +321,84 @@ def get_bridge_url() -> str:
 BRIDGE_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport"
 content="width=device-width,initial-scale=1"><meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <title>A.R.I.A. Bridge</title>
-<style>body{background:#0b0e12;color:#e8f4ff;font-family:sans-serif;margin:0;padding:16px}
-h2{color:#ff5fa2;margin-top:0}#log{border:1px solid #2a3138;border-radius:8px;padding:10px;
-height:42vh;overflow-y:auto;margin-bottom:12px;font-size:14px}
-.you{color:#ff5fa2}.aria{color:#28f078}
-form{display:flex;gap:8px;margin-bottom:10px}input{flex:1;padding:12px;border-radius:8px;border:1px
-solid #2a3138;background:#14181d;color:#fff;font-size:16px}
-button{padding:12px 18px;border-radius:8px;border:0;background:#ff5fa2;color:#fff;
-font-weight:bold;font-size:16px;cursor:pointer}#talk{flex:2;padding:16px;touch-action:none;
-user-select:none;-webkit-user-select:none}
-.talk-row{display:flex;gap:8px}
-#ptt{flex:1;padding:16px;border-radius:8px;border:1px solid #2a3138;background:#1e242b;color:#e8f4ff;font-weight:bold;font-size:16px;cursor:pointer}
-.btn-row{display:flex;gap:8px;margin-top:8px}
-.secondary-btn{flex:1;background:#1e242b;color:#e8f4ff;font-size:13px;padding:10px;border-radius:8px;border:1px solid #2a3138}
-.topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-.topbar h2{margin:0}
+<style>
+:root{--acc:#ff5fa2;--bg:#05070a;--card:#0d1117;--line:#1c232c;--txt:#eef4fa;--dim:#8ba2b5}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;margin:0;padding:14px;min-height:100vh}
+#app{max-width:560px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+.topbar{display:flex;justify-content:space-between;align-items:center}
+.wordmark{font-size:13px;letter-spacing:4px;color:var(--dim);font-weight:600}
 .topbtns{display:flex;gap:8px;align-items:center}
-.icon-btn{background:#1e242b;color:#e8f4ff;border:1px solid #2a3138;border-radius:8px;padding:8px 12px;font-size:18px;cursor:pointer}
-#flipcam{font-size:13px}
-.settings{display:flex;flex-direction:column;gap:8px;background:#14181d;border:1px solid #2a3138;border-radius:12px;padding:12px;margin-bottom:12px}
-.face-wrap{text-align:center;margin-bottom:12px}
-#face{border-radius:12px;max-width:100%;width:min(94vw,560px);border:1px solid #2a3138;image-rendering:pixelated}
+.icon-btn{background:transparent;color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:7px 11px;font-size:16px;cursor:pointer}
+#flipcam{font-size:12px;color:var(--dim)}
+#stage{position:relative;display:flex;justify-content:center}
+#face{width:min(94vw,520px);max-width:100%;border-radius:20px;border:1px solid var(--line);image-rendering:pixelated;background:#000;box-shadow:0 0 60px rgba(255,95,162,.12)}
+#eyes{width:min(94vw,520px);max-width:100%;border-radius:20px;border:1px solid var(--line);background:#000}
+#caption{position:absolute;left:12px;right:12px;bottom:10px;font-size:13px;line-height:1.4;color:var(--txt);background:rgba(5,7,10,.78);border:1px solid var(--line);border-radius:10px;padding:8px 10px;display:none;backdrop-filter:blur(6px)}
+#caption.on{display:block}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:10px}
+#settings{display:flex;flex-direction:column;gap:8px}
+#log{max-height:38vh;overflow-y:auto;font-size:14px;display:flex;flex-direction:column;gap:6px}
+.you{color:var(--acc)}.aria{color:#28f078}
+.modes{display:flex;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:4px;gap:4px}
+.mode-btn{flex:1;background:transparent;border:0;color:var(--dim);font-size:14px;font-weight:600;padding:9px;border-radius:9px;cursor:pointer}
+.mode-btn.active{background:#1a212b;color:var(--txt)}
+#lookbtn{background:transparent;border:1px solid var(--acc);color:var(--acc);border-radius:12px;padding:11px;font-size:14px;font-weight:700;cursor:pointer}
+#lookbtn:disabled{opacity:.5}
+form{display:flex;gap:8px}input{flex:1;padding:13px 14px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:#fff;font-size:16px;outline:none}
+input:focus{border-color:var(--acc)}
+#sendbtn{padding:0 22px;border-radius:12px;border:0;background:var(--acc);color:#fff;font-weight:700;font-size:16px;cursor:pointer}
+.talk-row{display:flex;gap:8px}
+#talk{flex:2;padding:15px;border-radius:12px;border:0;background:var(--acc);color:#fff;font-weight:700;font-size:16px;cursor:pointer;touch-action:none;user-select:none;-webkit-user-select:none}
+#ptt{flex:1;padding:15px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--txt);font-weight:600;font-size:16px;cursor:pointer}
+.row-btn{background:transparent;border:1px solid var(--line);color:var(--txt);font-size:14px;padding:11px;border-radius:10px;cursor:pointer;text-align:left}
+.footrow{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--dim)}
+.footrow a{color:var(--acc);text-decoration:none}
+body.facemode{padding:0}
+body.facemode #app{max-width:none}
+body.facemode #app>*:not(#stage){display:none!important}
+body.facemode #stage{position:fixed;inset:0;z-index:50;background:#000}
+body.facemode #face,body.facemode #eyes{width:100%;height:100%;object-fit:contain;border:0;border-radius:0;box-shadow:none}
+body.facemode #caption{display:none!important}
 </style></head><body>
-<div class="topbar">
-<h2>A.R.I.A. // Phone Bridge</h2>
+<div id="app">
+<header class="topbar">
+<div class="wordmark">A.R.I.A.</div>
 <div class="topbtns">
 <button id="flipcam" type="button" class="icon-btn" style="display:none">front ⇄</button>
 <button id="logbtn" type="button" class="icon-btn" aria-label="Log">📜</button>
 <button id="cog" type="button" class="icon-btn" aria-label="Settings">⚙</button>
 </div>
+</header>
+<main id="stage">
+<img id="face" alt="A.R.I.A.">
+<img id="eyes" alt="Camera view" style="display:none">
+<div id="caption"></div>
+</main>
+<div id="settings" class="panel" style="display:none">
+<button id="spk" type="button" class="row-btn">Speak replies: ON</button>
+<button id="testspk" type="button" class="row-btn">Test Audio</button>
+<button id="cam" type="button" class="row-btn">Camera: OFF</button>
 </div>
-<div id="settings" class="settings" style="display:none">
-<button id="spk" type="button" class="secondary-btn">Speak replies: ON</button>
-<button id="testspk" type="button" class="secondary-btn">Test Audio</button>
-<button id="cam" type="button" class="secondary-btn">Camera: OFF</button>
+<div id="log" class="panel" style="display:none"></div>
+<div class="modes">
+<button id="mode-face" type="button" class="mode-btn active">Face</button>
+<button id="mode-eyes" type="button" class="mode-btn">Eyes</button>
+<button id="mode-full" type="button" class="mode-btn">⛶ Full</button>
 </div>
-<div class="face-wrap"><img id="face" alt="A.R.I.A."></div>
-<div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
-  <a href="/commands" style="color:#ff5fa2;font-size:14px">Command reference</a>
-  <span id="astat" style="font-size:12px;color:#8ba2b5">Audio: ready</span>
-</div>
-<div id="log" style="display:none"></div>
+<button id="lookbtn" type="button" style="display:none">✦ Describe what you see</button>
 <form id="msgform">
-  <input id="t" placeholder="Directive..." autocomplete="off">
-  <button type="submit" id="sendbtn">Send</button>
+<input id="t" placeholder="Directive..." autocomplete="off">
+<button type="submit" id="sendbtn">Send</button>
 </form>
 <div class="talk-row">
 <button id="talk">Hold to talk</button>
 <button id="ptt" type="button">Tap to talk</button>
+</div>
+<div class="footrow">
+<a href="/commands">Command reference</a>
+<span id="astat">Audio: ready</span>
+</div>
 </div>
 <audio id="aria-audio" playsinline webkit-playsinline preload="auto" style="display:none"></audio>
 <audio id="aria-bg" loop playsinline webkit-playsinline preload="auto" style="display:none" src="/silent.wav"></audio>
@@ -805,13 +838,65 @@ async function flipCam(){
   catch(err){alert('Camera flip failed ('+err+').');}
 }
 document.getElementById('flipcam').addEventListener('click',()=>{unlockAudio();flipCam();});
+
+// ---- view modes: face / eyes / fullscreen ----
+const stageEl=document.getElementById('stage');
+const faceImg=document.getElementById('face');
+const eyesImg=document.getElementById('eyes');
+const captionEl=document.getElementById('caption');
+const lookBtn=document.getElementById('lookbtn');
+function setCaption(t){
+  captionEl.innerText=t||'';
+  captionEl.classList.toggle('on',!!t);
+}
+async function setView(mode){
+  document.getElementById('mode-face').classList.toggle('active',mode==='face');
+  document.getElementById('mode-eyes').classList.toggle('active',mode==='eyes');
+  const eyes=mode==='eyes';
+  faceImg.style.display=eyes?'none':'';
+  eyesImg.style.display=eyes?'':'none';
+  lookBtn.style.display=eyes?'':'none';
+  if(eyes){
+    setCaption('Connecting…');
+    try{
+      const r=await api('/api/camstatus');
+      if(r.ok){
+        const d=await r.json();
+        if(d.active){setCaption('');eyesImg.src='/phone_cam.mjpg';}
+        else{setCaption('Camera is off — enable it in ⚙ settings.');eyesImg.style.display='none';}
+      }else{setCaption('Could not reach camera.');}
+    }catch(e){setCaption('Could not reach camera.');}
+  }else{
+    eyesImg.removeAttribute('src');
+    setCaption('');
+  }
+}
+document.getElementById('mode-face').addEventListener('click',()=>setView('face'));
+document.getElementById('mode-eyes').addEventListener('click',()=>setView('eyes'));
+document.getElementById('mode-full').addEventListener('click',()=>{
+  if(document.getElementById('mode-eyes').classList.contains('active'))setView('face');
+  document.body.classList.add('facemode');
+});
+stageEl.addEventListener('click',()=>{
+  if(document.body.classList.contains('facemode'))document.body.classList.remove('facemode');
+});
+lookBtn.addEventListener('click',async()=>{
+  lookBtn.disabled=true;lookBtn.innerText='Looking…';setCaption('');
+  try{
+    const r=await api('/api/look',{method:'POST'});
+    let d={};try{d=await r.json();}catch(e){}
+    if(r.ok&&d.reply){setCaption(d.reply);add('aria',d.reply);}
+    else setCaption('Look failed: '+(d.error||r.status));
+  }catch(e){setCaption('Look failed: '+e);}
+  lookBtn.disabled=false;lookBtn.innerText='✦ Describe what you see';
+});
 document.getElementById('cog').addEventListener('click',()=>{
   const s=document.getElementById('settings');
   s.style.display=(s.style.display==='none')?'flex':'none';
 });
 document.getElementById('logbtn').addEventListener('click',()=>{
   const l=document.getElementById('log');
-  l.style.display=(l.style.display==='none')?'block':'none';
+  l.style.display=(l.style.display==='none')?'flex':'none';
   if(l.style.display!=='none'){l.scrollTop=l.scrollHeight;}
 });
 </script></body></html>"""
@@ -938,6 +1023,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 logs = _CHAT_LOG_CALL() if _CHAT_LOG_CALL else []
                 self._send(200, json.dumps(logs[-30:]).encode("utf-8"))
                 return
+            if self.path.startswith("/api/camstatus"):
+                self._send(200, json.dumps(get_phone_frame_status()).encode("utf-8"))
+                return
             if self.path.startswith("/api/say"):
                 qs = self.path.split("?", 1)[1] if "?" in self.path else ""
                 params = dict(p.split("=", 1) for p in qs.split("&") if "=" in p)
@@ -979,6 +1067,32 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(_SILENT_WAV_BYTES)
             return
+
+        if self.path.startswith("/phone_cam.mjpg"):
+            # Live view of what ARIA's phone camera sees (needs Camera: ON).
+            if not self._authed():
+                self._send(401, b'{"error":"bad or missing bridge token"}')
+                return
+            if not get_phone_frame_jpeg():
+                self._send(404, b'{"error":"no camera frames yet - turn on Camera in settings"}')
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            try:
+                while True:
+                    jpg = get_phone_frame_jpeg()
+                    if jpg:
+                        chunk = (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                                 + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n")
+                        self.wfile.write(chunk)
+                    time.sleep(0.25)
+            except Exception:
+                return
 
         if self.path.startswith("/face.mjpg"):
             if not self._authed():
@@ -1053,7 +1167,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send(401, b'{"error":"bad bridge token"}')
             return
         if not (self.path.startswith("/api/ask") or self.path.startswith("/api/voice")
-                or self.path.startswith("/api/camframe")):
+                or self.path.startswith("/api/camframe") or self.path.startswith("/api/look")):
             self.send_response(404)
             self.end_headers()
             return
@@ -1062,6 +1176,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
 
         length = int(self.headers.get("Content-Length", 0))
+        if self.path.startswith("/api/look"):
+            # Snapshot + describe: what does ARIA's camera see right now?
+            try:
+                reply = describe_phone_view()
+            except Exception as e:
+                self._send(500, json.dumps({"error": f"look failed: {e}"}).encode("utf-8"))
+                return
+            self._send(200, json.dumps({"reply": reply}).encode("utf-8"))
+            return
         if self.path.startswith("/api/camframe"):
             # Camera frame uploaded by the bridge page (ARIA_BODY_CAMERA=bridge).
             if length > 1_000_000:

@@ -204,10 +204,20 @@ export ARIA_BODY_CAMERA=http://<phone-ip>:8080/video
 
 Newer and simpler than IP Webcam: the bridge page itself can be ARIA's eyes.
 Set `ARIA_BODY_CAMERA=bridge` on the laptop, open the bridge page on the
-phone, and tap **Camera: ON**. The page streams 480x360 JPEG frames (~3 fps)
-to the laptop over the existing bridge connection — no second app, no extra
-server. Face, voice, and eyes all live in the one page. Tap **Camera: OFF**
-to stop. Uses the front camera (same side as the screen, like real eyes).
+phone, and tap **Camera: ON** (in the ⚙ settings panel). The page streams
+480x360 JPEG frames (~3 fps) to the laptop over the existing bridge
+connection — no second app, no extra server. Face, voice, and eyes all live
+in the one page. Tap **Camera: OFF** to stop. Uses the front camera (same
+side as the screen, like real eyes); the **front ⇄** switch in the header
+flips to the rear camera while streaming.
+
+The redesigned bridge page (dark, minimal) has three view modes under the
+stage: **Face** (her pixel body), **Eyes** (live view of her phone camera via
+`/phone_cam.mjpg`), and **⛶ Full** (fullscreen face for the mounted phone —
+tap anywhere to exit). In Eyes mode, **✦ Describe what you see** captures a
+frame and has her describe it (`POST /api/look`). The 📜 button toggles the
+scrollable conversation log; the directive field and hold/tap-to-talk
+buttons sit below the stage.
 
 ## Troubleshooting
 

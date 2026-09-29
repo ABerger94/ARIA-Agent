@@ -127,6 +127,38 @@ def get_phone_frame_jpeg() -> Optional[bytes]:
     with _PHONE_CAM["lock"]:
         return _PHONE_CAM["jpeg"]
 
+
+def get_phone_frame_status() -> dict:
+    """Whether the phone camera is actively streaming (for the bridge UI)."""
+    with _PHONE_CAM["lock"]:
+        last = _PHONE_CAM["last"]
+        has = _PHONE_CAM["jpeg"] is not None
+    age = time.time() - last if last else -1.0
+    return {"active": bool(has and 0 <= age < 10.0),
+            "age_s": round(age, 1) if last else -1.0}
+
+
+def describe_phone_view(question: str = "") -> str:
+    """Describe what ARIA's phone camera currently sees."""
+    jpg = get_phone_frame_jpeg()
+    if not jpg:
+        return "[No camera view — turn on Camera in the bridge page's settings.]"
+    q = question or "Describe what you see in one or two sentences, as ARIA seeing through her own eyes."
+    b64 = base64.b64encode(jpg).decode("utf-8")
+    contents = [{"role": "user", "parts": [
+        {"text": q},
+        {"inline_data": {"mime_type": "image/jpeg", "data": b64}}
+    ]}]
+    sys_prompt = ("You are ARIA, a robot describing what your own camera eyes see. "
+                  "Be concise and concrete.")
+    if _VISION_TEXT_CALL:
+        return _VISION_TEXT_CALL(sys_prompt, contents)
+    try:
+        from aria.agent.brain import gemini_text
+        return gemini_text(sys_prompt, contents)
+    except Exception as e:
+        return f"[Vision unavailable: {e}]"
+
 _VISION_TEXT_CALL: Optional[Callable[[str, Any], str]] = None
 
 
