@@ -1,0 +1,3 @@
+# Normalize line endings across Windows/Linux checkouts (LF in repo).
+# Prevents whole-file merge conflicts from CRLF vs LF.
+* text=auto
