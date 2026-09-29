@@ -315,7 +315,7 @@ def get_bridge_url() -> str:
 
 
 
-BRIDGE_HTML = """<!DOCTYPE html><html><head><meta name="viewport"
+BRIDGE_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport"
 content="width=device-width,initial-scale=1"><meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <title>A.R.I.A. Bridge</title>
 <style>body{background:#0b0e12;color:#e8f4ff;font-family:sans-serif;margin:0;padding:16px}
@@ -817,7 +817,7 @@ document.getElementById('logbtn').addEventListener('click',()=>{
 </script></body></html>"""
 
 
-BRIDGE_LOGIN_HTML = """<!DOCTYPE html><html><head><meta name="viewport"
+BRIDGE_LOGIN_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport"
 content="width=device-width,initial-scale=1"><title>A.R.I.A. Bridge - Login</title>
 <style>body{background:#0b0e12;color:#e8f4ff;font-family:sans-serif;margin:0;padding:16px}
 h2{color:#ff5fa2}p{color:#9fb2c3;font-size:14px}
@@ -1005,7 +1005,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path == "/":
             if self._authed():
-                self._send(200, BRIDGE_HTML.encode("utf-8"), "text/html")
+                self._send(200, BRIDGE_HTML.encode("utf-8"), "text/html; charset=utf-8")
                 return
             # One-time upgrade: a valid legacy ?token= bookmark becomes a
             # cookie, then redirects to the clean URL.
@@ -1018,7 +1018,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self.send_header("Set-Cookie", self._bridge_cookie())
                 self.end_headers()
                 return
-            self._send(200, BRIDGE_LOGIN_HTML.encode("utf-8"), "text/html")
+            self._send(200, BRIDGE_LOGIN_HTML.encode("utf-8"), "text/html; charset=utf-8")
             return
 
         if path == "/commands":
@@ -1027,7 +1027,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self.send_header("Location", "/")
                 self.end_headers()
                 return
-            self._send(200, _commands_html().encode("utf-8"), "text/html")
+            self._send(200, _commands_html().encode("utf-8"), "text/html; charset=utf-8")
             return
 
         self._send(404, b'{"error":"not found"}')
