@@ -46,6 +46,9 @@ for name in ("aria.scheduler", "aria.vision", "aria.hardware", "aria.spotify", "
     sys.modules[name] = types.ModuleType(name)
 sys.modules["aria.vision"].get_face_frame_jpeg = lambda: None
 sys.modules["aria.vision"].publish_phone_frame = lambda jpeg: True
+sys.modules["aria.vision"].get_phone_frame_jpeg = lambda: None
+sys.modules["aria.vision"].get_phone_frame_status = lambda: {"active": False, "age_s": -1.0}
+sys.modules["aria.vision"].describe_phone_view = lambda q="": "[stubbed]"
 sys.modules["aria.hud"].tool_show_commands = lambda: "ok"
 sys.modules["aria.hud"].tool_hide_commands = lambda: "ok"
 builtins_mod = importlib.import_module("aria.tools.builtins")
@@ -378,8 +381,12 @@ def t_body_protocol():
 
         # bridge-page camera: page uploads frames, vision serves them as a capture
         assert "publish_phone_frame" in vis and "BridgeCamera" in vis
+        assert "describe_phone_view" in vis and "get_phone_frame_status" in vis
         brg = open(os.path.join(PKG, "bridge.py")).read()
         assert "/api/camframe" in brg and "facingMode" in brg and "Camera: OFF" in brg
+        # eyes viewer + look: MJPEG of phone frames, cam status, describe endpoint
+        assert "/phone_cam.mjpg" in brg and "/api/camstatus" in brg and "/api/look" in brg
+        assert "mode-eyes" in brg and "mode-full" in brg and "facemode" in brg
 
         # camera source parsing: URL stays a string, digits become int, junk -> 0
         # (extracted from the real source via AST so the headless suite never
