@@ -298,6 +298,8 @@ def _init_default_registry():
 
     # Hardware tools
     _REGISTRY["move_head_servos"] = lambda a: hardware.tool_move_head_servos(int(a.get("pan", 90)), int(a.get("tilt", 45)))
+    _REGISTRY["drive_wheels"] = lambda a: hardware.tool_drive(int(a.get("left", 0)), int(a.get("right", 0)), float(a.get("seconds", 0)))
+    _REGISTRY["body_stop"] = lambda a: hardware.tool_body_stop()
 
     # Spotify tools
     _REGISTRY["spotify"] = lambda a: spotify.tool_spotify(a.get("action", "play_pause"), a.get("query", ""))

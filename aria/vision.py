@@ -24,6 +24,11 @@ from aria.hardware import send_servo_command, SERVO_POS
 VISION_SCREEN_SIZE = (800, 450)
 VISION_CAM_SIZE = (640, 480)
 
+# Robot body camera: the head-mounted USB webcam. Defaults to the first camera;
+# set ARIA_BODY_CAMERA=1 (etc.) when the laptop's built-in cam should stay index 0
+# and the body's webcam is the second device. See docs/ROBOT_BODY.md.
+BODY_CAMERA_INDEX = int(os.environ.get("ARIA_BODY_CAMERA", "0"))
+
 LATEST_CAMERA_FRAME: Optional[np.ndarray] = None
 _LAST_SCREEN_HASH: Optional[str] = None
 _VISION_LAST: Tuple[Optional[bool], Optional[float]] = (None, None)
@@ -83,7 +88,7 @@ def capture_screen_if_changed() -> Optional[bytes]:
 def capture_webcam() -> Optional[bytes]:
     """Capture a fresh frame from the local webcam."""
     global LATEST_CAMERA_FRAME, _VISION_LAST
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(BODY_CAMERA_INDEX)
     ret, frame = None, None
     for _ in range(3):
         ret, frame = cap.read()
@@ -184,7 +189,7 @@ def face_track_loop(is_busy_fn: Optional[Callable[[], bool]] = None):
             busy = is_busy_fn() if is_busy_fn else False
             if not FACE_TRACKING or busy:
                 continue
-            cap = cv2.VideoCapture(0)
+            cap = cv2.VideoCapture(BODY_CAMERA_INDEX)
             ret, frame = cap.read()
             cap.release()
             if not ret or frame is None:

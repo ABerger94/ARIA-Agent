@@ -87,5 +87,58 @@ def get_hardware_status() -> Dict[str, Any]:
         "connected": HARDWARE_CONNECTED,
         "pan": SERVO_PAN,
         "tilt": SERVO_TILT,
+        "wheels": dict(WHEEL_STATE),
         "serial_available": SERIAL_AVAILABLE
     }
+
+
+# ---- Drive base (phase 2 of the robot body) ----
+# Continuous-rotation servos on the Arduino (D5/D6 in aria_body.ino).
+# Wire protocol: b"W<left>,<right>\n", each -100..100, 0 = stopped.
+
+WHEEL_STATE: Dict[str, int] = {"left": 0, "right": 0}
+
+
+def send_drive_command(left: int, right: int) -> Tuple[int, int]:
+    """Clamp and transmit wheel speeds (-100..100) to the body Arduino."""
+    global SERIAL_CONN, HARDWARE_CONNECTED
+    with _LOCK:
+        left = max(-100, min(100, int(left)))
+        right = max(-100, min(100, int(right)))
+        WHEEL_STATE["left"] = left
+        WHEEL_STATE["right"] = right
+
+        if HARDWARE_CONNECTED and SERIAL_CONN and getattr(SERIAL_CONN, "is_open", False):
+            try:
+                SERIAL_CONN.write(f"W{left},{right}\n".encode("utf-8"))
+            except Exception as e:
+                add_log(f"Drive write failed: {e}")
+                HARDWARE_CONNECTED = False
+
+        add_log(f"Wheels: L {left}, R {right}")
+        return left, right
+
+
+def tool_drive(left: int = 0, right: int = 0, seconds: float = 0) -> str:
+    """Tool implementation for driving the robot body.
+
+    left/right: -100..100 (negative = reverse). seconds > 0 auto-stops
+    the wheels after that long so ARIA can't drive off the desk forever.
+    """
+    l, r = send_drive_command(left, right)
+    mode = "hardware" if HARDWARE_CONNECTED else "virtual mode"
+    if seconds and seconds > 0:
+        secs = max(0.1, min(30.0, float(seconds)))
+        timer = threading.Timer(secs, send_drive_command, args=(0, 0))
+        timer.daemon = True
+        timer.start()
+        return f"Driving L {l} / R {r} for {secs:g}s ({mode}); auto-stop armed."
+    return f"Wheels set to L {l} / R {r} ({mode})."
+
+
+def tool_body_stop() -> str:
+    """Stop the wheels and center the head."""
+    send_drive_command(0, 0)
+    send_servo_command(90, 45)
+    mode = "hardware" if HARDWARE_CONNECTED else "virtual mode"
+    return f"Body stopped, head centered ({mode})."

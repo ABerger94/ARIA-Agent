@@ -293,6 +293,83 @@ def t_tts_contract():
     assert sp.edge_tts_bytes("hi") == b"", "desktop wrapper must stay silent-safe"
 check("tts_bytes_for_bridge: loud failure, SAPI fallback, edge passthrough", t_tts_contract)
 
+# 23. Robot body protocol: head + drive commands over the Arduino wire format.
+#     Loads the REAL aria/hardware.py with a fake `serial` module.
+def t_body_protocol():
+    import importlib.util, time
+    written = []
+
+    class FakeSerial:
+        def __init__(self, device, baudrate, timeout=1):
+            self.device, self.is_open = device, True
+        def write(self, data):
+            written.append(bytes(data))
+
+    fake_serial = types.ModuleType("serial")
+    fake_tools = types.ModuleType("serial.tools")
+    fake_lp = types.ModuleType("serial.tools.list_ports")
+    fake_port = types.SimpleNamespace(device="COM7", description="USB-SERIAL CH340 (COM7)")
+    fake_lp.comports = lambda: [fake_port]
+    fake_serial.Serial = FakeSerial
+    fake_serial.tools = fake_tools
+    fake_tools.list_ports = fake_lp
+    sys.modules["serial"] = fake_serial
+    sys.modules["serial.tools"] = fake_tools
+    sys.modules["serial.tools.list_ports"] = fake_lp
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "aria_hardware_real", os.path.join(PKG, "hardware.py"))
+        hw = importlib.util.module_from_spec(spec)
+        sys.modules["aria_hardware_real"] = hw
+        spec.loader.exec_module(hw)
+
+        # virtual mode: no connection, no crash, state still tracked
+        assert hw.HARDWARE_CONNECTED is False
+        assert hw.send_servo_command(90, 45) == (90, 45)
+        assert written == [], "virtual mode must not write serial"
+
+        # auto-detect the CH340 Nano and connect
+        assert hw.init_hardware() is True, "must detect fake CH340 port"
+        assert hw.HARDWARE_CONNECTED is True
+
+        # head protocol: b"P<pan>T<tilt>\\n" with clamping
+        assert hw.send_servo_command(200, -10) == (180, 0)
+        assert written[-1] == b"P180T0\n", written[-1]
+
+        # drive protocol: b"W<l>,<r>\\n", -100..100 with clamping
+        assert hw.send_drive_command(-50, 75) == (-50, 75)
+        assert written[-1] == b"W-50,75\n", written[-1]
+        assert hw.send_drive_command(150, -150) == (100, -100)
+        assert written[-1] == b"W100,-100\n", written[-1]
+
+        # auto-stop timer fires a W0,0
+        n = len(written)
+        msg = hw.tool_drive(60, 60, seconds=0.1)
+        assert "60" in msg and "auto-stop" in msg, msg
+        time.sleep(0.4)
+        assert written[-1] == b"W0,0\n", written[-1:]
+        assert len(written) > n
+
+        # stop tool + status shape
+        assert "centered" in hw.tool_body_stop().lower()
+        st = hw.get_hardware_status()
+        assert st["connected"] is True and st["wheels"] == {"left": 0, "right": 0}, st
+
+        # firmware parses every command hardware.py can emit
+        ino = open(os.path.join(os.path.dirname(PKG), "arduino", "aria_body",
+                                "aria_body.ino")).read()
+        for token in ("line[0] == 'P'", "line[0] == 'W'", "line[0] == 'S'"):
+            assert token in ino, f"firmware missing handler {token}"
+
+        # vision.py honors ARIA_BODY_CAMERA on both capture paths
+        vis = open(os.path.join(PKG, "vision.py")).read()
+        assert "ARIA_BODY_CAMERA" in vis
+        assert vis.count("cv2.VideoCapture(BODY_CAMERA_INDEX)") == 2, "both capture paths must use the body camera index"
+    finally:
+        for m in ("serial", "serial.tools", "serial.tools.list_ports"):
+            sys.modules.pop(m, None)
+check("robot body: head/drive wire protocol, auto-stop, firmware parity, body camera", t_body_protocol)
+
 print(f"\n{sum(1 for _, s, _ in results if s=='PASS')}/{len(results)} passed")
 fails = [r for r in results if r[1] != "PASS"]
 sys.exit(1 if fails else 0)
