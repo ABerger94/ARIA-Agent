@@ -42,15 +42,51 @@ bits a physical body. New tools: `drive_wheels` (phase 2) and `body_stop`.
 Nothing else. The "body" itself is whatever you want: a small box, a 3D print,
 a dinosaur toy with the head mounted on top. ARIA doesn't care what she looks like.
 
-## Parts — Phase 2 (~$15, optional)
+## Parts — Phase 2: mobile base (~$30, optional)
 
-| Part | Price found |
-|---|---|
-| FS90R continuous-rotation micro servos × 2 | ~$7.50 each |
-| Small platform (acrylic/wood/cardboard) + one caster wheel | ~$0–10 DIY |
+Verdict: **wheels, not tracks.** The cheapest decent tank-track kit runs $60+
+and needs a motor-driver board plus different firmware. Two driven wheels do
+everything a desk robot needs for ~$30, reuse the `drive_wheels` tool and
+firmware already in this repo, and still involve zero soldering.
 
-The wheel servos *are* the motors — no motor driver needed. They plug into the
-same shield (D5/D6) and ARIA drives them with the `drive_wheels` tool.
+| Part | Why | Price found |
+|---|---|---|
+| FS90R continuous-rotation micro servos × 2 | The wheel motors — they *are* servos, so they plug into the same shield and speak the existing `W<l>,<r>` protocol. No motor driver needed. | ~$7.50 each |
+| Servo wheels × 2 (for FS90R / micro servos) | Bolt straight onto the servo horns | ~$2.50 each |
+| Ball caster × 1 | Rear third wheel so it doesn't drag | ~$2 |
+| 2WD acrylic chassis plates | The clean sandwich decks — black acrylic, pre-cut | ~$4 |
+| Brass standoffs M3 × 4 + screws | Hold the two decks apart; brass looks sharp against black acrylic | ~$2–7 |
+| M2 screws/nuts (small kit) | Bolt the servo mounting ears to the bottom deck | ~$3 typical |
+
+### How the clean build goes together
+
+Think sandwich, not sprawl — every wire lives *between* the decks:
+
+1. **Bottom deck (underside):** bolt the two FS90R servos to the plate with M2
+   screws through their mounting ears, wheels on the horns. Ball caster at the
+   rear. (Mark and drill 2 mm pilot holes if the plate's grid doesn't line up —
+   sharp bit, low speed, acrylic drills fine.)
+2. **Between decks:** Nano + sensor shield, 4×AA battery pack, and all wiring.
+   Servo leads plug into D5 (left) / D6 (right). Nothing visible from outside.
+3. **Top deck:** pan-tilt head dead center, mini USB speaker beside it.
+4. **Standoffs** at the four corners set the deck gap (~30 mm clears the Nano).
+5. **Cable bundle:** the three thin USB cables (Nano, webcam, speaker) zip-tied
+   into one leash out the back to the laptop.
+
+### The honest constraint: it's a desk rover
+
+ARIA's brain runs on your laptop, so the robot is tethered by USB — it trundles
+around the desk, turns to face you, spins, "paces" while thinking. True
+untethered floor roaming would mean a Raspberry Pi + battery + WiFi redesign:
+a different project at 3–4× the cost. This design doesn't pretend otherwise.
+
+### Driving it
+
+`drive_wheels` already exists: left/right −100…100, negative = reverse.
+`drive_wheels(left=-60, right=60)` spins in place; add `seconds` and it
+auto-stops (max 30 s) so it can't drive off the desk edge. `body_stop` kills
+everything. Face tracking keeps working — the head tracks you while the base
+sits still, or while it moves.
 
 ## Assembly — Phase 1 (no solder)
 
@@ -91,6 +127,42 @@ same shield (D5/D6) and ARIA drives them with the `drive_wheels` tool.
    "Follow my face" → `face_tracking` → the head tracks you via the webcam.
 
 ## Test procedure
+
+### Testing with zero hardware: the virtual body
+
+`sim/robot_sim.py` is a software stand-in for the Arduino — it speaks the exact
+same `P/T/W/S` protocol over TCP, so ARIA can't tell the difference.
+
+Terminal 1 (either laptop):
+
+```
+python sim/robot_sim.py --port 9999
+```
+
+Terminal 2 — point ARIA at it instead of a COM port:
+
+```
+# Windows
+set ARIA_BODY_SERIAL_URL=socket://127.0.0.1:9999
+# Linux/macOS
+export ARIA_BODY_SERIAL_URL=socket://127.0.0.1:9999
+```
+
+Then start ARIA and use `move_head`, `drive_wheels`, `body_stop` normally.
+Every command shows up live in terminal 1 with timestamps and wheel state,
+e.g. `[21:14:23] DRIVE [L▲ +60 R▼ -60]`. Unset the variable to go back to
+real USB serial. Across a LAN, replace `127.0.0.1` with the sim machine's IP —
+handy if one laptop ends up being the robot's permanent host.
+
+### The second-laptop play
+
+Honestly the best use of a spare laptop: make it the robot's dedicated brain.
+Install Python + `pip install -r requirements.txt`, pull this repo, set
+`ARIA_BODY_CAMERA` if the webcam isn't index 0, and leave ARIA running there.
+The robot tethers to it via USB; your main machine stays free, and you can
+still reach ARIA from your phone through the phone bridge.
+
+### With real hardware
 
 - [ ] Serial Monitor: `P90T45` centers the head; servos move smoothly (eased).
 - [ ] ARIA: "look left" moves the physical head.

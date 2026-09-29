@@ -350,10 +350,18 @@ def t_body_protocol():
         assert written[-1] == b"W0,0\n", written[-1:]
         assert len(written) > n
 
-        # stop tool + status shape
+        # stop tool sends the firmware's dedicated S command + status shape
         assert "centered" in hw.tool_body_stop().lower()
+        assert written[-2] == b"S\n", written[-2:]
+        assert written[-1] == b"P90T45\n", written[-1:]
         st = hw.get_hardware_status()
         assert st["connected"] is True and st["wheels"] == {"left": 0, "right": 0}, st
+
+        # ARIA_BODY_SERIAL_URL routes init_hardware through pyserial's
+        # serial_for_url (used by sim/robot_sim.py); falls back to port scan
+        # when unset. Only asserted as source presence — no socket needed.
+        hw_src = open(os.path.join(PKG, "hardware.py")).read()
+        assert "ARIA_BODY_SERIAL_URL" in hw_src and "serial_for_url" in hw_src
 
         # firmware parses every command hardware.py can emit
         ino = open(os.path.join(os.path.dirname(PKG), "arduino", "aria_body",

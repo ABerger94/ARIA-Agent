@@ -6,6 +6,7 @@ Manages physical USB serial connection to robot neck servos and microcontrollers
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import Optional, Tuple, Dict, Any
 
@@ -35,6 +36,18 @@ def init_hardware() -> bool:
             add_log("Hardware serial library (pyserial) offline.")
             return False
         
+        # Virtual body over TCP (e.g. sim/robot_sim.py). Set ARIA_BODY_SERIAL_URL
+        # to something like socket://127.0.0.1:9999 to test without hardware.
+        sim_url = os.environ.get("ARIA_BODY_SERIAL_URL", "").strip()
+        if sim_url:
+            try:
+                SERIAL_CONN = serial.serial_for_url(sim_url, baudrate=115200, timeout=1)
+                HARDWARE_CONNECTED = True
+                add_log(f"Physical hardware linked (virtual): {sim_url}")
+                return True
+            except Exception as e:
+                add_log(f"Virtual hardware link failed ({sim_url}): {e}")
+
         try:
             for port in serial.tools.list_ports.comports():
                 desc = port.description or ""
@@ -136,9 +149,26 @@ def tool_drive(left: int = 0, right: int = 0, seconds: float = 0) -> str:
     return f"Wheels set to L {l} / R {r} ({mode})."
 
 
+def send_stop_command() -> None:
+    """Emergency stop: tell the firmware to halt the wheels (b"S\\n")."""
+    global SERIAL_CONN, HARDWARE_CONNECTED
+    with _LOCK:
+        WHEEL_STATE["left"] = 0
+        WHEEL_STATE["right"] = 0
+
+        if HARDWARE_CONNECTED and SERIAL_CONN and getattr(SERIAL_CONN, "is_open", False):
+            try:
+                SERIAL_CONN.write(b"S\n")
+            except Exception as e:
+                add_log(f"Stop write failed: {e}")
+                HARDWARE_CONNECTED = False
+
+        add_log("Wheels: emergency stop")
+
+
 def tool_body_stop() -> str:
     """Stop the wheels and center the head."""
-    send_drive_command(0, 0)
+    send_stop_command()
     send_servo_command(90, 45)
     mode = "hardware" if HARDWARE_CONNECTED else "virtual mode"
     return f"Body stopped, head centered ({mode})."
