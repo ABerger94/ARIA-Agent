@@ -37,3 +37,5 @@ if __name__ == "__main__":
 
 # Code updated from GitHub (1790573379.6667154)
 # Voice pathway fixed & continuous wake listener restored - 1790576480.3857312
+
+# Phone bridge speech playback fix (dual HTML5/WebAudio + silent wav unlock + direct TTS response) - 1790620634.6790798

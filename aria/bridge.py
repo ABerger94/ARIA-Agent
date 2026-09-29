@@ -7,6 +7,8 @@ live MJPEG cyber-face stream, and web dashboard over HTTP / TLS HTTPS.
 from __future__ import annotations
 
 import base64
+import io
+import wave
 import json
 import os
 import ssl
@@ -31,6 +33,18 @@ BRIDGE_KEY: Optional[str] = None
 _BRIDGE_PROCESS_CALL: Optional[Callable[[str, bool], str]] = None
 _CHAT_LOG_CALL: Optional[Callable[[], Any]] = None
 _BRIDGE_SERVER: Optional[ThreadingHTTPServer] = None
+
+def _generate_silent_wav() -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(1)
+        wf.setframerate(8000)
+        wf.writeframes(b'\x80' * 8000)
+    return buf.getvalue()
+
+_SILENT_WAV_BYTES = _generate_silent_wav()
+
 
 _BRIDGE_CERT_PEM = """-----BEGIN CERTIFICATE-----
 MIIDNjCCAh6gAwIBAgIUEVjzN4XTbazT0YrhRlehUUQhkfYwDQYJKoZIhvcNAQEL
@@ -302,24 +316,38 @@ def get_bridge_url() -> str:
 
 
 BRIDGE_HTML = """<!DOCTYPE html><html><head><meta name="viewport"
-content="width=device-width,initial-scale=1"><title>A.R.I.A. Bridge</title>
+content="width=device-width,initial-scale=1"><meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>A.R.I.A. Bridge</title>
 <style>body{background:#0b0e12;color:#e8f4ff;font-family:sans-serif;margin:0;padding:16px}
-h2{color:#ff5fa2}#log{border:1px solid #2a3138;border-radius:8px;padding:10px;
-height:44vh;overflow-y:auto;margin-bottom:12px;font-size:14px}
+h2{color:#ff5fa2;margin-top:0}#log{border:1px solid #2a3138;border-radius:8px;padding:10px;
+height:42vh;overflow-y:auto;margin-bottom:12px;font-size:14px}
 .you{color:#ff5fa2}.aria{color:#28f078}
 form{display:flex;gap:8px;margin-bottom:10px}input{flex:1;padding:12px;border-radius:8px;border:1px
 solid #2a3138;background:#14181d;color:#fff;font-size:16px}
 button{padding:12px 18px;border-radius:8px;border:0;background:#ff5fa2;color:#fff;
-font-weight:bold;font-size:16px}#talk{width:100%;padding:16px;touch-action:none;
-user-select:none;-webkit-user-select:none}</style></head><body>
+font-weight:bold;font-size:16px;cursor:pointer}#talk{width:100%;padding:16px;touch-action:none;
+user-select:none;-webkit-user-select:none}
+.btn-row{display:flex;gap:8px;margin-top:8px}
+.secondary-btn{flex:1;background:#1e242b;color:#e8f4ff;font-size:13px;padding:10px;border-radius:8px;border:1px solid #2a3138}
+</style></head><body>
 <h2>A.R.I.A. // Phone Bridge</h2>
 <div style="text-align:center;margin-bottom:12px"><img id="face" alt="A.R.I.A." style="border-radius:12px;max-width:100%;width:320px;border:1px solid #2a3138"></div>
-<div style="margin-bottom:12px"><a href="/commands" style="color:#ff5fa2">Command reference</a></div>
+<div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
+  <a href="/commands" style="color:#ff5fa2;font-size:14px">Command reference</a>
+  <span id="astat" style="font-size:12px;color:#8ba2b5">Audio: ready</span>
+</div>
 <div id="log"></div>
-<form onsubmit="return send()"><input id="t" placeholder="Directive..."
-autocomplete="off"><button>Send</button></form>
+<form id="msgform">
+  <input id="t" placeholder="Directive..." autocomplete="off">
+  <button type="submit" id="sendbtn">Send</button>
+</form>
 <button id="talk">Hold to talk</button>
-<button id="spk" style="width:100%;margin-top:8px">Speak replies: ON</button>
+<div class="btn-row">
+  <button id="spk" type="button" class="secondary-btn">Speak replies: ON</button>
+  <button id="testspk" type="button" class="secondary-btn">Test Audio</button>
+</div>
+<audio id="aria-audio" playsinline webkit-playsinline preload="auto" style="display:none"></audio>
+<audio id="aria-bg" loop playsinline webkit-playsinline preload="auto" style="display:none" src="/silent.wav"></audio>
 <script>
 async function api(path,opts){
   opts=opts||{};
@@ -330,39 +358,188 @@ async function api(path,opts){
 let spkOn=localStorage.getItem('spk')!=='0';
 function updateSpkBtn(){document.getElementById('spk').innerText='Speak replies: '+(spkOn?'ON':'OFF');}
 updateSpkBtn();
+
 let actx=null,curSrc=null,voiceErrT=null;
+
+function b64ToArrayBuffer(b64){
+  const bin=window.atob(b64);
+  const len=bin.length;
+  const bytes=new Uint8Array(len);
+  for(let i=0;i<len;i++){bytes[i]=bin.charCodeAt(i);}
+  return bytes.buffer;
+}
+
 function ensureAudio(){
-  if(!actx){try{actx=new (window.AudioContext||window.webkitAudioContext)();}catch(e){return null;}}
-  if(actx.state==='suspended'){actx.resume();}
+  if(!actx){
+    try{
+      const AC=window.AudioContext||window.webkitAudioContext;
+      if(AC)actx=new AC();
+    }catch(e){console.log('actx init err',e);}
+  }
+  if(actx&&(actx.state==='suspended'||actx.state==='interrupted')){
+    try{actx.resume().catch(()=>{});}catch(e){}
+  }
   return actx;
 }
-document.addEventListener('pointerdown',()=>{ensureAudio();});
-function voiceError(){
+
+function unlockAudio(){
+  try{
+    const bg=document.getElementById('aria-bg');
+    if(bg&&bg.paused){
+      bg.play().catch(()=>{});
+    }
+  }catch(e){}
+  try{
+    const ctx=ensureAudio();
+    if(ctx){
+      if(ctx.state==='suspended'||ctx.state==='interrupted'){
+        ctx.resume().catch(()=>{});
+      }
+      const b=ctx.createBuffer(1,1,22050);
+      const s=ctx.createBufferSource();
+      s.buffer=b;
+      s.connect(ctx.destination);
+      s.start(0);
+    }
+  }catch(e){}
+  const st=document.getElementById('astat');
+  if(st&&st.innerText.indexOf('error')===-1)st.innerText='Audio: active';
+}
+
+['touchstart','touchend','pointerdown','click','keydown'].forEach(evt=>{
+  document.addEventListener(evt,unlockAudio,{passive:true});
+});
+
+function voiceError(msg){
+  const st=document.getElementById('astat');
+  if(st)st.innerText='Audio error: '+(msg||'check silent switch');
   const b=document.getElementById('spk');
-  b.innerText='Speak replies: ERROR - tap for details';
-  b.onclick=()=>{alert('Voice synthesis failed on the PC. Check the ARIA action stream for "Bridge TTS failed".');updateSpkBtn();document.getElementById('spk').onclick=spkToggle;};
+  b.innerText='Speak replies: ERROR';
   clearTimeout(voiceErrT);
-  voiceErrT=setTimeout(()=>{document.getElementById('spk').onclick=spkToggle;updateSpkBtn();},8000);
+  voiceErrT=setTimeout(()=>{updateSpkBtn();if(st)st.innerText='Audio: ready';},6000);
 }
-function spkToggle(){spkOn=!spkOn;localStorage.setItem('spk',spkOn?'1':'0');updateSpkBtn();}
+
+function spkToggle(){
+  spkOn=!spkOn;
+  localStorage.setItem('spk',spkOn?'1':'0');
+  updateSpkBtn();
+  if(spkOn)unlockAudio();
+}
 document.getElementById('spk').onclick=spkToggle;
-async function playAudio(buf){
-  if(!spkOn||!buf||!buf.byteLength)return;
-  const ctx=ensureAudio();
-  if(!ctx)throw new Error('no audio context');
-  if(curSrc){try{curSrc.stop();}catch(e){}curSrc=null;}
-  const audio=await ctx.decodeAudioData(buf);
-  const src=ctx.createBufferSource();src.buffer=audio;src.connect(ctx.destination);src.start();
-  curSrc=src;
+
+function playViaWebAudio(buf){
+  return new Promise((resolve,reject)=>{
+    const ctx=ensureAudio();
+    if(!ctx){reject(new Error('no audio context'));return;}
+    if(ctx.state==='suspended'||ctx.state==='interrupted'){
+      ctx.resume().catch(()=>{});
+    }
+    if(curSrc){try{curSrc.stop();}catch(e){}curSrc=null;}
+    const copy=buf.slice(0);
+    ctx.decodeAudioData(copy,(decoded)=>{
+      try{
+        const src=ctx.createBufferSource();
+        src.buffer=decoded;
+        src.connect(ctx.destination);
+        src.onended=()=>{curSrc=null;resolve();};
+        src.start(0);
+        curSrc=src;
+      }catch(err){reject(err);}
+    },(err)=>{reject(err);});
+  });
 }
+
+function playAudio(buf){
+  return new Promise((resolve)=>{
+    if(!spkOn||!buf||!buf.byteLength){resolve();return;}
+    unlockAudio();
+    const st=document.getElementById('astat');
+    if(st)st.innerText='Audio: playing...';
+
+    let resolved=false;
+    const finish=()=>{
+      if(!resolved){
+        resolved=true;
+        if(st)st.innerText='Audio: ready';
+        resolve();
+      }
+    };
+
+    const player=document.getElementById('aria-audio');
+    let blobUrl=null;
+    try{
+      const blob=new Blob([buf],{type:'audio/mpeg'});
+      blobUrl=URL.createObjectURL(blob);
+      player.src=blobUrl;
+
+      const cleanupPlayer=()=>{
+        if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
+        player.onended=null;
+        player.onerror=null;
+        finish();
+      };
+
+      player.onended=cleanupPlayer;
+      player.onerror=()=>{
+        if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
+        player.onended=null;
+        player.onerror=null;
+        playViaWebAudio(buf).then(finish).catch((e)=>{
+          console.log('web audio fallback error',e);
+          voiceError('playback failed');
+          finish();
+        });
+      };
+
+      const p=player.play();
+      if(p!==undefined){
+        p.catch((err)=>{
+          console.log('HTMLAudio play rejected, using WebAudio fallback',err);
+          if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
+          player.onended=null;
+          player.onerror=null;
+          playViaWebAudio(buf).then(finish).catch((e)=>{
+            console.log('web audio fallback error',e);
+            voiceError('playback failed');
+            finish();
+          });
+        });
+      }
+    }catch(err){
+      console.log('HTMLAudio error, using WebAudio fallback',err);
+      playViaWebAudio(buf).then(finish).catch((e)=>{
+        voiceError('playback failed');
+        finish();
+      });
+    }
+  });
+}
+
 async function playReply(text){
   if(!spkOn||!text)return;
   try{
     const r=await api('/api/say?text='+encodeURIComponent(text.slice(0,500)));
     if(!r.ok)throw new Error('tts http '+r.status);
-    await playAudio(await r.arrayBuffer());
-  }catch(e){console.log('voice:',e);voiceError();}
+    const buf=await r.arrayBuffer();
+    await playAudio(buf);
+  }catch(e){console.log('voice:',e);voiceError('tts fetch failed');}
 }
+
+document.getElementById('testspk').onclick=async()=>{
+  unlockAudio();
+  const st=document.getElementById('astat');
+  if(st)st.innerText='Audio: synthesizing test...';
+  try{
+    const r=await api('/api/say?text='+encodeURIComponent('Speech test successful. Phone audio is active.'));
+    if(!r.ok)throw new Error('http '+r.status);
+    const buf=await r.arrayBuffer();
+    await playAudio(buf);
+  }catch(e){
+    alert('Test failed: '+e);
+    voiceError('test failed');
+  }
+};
+
 const logEl=document.getElementById('log');
 function add(s,m){
   const d=document.createElement('div');
@@ -380,25 +557,64 @@ async function refreshLog(){
 refreshLog();
 setInterval(refreshLog,3000);
 document.getElementById('face').src='/face.mjpg';
-async function send(){
-  const i=document.getElementById('t');const t=i.value.trim();
-  if(!t)return false;i.value='';add('you',t);
-  const r=await api('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});
-  if(r.ok){
-    const d=await r.json();(d.reply||[]).forEach(s=>{
-      add('aria',s);
-      playReply(s);
-    });
+
+const msgForm=document.getElementById('msgform');
+msgForm.addEventListener('submit',async function(e){
+  e.preventDefault();
+  e.stopPropagation();
+  unlockAudio();
+  const inp=document.getElementById('t');
+  const t=inp.value.trim();
+  if(!t)return false;
+  inp.value='';
+  add('you',t);
+  const btn=document.getElementById('sendbtn');
+  btn.disabled=true;
+  try{
+    const r=await api('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});
+    btn.disabled=false;
+    if(r.ok){
+      const d=await r.json();
+      const replies=d.reply||[];
+      for(const s of replies){
+        if(s&&s.trim())add('aria',s);
+      }
+      if(d.audio&&spkOn){
+        try{
+          const buf=b64ToArrayBuffer(d.audio);
+          await playAudio(buf);
+        }catch(err){
+          console.log('play audio err',err);
+          voiceError('audio decode');
+        }
+      }else if(replies.length>0&&spkOn){
+        await playReply(replies[0]);
+      }
+    }else{
+      let rd={};try{rd=await r.json();}catch(e){}
+      alert('Directive failed: '+(rd.error||r.status));
+    }
+  }catch(err){
+    btn.disabled=false;
+    alert('Network error: '+err);
   }
   return false;
-}
-let mr=null,chunks=[];
+});
+
+let mr=null,chunks=[],isHolding=false;
 const talkBtn=document.getElementById('talk');
 talkBtn.onpointerdown=async(e)=>{
   e.preventDefault();
+  unlockAudio();
+  isHolding=true;
   chunks=[];
   try{
     const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    if(!isHolding){
+      stream.getTracks().forEach(t=>t.stop());
+      talkBtn.innerText='Hold to talk';
+      return;
+    }
     let mimeType='';
     if(window.MediaRecorder&&typeof MediaRecorder.isTypeSupported==='function'){
       if(MediaRecorder.isTypeSupported('audio/webm;codecs=opus'))mimeType='audio/webm;codecs=opus';
@@ -421,11 +637,11 @@ talkBtn.onpointerdown=async(e)=>{
           const reply=decodeURIComponent(r.headers.get('X-Reply')||'');
           if(transcript)add('you',transcript);
           if(reply)add('aria',reply);
-          try{await playAudio(buf);}catch(e){console.log('voice:',e);voiceError();}
+          try{await playAudio(buf);}catch(e){console.log('voice:',e);voiceError('voice play');}
         }else{
           let rd={};try{rd=await r.json();}catch(e){}
           if(rd.reply)add('aria',rd.reply);
-          voiceError();
+          voiceError('voice error');
           if(!rd.reply)alert('Voice request failed: '+r.status);
         }
       }catch(err){alert('Voice error: '+err);}
@@ -434,10 +650,16 @@ talkBtn.onpointerdown=async(e)=>{
     mr.start();
     talkBtn.innerText='Listening...';
   }catch(err){
+    isHolding=false;
     alert('Mic error ('+err+'). Ensure HTTPS certificate is accepted.');
   }
 };
-talkBtn.onpointerup=(e)=>{e.preventDefault();if(mr&&mr.state==='recording')mr.stop();};
+talkBtn.onpointerup=(e)=>{
+  e.preventDefault();
+  unlockAudio();
+  isHolding=false;
+  if(mr&&mr.state==='recording')mr.stop();
+};
 talkBtn.onpointercancel=talkBtn.onpointerup;
 </script></body></html>"""
 
@@ -506,6 +728,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "*")
@@ -577,6 +802,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(audio)))
+                self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Expires", "0")
                 self.send_header("X-TTS-Engine", "edge" if ctype == "audio/mpeg" else "sapi")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Access-Control-Expose-Headers", "X-TTS-Engine")
@@ -584,6 +812,16 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self.wfile.write(audio)
                 return
             self._send(404, b'{"error":"not found"}')
+            return
+
+        if self.path.startswith("/silent.wav"):
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/wav")
+            self.send_header("Content-Length", str(len(_SILENT_WAV_BYTES)))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(_SILENT_WAV_BYTES)
             return
 
         if self.path.startswith("/face.mjpg"):
@@ -686,6 +924,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(audio_out)))
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
             self.send_header("X-TTS-Engine", "edge" if ctype == "audio/mpeg" else "sapi")
             self.send_header("X-Transcript", urllib.parse.quote(text[:300]))
             self.send_header("X-Reply", urllib.parse.quote(reply[:500]))
@@ -704,10 +945,20 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
         if text.strip():
             add_log(f"Bridge directive: {text[:25]}")
-            reply = _BRIDGE_PROCESS_CALL(text.strip(), False) if _BRIDGE_PROCESS_CALL else ""
+            reply = _BRIDGE_PROCESS_CALL(text.strip(), True) if _BRIDGE_PROCESS_CALL else ""
         else:
             reply = ""
-        self._send(200, json.dumps({"reply": [reply]}).encode("utf-8"))
+
+        audio_b64 = ""
+        if reply.strip():
+            try:
+                audio_out, _ = tts_bytes_for_bridge(reply[:2000])
+                if audio_out:
+                    audio_b64 = base64.b64encode(audio_out).decode("ascii")
+            except Exception as e:
+                add_log(f"Bridge ask TTS failed: {e}")
+
+        self._send(200, json.dumps({"reply": [reply], "audio": audio_b64}).encode("utf-8"))
 
 
 def start_bridge_server(port: int = PHONE_BRIDGE_PORT) -> ThreadingHTTPServer:
