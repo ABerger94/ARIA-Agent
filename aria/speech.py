@@ -99,6 +99,10 @@ def init_pyttsx3(on_log: Optional[Callable[[str], None]] = None):
 
 # ---------------- Local STT (faster-whisper) ----------------
 
+# v9.17: Google cloud transcription is the default. The local faster-whisper
+# path stays in the file, dormant unless this flag is flipped to True.
+_USE_LOCAL_STT = False
+
 _FW_AVAILABLE = False
 _FW_MODEL = None
 _FW_LOCK = threading.Lock()
@@ -179,16 +183,13 @@ def transcribe(audio: sr.AudioData, recognizer: sr.Recognizer, use_local_stt: bo
             pcm = fw_pcm(audio)
             segments, _ = model.transcribe(
                 pcm, language="en",
-                initial_prompt=None,
+                initial_prompt="Aria.",
                 vad_filter=True,
-                vad_parameters=dict(min_silence_duration_ms=450, threshold=0.55),
+                vad_parameters=dict(min_silence_duration_ms=400, threshold=0.5),
                 condition_on_previous_text=False
             )
             kept = [s for s in segments if getattr(s, "no_speech_prob", 0.0) <= _FW_NO_SPEECH_CUTOFF]
             text = " ".join(s.text.strip() for s in kept).strip()
-            words = [w.lower().strip(" ,.-!?:;—–\t\n") for w in text.split() if w.strip(" ,.-!?:;—–\t\n")]
-            if len(words) >= 2 and len(set(words)) == 1:
-                return ""
             return text
         except Exception as e:
             if on_log:
@@ -590,4 +591,4 @@ def set_speech_state_hook(fn):
 
 def transcribe_local_or_cloud(audio: sr.AudioData, recognizer_inst: Optional[sr.Recognizer] = None) -> str:
     r = recognizer_inst if recognizer_inst is not None else sr.Recognizer()
-    return transcribe(audio, r, use_local_stt=fw_is_available())
+    return transcribe(audio, r, use_local_stt=(_USE_LOCAL_STT and fw_is_available()))

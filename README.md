@@ -19,8 +19,9 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
   which camera her eyes use (`[bridge]`, `[cam N]`, or `[net]`).
 - **Voice In / Voice Out** — Edge TTS neural voice with sentence boundary
   streaming and pipelined TTS synthesis prefetch; instant speech interruption
-  barge-in via the `X` key or voice; desktop mic input prefers local
-  faster-whisper transcription when installed, with Google cloud fallback;
+  barge-in via the `X` key or voice; desktop mic input uses Google cloud
+  transcription by default, with local faster-whisper dormant behind the
+  `_USE_LOCAL_STT` flag in `aria/speech.py`;
   hold-SPACE push-to-talk; wake-word listener loop.
 - **Whisper Mode & Mood Engine** — toggleable whisper mode (W key, voice, or HUD)
   for softer volume, concise replies, and quieted heartbeats; mood system
@@ -280,7 +281,3 @@ tools/                   Helper scripts (key manager)
 - `aria_keys.json`, logs, memory DB, and journal are gitignored — they stay
   on your machine and never get committed.
 - Tested on Windows 11 with Python 3.12.
-- The v9.17/v9.14 changelog entries predate the current STT behavior: the
-  desktop mic now prefers local faster-whisper whenever it is installed,
-  falling back to Google cloud transcription, and the bridge's voice
-  messages are transcribed by Gemini.
