@@ -3,7 +3,7 @@
 A Python desktop AI companion. She lives on your Windows laptop as an animated
 face in an OpenCV HUD: she talks (natural Edge TTS voice), listens (mic +
 speech recognition), remembers, and acts through a Gemini-powered agent loop
-with 54 tools. Her phone bridge turns any phone into her face, voice, and
+with 55 tools. Her phone bridge turns any phone into her face, voice, and
 eyes — and an Arduino robot body gives her a pan/tilt head, with
 differential-drive wheels as the next phase.
 
@@ -31,7 +31,7 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
 - **Progressive Tool Loading** — only 17 core tool schemas go to the model
   per call; specialist toolkits (Gmail, Spotify, scheduler, GitHub,
   vision/hardware, Windows control, MTG, memory/notes, admin) unlock on demand
-  via `load_toolkit`. 54 tools total across 10 toolkits.
+  via `load_toolkit`. 55 tools total across 10 toolkits.
 - **Durable Memory & Spine** — SQLite semantic vector memory + Markdown journal;
   unbroken memory spine (`memory_spine.jsonl`) logging turns, tool invocations,
   and journal entries; session context (`where_we_left_off.md`) automatically
@@ -89,7 +89,7 @@ python tools\aria_add_key.py
 (or set `GEMINI_API_KEY` / `GITHUB_TOKEN` as environment variables — env vars
 take precedence over `aria_keys.json`).
 
-Gmail sending uses an app password, saved via ARIA's `gmail_setup` tool.
+Gmail sending and reading use an app password, saved via ARIA's `gmail_setup` tool (`send_email` / `read_email`).
 
 To give her the phone face: on the laptop `set ARIA_BODY_CAMERA=bridge`,
 open the bridge page on the phone (see Bridge URL printed at startup), log in

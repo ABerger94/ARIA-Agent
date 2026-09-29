@@ -83,6 +83,16 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
                                             'to': {'type': 'STRING'}},
                           'required': ['to', 'subject', 'body'],
                           'type': 'OBJECT'}},
+    {   'description': "Reads the user's Gmail over IMAP (same app password as send_email). Without uid: searches "
+                       'INBOX with Gmail-style query syntax (e.g. "from:boss newer_than:7d") and returns newest '
+                       'matches as one-line summaries with uids. With uid: returns the full body of that message. '
+                       'Read-only, never marks messages read.',
+        'name': 'read_email',
+        'parameters': {   'properties': {   'query': {'type': 'STRING'},
+                                            'limit': {'type': 'INTEGER'},
+                                            'unread_only': {'type': 'BOOLEAN'},
+                                            'uid': {'type': 'STRING'}},
+                          'type': 'OBJECT'}},
     {   'description': 'Sets a one-shot spoken reminder. delay_seconds from now.',
         'name': 'set_reminder',
         'parameters': {   'properties': {'delay_seconds': {'type': 'INTEGER'}, 'message': {'type': 'STRING'}},
@@ -241,7 +251,8 @@ TOOLS_DECLARATION = [
 
 TOOLKITS = {   'admin': {   'summary': 'API keys, bridge token, command guide, volume',
                  'tools': ['gemini_keys', 'bridge_token', 'show_commands', 'hide_commands', 'volume']},
-    'comms': {'summary': 'Gmail: store credentials, send email', 'tools': ['gmail_setup', 'send_email']},
+    'comms': {'summary': 'Gmail: store credentials, send and read email',
+              'tools': ['gmail_setup', 'send_email', 'read_email']},
     'core': {   'summary': 'everyday tools: web search, open apps/URLs, run Python code, click/type, screenshots, '
                            'screen reading, clipboard, files, memory save/search, bounded workflow skills',
                 'tools': [   'web_search',
@@ -334,6 +345,7 @@ COMMAND_GUIDE = [   ('Memory', 'save_memory', 'remember my Doja playlist is spot
     ('GitHub', 'github_create_repo', 'create a repo called gig-tracker'),
     ('Email', 'gmail_setup', 'save my Gmail and app password'),
     ('Email', 'send_email', 'email mom the deck list'),
+    ('Email', 'read_email', 'check my unread email'),
     ('This screen', 'show_commands', 'show commands'),
     ('This screen', 'hide_commands', 'hide commands')]
 

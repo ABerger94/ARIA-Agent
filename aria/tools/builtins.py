@@ -6,7 +6,9 @@ Git/GitHub, email, notes, price tracking, and MTG data.
 
 import base64
 from datetime import datetime, timedelta
+import email
 import html as html_lib
+import imaplib
 import json
 import os
 import re
@@ -428,8 +430,9 @@ def tool_volume(action: str = "status", level: int = 50) -> str:
 
 # ---------------- Comms (Gmail) ----------------
 def _gmail_creds() -> Tuple[str, str]:
-    return (key_get("GMAIL_USER") or "").strip(), \
-           (key_get("GMAIL_APP_PASSWORD") or "").replace(" ", "").strip()
+    # key_get returns (value, source); we only need the value.
+    return (key_get("GMAIL_USER")[0] or "").strip(), \
+           (key_get("GMAIL_APP_PASSWORD")[0] or "").replace(" ", "").strip()
 
 
 def tool_gmail_setup(gmail_user: str, app_password: str) -> str:
@@ -437,7 +440,7 @@ def tool_gmail_setup(gmail_user: str, app_password: str) -> str:
     _KEYS["GMAIL_USER"] = (gmail_user or "").strip()
     _KEYS["GMAIL_APP_PASSWORD"] = (app_password or "").replace(" ", "").strip()
     save_keys()
-    return f"Gmail saved for {_KEYS['GMAIL_USER']}. You can now send email with send_email."
+    return f"Gmail saved for {_KEYS['GMAIL_USER']}. You can now send email with send_email and read it with read_email."
 
 
 def tool_send_email(to: str, subject: str, body: str) -> str:
@@ -469,6 +472,117 @@ def tool_send_email(to: str, subject: str, body: str) -> str:
             add_log(f"Email send attempt {_sa + 1}/2 failed ({type(e).__name__}) - retrying...")
             time.sleep(3)
     return f"Could not send email to {to}."
+
+
+def _gmail_imap() -> Tuple[Optional[imaplib.IMAP4_SSL], Optional[str]]:
+    """Open an authenticated IMAP connection to Gmail, or (None, error)."""
+    user, pw = _gmail_creds()
+    if not user or not pw or pw == "INSERT":
+        return None, ("Gmail isn't set up yet. Ask the user for their Gmail address and an "
+                      "app password (myaccount.google.com/apppasswords - needs 2-Step "
+                      "Verification turned on), then call gmail_setup to save them.")
+    try:
+        m = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=30)
+        m.login(user, pw)
+        return m, None
+    except imaplib.IMAP4.error:
+        return None, ("Gmail rejected the login. The app password is wrong or was revoked - "
+                      "ask the user to generate a fresh one at myaccount.google.com/apppasswords "
+                      "and call gmail_setup again.")
+    except Exception as e:
+        return None, f"Could not reach Gmail over IMAP: {e}"
+
+
+def _imap_text_part(msg) -> str:
+    """Best-effort plain-text body from a parsed email message."""
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_type() == "text/plain" and \
+               "attachment" not in str(part.get("Content-Disposition", "")):
+                try:
+                    payload = part.get_payload(decode=True) or b""
+                    return payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+                except Exception:
+                    continue
+        return ""
+    try:
+        payload = msg.get_payload(decode=True) or b""
+        return payload.decode(msg.get_content_charset() or "utf-8", errors="replace")
+    except Exception:
+        return str(msg.get_payload())
+
+
+def tool_read_email(query: str = "", limit: int = 10, unread_only: bool = False,
+                    uid: str = "") -> str:
+    """Read the user's Gmail over IMAP (same app password as send_email).
+
+    Without uid: searches INBOX (Gmail-style query via X-GM-RAW, e.g.
+    "from:boss newer_than:7d") and returns newest matches as one-line
+    summaries with uids. With uid: returns the full body of that message.
+    Read-only - never marks messages as read.
+    """
+    m, err = _gmail_imap()
+    if err:
+        return err
+    try:
+        m.select("INBOX", readonly=True)
+        if uid:
+            typ, data = m.uid("FETCH", uid, "(BODY.PEEK[])")
+            if typ != "OK" or not data or not data[0]:
+                return f"No message found with uid {uid}."
+            raw = data[0][1] if isinstance(data[0], tuple) else data[0]
+            msg = email.message_from_bytes(raw)
+            body = _imap_text_part(msg).strip()
+            if len(body) > 4000:
+                body = body[:4000] + "\n[...truncated...]"
+            return (f"From: {msg.get('From', '?')}\n"
+                    f"Date: {msg.get('Date', '?')}\n"
+                    f"Subject: {msg.get('Subject', '(no subject)')}\n\n{body or '[no text body]'}")
+
+        criteria = []
+        if unread_only:
+            criteria.append("UNSEEN")
+        if query:
+            # Gmail's raw search: full Gmail query syntax over IMAP.
+            try:
+                typ, data = m.uid("SEARCH", None, "X-GM-RAW", query)
+                if typ != "OK":
+                    raise imaplib.IMAP4.error("X-GM-RAW failed")
+            except Exception:
+                typ, data = m.uid("SEARCH", None, "TEXT", query)
+        else:
+            typ, data = m.uid("SEARCH", None, *(criteria or ["ALL"]))
+        if typ != "OK":
+            return "Gmail search failed."
+        uids = (data[0] or b"").split()
+        try:
+            limit = max(1, min(50, int(limit)))
+        except Exception:
+            limit = 10
+        uids = uids[-limit:][::-1]  # newest first
+        if not uids:
+            return "No matching emails."
+        lines = []
+        for u in uids:
+            u = u.decode()
+            typ, data = m.uid("FETCH", u, "(BODY.PEEK[HEADER.FIELDS (DATE FROM SUBJECT)])")
+            if typ != "OK" or not data or not data[0]:
+                continue
+            raw = data[0][1] if isinstance(data[0], tuple) else data[0]
+            h = email.message_from_bytes(raw)
+            frm = (h.get("From") or "?").replace("\n", " ")[:60]
+            subj = (h.get("Subject") or "(no subject)").replace("\n", " ")[:80]
+            dt = (h.get("Date") or "?")[:31]
+            lines.append(f"[uid={u}] {dt} | {frm} | \"{subj}\"")
+        add_log(f"Email read: {len(lines)} message(s) listed")
+        return f"{len(lines)} email(s), newest first:\n" + "\n".join(lines)
+    except Exception as e:
+        return f"Could not read Gmail: {e}"
+    finally:
+        try:
+            m.logout()
+        except Exception:
+            pass
 
 
 # ---------------- GitHub ----------------

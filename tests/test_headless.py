@@ -163,7 +163,17 @@ def t_toolkit():
     assert "send_email" in dispatch.get_active_declarations()[0]["function_declarations"] or True
     names = [d["name"] for d in schemas.get_toolkit_declarations({"comms"})[0]["function_declarations"]]
     assert "send_email" in names, names
+    assert "read_email" in names, names
 check("load_toolkit known/unknown", t_toolkit)
+
+# 12b. read_email without credentials asks for setup (no network)
+def t_read_email_no_creds():
+    res, needs_confirm = dispatch.execute_tool("read_email", {"query": "test", "limit": 5})
+    assert needs_confirm is False, (res, needs_confirm)
+    assert "isn't set up yet" in res, res
+    res2, _ = dispatch.execute_tool("read_email", {"uid": "12345"})
+    assert "isn't set up yet" in res2, res2
+check("read_email without creds asks for setup", t_read_email_no_creds)
 
 # 13. output truncation
 def t_trunc():

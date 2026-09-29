@@ -280,6 +280,7 @@ def _init_default_registry():
     )
     _REGISTRY["gmail_setup"] = lambda a: builtins.tool_gmail_setup(a.get("gmail_user", ""), a.get("app_password", ""))
     _REGISTRY["send_email"] = lambda a: builtins.tool_send_email(a.get("to", ""), a.get("subject", ""), a.get("body", ""))
+    _REGISTRY["read_email"] = lambda a: builtins.tool_read_email(a.get("query", ""), a.get("limit", 10), bool(a.get("unread_only", False)), a.get("uid", ""))
 
     # Scheduler tools
     _REGISTRY["morning_briefing"] = lambda a: scheduler.tool_briefing()
