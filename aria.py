@@ -39,3 +39,5 @@ if __name__ == "__main__":
 # Voice pathway fixed & continuous wake listener restored - 1790576480.3857312
 
 # Phone bridge speech playback fix (dual HTML5/WebAudio + silent wav unlock + direct TTS response) - 1790620634.6790798
+
+# STT phantom wake-word hallucination fix applied - 1790641499.1844068

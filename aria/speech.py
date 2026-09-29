@@ -179,13 +179,16 @@ def transcribe(audio: sr.AudioData, recognizer: sr.Recognizer, use_local_stt: bo
             pcm = fw_pcm(audio)
             segments, _ = model.transcribe(
                 pcm, language="en",
-                initial_prompt="Aria.",
+                initial_prompt=None,
                 vad_filter=True,
-                vad_parameters=dict(min_silence_duration_ms=400, threshold=0.5),
+                vad_parameters=dict(min_silence_duration_ms=450, threshold=0.55),
                 condition_on_previous_text=False
             )
             kept = [s for s in segments if getattr(s, "no_speech_prob", 0.0) <= _FW_NO_SPEECH_CUTOFF]
             text = " ".join(s.text.strip() for s in kept).strip()
+            words = [w.lower().strip(" ,.-!?:;—–\t\n") for w in text.split() if w.strip(" ,.-!?:;—–\t\n")]
+            if len(words) >= 2 and len(set(words)) == 1:
+                return ""
             return text
         except Exception as e:
             if on_log:
