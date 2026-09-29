@@ -346,6 +346,7 @@ user-select:none;-webkit-user-select:none}
   <button id="spk" type="button" class="secondary-btn">Speak replies: ON</button>
   <button id="testspk" type="button" class="secondary-btn">Test Audio</button>
   <button id="cam" type="button" class="secondary-btn">Camera: OFF</button>
+  <button id="flipcam" type="button" class="secondary-btn">Flip camera</button>
 </div>
 <audio id="aria-audio" playsinline webkit-playsinline preload="auto" style="display:none"></audio>
 <audio id="aria-bg" loop playsinline webkit-playsinline preload="auto" style="display:none" src="/silent.wav"></audio>
@@ -704,13 +705,21 @@ talkBtn.onpointercancel=talkBtn.onpointerup;
 
 // Phone-as-eyes: stream this page's camera to the laptop as ARIA's body
 // camera (set ARIA_BODY_CAMERA=bridge on the laptop first).
-let camOn=false,camStream=null,camTimer=null;
+let camOn=false,camStream=null,camTimer=null,camFacing='user';
 const camBtn=document.getElementById('cam');
 const camVideo=document.createElement('video');
 camVideo.setAttribute('playsinline','');camVideo.muted=true;camVideo.style.display='none';
 document.body.appendChild(camVideo);
 const camCanvas=document.createElement('canvas');camCanvas.width=480;camCanvas.height=360;
-function updateCamBtn(){camBtn.innerText='Camera: '+(camOn?'ON':'OFF');}
+function camFacingName(){return camFacing==='user'?'front':'rear';}
+function updateCamBtn(){camBtn.innerText='Camera: '+(camOn?('ON ('+camFacingName()+')'):'OFF');}
+async function startCamStream(){
+  if(camStream){camStream.getTracks().forEach(t=>t.stop());camStream=null;}
+  camStream=await navigator.mediaDevices.getUserMedia(
+    {video:{facingMode:camFacing,width:{ideal:480},height:{ideal:360}},audio:false});
+  camVideo.srcObject=camStream;
+  await camVideo.play();
+}
 async function toggleCam(){
   if(camOn){
     camOn=false;updateCamBtn();
@@ -719,10 +728,7 @@ async function toggleCam(){
     return;
   }
   try{
-    camStream=await navigator.mediaDevices.getUserMedia(
-      {video:{facingMode:'user',width:{ideal:480},height:{ideal:360}},audio:false});
-    camVideo.srcObject=camStream;
-    await camVideo.play();
+    await startCamStream();
     camOn=true;updateCamBtn();
     const ctx=camCanvas.getContext('2d');
     let posting=false;
@@ -742,6 +748,14 @@ async function toggleCam(){
   }
 }
 camBtn.addEventListener('click',()=>{unlockAudio();toggleCam();});
+async function flipCam(){
+  if(!camOn)return;
+  camFacing=(camFacing==='user')?'environment':'user';
+  updateCamBtn();
+  try{await startCamStream();}
+  catch(err){alert('Camera flip failed ('+err+').');}
+}
+document.getElementById('flipcam').addEventListener('click',()=>{unlockAudio();flipCam();});
 </script></body></html>"""
 
 
