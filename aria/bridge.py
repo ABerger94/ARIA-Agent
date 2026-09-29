@@ -325,13 +325,34 @@ height:42vh;overflow-y:auto;margin-bottom:12px;font-size:14px}
 form{display:flex;gap:8px;margin-bottom:10px}input{flex:1;padding:12px;border-radius:8px;border:1px
 solid #2a3138;background:#14181d;color:#fff;font-size:16px}
 button{padding:12px 18px;border-radius:8px;border:0;background:#ff5fa2;color:#fff;
-font-weight:bold;font-size:16px;cursor:pointer}#talk{width:100%;padding:16px;touch-action:none;
+font-weight:bold;font-size:16px;cursor:pointer}#talk{flex:2;padding:16px;touch-action:none;
 user-select:none;-webkit-user-select:none}
+.talk-row{display:flex;gap:8px}
+#ptt{flex:1;padding:16px;border-radius:8px;border:1px solid #2a3138;background:#1e242b;color:#e8f4ff;font-weight:bold;font-size:16px;cursor:pointer}
 .btn-row{display:flex;gap:8px;margin-top:8px}
 .secondary-btn{flex:1;background:#1e242b;color:#e8f4ff;font-size:13px;padding:10px;border-radius:8px;border:1px solid #2a3138}
+.topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.topbar h2{margin:0}
+.topbtns{display:flex;gap:8px;align-items:center}
+.icon-btn{background:#1e242b;color:#e8f4ff;border:1px solid #2a3138;border-radius:8px;padding:8px 12px;font-size:18px;cursor:pointer}
+#flipcam{font-size:13px}
+.settings{display:flex;flex-direction:column;gap:8px;background:#14181d;border:1px solid #2a3138;border-radius:12px;padding:12px;margin-bottom:12px}
+.face-wrap{text-align:center;margin-bottom:12px}
+#face{border-radius:12px;max-width:100%;width:min(88vw,400px);border:1px solid #2a3138}
 </style></head><body>
+<div class="topbar">
 <h2>A.R.I.A. // Phone Bridge</h2>
-<div style="text-align:center;margin-bottom:12px"><img id="face" alt="A.R.I.A." style="border-radius:12px;max-width:100%;width:320px;border:1px solid #2a3138"></div>
+<div class="topbtns">
+<button id="flipcam" type="button" class="icon-btn" style="display:none">front ⇄</button>
+<button id="cog" type="button" class="icon-btn" aria-label="Settings">⚙</button>
+</div>
+</div>
+<div id="settings" class="settings" style="display:none">
+<button id="spk" type="button" class="secondary-btn">Speak replies: ON</button>
+<button id="testspk" type="button" class="secondary-btn">Test Audio</button>
+<button id="cam" type="button" class="secondary-btn">Camera: OFF</button>
+</div>
+<div class="face-wrap"><img id="face" alt="A.R.I.A."></div>
 <div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
   <a href="/commands" style="color:#ff5fa2;font-size:14px">Command reference</a>
   <span id="astat" style="font-size:12px;color:#8ba2b5">Audio: ready</span>
@@ -341,12 +362,9 @@ user-select:none;-webkit-user-select:none}
   <input id="t" placeholder="Directive..." autocomplete="off">
   <button type="submit" id="sendbtn">Send</button>
 </form>
+<div class="talk-row">
 <button id="talk">Hold to talk</button>
-<div class="btn-row">
-  <button id="spk" type="button" class="secondary-btn">Speak replies: ON</button>
-  <button id="testspk" type="button" class="secondary-btn">Test Audio</button>
-  <button id="cam" type="button" class="secondary-btn">Camera: OFF</button>
-  <button id="flipcam" type="button" class="secondary-btn">Flip camera</button>
+<button id="ptt" type="button">Tap to talk</button>
 </div>
 <audio id="aria-audio" playsinline webkit-playsinline preload="auto" style="display:none"></audio>
 <audio id="aria-bg" loop playsinline webkit-playsinline preload="auto" style="display:none" src="/silent.wav"></audio>
@@ -641,20 +659,27 @@ msgForm.addEventListener('submit',async function(e){
   return false;
 });
 
-let mr=null,chunks=[],isHolding=false;
+let mr=null,chunks=[],talkActive=false,talkStream=null;
 const talkBtn=document.getElementById('talk');
-talkBtn.onpointerdown=async(e)=>{
-  e.preventDefault();
-  unlockAudio();
-  isHolding=true;
+const pttBtn=document.getElementById('ptt');
+function setTalkUI(state){
+  // state: 'idle' | 'listening' | 'processing'
+  talkBtn.innerText=state==='listening'?'Listening...':(state==='processing'?'Processing...':'Hold to talk');
+  pttBtn.innerText=state==='listening'?'Tap to stop':(state==='processing'?'Processing...':'Tap to talk');
+}
+async function beginTalk(){
+  if(talkActive)return;
+  talkActive=true;
   chunks=[];
+  setTalkUI('listening');
   try{
     const stream=await navigator.mediaDevices.getUserMedia({audio:true});
-    if(!isHolding){
+    if(!talkActive){
       stream.getTracks().forEach(t=>t.stop());
-      talkBtn.innerText='Hold to talk';
+      setTalkUI('idle');
       return;
     }
+    talkStream=stream;
     let mimeType='';
     if(window.MediaRecorder&&typeof MediaRecorder.isTypeSupported==='function'){
       if(MediaRecorder.isTypeSupported('audio/webm;codecs=opus'))mimeType='audio/webm;codecs=opus';
@@ -665,10 +690,10 @@ talkBtn.onpointerdown=async(e)=>{
     mr=mimeType?new MediaRecorder(stream,{mimeType}):new MediaRecorder(stream);
     mr.ondataavailable=ev=>{if(ev.data&&ev.data.size>0)chunks.push(ev.data);};
     mr.onstop=async()=>{
-      stream.getTracks().forEach(t=>t.stop());
+      if(talkStream){talkStream.getTracks().forEach(t=>t.stop());talkStream=null;}
       const recType=(mr&&mr.mimeType)||mimeType||'audio/webm';
       const blob=new Blob(chunks,{type:recType});
-      talkBtn.innerText='Processing...';
+      setTalkUI('processing');
       try{
         const r=await api('/api/voice',{method:'POST',headers:{'Content-Type':recType},body:blob});
         if(r.ok){
@@ -686,22 +711,40 @@ talkBtn.onpointerdown=async(e)=>{
           if(!rd.reply)alert('Voice request failed: '+(rd.error||r.status));
         }
       }catch(err){alert('Voice error: '+err);}
-      talkBtn.innerText='Hold to talk';
+      setTalkUI('idle');
     };
     mr.start();
-    talkBtn.innerText='Listening...';
   }catch(err){
-    isHolding=false;
+    talkActive=false;
+    setTalkUI('idle');
     alert('Mic error ('+err+'). Ensure HTTPS certificate is accepted.');
   }
+}
+function endTalk(){
+  if(!talkActive)return;
+  talkActive=false;
+  if(mr&&mr.state==='recording'){mr.stop();}
+  else{
+    if(talkStream){talkStream.getTracks().forEach(t=>t.stop());talkStream=null;}
+    setTalkUI('idle');
+  }
+}
+talkBtn.onpointerdown=(e)=>{
+  e.preventDefault();
+  unlockAudio();
+  beginTalk();
 };
 talkBtn.onpointerup=(e)=>{
   e.preventDefault();
   unlockAudio();
-  isHolding=false;
-  if(mr&&mr.state==='recording')mr.stop();
+  endTalk();
 };
 talkBtn.onpointercancel=talkBtn.onpointerup;
+pttBtn.addEventListener('click',()=>{
+  unlockAudio();
+  if(talkActive)endTalk();
+  else beginTalk();
+});
 
 // Phone-as-eyes: stream this page's camera to the laptop as ARIA's body
 // camera (set ARIA_BODY_CAMERA=bridge on the laptop first).
@@ -712,7 +755,12 @@ camVideo.setAttribute('playsinline','');camVideo.muted=true;camVideo.style.displ
 document.body.appendChild(camVideo);
 const camCanvas=document.createElement('canvas');camCanvas.width=480;camCanvas.height=360;
 function camFacingName(){return camFacing==='user'?'front':'rear';}
-function updateCamBtn(){camBtn.innerText='Camera: '+(camOn?('ON ('+camFacingName()+')'):'OFF');}
+function updateCamBtn(){
+  camBtn.innerText='Camera: '+(camOn?('ON ('+camFacingName()+')'):'OFF');
+  const fc=document.getElementById('flipcam');
+  fc.style.display=camOn?'':'none';
+  fc.innerText=camFacingName()+' ⇄';
+}
 async function startCamStream(){
   if(camStream){camStream.getTracks().forEach(t=>t.stop());camStream=null;}
   camStream=await navigator.mediaDevices.getUserMedia(
@@ -756,6 +804,10 @@ async function flipCam(){
   catch(err){alert('Camera flip failed ('+err+').');}
 }
 document.getElementById('flipcam').addEventListener('click',()=>{unlockAudio();flipCam();});
+document.getElementById('cog').addEventListener('click',()=>{
+  const s=document.getElementById('settings');
+  s.style.display=(s.style.display==='none')?'flex':'none';
+});
 </script></body></html>"""
 
 
