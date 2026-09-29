@@ -102,7 +102,32 @@ def skill_file_sweep(objective: str, call: Callable) -> str:
     return ("File sweep for '%s': read %d file(s) (%s):\n\n%s"
             % (objective, len(read), ", ".join(read), "\n\n".join(notes)))
 
+def skill_git_audit(objective: str, call: Callable) -> str:
+    """Inspect local git repository status, active branch, and recent commits."""
+    import subprocess
+    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    try:
+        status_res = subprocess.run(["git", "status", "--short"], capture_output=True, text=True, cwd=root_dir, timeout=5)
+        branch_res = subprocess.run(["git", "branch", "--show-current"], capture_output=True, text=True, cwd=root_dir, timeout=5)
+        log_res = subprocess.run(["git", "log", "-n", "5", "--oneline"], capture_output=True, text=True, cwd=root_dir, timeout=5)
+
+        branch = branch_res.stdout.strip() or "unknown"
+        status = status_res.stdout.strip()
+        recent = log_res.stdout.strip()
+
+        status_summary = f"{len(status.splitlines())} modified/untracked file(s)" if status else "clean working tree"
+        return (f"Git Audit (branch: {branch}, status: {status_summary}):\n\n"
+                f"Recent commits:\n{recent}\n\n"
+                f"Working tree:\n{status or 'No uncommitted changes.'}")
+    except Exception as e:
+        return f"[Git audit failed: {e}]"
+
+
 SKILLS: Dict[str, Dict[str, Any]] = {
+    "git_audit": {
+        "description": ("Inspect git repository status, active branch, and recent commits. "
+                        "Objective is ignored or used as context."),
+        "max_calls": 2, "run": skill_git_audit},
     "deep_research": {
         "description": ("Bounded web research on the objective: up to 4 searches, "
                         "returns a cited summary. Never invents findings."),
@@ -122,7 +147,7 @@ def tool_run_skill(skill_name: str,
                    tool_executor: Optional[Callable[[str, dict], str]] = None,
                    state_callback: Optional[Callable[[str], Any]] = None,
                    log_callback: Optional[Callable[[str], None]] = None) -> str:
-    """Run a bounded workflow skill: deep_research, system_check, file_sweep."""
+    """Run a bounded workflow skill: deep_research, system_check, file_sweep, git_audit."""
     name = (skill_name or "").strip().lower()
     sk = SKILLS.get(name)
     if not sk:

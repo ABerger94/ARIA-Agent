@@ -37,7 +37,8 @@ from aria.tools.schemas import (
 )
 from aria.tools.dispatch import (
     execute_tool, reset_turn_state, set_turn_context,
-    get_last_tool_executed, get_loaded_toolkits, set_hud_hook
+    get_last_tool_executed, get_loaded_toolkits, set_hud_hook,
+    auto_resolve_toolkits
 )
 import aria.speech as speech
 from aria.agent.shortcuts import check_voice_shortcut
@@ -316,6 +317,7 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
 
     LAST_USER_MESSAGE = user_prompt or ""
     reset_turn_state()
+    auto_resolve_toolkits(LAST_USER_MESSAGE)
     set_turn_context(LAST_USER_MESSAGE)
 
     hud.set_hud_state("thinking")
@@ -362,8 +364,7 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
 
             def _stream_chunk_cb(chunk: Optional[str]):
                 if chunk is None:
-                    if stream_buf[0].strip() and not speech._SPEECH_STOP.is_set():
-                        speech._SPEECH_QUEUE.put(stream_buf[0].strip())
+                    if stream_buf[0].strip():
                         stream_sents.append(stream_buf[0].strip())
                     stream_buf[0] = ""
                     return
@@ -372,9 +373,7 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                 stream_buf[0] += chunk
                 sents, stream_buf[0] = speech.extract_sentences(stream_buf[0], first_clause=(len(stream_sents) == 0))
                 for s in sents:
-                    if not speech._SPEECH_STOP.is_set():
-                        speech._SPEECH_QUEUE.put(s)
-                        stream_sents.append(s)
+                    stream_sents.append(s)
 
             speech._SPEECH_STOP.clear()
 
@@ -408,8 +407,13 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                 log_conversation("A.R.I.A.", final_text)
                 add_log(f"Speech: {final_text[:28]}...")
 
-                if not silent and not stream_sents:
-                    say(final_text)
+                if not silent:
+                    if stream_sents:
+                        for s in stream_sents:
+                            if not speech._SPEECH_STOP.is_set():
+                                speech._SPEECH_QUEUE.put(s)
+                    else:
+                        say(final_text)
                 elif silent and reply_sink is not None:
                     reply_sink.append(final_text)
 

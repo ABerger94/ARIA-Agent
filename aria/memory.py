@@ -447,3 +447,21 @@ def memory_db_probe() -> bool:
             _MEMORY_DB_OK = False
         _MEMORY_DB_T = now
     return bool(_MEMORY_DB_OK)
+
+
+def memory_forget_entries(query: str) -> int:
+    """Delete non-system memories matching keyword. Returns count of deleted rows."""
+    q = (query or "").strip().lower()
+    if not q:
+        return 0
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM memory WHERE category != 'system' AND (lower(key) LIKE ? OR lower(value) LIKE ?)",
+                    (f"%{q}%", f"%{q}%"))
+        ids = [r[0] for r in cur.fetchall()]
+        for rid in ids:
+            cur.execute("DELETE FROM memory WHERE id = ?", (rid,))
+        conn.commit()
+        conn.close()
+    return len(ids)

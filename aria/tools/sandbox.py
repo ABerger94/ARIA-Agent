@@ -1,3 +1,4 @@
+import uuid
 """
 ARIA Execution Sandboxing, Validation, and Safety Guards.
 Provides Python subprocess isolation, stale target detection, duplicate blocking,
@@ -142,7 +143,7 @@ def tool_run_python(code: str,
         except Exception as e:
             return f"[Execution Error: {e}]"
     finally:
-        if temp_script:
+        if temp_script and os.path.exists(temp_script):
             try:
                 os.remove(temp_script)
             except OSError:

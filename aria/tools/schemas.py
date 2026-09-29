@@ -172,7 +172,7 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
         'parameters': {'properties': {'action': {'type': 'STRING'}, 'key': {'type': 'STRING'}}, 'type': 'OBJECT'}},
     {   'description': 'Run a bounded workflow skill: a reusable multi-step procedure with a hard cap on tool calls. '
                        'Skills: deep_research (web research with cited summary), system_check (laptop health report), '
-                       'file_sweep (find and digest workspace files matching the objective). Prefer a skill over a '
+                       'file_sweep (find and digest workspace files matching the objective), git_audit (git branch, status, and commits report). Prefer a skill over a '
                        'long free-form tool chain when the job fits one.',
         'name': 'run_skill',
         'parameters': {   'properties': {'objective': {'type': 'STRING'}, 'skill_name': {'type': 'STRING'}},
@@ -198,7 +198,7 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
         'parameters': {'properties': {'title': {'type': 'STRING'}}, 'required': ['title'], 'type': 'OBJECT'}},
     {   'description': 'Press a media key: mute, volume_up, volume_down, play_pause, next, prev.',
         'name': 'media_key',
-        'parameters': {'properties': {'action': {'type': 'STRING'}}, 'required': ['action'], 'type': 'OBJECT'}},
+        'parameters': {'properties': {'action': {'type': 'STRING'}, 'key': {'type': 'STRING'}}, 'required': [], 'type': 'OBJECT'}},
     {   'description': 'Look up a Magic: The Gathering card on Scryfall — rules text, type, mana cost, market price. '
                        'Free, no key. Great for deck talk.',
         'name': 'mtg_card',

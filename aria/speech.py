@@ -165,11 +165,40 @@ def ptt_join_audio(frames_list: List[bytes], sample_rate: int, sample_width: int
     return sr.AudioData(frames, sample_rate, sample_width), total_s
 
 
+_STT_HALLUCINATIONS = [
+    r"^(?:thank\s+you(?:\s+very\s+much)?|thanks(?:\s+for\s+watching)?)[.!]?$",
+    r"^please\s+subscribe[.!]?$",
+    r"^subtitles\s+by.*$",
+    r"^(?:bye|goodbye|see\s+you(?:\s+later|\s+next\s+time)?)[.!]?$",
+    r"^(?:so,\s+yeah|you'?re\s+welcome)[.!]?$",
+    r"^searching\s+spotify.*$",
+    r"^(?:boom|in\s+the\s+1970s)[.!]?$",
+    r"^(?:silence|coughing|throat\s+clearing|laughter)[.!]?$",
+]
+
+
+def clean_stt_transcript(text: str) -> str:
+    """Filter out common Whisper silence hallucinations and repetition loops."""
+    if not text:
+        return ""
+    t = text.strip()
+    low = t.lower().strip(" ,.-!?:;—–\t\n")
+    if not low:
+        return ""
+    for pat in _STT_HALLUCINATIONS:
+        if re.match(pat, low):
+            return ""
+    words = low.split()
+    if len(words) >= 2 and len(set(words)) == 1:
+        return ""
+    return t
+
+
 def transcribe(audio: sr.AudioData, recognizer: sr.Recognizer, use_local_stt: bool = False, on_log: Optional[Callable[[str], None]] = None) -> str:
     """Transcribe sr.AudioData to text. Prefers faster-whisper with strict VAD filtering, falls back to Google on STT failure."""
     if not use_local_stt:
         try:
-            return recognizer.recognize_google(audio)
+            return clean_stt_transcript(recognizer.recognize_google(audio))
         except Exception:
             return ""
 
@@ -186,16 +215,13 @@ def transcribe(audio: sr.AudioData, recognizer: sr.Recognizer, use_local_stt: bo
             )
             kept = [s for s in segments if getattr(s, "no_speech_prob", 0.0) <= _FW_NO_SPEECH_CUTOFF]
             text = " ".join(s.text.strip() for s in kept).strip()
-            words = [w.lower().strip(" ,.-!?:;—–\t\n") for w in text.split() if w.strip(" ,.-!?:;—–\t\n")]
-            if len(words) >= 2 and len(set(words)) == 1:
-                return ""
-            return text
+            return clean_stt_transcript(text)
         except Exception as e:
             if on_log:
                 on_log(f"Local STT failed, falling back to Google: {e}")
 
     try:
-        return recognizer.recognize_google(audio)
+        return clean_stt_transcript(recognizer.recognize_google(audio))
     except Exception:
         return ""
 

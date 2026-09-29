@@ -1,5 +1,5 @@
 """
-A.R.I.A. Autonomous Robotic Intelligence Agent OS.
+A.R.I.A. Adaptive Robotic Intelligence Agent OS.
 Modular Agent Framework.
 """
 

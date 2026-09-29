@@ -487,6 +487,18 @@ def continuous_voice_listener():
                         time.sleep(0.2)
                         continue
 
+                    # Pre-filter: skip sub-word fragments (<0.3s) and faint clicks (<150 RMS)
+                    try:
+                        raw_data = audio.get_raw_data()
+                        dur = len(raw_data) / (audio.sample_rate * audio.sample_width)
+                        if dur < 0.3:
+                            continue
+                        import audioop
+                        if audioop.rms(raw_data, audio.sample_width) < 150:
+                            continue
+                    except Exception:
+                        pass
+
                     # Transcribe
                     try:
                         transcript = speech.transcribe_local_or_cloud(audio, wake_rec).strip()

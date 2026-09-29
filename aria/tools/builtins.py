@@ -29,6 +29,7 @@ from aria.config import (
     get_gemini_key, key_mask, _KEY_QUARANTINE_UNTIL, _KEY_QUARANTINE_CODE
 )
 from aria.memory import (
+    memory_forget_entries,
     memory_save, memory_search_semantic, memory_get_all,
     spine_append, add_log, DB_PATH, DB_LOCK
 )
@@ -382,18 +383,21 @@ _MEDIA_ACTIONS = {
 }
 
 
-def tool_media_key(action: str) -> str:
-    if not GUI_AVAILABLE:
-        return "[pyautogui not installed]"
-    a = (action or "").lower().strip()
-    key = _MEDIA_ACTIONS.get(a)
-    if not key:
-        return f"[Unknown media action '{action}'. Valid: {', '.join(sorted(_MEDIA_ACTIONS))}]"
+def tool_media_key(action: str = "play_pause", key: str = "") -> str:
+    """Send Windows media key press using native virtual key codes."""
+    target = (key or action or "play_pause").lower().strip()
     try:
-        pyautogui.press(key)
-        return f"Sent media key: {a}."
-    except Exception as e:
-        return f"[Media key failed: {e}]"
+        from aria.spotify import tool_media_key as sp_media_key
+        return sp_media_key(target)
+    except Exception:
+        if not GUI_AVAILABLE:
+            return "[Media key unavailable]"
+        k = _MEDIA_ACTIONS.get(target, "playpause")
+        try:
+            pyautogui.press(k)
+            return f"Sent media key: {target}."
+        except Exception as e:
+            return f"[Media key failed: {e}]"
 
 
 def tool_volume(action: str = "status", level: int = 50) -> str:
@@ -403,8 +407,11 @@ def tool_volume(action: str = "status", level: int = 50) -> str:
         from comtypes import CLSCTX_ALL
         from ctypes import cast, POINTER
         dev = AudioUtilities.GetSpeakers()
-        iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        vol = cast(iface, POINTER(IAudioEndpointVolume))
+        if hasattr(dev, "EndpointVolume"):
+            vol = dev.EndpointVolume
+        else:
+            iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            vol = cast(iface, POINTER(IAudioEndpointVolume))
         a = str(action).lower().strip()
         if a == "set":
             pct = max(0, min(100, int(level)))
@@ -530,19 +537,10 @@ def memory_forget(query: str) -> str:
     q = (query or "").strip().lower()
     if not q:
         return "Nothing to forget: empty query."
-    with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM memory WHERE category != 'system' AND (lower(key) LIKE ? OR lower(value) LIKE ?)",
-                    (f"%{q}%", f"%{q}%"))
-        ids = [r[0] for r in cur.fetchall()]
-        for rid in ids:
-            cur.execute("DELETE FROM memory WHERE id = ?", (rid,))
-        conn.commit()
-        conn.close()
-    add_log(f"Forgot {len(ids)} memories matching '{query}'")
-    noun = "memory" if len(ids) == 1 else "memories"
-    return f"Forgot {len(ids)} {noun} matching '{query}'."
+    count = memory_forget_entries(q)
+    add_log(f"Forgot {count} memories matching '{query}'")
+    noun = "memory" if count == 1 else "memories"
+    return f"Forgot {count} {noun} matching '{query}'."
 
 
 def journal_write(entry: str) -> str:

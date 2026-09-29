@@ -6,6 +6,7 @@ to import from hud.py). Toggle with hud.USE_PIXEL_AVATAR.
 """
 import math
 import os
+import time
 from datetime import datetime
 
 import cv2
@@ -61,8 +62,29 @@ def get_theme() -> str:
     return _theme_name
 
 
+_last_theme_check = 0.0
+
+
+def load_theme() -> str:
+    global _theme_name
+    try:
+        with open(_THEME_FILE) as f:
+            saved = f.read().strip()
+        if saved in THEMES and saved != _theme_name:
+            _theme_name = saved
+            _apply_theme()
+    except OSError:
+        pass
+    return _theme_name
+
+
 def theme_colors():
     """(accent, accent2) for HUD chrome theming."""
+    global _last_theme_check
+    now = time.time()
+    if now - _last_theme_check > 0.5:
+        _last_theme_check = now
+        load_theme()
     return ACCENT, ACCENT2
 
 
@@ -82,17 +104,6 @@ def set_theme(name: str) -> str:
 def cycle_theme() -> str:
     nxt = _THEME_ORDER[(_THEME_ORDER.index(_theme_name) + 1) % len(_THEME_ORDER)]
     return set_theme(nxt)
-
-
-def load_theme() -> str:
-    try:
-        with open(_THEME_FILE) as f:
-            saved = f.read().strip()
-        if saved in THEMES:
-            set_theme(saved)
-    except OSError:
-        pass
-    return _theme_name
 
 
 def _r(c, ox, oy, gx, gy, gw, gh, color):
@@ -301,6 +312,10 @@ def _sleep_zzz(c, ox, oy, t):
 
 def draw_pixel_aria(canvas, state, t):
     """Draw the pixel-person avatar centered on the HUD face region."""
+    global _last_theme_check
+    if t - _last_theme_check > 0.5:
+        _last_theme_check = t
+        load_theme()
     _presence(canvas, t)
     ox = 640 - (GW * S) // 2
     oy = 452 - GH * S  # feet land ~y=452

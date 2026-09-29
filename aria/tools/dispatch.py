@@ -5,6 +5,7 @@ risky tool audit logging, HUD feedback transitions, and progressive schema paylo
 """
 
 import time
+import re
 from typing import Dict, List, Optional, Set, Tuple, Callable, Any
 
 from aria.config import MAX_TOOL_OUTPUT, BRIDGE_TOKEN, GITHUB_USERNAME, redact
@@ -91,6 +92,40 @@ def reset_toolkits() -> None:
     _LOADED_TOOLKITS = {"core"}
 
 
+# Keyword map for dynamic zero-turn toolkit auto-resolution
+KEYWORD_TOOLKIT_MAP: Dict[str, List[str]] = {
+    "spotify": [r"\bspotify\b", r"\bmusic\b", r"\bsongs?\b", r"\bplaylists?\b", r"\btracks?\b", r"\bdj\b", r"\bplay\b", r"\bpause\b", r"\bshuffle\b", r"\bmedia\b"],
+    "windows": [r"\bwindows?\b", r"\bminimize\b", r"\bmaximize\b", r"\bfocus\b", r"\bclose\s+window\b", r"\bswitch\s+to\b"],
+    "scheduler": [r"\breminds?\b", r"\breminders?\b", r"\btimers?\b", r"\bschedules?\b", r"\balarms?\b", r"\brecurring\b", r"\bnudge\b"],
+    "memory_plus": [r"\bnotes?\b", r"\bjournal\b", r"\bdiary\b", r"\bbriefing\b", r"\bforget\b", r"\bremember\b"],
+    "mtg": [r"\bmtg\b", r"\bmagic\b", r"\bcommander\b", r"\bedh\b", r"\bscryfall\b", r"\bcards?\b", r"\bdecks?\b", r"\bmana\b"],
+    "vision": [r"\bphotos?\b", r"\bpictures?\b", r"\bcameras?\b", r"\bwebcam\b", r"\bservos?\b", r"\bhead\b", r"\bneck\b", r"\btracking\b"],
+    "comms": [r"\bemai(?:ls?)\b", r"\bgmail\b", r"\bmail\b", r"\binbox\b"],
+    "admin": [r"\bvolume\b", r"\bmute\b", r"\bunmute\b", r"\bbridge\b", r"\btokens?\b", r"\bkeys?\b"],
+    "github": [r"\bgithub\b", r"\bgit\b", r"\brepos?(?:itory)?\b", r"\bcommit\b", r"\bpush\b"],
+}
+
+TOOL_TO_TOOLKIT: Dict[str, str] = {
+    t_name: tk_name
+    for tk_name, tk_data in TOOLKITS.items()
+    for t_name in tk_data.get("tools", [])
+}
+
+
+def auto_resolve_toolkits(prompt: str) -> List[str]:
+    """Scan user prompt against toolkit keywords and auto-load matched specialist toolkits."""
+    if not prompt:
+        return []
+    p_low = prompt.lower()
+    newly_loaded: List[str] = []
+    for tk, patterns in KEYWORD_TOOLKIT_MAP.items():
+        if tk in TOOLKITS and tk not in _LOADED_TOOLKITS:
+            if any(re.search(pat, p_low) for pat in patterns):
+                _LOADED_TOOLKITS.add(tk)
+                newly_loaded.append(tk)
+    return newly_loaded
+
+
 def get_loaded_toolkits() -> Set[str]:
     """Return set of currently loaded toolkit names."""
     return set(_LOADED_TOOLKITS)
@@ -138,6 +173,12 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
     """
     global _LAST_OPEN_TARGET, _TURN_NUDGED, _LAST_TOOL_EXECUTED
     
+    # Auto-resolve parent toolkit if called directly
+    if fn_name in TOOL_TO_TOOLKIT:
+        parent_tk = TOOL_TO_TOOLKIT[fn_name]
+        if parent_tk not in _LOADED_TOOLKITS:
+            _LOADED_TOOLKITS.add(parent_tk)
+
     # 1. Log to spine
     if _SPINE_HOOK:
         try:
@@ -256,7 +297,7 @@ def _init_default_registry():
     _REGISTRY["focus_window"] = lambda a: builtins.tool_focus_window(a.get("title", ""))
     _REGISTRY["minimize_window"] = lambda a: builtins.tool_minimize_window(a.get("title", ""))
     _REGISTRY["close_window"] = lambda a: builtins.tool_close_window(a.get("title", ""))
-    _REGISTRY["media_key"] = lambda a: builtins.tool_media_key(a.get("action", ""))
+    _REGISTRY["media_key"] = lambda a: builtins.tool_media_key(a.get("action", "") or a.get("key", "play_pause"))
     _REGISTRY["mtg_card"] = lambda a: builtins.tool_mtg_card(a.get("card_name", ""))
     _REGISTRY["watch_price"] = lambda a: builtins.tool_watch_price(
         a.get("url", ""), a.get("target_price", ""), a.get("label", "item")

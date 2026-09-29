@@ -41,16 +41,63 @@ def hud_ascii(s: Any) -> str:
     return res.encode("ascii", "replace").decode("ascii")
 
 
+_CACHED_IP = "localhost"
+_IP_LAST_CHECK = 0.0
+
 def lan_ip() -> str:
-    """Find local network IP address."""
+    """Find local network IP address, cached for 60 seconds."""
+    global _CACHED_IP, _IP_LAST_CHECK
+    now = time.time()
+    if now - _IP_LAST_CHECK < 60.0 and _CACHED_IP != "localhost":
+        return _CACHED_IP
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
         ip = s.getsockname()[0]
         s.close()
-        return ip
+        _CACHED_IP = ip
     except Exception:
-        return "localhost"
+        _CACHED_IP = "localhost"
+    _IP_LAST_CHECK = now
+    return _CACHED_IP
+
+_CACHED_TELEMETRY = {
+    "cpu": 0.0,
+    "mem": 0.0,
+    "bat_str": "AC",
+    "subsystems": [],
+    "last_check": 0.0,
+}
+
+def get_cached_telemetry() -> Tuple[float, float, str, List[Tuple[str, str, bool]]]:
+    """Returns (cpu, mem, bat_str, subsystems) throttled to 1.0s interval."""
+    now = time.time()
+    if now - _CACHED_TELEMETRY["last_check"] >= 1.0:
+        try:
+            _CACHED_TELEMETRY["cpu"] = psutil.cpu_percent()
+        except Exception:
+            pass
+        try:
+            _CACHED_TELEMETRY["mem"] = psutil.virtual_memory().percent
+        except Exception:
+            pass
+        try:
+            bat = psutil.sensors_battery()
+            _CACHED_TELEMETRY["bat_str"] = f"{bat.percent}%" if bat else "AC"
+        except Exception:
+            _CACHED_TELEMETRY["bat_str"] = "AC"
+        if _SUBSYSTEMS_CALLBACK:
+            try:
+                _CACHED_TELEMETRY["subsystems"] = _SUBSYSTEMS_CALLBACK() or []
+            except Exception:
+                pass
+        _CACHED_TELEMETRY["last_check"] = now
+    return (
+        _CACHED_TELEMETRY["cpu"],
+        _CACHED_TELEMETRY["mem"],
+        _CACHED_TELEMETRY["bat_str"],
+        _CACHED_TELEMETRY["subsystems"],
+    )
 
 
 # Visual Palette (BGR)
@@ -369,12 +416,9 @@ def draw_hud() -> np.ndarray:
     cv2.rectangle(canvas, (20, 480), (1260, 705), BORDER, 1)
 
     now_str = datetime.now().strftime("%Y-%m-%d  %H:%M:%S")
-    cpu_usage = psutil.cpu_percent()
-    mem_usage = psutil.virtual_memory().percent
-    battery = psutil.sensors_battery()
-    bat_str = f"{battery.percent}%" if battery else "AC"
+    cpu_usage, mem_usage, bat_str, modules = get_cached_telemetry()
 
-    cv2.putText(canvas, "A.R.I.A. // AUTONOMOUS ROBOTIC INTELLIGENCE AGENT", (30, 40),
+    cv2.putText(canvas, "A.R.I.A. // Adaptive Robotic Intelligence Agent", (30, 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, ACC, 2, cv2.LINE_AA)
     sys_stats = f"TIME: {now_str}  |  CPU: {cpu_usage}%  |  MEM: {mem_usage}%  |  PWR: {bat_str}"
     cv2.putText(canvas, sys_stats, (650, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 170, 180), 1, cv2.LINE_AA)
@@ -397,7 +441,6 @@ def draw_hud() -> np.ndarray:
 
     # Subsystems
     cv2.putText(canvas, "[ SUBSYSTEMS ]", (35, 102), cv2.FONT_HERSHEY_SIMPLEX, 0.5, ACC, 1, cv2.LINE_AA)
-    modules = _SUBSYSTEMS_CALLBACK() if _SUBSYSTEMS_CALLBACK else []
     for i, (mod, stat, ok) in enumerate(modules):
         dot = GREEN if ok else (160, 160, 160)
         cv2.circle(canvas, (43, 131 + i * 32), 4, dot, -1)
