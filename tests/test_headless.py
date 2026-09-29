@@ -423,6 +423,23 @@ def t_body_protocol():
         good = b"\xff\xd8\xff\xe0" + b"\x00" * 200
         assert pub(good) is True
         assert ns2["_PHONE_CAM"]["jpeg"] == good
+
+        # body_camera_label: short source tag for the HUD subsystem box
+        fn3_src = next(
+            (ast.get_source_segment(vis, n) for n in ast.walk(tree)
+             if isinstance(n, ast.FunctionDef) and n.name == "body_camera_label"),
+            None,
+        )
+        assert fn3_src, "missing body_camera_label"
+        ns3: dict = {"_body_camera_source": parse}
+        exec(compile(fn3_src, "<test>", "exec"), ns3)
+        label = ns3["body_camera_label"]
+        for raw, expected in [
+            ("bridge", "bridge"), ("0", "cam 0"), ("1", "cam 1"),
+            ("http://192.168.1.42:8080/video", "net"),
+        ]:
+            ns["BODY_CAMERA_RAW"] = raw
+            assert label() == expected, (raw, label())
     finally:
         for m in ("serial", "serial.tools", "serial.tools.list_ports"):
             sys.modules.pop(m, None)

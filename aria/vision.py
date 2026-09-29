@@ -49,6 +49,16 @@ def _body_camera_source():
         return 0
 
 
+def body_camera_label() -> str:
+    """Short human label for the HUD subsystem box: bridge, cam N, or net."""
+    src = _body_camera_source()
+    if src == "bridge":
+        return "bridge"
+    if isinstance(src, str):
+        return "net"
+    return f"cam {src}"
+
+
 class BridgeCamera:
     """cv2.VideoCapture-compatible shim reading frames uploaded by the
     Phone Bridge page (ARIA_BODY_CAMERA=bridge)."""
