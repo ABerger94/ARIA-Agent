@@ -344,6 +344,7 @@ user-select:none;-webkit-user-select:none}
 <h2>A.R.I.A. // Phone Bridge</h2>
 <div class="topbtns">
 <button id="flipcam" type="button" class="icon-btn" style="display:none">front ⇄</button>
+<button id="logbtn" type="button" class="icon-btn" aria-label="Log">📜</button>
 <button id="cog" type="button" class="icon-btn" aria-label="Settings">⚙</button>
 </div>
 </div>
@@ -357,7 +358,7 @@ user-select:none;-webkit-user-select:none}
   <a href="/commands" style="color:#ff5fa2;font-size:14px">Command reference</a>
   <span id="astat" style="font-size:12px;color:#8ba2b5">Audio: ready</span>
 </div>
-<div id="log"></div>
+<div id="log" style="display:none"></div>
 <form id="msgform">
   <input id="t" placeholder="Directive..." autocomplete="off">
   <button type="submit" id="sendbtn">Send</button>
@@ -807,6 +808,11 @@ document.getElementById('flipcam').addEventListener('click',()=>{unlockAudio();f
 document.getElementById('cog').addEventListener('click',()=>{
   const s=document.getElementById('settings');
   s.style.display=(s.style.display==='none')?'flex':'none';
+});
+document.getElementById('logbtn').addEventListener('click',()=>{
+  const l=document.getElementById('log');
+  l.style.display=(l.style.display==='none')?'block':'none';
+  if(l.style.display!=='none'){l.scrollTop=l.scrollHeight;}
 });
 </script></body></html>"""
 
