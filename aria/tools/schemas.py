@@ -46,6 +46,14 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
     {   'description': 'Rotates physical robot neck servos (Pan 0-180, Tilt 0-90).',
         'name': 'move_head_servos',
         'parameters': {'properties': {'pan': {'type': 'INTEGER'}, 'tilt': {'type': 'INTEGER'}}, 'type': 'OBJECT'}},
+    {   'description': 'Drives the robot body wheels. left/right -100..100 (negative = reverse, 0 = stop). '
+                       'seconds > 0 auto-stops the wheels after that long.',
+        'name': 'drive_wheels',
+        'parameters': {'properties': {'left': {'type': 'INTEGER'}, 'right': {'type': 'INTEGER'},
+                                      'seconds': {'type': 'NUMBER'}}, 'type': 'OBJECT'}},
+    {   'description': 'Stops the robot body wheels and centers the head.',
+        'name': 'body_stop',
+        'parameters': {'properties': {}, 'type': 'OBJECT'}},
     {   'description': 'Creates/updates a file in a GitHub repo..',
         'name': 'github_push_file',
         'parameters': {   'properties': {   'content': {'type': 'STRING'},
@@ -267,7 +275,7 @@ TOOLKITS = {   'admin': {   'summary': 'API keys, bridge token, command guide, v
                                   'break_reminders']},
     'spotify': {'summary': 'music: Spotify control, DJ mode, media keys', 'tools': ['spotify', 'dj', 'media_key']},
     'vision': {   'summary': 'webcam photos, face tracking, neck servos',
-                  'tools': ['take_photo', 'face_tracking', 'move_head_servos']},
+                  'tools': ['take_photo', 'face_tracking', 'move_head_servos', 'drive_wheels', 'body_stop']},
     'windows': {   'summary': 'list, focus, minimize, close windows',
                    'tools': ['list_windows', 'focus_window', 'minimize_window', 'close_window']}}
 
@@ -318,6 +326,8 @@ COMMAND_GUIDE = [   ('Memory', 'save_memory', 'remember my Doja playlist is spot
     ('Prices', 'unwatch_price', 'stop watching the tablet'),
     ('Face & body', 'face_tracking', 'follow my face'),
     ('Face & body', 'move_head_servos', 'look left'),
+    ('Face & body', 'drive_wheels', 'drive forward for 2 seconds'),
+    ('Face & body', 'body_stop', 'stop moving'),
     ('Phone & keys', 'gemini_keys', 'check my Gemini keys'),
     ('Phone & keys', 'bridge_token', 'what is my bridge token?'),
     ('GitHub', 'github_push_file', 'push this file to my repo'),

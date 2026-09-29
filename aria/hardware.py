@@ -1,15 +1,12 @@
 """
 ARIA Hardware Controller.
-Manages physical USB serial connection to robot neck servos and microcontrollers,
-featuring Exponential Moving Average (EMA) smoothing, deadband micro-jitter suppression,
-packet rate limiting, and virtual mode fallback.
+Manages physical USB serial connection to robot neck servos and microcontrollers.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-import time
 from typing import Optional, Tuple, Dict, Any
 
 try:
@@ -25,18 +22,9 @@ from aria.config import add_log
 _LOCK = threading.Lock()
 SERIAL_CONN: Optional[Any] = None
 HARDWARE_CONNECTED: bool = False
-
-SERVO_PAN: float = 90.0
-SERVO_TILT: float = 45.0
+SERVO_PAN: int = 90
+SERVO_TILT: int = 45
 SERVO_POS: Dict[str, int] = {"pan": 90, "tilt": 45}
-
-# Jitter suppression and smoothing parameters
-SERVO_ALPHA: float = 0.35            # EMA weight (0.0 to 1.0)
-SERVO_DEADBAND: float = 1.5          # Minimum degrees required to trigger serial movement
-_MIN_PACKET_INTERVAL: float = 0.030  # Max ~33Hz to prevent serial buffer bloat
-_LAST_TRANSMIT_TIME: float = 0.0
-_LAST_LOG_PAN: float = 90.0
-_LAST_LOG_TILT: float = 45.0
 
 
 def init_hardware() -> bool:
@@ -66,58 +54,29 @@ def init_hardware() -> bool:
         return False
 
 
-def send_servo_command(pan: float, tilt: float, force: bool = False) -> Tuple[int, int]:
-    """Clamp, smooth (EMA), deadband-filter, and transmit pan/tilt command to connected servos."""
-    global SERVO_PAN, SERVO_TILT, SERIAL_CONN, HARDWARE_CONNECTED, _LAST_TRANSMIT_TIME, _LAST_LOG_PAN, _LAST_LOG_TILT
+def send_servo_command(pan: int, tilt: int) -> Tuple[int, int]:
+    """Clamp and transmit pan/tilt command to connected servos."""
+    global SERVO_PAN, SERVO_TILT, SERIAL_CONN, HARDWARE_CONNECTED
     with _LOCK:
-        target_pan = max(0.0, min(180.0, float(pan)))
-        target_tilt = max(0.0, min(180.0, float(tilt)))
-
-        d_pan = abs(target_pan - SERVO_PAN)
-        d_tilt = abs(target_tilt - SERVO_TILT)
-
-        now = time.time()
-        # Deadband & rate limit check (unless forced by explicit user tool call)
-        if not force:
-            if d_pan < SERVO_DEADBAND and d_tilt < SERVO_DEADBAND:
-                return int(round(SERVO_PAN)), int(round(SERVO_TILT))
-            if (now - _LAST_TRANSMIT_TIME) < _MIN_PACKET_INTERVAL:
-                return int(round(SERVO_PAN)), int(round(SERVO_TILT))
-
-        # Exponential Moving Average smoothing
-        if force:
-            SERVO_PAN = target_pan
-            SERVO_TILT = target_tilt
-        else:
-            SERVO_PAN = (SERVO_ALPHA * target_pan) + ((1.0 - SERVO_ALPHA) * SERVO_PAN)
-            SERVO_TILT = (SERVO_ALPHA * target_tilt) + ((1.0 - SERVO_ALPHA) * SERVO_TILT)
-
-        out_pan = int(round(SERVO_PAN))
-        out_tilt = int(round(SERVO_TILT))
-
-        SERVO_POS["pan"] = out_pan
-        SERVO_POS["tilt"] = out_tilt
-        _LAST_TRANSMIT_TIME = now
+        SERVO_PAN = max(0, min(180, int(pan)))
+        SERVO_TILT = max(0, min(90, int(tilt)))
+        SERVO_POS["pan"] = SERVO_PAN
+        SERVO_POS["tilt"] = SERVO_TILT
 
         if HARDWARE_CONNECTED and SERIAL_CONN and getattr(SERIAL_CONN, "is_open", False):
             try:
-                SERIAL_CONN.write(f"P{out_pan}T{out_tilt}\n".encode("utf-8"))
+                SERIAL_CONN.write(f"P{SERVO_PAN}T{SERVO_TILT}\n".encode("utf-8"))
             except Exception as e:
                 add_log(f"Servo write failed: {e}")
                 HARDWARE_CONNECTED = False
 
-        # Suppress log spam: only log when position changes significantly or when forced
-        if force or abs(out_pan - _LAST_LOG_PAN) >= 5 or abs(out_tilt - _LAST_LOG_TILT) >= 5:
-            add_log(f"Servos: Pan {out_pan}deg, Tilt {out_tilt}deg")
-            _LAST_LOG_PAN = float(out_pan)
-            _LAST_LOG_TILT = float(out_tilt)
-
-        return out_pan, out_tilt
+        add_log(f"Servos: Pan {SERVO_PAN}deg, Tilt {SERVO_TILT}deg")
+        return SERVO_PAN, SERVO_TILT
 
 
 def tool_move_head_servos(pan: int = 90, tilt: int = 45) -> str:
     """Tool implementation for moving robot neck servos."""
-    p, t = send_servo_command(pan, tilt, force=True)
+    p, t = send_servo_command(pan, tilt)
     if HARDWARE_CONNECTED:
         return f"Head servos repositioned to Pan {p}deg, Tilt {t}deg."
     return f"Virtual servos repositioned to Pan {p}deg, Tilt {t}deg (hardware in virtual mode)."
@@ -126,7 +85,60 @@ def tool_move_head_servos(pan: int = 90, tilt: int = 45) -> str:
 def get_hardware_status() -> Dict[str, Any]:
     return {
         "connected": HARDWARE_CONNECTED,
-        "pan": int(round(SERVO_PAN)),
-        "tilt": int(round(SERVO_TILT)),
+        "pan": SERVO_PAN,
+        "tilt": SERVO_TILT,
+        "wheels": dict(WHEEL_STATE),
         "serial_available": SERIAL_AVAILABLE
     }
+
+
+# ---- Drive base (phase 2 of the robot body) ----
+# Continuous-rotation servos on the Arduino (D5/D6 in aria_body.ino).
+# Wire protocol: b"W<left>,<right>\n", each -100..100, 0 = stopped.
+
+WHEEL_STATE: Dict[str, int] = {"left": 0, "right": 0}
+
+
+def send_drive_command(left: int, right: int) -> Tuple[int, int]:
+    """Clamp and transmit wheel speeds (-100..100) to the body Arduino."""
+    global SERIAL_CONN, HARDWARE_CONNECTED
+    with _LOCK:
+        left = max(-100, min(100, int(left)))
+        right = max(-100, min(100, int(right)))
+        WHEEL_STATE["left"] = left
+        WHEEL_STATE["right"] = right
+
+        if HARDWARE_CONNECTED and SERIAL_CONN and getattr(SERIAL_CONN, "is_open", False):
+            try:
+                SERIAL_CONN.write(f"W{left},{right}\n".encode("utf-8"))
+            except Exception as e:
+                add_log(f"Drive write failed: {e}")
+                HARDWARE_CONNECTED = False
+
+        add_log(f"Wheels: L {left}, R {right}")
+        return left, right
+
+
+def tool_drive(left: int = 0, right: int = 0, seconds: float = 0) -> str:
+    """Tool implementation for driving the robot body.
+
+    left/right: -100..100 (negative = reverse). seconds > 0 auto-stops
+    the wheels after that long so ARIA can't drive off the desk forever.
+    """
+    l, r = send_drive_command(left, right)
+    mode = "hardware" if HARDWARE_CONNECTED else "virtual mode"
+    if seconds and seconds > 0:
+        secs = max(0.1, min(30.0, float(seconds)))
+        timer = threading.Timer(secs, send_drive_command, args=(0, 0))
+        timer.daemon = True
+        timer.start()
+        return f"Driving L {l} / R {r} for {secs:g}s ({mode}); auto-stop armed."
+    return f"Wheels set to L {l} / R {r} ({mode})."
+
+
+def tool_body_stop() -> str:
+    """Stop the wheels and center the head."""
+    send_drive_command(0, 0)
+    send_servo_command(90, 45)
+    mode = "hardware" if HARDWARE_CONNECTED else "virtual mode"
+    return f"Body stopped, head centered ({mode})."
