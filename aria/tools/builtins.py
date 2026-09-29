@@ -6,7 +6,9 @@ Git/GitHub, email, notes, price tracking, and MTG data.
 
 import base64
 from datetime import datetime, timedelta
+import email
 import html as html_lib
+import imaplib
 import json
 import os
 import re
@@ -435,8 +437,9 @@ def tool_volume(action: str = "status", level: int = 50) -> str:
 
 # ---------------- Comms (Gmail) ----------------
 def _gmail_creds() -> Tuple[str, str]:
-    return (key_get("GMAIL_USER") or "").strip(), \
-           (key_get("GMAIL_APP_PASSWORD") or "").replace(" ", "").strip()
+    # key_get returns (value, source); we only need the value.
+    return (key_get("GMAIL_USER")[0] or "").strip(), \
+           (key_get("GMAIL_APP_PASSWORD")[0] or "").replace(" ", "").strip()
 
 
 def tool_gmail_setup(gmail_user: str, app_password: str) -> str:
@@ -444,7 +447,7 @@ def tool_gmail_setup(gmail_user: str, app_password: str) -> str:
     _KEYS["GMAIL_USER"] = (gmail_user or "").strip()
     _KEYS["GMAIL_APP_PASSWORD"] = (app_password or "").replace(" ", "").strip()
     save_keys()
-    return f"Gmail saved for {_KEYS['GMAIL_USER']}. You can now send email with send_email."
+    return f"Gmail saved for {_KEYS['GMAIL_USER']}. You can now send email with send_email and read it with read_email."
 
 
 def tool_send_email(to: str, subject: str, body: str) -> str:
@@ -476,6 +479,169 @@ def tool_send_email(to: str, subject: str, body: str) -> str:
             add_log(f"Email send attempt {_sa + 1}/2 failed ({type(e).__name__}) - retrying...")
             time.sleep(3)
     return f"Could not send email to {to}."
+
+
+def _gmail_imap() -> Tuple[Optional[imaplib.IMAP4_SSL], Optional[str]]:
+    """Open an authenticated IMAP connection to Gmail, or (None, error)."""
+    user, pw = _gmail_creds()
+    if not user or not pw or pw == "INSERT":
+        return None, ("Gmail isn't set up yet. Ask the user for their Gmail address and an "
+                      "app password (myaccount.google.com/apppasswords - needs 2-Step "
+                      "Verification turned on), then call gmail_setup to save them.")
+    try:
+        m = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=30)
+        m.login(user, pw)
+        return m, None
+    except imaplib.IMAP4.error:
+        return None, ("Gmail rejected the login. The app password is wrong or was revoked - "
+                      "ask the user to generate a fresh one at myaccount.google.com/apppasswords "
+                      "and call gmail_setup again.")
+    except Exception as e:
+        return None, f"Could not reach Gmail over IMAP: {e}"
+
+
+def _imap_text_part(msg) -> str:
+    """Best-effort plain-text body from a parsed email message."""
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_type() == "text/plain" and \
+               "attachment" not in str(part.get("Content-Disposition", "")):
+                try:
+                    payload = part.get_payload(decode=True) or b""
+                    return payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+                except Exception:
+                    continue
+        return ""
+    try:
+        payload = msg.get_payload(decode=True) or b""
+        return payload.decode(msg.get_content_charset() or "utf-8", errors="replace")
+    except Exception:
+        return str(msg.get_payload())
+
+
+def tool_read_email(query: str = "", limit: int = 10, unread_only: bool = False,
+                    uid: str = "") -> str:
+    """Read the user's Gmail over IMAP (same app password as send_email).
+
+    Without uid: searches INBOX (Gmail-style query via X-GM-RAW, e.g.
+    "from:boss newer_than:7d") and returns newest matches as one-line
+    summaries with uids. With uid: returns the full body of that message.
+    Read-only - never marks messages as read.
+    """
+    m, err = _gmail_imap()
+    if err:
+        return err
+    try:
+        m.select("INBOX", readonly=True)
+        if uid:
+            typ, data = m.uid("FETCH", uid, "(BODY.PEEK[])")
+            if typ != "OK" or not data or not data[0]:
+                return f"No message found with uid {uid}."
+            raw = data[0][1] if isinstance(data[0], tuple) else data[0]
+            msg = email.message_from_bytes(raw)
+            body = _imap_text_part(msg).strip()
+            if len(body) > 4000:
+                body = body[:4000] + "\n[...truncated...]"
+            return (f"From: {msg.get('From', '?')}\n"
+                    f"Date: {msg.get('Date', '?')}\n"
+                    f"Subject: {msg.get('Subject', '(no subject)')}\n\n{body or '[no text body]'}")
+
+        criteria = []
+        if unread_only:
+            criteria.append("UNSEEN")
+        if query:
+            # Gmail's raw search: full Gmail query syntax over IMAP.
+            try:
+                typ, data = m.uid("SEARCH", None, "X-GM-RAW", query)
+                if typ != "OK":
+                    raise imaplib.IMAP4.error("X-GM-RAW failed")
+            except Exception:
+                typ, data = m.uid("SEARCH", None, "TEXT", query)
+        else:
+            typ, data = m.uid("SEARCH", None, *(criteria or ["ALL"]))
+        if typ != "OK":
+            return "Gmail search failed."
+        uids = (data[0] or b"").split()
+        try:
+            limit = max(1, min(50, int(limit)))
+        except Exception:
+            limit = 10
+        uids = uids[-limit:][::-1]  # newest first
+        if not uids:
+            return "No matching emails."
+        lines = []
+        for u in uids:
+            u = u.decode()
+            typ, data = m.uid("FETCH", u, "(BODY.PEEK[HEADER.FIELDS (DATE FROM SUBJECT)])")
+            if typ != "OK" or not data or not data[0]:
+                continue
+            raw = data[0][1] if isinstance(data[0], tuple) else data[0]
+            h = email.message_from_bytes(raw)
+            frm = (h.get("From") or "?").replace("\n", " ")[:60]
+            subj = (h.get("Subject") or "(no subject)").replace("\n", " ")[:80]
+            dt = (h.get("Date") or "?")[:31]
+            lines.append(f"[uid={u}] {dt} | {frm} | \"{subj}\"")
+        add_log(f"Email read: {len(lines)} message(s) listed")
+        return f"{len(lines)} email(s), newest first:\n" + "\n".join(lines)
+    except Exception as e:
+        return f"Could not read Gmail: {e}"
+    finally:
+        try:
+            m.logout()
+        except Exception:
+            pass
+
+
+# ---------------- Calendar (live iCal feed) ----------------
+def _ical_url() -> str:
+    v = key_get("ICAL_URL")[0] or ""
+    v = v.strip()
+    return "" if v in ("", "INSERT") else v
+
+
+def tool_calendar_setup(ical_url: str) -> str:
+    """Save the Google Calendar secret iCal URL in aria_keys.json."""
+    url = (ical_url or "").strip()
+    if not url.startswith(("http://", "https://")) or "ics" not in url.lower():
+        return ("That doesn't look like an iCal URL. In Google Calendar go to Settings > "
+                "your calendar > 'Secret address in iCal format', copy it, and pass it here.")
+    _KEYS["ICAL_URL"] = url
+    save_keys()
+    return ("Calendar connected. I'll read your live schedule from now on - "
+            "check it anytime with check_calendar.")
+
+
+def tool_check_calendar(days: int = 1) -> str:
+    """Read upcoming events from the live iCal calendar feed."""
+    from aria.ical import fetch_ical, parse_ical, upcoming
+    url = _ical_url()
+    if not url:
+        return ("No calendar connected yet. In Google Calendar go to Settings > "
+                "your calendar > 'Secret address in iCal format', copy the URL, "
+                "then call calendar_setup with it.")
+    try:
+        days = max(1, min(14, int(days)))
+    except Exception:
+        days = 1
+    try:
+        events = upcoming(parse_ical(fetch_ical(url)), days=days)
+    except Exception as e:
+        return f"Could not fetch your calendar: {e}"
+    if not events:
+        return f"Nothing on your calendar for the next {days} day(s)."
+
+    def _ft(dt):
+        h = dt.hour % 12 or 12
+        return f"{h}:{dt.minute:02d} {'PM' if dt.hour >= 12 else 'AM'}"
+
+    lines = []
+    for e in events:
+        s, en = e["start"], e["end"]
+        day = f"{s.strftime('%a %b')} {s.day}"
+        tm = f"{day} (all day)" if e["all_day"] else f"{day}, {_ft(s)} - {_ft(en)}"
+        lines.append(f"- {tm}: {e['summary']}")
+    add_log(f"Calendar read: {len(events)} event(s) for next {days}d")
+    return "\n".join(lines)
 
 
 # ---------------- GitHub ----------------

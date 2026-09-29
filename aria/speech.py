@@ -208,9 +208,9 @@ def transcribe(audio: sr.AudioData, recognizer: sr.Recognizer, use_local_stt: bo
             pcm = fw_pcm(audio)
             segments, _ = model.transcribe(
                 pcm, language="en",
-                initial_prompt=None,
+                initial_prompt="Aria.",
                 vad_filter=True,
-                vad_parameters=dict(min_silence_duration_ms=450, threshold=0.55),
+                vad_parameters=dict(min_silence_duration_ms=400, threshold=0.5),
                 condition_on_previous_text=False
             )
             kept = [s for s in segments if getattr(s, "no_speech_prob", 0.0) <= _FW_NO_SPEECH_CUTOFF]

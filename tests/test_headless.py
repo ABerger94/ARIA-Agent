@@ -163,7 +163,65 @@ def t_toolkit():
     assert "send_email" in dispatch.get_active_declarations()[0]["function_declarations"] or True
     names = [d["name"] for d in schemas.get_toolkit_declarations({"comms"})[0]["function_declarations"]]
     assert "send_email" in names, names
+    assert "read_email" in names, names
 check("load_toolkit known/unknown", t_toolkit)
+
+# 12b. read_email without credentials asks for setup (no network)
+def t_read_email_no_creds():
+    res, needs_confirm = dispatch.execute_tool("read_email", {"query": "test", "limit": 5})
+    assert needs_confirm is False, (res, needs_confirm)
+    assert "isn't set up yet" in res, res
+    res2, _ = dispatch.execute_tool("read_email", {"uid": "12345"})
+    assert "isn't set up yet" in res2, res2
+check("read_email without creds asks for setup", t_read_email_no_creds)
+
+# 12c. iCal parser: folded lines, UTC/all-day/TZID, escaped chars
+def t_ical_parse():
+    from datetime import datetime
+    ical = importlib.import_module("aria.ical")
+    sample = (
+        "BEGIN:VCALENDAR\r\n"
+        "BEGIN:VEVENT\r\n"
+        "DTSTART:20261002T200000Z\r\n"
+        "DTEND:20261003T010000Z\r\n"
+        "SUMMARY:Dock of the Bay \\, Wait\r\n"
+        "LOCATION:Sparrows Point\r\n"
+        "END:VEVENT\r\n"
+        "BEGIN:VEVENT\r\n"
+        "DTSTART:20261005\r\n"
+        "DTEND:20261006\r\n"
+        "SUMMARY:Day off\r\n"
+        "END:VEVENT\r\n"
+        "BEGIN:VEVENT\r\n"
+        "DTSTART;TZID=America/New_York:20261006T160000\r\n"
+        "SUMMARY:Long description that folds \r\n"
+        " over two lines\r\n"
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n"
+    )
+    evs = ical.parse_ical(sample)
+    assert len(evs) == 3, evs
+    assert evs[0]["summary"] == "Dock of the Bay , Wait @ Sparrows Point", evs[0]
+    assert evs[0]["start"].strftime("%Y-%m-%d %H:%M") == "2026-10-02 20:00", evs[0]
+    assert evs[1]["all_day"] is True, evs[1]
+    assert (evs[1]["end"] - evs[1]["start"]).days == 1, evs[1]
+    assert evs[2]["summary"] == "Long description that folds over two lines", evs[2]
+    # upcoming(): only events overlapping the window, naive-local times
+    now = datetime(2026, 10, 2, 12, 0)
+    up = ical.upcoming(evs, days=1, now=now)
+    assert len(up) == 1 and up[0]["summary"].startswith("Dock of the Bay"), up
+    up3 = ical.upcoming(evs, days=4, now=now)
+    assert len(up3) == 2, up3
+check("ical parse + upcoming window", t_ical_parse)
+
+# 12d. calendar tools without a connected feed
+def t_cal_no_creds():
+    res, needs_confirm = dispatch.execute_tool("check_calendar", {"days": 2})
+    assert needs_confirm is False, (res, needs_confirm)
+    assert "No calendar connected" in res, res
+    res2, _ = dispatch.execute_tool("calendar_setup", {"ical_url": "not a url"})
+    assert "doesn't look like" in res2, res2
+check("calendar tools without feed ask for setup", t_cal_no_creds)
 
 # 13. output truncation
 def t_trunc():

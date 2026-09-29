@@ -30,12 +30,14 @@ bits a physical body. New tools: `drive_wheels` (phase 2) and `body_stop`.
 
 | Part | Why | Price found |
 |---|---|---|
-| Arduino Nano clone (CH340, with USB cable) | The muscle — generates servo signals, talks USB serial to ARIA | ~$4–10 (Inland Nano 3.0 is $3.99 at Micro Center) |
-| Nano I/O expansion / sensor shield | Servos plug straight into its 3-pin headers — this is what makes it solder-free | ~$6–7 |
-| SG90 micro servos × 2 | Pan + tilt muscles | ~$4 each |
-| Mini pan-tilt bracket kit | The neck — two servos + webcam bolt together with screws | ~$5 |
-| 1080p USB webcam with built-in mic | Eyes + ears in one device | ~$16–20 |
-| Mini USB stereo speaker | Voice | ~$12.50 |
+| Arduino Nano clone (CH340, with USB cable) | The muscle — generates servo signals, talks USB serial to ARIA | ~$8 (Inland Nano 3.0 is $7.99 at Micro Center, verified 2026-09-29) |
+| Nano I/O expansion / sensor shield | Servos plug straight into its 3-pin headers — this is what makes it solder-free | ~$5 (Inland Nano shield $4.99 at Micro Center) |
+| SG90 micro servos × 2 | Pan + tilt muscles | ~$4 each (Inland 3-pack $10.99 at Micro Center) |
+| Mini pan-tilt bracket kit | The neck — two servos + webcam bolt together with screws | ~$6 (not carried at Micro Center — Amazon) |
+| 1.3" SH1106 OLED display, I2C (128×64) | Her face — animated eyes + smile, driven by the Nano | ~$8 (Inland KS0056 $7.99 at Micro Center) |
+| Female-to-female DuPont jumper wires | Connect the OLED (SDA/SCL/VCC/GND) to the shield's A4/A5 headers | maker aisle |
+| 1080p USB webcam with built-in mic | Eyes + ears in one device | ~$16–20 (or use one you own) |
+| Mini USB stereo speaker | Voice | ~$12–25 |
 | 4×AA battery holder with on/off switch | Servo power — **separate from USB** (servos brown-out USB power when they move) | ~$3–6 |
 | 4× AA batteries | | you probably own these |
 
@@ -103,6 +105,33 @@ sits still, or while it moves.
 6. **Windows sound settings**: set the USB speaker as default *playback* and the
    webcam mic as default *recording* device. ARIA uses system defaults — no code
    changes needed.
+
+## The face (animated OLED eyes + smile)
+
+A 1.3" SH1106 OLED (128×64, I2C) gives her a proper robot face: white eyes
+with pupils that glance where the head turns, a blink every few seconds, and
+a smile. It runs entirely on the Nano — no laptop code involved.
+
+**Wiring (no solder).** The Inland KS0056 module must be set to **I2C mode**
+(check the pads/jumper on the back of the module — bridge the I2C pads per
+the silkscreen). Then with female-to-female DuPont jumpers:
+
+| OLED pin | Shield header |
+|---|---|
+| VCC | 5V |
+| GND | GND |
+| SCL | A5 |
+| SDA | A4 |
+
+**Mounting.** Foam mounting tape on the front of the project box (or the head
+assembly once the pan-tilt kit arrives). The face doesn't need to turn — the
+pupils do the looking.
+
+**Firmware.** `FACE_OLED` is `1` by default in `aria_body.ino`. Install the
+**U8g2** library once (Arduino IDE: Sketch → Include Library → Manage
+Libraries → search "U8g2"). Set `FACE_OLED` to `0` to build without the
+display (saves ~10 KB flash). Verified to compile for the Nano: 44% flash,
+46% RAM with the face enabled.
 
 ## Firmware (one-time, ~10 min)
 
