@@ -383,6 +383,12 @@ function ensureAudio(){
   return actx;
 }
 
+function setAudioSessionType(t){
+  try{
+    if(navigator.audioSession){navigator.audioSession.type=t;}
+  }catch(e){}
+}
+
 function unlockAudio(){
   try{
     const bg=document.getElementById('aria-bg');
@@ -395,10 +401,9 @@ function unlockAudio(){
     // Ring/Silent switch mutes. Promote to "playback" so the WebAudio
     // fallback stays audible with the switch on. WebKit-only; no-op
     // elsewhere. Re-asserted on every gesture — WebKit can reset it
-    // after interruptions (calls, Siri, app switch).
-    if(navigator.audioSession){
-      try{navigator.audioSession.type='playback';}catch(e){}
-    }
+    // after interruptions (calls, Siri, app switch). Recording flips it
+    // to "playAndRecord" for the capture duration (see talk button).
+    setAudioSessionType('playback');
   }catch(e){}
   try{
     const ctx=ensureAudio();
@@ -653,10 +658,13 @@ talkBtn.onpointerdown=async(e)=>{
   unlockAudio();
   isHolding=true;
   chunks=[];
+  // 'playback' forbids capture on iOS — allow recording for the hold duration.
+  setAudioSessionType('playAndRecord');
   try{
     const stream=await navigator.mediaDevices.getUserMedia({audio:true});
     if(!isHolding){
       stream.getTracks().forEach(t=>t.stop());
+      setAudioSessionType('playback');
       talkBtn.innerText='Hold to talk';
       return;
     }
@@ -671,6 +679,7 @@ talkBtn.onpointerdown=async(e)=>{
     mr.ondataavailable=ev=>{if(ev.data&&ev.data.size>0)chunks.push(ev.data);};
     mr.onstop=async()=>{
       stream.getTracks().forEach(t=>t.stop());
+      setAudioSessionType('playback');
       const recType=(mr&&mr.mimeType)||mimeType||'audio/webm';
       const blob=new Blob(chunks,{type:recType});
       talkBtn.innerText='Processing...';
@@ -697,6 +706,7 @@ talkBtn.onpointerdown=async(e)=>{
     talkBtn.innerText='Listening...';
   }catch(err){
     isHolding=false;
+    setAudioSessionType('playback');
     alert('Mic error ('+err+'). Ensure HTTPS certificate is accepted.');
   }
 };
