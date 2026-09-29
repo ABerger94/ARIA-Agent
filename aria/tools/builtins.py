@@ -585,6 +585,58 @@ def tool_read_email(query: str = "", limit: int = 10, unread_only: bool = False,
             pass
 
 
+# ---------------- Calendar (live iCal feed) ----------------
+def _ical_url() -> str:
+    v = key_get("ICAL_URL")[0] or ""
+    v = v.strip()
+    return "" if v in ("", "INSERT") else v
+
+
+def tool_calendar_setup(ical_url: str) -> str:
+    """Save the Google Calendar secret iCal URL in aria_keys.json."""
+    url = (ical_url or "").strip()
+    if not url.startswith(("http://", "https://")) or "ics" not in url.lower():
+        return ("That doesn't look like an iCal URL. In Google Calendar go to Settings > "
+                "your calendar > 'Secret address in iCal format', copy it, and pass it here.")
+    _KEYS["ICAL_URL"] = url
+    save_keys()
+    return ("Calendar connected. I'll read your live schedule from now on - "
+            "check it anytime with check_calendar.")
+
+
+def tool_check_calendar(days: int = 1) -> str:
+    """Read upcoming events from the live iCal calendar feed."""
+    from aria.ical import fetch_ical, parse_ical, upcoming
+    url = _ical_url()
+    if not url:
+        return ("No calendar connected yet. In Google Calendar go to Settings > "
+                "your calendar > 'Secret address in iCal format', copy the URL, "
+                "then call calendar_setup with it.")
+    try:
+        days = max(1, min(14, int(days)))
+    except Exception:
+        days = 1
+    try:
+        events = upcoming(parse_ical(fetch_ical(url)), days=days)
+    except Exception as e:
+        return f"Could not fetch your calendar: {e}"
+    if not events:
+        return f"Nothing on your calendar for the next {days} day(s)."
+
+    def _ft(dt):
+        h = dt.hour % 12 or 12
+        return f"{h}:{dt.minute:02d} {'PM' if dt.hour >= 12 else 'AM'}"
+
+    lines = []
+    for e in events:
+        s, en = e["start"], e["end"]
+        day = f"{s.strftime('%a %b')} {s.day}"
+        tm = f"{day} (all day)" if e["all_day"] else f"{day}, {_ft(s)} - {_ft(en)}"
+        lines.append(f"- {tm}: {e['summary']}")
+    add_log(f"Calendar read: {len(events)} event(s) for next {days}d")
+    return "\n".join(lines)
+
+
 # ---------------- GitHub ----------------
 def _github_request(path: str, method: str = "GET", payload: Optional[dict] = None) -> Tuple[Optional[dict], Optional[str]]:
     if not GITHUB_ARMED or not GITHUB_TOKEN:

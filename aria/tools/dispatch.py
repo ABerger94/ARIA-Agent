@@ -290,6 +290,8 @@ def _init_default_registry():
     _REGISTRY["list_scheduled_tasks"] = lambda a: scheduler.tool_list_scheduled()
     _REGISTRY["cancel_scheduled_task"] = lambda a: scheduler.tool_cancel_scheduled(int(a.get("task_id", 0)))
     _REGISTRY["break_reminders"] = lambda a: scheduler.tool_break_reminders(a.get("enabled", True))
+    _REGISTRY["calendar_setup"] = lambda a: builtins.tool_calendar_setup(a.get("ical_url", ""))
+    _REGISTRY["check_calendar"] = lambda a: builtins.tool_check_calendar(a.get("days", 1))
 
     # Vision tools
     _REGISTRY["take_photo"] = lambda a: vision.tool_take_photo(a.get("name", ""))

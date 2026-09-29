@@ -113,6 +113,35 @@ def _entries_line(entries: List[Dict[str, str]]) -> str:
     return ", ".join(parts)
 
 
+def _live_entries(days: int = 2) -> Tuple[List[Dict[str, str]], bool]:
+    """Today's+upcoming entries from the live iCal feed.
+
+    Returns (entries, True) when a calendar is connected and fetched;
+    ([], False) otherwise so callers fall back to the saved schedule.
+    Entry shape matches the seed: {date, start, end, summary} with
+    local HH:MM times (empty start/end for all-day events).
+    """
+    try:
+        from aria.ical import fetch_ical, parse_ical, upcoming
+        from aria.config import key_get
+        url = (key_get("ICAL_URL")[0] or "").strip()
+        if not url or url == "INSERT":
+            return [], False
+        entries = []
+        for e in upcoming(parse_ical(fetch_ical(url)), days=days):
+            s, en = e["start"], e["end"]
+            entries.append({
+                "date": s.strftime("%Y-%m-%d"),
+                "start": "" if e["all_day"] else s.strftime("%H:%M"),
+                "end": "" if e["all_day"] else en.strftime("%H:%M"),
+                "summary": ("(all day) " if e["all_day"] else "") + e["summary"],
+            })
+        return sorted(entries, key=lambda e: (e["date"], e.get("start", ""))), True
+    except Exception as ex:
+        add_log(f"Live calendar failed, using saved schedule: {ex}")
+        return [], False
+
+
 def _weather_full() -> Optional[Dict[str, str]]:
     try:
         req = urllib.request.Request(
@@ -147,11 +176,18 @@ def _weather_now() -> str:
 def tool_briefing() -> str:
     now = datetime.now()
     day = now.strftime("%A, %B %d")
-    entries = _today_entries()
+    live_entries, is_live = _live_entries(2)
+    if is_live:
+        today_s = now.strftime("%Y-%m-%d")
+        tmrw_s = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        entries = [e for e in live_entries if e.get("date") == today_s]
+        t_entries = [e for e in live_entries if e.get("date") == tmrw_s]
+    else:
+        entries = _today_entries()
+        tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        t_entries = sorted([e for e in _load_schedule() if e.get("date") == tomorrow],
+                           key=lambda e: e.get("start", ""))
     sched = f"You've got: {_entries_line(entries)}." if entries else "Nothing on the schedule today."
-    tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-    t_entries = sorted([e for e in _load_schedule() if e.get("date") == tomorrow],
-                       key=lambda e: e.get("start", ""))
     tmrw = f" Tomorrow: {_entries_line(t_entries)}." if t_entries else ""
     wf = _weather_full()
     if wf and wf.get("temp_F"):
