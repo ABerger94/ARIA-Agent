@@ -197,9 +197,17 @@ set ARIA_BODY_CAMERA=http://<phone-ip>:8080/video
 export ARIA_BODY_CAMERA=http://<phone-ip>:8080/video
 ```
 
-`open_body_camera()` in `aria/vision.py` accepts a stream URL or a USB index,
-so face tracking and snapshots work unchanged — she literally sees through
-the phone. The bridge handles hearing and voice.
+`open_body_camera()` in `aria/vision.py` accepts a stream URL, a USB index, or
+`bridge`, so face tracking and snapshots work unchanged.
+
+### Bridge-page camera (one phone does everything)
+
+Newer and simpler than IP Webcam: the bridge page itself can be ARIA's eyes.
+Set `ARIA_BODY_CAMERA=bridge` on the laptop, open the bridge page on the
+phone, and tap **Camera: ON**. The page streams 480x360 JPEG frames (~3 fps)
+to the laptop over the existing bridge connection — no second app, no extra
+server. Face, voice, and eyes all live in the one page. Tap **Camera: OFF**
+to stop. Uses the front camera (same side as the screen, like real eyes).
 
 ## Troubleshooting
 

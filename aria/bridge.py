@@ -22,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional, Callable, Any
 
 from aria.config import PHONE_BRIDGE_PORT, BRIDGE_TOKEN, ROOT_DIR, WORKSPACE_DIR, add_log, lan_ip, get_setting
-from aria.vision import get_face_frame_jpeg
+from aria.vision import get_face_frame_jpeg, publish_phone_frame
 from aria.speech import tts_bytes_for_bridge, transcribe_audio
 from aria.tools.schemas import COMMAND_GUIDE
 
@@ -345,6 +345,7 @@ user-select:none;-webkit-user-select:none}
 <div class="btn-row">
   <button id="spk" type="button" class="secondary-btn">Speak replies: ON</button>
   <button id="testspk" type="button" class="secondary-btn">Test Audio</button>
+  <button id="cam" type="button" class="secondary-btn">Camera: OFF</button>
 </div>
 <audio id="aria-audio" playsinline webkit-playsinline preload="auto" style="display:none"></audio>
 <audio id="aria-bg" loop playsinline webkit-playsinline preload="auto" style="display:none" src="/silent.wav"></audio>
@@ -706,6 +707,47 @@ talkBtn.onpointerup=(e)=>{
   if(mr&&mr.state==='recording')mr.stop();
 };
 talkBtn.onpointercancel=talkBtn.onpointerup;
+
+// Phone-as-eyes: stream this page's camera to the laptop as ARIA's body
+// camera (set ARIA_BODY_CAMERA=bridge on the laptop first).
+let camOn=false,camStream=null,camTimer=null;
+const camBtn=document.getElementById('cam');
+const camVideo=document.createElement('video');
+camVideo.setAttribute('playsinline','');camVideo.muted=true;camVideo.style.display='none';
+document.body.appendChild(camVideo);
+const camCanvas=document.createElement('canvas');camCanvas.width=480;camCanvas.height=360;
+function updateCamBtn(){camBtn.innerText='Camera: '+(camOn?'ON':'OFF');}
+async function toggleCam(){
+  if(camOn){
+    camOn=false;updateCamBtn();
+    if(camTimer){clearInterval(camTimer);camTimer=null;}
+    if(camStream){camStream.getTracks().forEach(t=>t.stop());camStream=null;}
+    return;
+  }
+  try{
+    camStream=await navigator.mediaDevices.getUserMedia(
+      {video:{facingMode:'user',width:{ideal:480},height:{ideal:360}},audio:false});
+    camVideo.srcObject=camStream;
+    await camVideo.play();
+    camOn=true;updateCamBtn();
+    const ctx=camCanvas.getContext('2d');
+    let posting=false;
+    camTimer=setInterval(()=>{
+      if(!camOn||posting)return;
+      if(camVideo.readyState<2||camVideo.videoWidth===0)return;
+      ctx.drawImage(camVideo,0,0,camCanvas.width,camCanvas.height);
+      posting=true;
+      camCanvas.toBlob(async(blob)=>{
+        posting=false;
+        if(!blob||!camOn)return;
+        try{await api('/api/camframe',{method:'POST',headers:{'Content-Type':'image/jpeg'},body:blob});}catch(e){}
+      },'image/jpeg',0.6);
+    },350);
+  }catch(err){
+    alert('Camera error ('+err+'). Grant camera permission and ensure the HTTPS certificate is accepted.');
+  }
+}
+camBtn.addEventListener('click',()=>{unlockAudio();toggleCam();});
 </script></body></html>"""
 
 
@@ -944,7 +986,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     add_log("Bridge: failed login attempt.")
                 self._send(401, b'{"error":"bad bridge token"}')
             return
-        if not (self.path.startswith("/api/ask") or self.path.startswith("/api/voice")):
+        if not (self.path.startswith("/api/ask") or self.path.startswith("/api/voice")
+                or self.path.startswith("/api/camframe")):
             self.send_response(404)
             self.end_headers()
             return
@@ -953,6 +996,19 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
 
         length = int(self.headers.get("Content-Length", 0))
+        if self.path.startswith("/api/camframe"):
+            # Camera frame uploaded by the bridge page (ARIA_BODY_CAMERA=bridge).
+            if length > 1_000_000:
+                self._send(413, b'{"error":"frame too large"}')
+                return
+            body = self.rfile.read(length)
+            ctype = self.headers.get("Content-Type", "").split(";")[0].strip()
+            if ctype not in ("image/jpeg", "application/octet-stream") \
+                    or not publish_phone_frame(body):
+                self._send(400, b'{"error":"bad frame"}')
+                return
+            self._send(200, b'{"ok":true}')
+            return
         if self.path.startswith("/api/voice"):
             audio_in = self.rfile.read(length)
             mime = self.headers.get("Content-Type", "audio/webm")
