@@ -338,7 +338,7 @@ user-select:none;-webkit-user-select:none}
 #flipcam{font-size:13px}
 .settings{display:flex;flex-direction:column;gap:8px;background:#14181d;border:1px solid #2a3138;border-radius:12px;padding:12px;margin-bottom:12px}
 .face-wrap{text-align:center;margin-bottom:12px}
-#face{border-radius:12px;max-width:100%;width:min(88vw,400px);border:1px solid #2a3138}
+#face{border-radius:12px;max-width:100%;width:min(94vw,560px);border:1px solid #2a3138;image-rendering:pixelated}
 </style></head><body>
 <div class="topbar">
 <h2>A.R.I.A. // Phone Bridge</h2>
