@@ -372,7 +372,30 @@ def t_body_protocol():
         # vision.py honors ARIA_BODY_CAMERA on both capture paths
         vis = open(os.path.join(PKG, "vision.py")).read()
         assert "ARIA_BODY_CAMERA" in vis
-        assert vis.count("cv2.VideoCapture(BODY_CAMERA_INDEX)") == 2, "both capture paths must use the body camera index"
+        assert vis.count("cap = open_body_camera()") == 2, "both capture paths must use the body camera"
+        assert "http://" in vis and "_body_camera_source" in vis
+
+        # camera source parsing: URL stays a string, digits become int, junk -> 0
+        # (extracted from the real source via AST so the headless suite never
+        # needs cv2/numpy just to test parsing)
+        import ast
+        tree = ast.parse(vis)
+        fn_src = next(
+            (ast.get_source_segment(vis, n) for n in ast.walk(tree)
+             if isinstance(n, ast.FunctionDef) and n.name == "_body_camera_source"),
+            None,
+        )
+        assert fn_src, "missing _body_camera_source"
+        ns: dict = {}
+        exec(compile("BODY_CAMERA_RAW = ''\n" + fn_src, "<test>", "exec"), ns)
+        parse = ns["_body_camera_source"]
+        for raw, expected in [
+            ("http://192.168.1.42:8080/video", "http://192.168.1.42:8080/video"),
+            ("https://example.com/cam", "https://example.com/cam"),
+            ("1", 1), ("0", 0), ("bogus", 0), ("", 0),
+        ]:
+            ns["BODY_CAMERA_RAW"] = raw
+            assert parse() == expected, (raw, parse())
     finally:
         for m in ("serial", "serial.tools", "serial.tools.list_ports"):
             sys.modules.pop(m, None)

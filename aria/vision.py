@@ -24,10 +24,28 @@ from aria.hardware import send_servo_command, SERVO_POS
 VISION_SCREEN_SIZE = (800, 450)
 VISION_CAM_SIZE = (640, 480)
 
-# Robot body camera: the head-mounted USB webcam. Defaults to the first camera;
-# set ARIA_BODY_CAMERA=1 (etc.) when the laptop's built-in cam should stay index 0
-# and the body's webcam is the second device. See docs/ROBOT_BODY.md.
-BODY_CAMERA_INDEX = int(os.environ.get("ARIA_BODY_CAMERA", "0"))
+# Robot body camera: the head-mounted USB webcam, or a network camera URL.
+# Set ARIA_BODY_CAMERA=1 (etc.) when the laptop's built-in cam should stay
+# index 0 and the body's webcam is the second device — or set it to a stream
+# URL (e.g. the IP Webcam app on ARIA's face phone:
+# ARIA_BODY_CAMERA=http://192.168.1.42:8080/video). See docs/ROBOT_BODY.md.
+BODY_CAMERA_RAW = os.environ.get("ARIA_BODY_CAMERA", "0").strip()
+
+
+def _body_camera_source():
+    """USB camera index (int) or network stream URL (str) for the body camera."""
+    raw = BODY_CAMERA_RAW
+    if raw.lower().startswith(("http://", "https://")):
+        return raw
+    try:
+        return int(raw)
+    except ValueError:
+        return 0
+
+
+def open_body_camera():
+    """OpenCV capture for the body camera — USB index or network stream."""
+    return cv2.VideoCapture(_body_camera_source())
 
 LATEST_CAMERA_FRAME: Optional[np.ndarray] = None
 _LAST_SCREEN_HASH: Optional[str] = None
@@ -88,7 +106,7 @@ def capture_screen_if_changed() -> Optional[bytes]:
 def capture_webcam() -> Optional[bytes]:
     """Capture a fresh frame from the local webcam."""
     global LATEST_CAMERA_FRAME, _VISION_LAST
-    cap = cv2.VideoCapture(BODY_CAMERA_INDEX)
+    cap = open_body_camera()
     ret, frame = None, None
     for _ in range(3):
         ret, frame = cap.read()
@@ -189,7 +207,7 @@ def face_track_loop(is_busy_fn: Optional[Callable[[], bool]] = None):
             busy = is_busy_fn() if is_busy_fn else False
             if not FACE_TRACKING or busy:
                 continue
-            cap = cv2.VideoCapture(BODY_CAMERA_INDEX)
+            cap = open_body_camera()
             ret, frame = cap.read()
             cap.release()
             if not ret or frame is None:
