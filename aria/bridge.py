@@ -383,12 +383,6 @@ function ensureAudio(){
   return actx;
 }
 
-function setAudioSessionType(t){
-  try{
-    if(navigator.audioSession){navigator.audioSession.type=t;}
-  }catch(e){}
-}
-
 function unlockAudio(){
   try{
     const bg=document.getElementById('aria-bg');
@@ -481,8 +475,6 @@ function playViaWebAudio(buf){
 function playAudio(buf,mime){
   return new Promise((resolve)=>{
     if(!spkOn||!buf||!buf.byteLength){resolve();return;}
-    // iOS: 'playback' keeps output audible with the Ring/Silent switch on.
-    setAudioSessionType('playback');
     unlockAudio();
     const st=document.getElementById('astat');
     if(st)st.innerText='Audio: playing...';
@@ -655,13 +647,10 @@ talkBtn.onpointerdown=async(e)=>{
   unlockAudio();
   isHolding=true;
   chunks=[];
-  // 'playback' forbids capture on iOS — allow recording for the hold duration.
-  setAudioSessionType('playAndRecord');
   try{
     const stream=await navigator.mediaDevices.getUserMedia({audio:true});
     if(!isHolding){
       stream.getTracks().forEach(t=>t.stop());
-      setAudioSessionType('playback');
       talkBtn.innerText='Hold to talk';
       return;
     }
@@ -676,7 +665,6 @@ talkBtn.onpointerdown=async(e)=>{
     mr.ondataavailable=ev=>{if(ev.data&&ev.data.size>0)chunks.push(ev.data);};
     mr.onstop=async()=>{
       stream.getTracks().forEach(t=>t.stop());
-      setAudioSessionType('playback');
       const recType=(mr&&mr.mimeType)||mimeType||'audio/webm';
       const blob=new Blob(chunks,{type:recType});
       talkBtn.innerText='Processing...';
@@ -703,7 +691,6 @@ talkBtn.onpointerdown=async(e)=>{
     talkBtn.innerText='Listening...';
   }catch(err){
     isHolding=false;
-    setAudioSessionType('playback');
     alert('Mic error ('+err+'). Ensure HTTPS certificate is accepted.');
   }
 };
