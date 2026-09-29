@@ -390,6 +390,16 @@ function unlockAudio(){
     }
   }catch(e){}
   try{
+    // iOS routes Web Audio through the "ambient" session, which the
+    // Ring/Silent switch mutes. Promote to "playback" so the WebAudio
+    // fallback stays audible with the switch on. WebKit-only; no-op
+    // elsewhere. Re-asserted on every gesture — WebKit can reset it
+    // after interruptions (calls, Siri, app switch).
+    if(navigator.audioSession){
+      try{navigator.audioSession.type='playback';}catch(e){}
+    }
+  }catch(e){}
+  try{
     const ctx=ensureAudio();
     if(ctx){
       if(ctx.state==='suspended'||ctx.state==='interrupted'){
@@ -410,13 +420,31 @@ function unlockAudio(){
   document.addEventListener(evt,unlockAudio,{passive:true});
 });
 
-function voiceError(msg){
+let lastVoiceErr='';
+function voiceError(msg,detail){
+  lastVoiceErr=detail||msg||'';
   const st=document.getElementById('astat');
-  if(st)st.innerText='Audio error: '+(msg||'check silent switch');
+  if(st)st.innerText='Audio error: '+(msg||'tap Speak for details');
   const b=document.getElementById('spk');
-  b.innerText='Speak replies: ERROR';
+  b.innerText='Speak replies: ERROR - tap for details';
+  // Sticky on purpose: the old auto-clear hid total TTS outages behind
+  // "Audio: ready". Clears on next successful playback or when tapped.
   clearTimeout(voiceErrT);
-  voiceErrT=setTimeout(()=>{updateSpkBtn();if(st)st.innerText='Audio: ready';},6000);
+  b.onclick=()=>{
+    alert('Voice failed. '+(lastVoiceErr?('PC says: '+lastVoiceErr+' '):'')+
+      'On the PC, check the ARIA action stream for the line starting '+
+      '"Bridge TTS failed:" — it names the exact synthesis error.');
+    clearVoiceError();
+  };
+}
+function clearVoiceError(){
+  lastVoiceErr='';
+  const b=document.getElementById('spk');
+  clearTimeout(voiceErrT);
+  b.onclick=spkToggle;
+  updateSpkBtn();
+  const st=document.getElementById('astat');
+  if(st)st.innerText='Audio: ready';
 }
 
 function spkToggle(){
@@ -449,7 +477,7 @@ function playViaWebAudio(buf){
   });
 }
 
-function playAudio(buf){
+function playAudio(buf,mime){
   return new Promise((resolve)=>{
     if(!spkOn||!buf||!buf.byteLength){resolve();return;}
     unlockAudio();
@@ -457,10 +485,11 @@ function playAudio(buf){
     if(st)st.innerText='Audio: playing...';
 
     let resolved=false;
-    const finish=()=>{
+    const finish=(ok)=>{
       if(!resolved){
         resolved=true;
-        if(st)st.innerText='Audio: ready';
+        if(ok){clearVoiceError();}
+        else if(st)st.innerText='Audio: ready';
         resolve();
       }
     };
@@ -468,7 +497,10 @@ function playAudio(buf){
     const player=document.getElementById('aria-audio');
     let blobUrl=null;
     try{
-      const blob=new Blob([buf],{type:'audio/mpeg'});
+      // Use the server's real content type. The old hardcoded
+      // 'audio/mpeg' mislabeled SAPI WAV bytes and broke the primary
+      // playback path whenever Edge was down.
+      const blob=new Blob([buf],{type:mime||'audio/mpeg'});
       blobUrl=URL.createObjectURL(blob);
       player.src=blobUrl;
 
@@ -476,7 +508,7 @@ function playAudio(buf){
         if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
         player.onended=null;
         player.onerror=null;
-        finish();
+        finish(true);
       };
 
       player.onended=cleanupPlayer;
@@ -484,10 +516,10 @@ function playAudio(buf){
         if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
         player.onended=null;
         player.onerror=null;
-        playViaWebAudio(buf).then(finish).catch((e)=>{
+        playViaWebAudio(buf).then(()=>finish(true)).catch((e)=>{
           console.log('web audio fallback error',e);
-          voiceError('playback failed');
-          finish();
+          voiceError('playback failed',String(e&&e.message||e));
+          finish(false);
         });
       };
 
@@ -498,18 +530,18 @@ function playAudio(buf){
           if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
           player.onended=null;
           player.onerror=null;
-          playViaWebAudio(buf).then(finish).catch((e)=>{
+          playViaWebAudio(buf).then(()=>finish(true)).catch((e)=>{
             console.log('web audio fallback error',e);
-            voiceError('playback failed');
-            finish();
+            voiceError('playback failed',String(e&&e.message||e));
+            finish(false);
           });
         });
       }
     }catch(err){
       console.log('HTMLAudio error, using WebAudio fallback',err);
-      playViaWebAudio(buf).then(finish).catch((e)=>{
-        voiceError('playback failed');
-        finish();
+      playViaWebAudio(buf).then(()=>finish(true)).catch((e)=>{
+        voiceError('playback failed',String(e&&e.message||e));
+        finish(false);
       });
     }
   });
@@ -519,10 +551,17 @@ async function playReply(text){
   if(!spkOn||!text)return;
   try{
     const r=await api('/api/say?text='+encodeURIComponent(text.slice(0,500)));
-    if(!r.ok)throw new Error('tts http '+r.status);
+    if(!r.ok){
+      // Surface the PC's real TTS reason (e.g. "tts unavailable: edge-tts
+      // failed (...); SAPI fallback failed (...)") instead of a bare status.
+      let srv='tts http '+r.status;
+      try{const j=await r.json();if(j&&j.error)srv=j.error;}catch(e){}
+      throw new Error(srv);
+    }
+    const mime=r.headers.get('Content-Type')||'audio/mpeg';
     const buf=await r.arrayBuffer();
-    await playAudio(buf);
-  }catch(e){console.log('voice:',e);voiceError('tts fetch failed');}
+    await playAudio(buf,mime);
+  }catch(e){console.log('voice:',e);voiceError('tts failed',String(e&&e.message||e));}
 }
 
 document.getElementById('testspk').onclick=async()=>{
@@ -531,12 +570,17 @@ document.getElementById('testspk').onclick=async()=>{
   if(st)st.innerText='Audio: synthesizing test...';
   try{
     const r=await api('/api/say?text='+encodeURIComponent('Speech test successful. Phone audio is active.'));
-    if(!r.ok)throw new Error('http '+r.status);
+    if(!r.ok){
+      let srv='http '+r.status;
+      try{const j=await r.json();if(j&&j.error)srv=j.error;}catch(e){}
+      throw new Error(srv);
+    }
+    const mime=r.headers.get('Content-Type')||'audio/mpeg';
     const buf=await r.arrayBuffer();
-    await playAudio(buf);
+    await playAudio(buf,mime);
   }catch(e){
-    alert('Test failed: '+e);
-    voiceError('test failed');
+    alert('Test failed: '+(e&&e.message||e));
+    voiceError('test failed',String(e&&e.message||e));
   }
 };
 
@@ -571,7 +615,7 @@ msgForm.addEventListener('submit',async function(e){
   const btn=document.getElementById('sendbtn');
   btn.disabled=true;
   try{
-    const r=await api('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});
+    const r=await api('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t,want_audio:spkOn})});
     btn.disabled=false;
     if(r.ok){
       const d=await r.json();
@@ -582,10 +626,10 @@ msgForm.addEventListener('submit',async function(e){
       if(d.audio&&spkOn){
         try{
           const buf=b64ToArrayBuffer(d.audio);
-          await playAudio(buf);
+          await playAudio(buf,d.audio_mime||'audio/mpeg');
         }catch(err){
           console.log('play audio err',err);
-          voiceError('audio decode');
+          voiceError('audio decode',String(err&&err.message||err));
         }
       }else if(replies.length>0&&spkOn){
         await playReply(replies[0]);
@@ -632,17 +676,18 @@ talkBtn.onpointerdown=async(e)=>{
       try{
         const r=await api('/api/voice',{method:'POST',headers:{'Content-Type':recType},body:blob});
         if(r.ok){
+          const mime=r.headers.get('Content-Type')||'audio/mpeg';
           const buf=await r.arrayBuffer();
           const transcript=decodeURIComponent(r.headers.get('X-Transcript')||'');
           const reply=decodeURIComponent(r.headers.get('X-Reply')||'');
           if(transcript)add('you',transcript);
           if(reply)add('aria',reply);
-          try{await playAudio(buf);}catch(e){console.log('voice:',e);voiceError('voice play');}
+          try{await playAudio(buf,mime);}catch(e){console.log('voice:',e);voiceError('voice play',String(e&&e.message||e));}
         }else{
           let rd={};try{rd=await r.json();}catch(e){}
           if(rd.reply)add('aria',rd.reply);
-          voiceError('voice error');
-          if(!rd.reply)alert('Voice request failed: '+r.status);
+          voiceError('voice error',rd.error||('http '+r.status));
+          if(!rd.reply)alert('Voice request failed: '+(rd.error||r.status));
         }
       }catch(err){alert('Voice error: '+err);}
       talkBtn.innerText='Hold to talk';
@@ -815,6 +860,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
 
         if self.path.startswith("/silent.wav"):
+            if not self._authed():
+                self._send(401, b'{"error":"bad or missing bridge token"}')
+                return
             self.send_response(200)
             self.send_header("Content-Type", "audio/wav")
             self.send_header("Content-Length", str(len(_SILENT_WAV_BYTES)))
@@ -939,9 +987,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            text = json.loads(self.rfile.read(length).decode("utf-8")).get("text", "")
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            text = payload.get("text", "")
+            want_audio = bool(payload.get("want_audio", False))
         except Exception:
             text = ""
+            want_audio = False
 
         if text.strip():
             add_log(f"Bridge directive: {text[:25]}")
@@ -949,16 +1000,23 @@ class BridgeHandler(BaseHTTPRequestHandler):
         else:
             reply = ""
 
+        # Only synthesize when the phone asked for audio (its Speak toggle).
+        # Unconditional TTS here added seconds of latency to every message
+        # and burned Edge calls for users who muted speech.
         audio_b64 = ""
-        if reply.strip():
+        audio_mime = ""
+        if reply.strip() and want_audio:
             try:
-                audio_out, _ = tts_bytes_for_bridge(reply[:2000])
+                audio_out, audio_mime = tts_bytes_for_bridge(reply[:2000])
                 if audio_out:
                     audio_b64 = base64.b64encode(audio_out).decode("ascii")
             except Exception as e:
                 add_log(f"Bridge ask TTS failed: {e}")
+                audio_mime = ""
 
-        self._send(200, json.dumps({"reply": [reply], "audio": audio_b64}).encode("utf-8"))
+        self._send(200, json.dumps(
+            {"reply": [reply], "audio": audio_b64, "audio_mime": audio_mime}
+        ).encode("utf-8"))
 
 
 def start_bridge_server(port: int = PHONE_BRIDGE_PORT) -> ThreadingHTTPServer:

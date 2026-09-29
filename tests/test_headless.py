@@ -274,10 +274,18 @@ def t_tts_contract():
         raise AssertionError("must raise, never return silent empty")
     except RuntimeError as e:
         assert "edge-tts failed" in str(e), e
-    sp._sapi_tts_wav = lambda text, timeout=60: b"RIFFfakex"
+    sp._sapi_tts_wav_ex = lambda text, timeout=60: (b"RIFFfakex", "")
     with mock.patch.object(sp.sys, "platform", "win32"):
         data, ctype = sp.tts_bytes_for_bridge("hi")
         assert ctype == "audio/wav" and data, (ctype, len(data))
+    sp._edge_tts_bytes_strict = lambda *a, **k: (_ for _ in ()).throw(Exception("net down"))
+    sp._sapi_tts_wav_ex = lambda text, timeout=60: (b"", "sapi powershell failed: boom")
+    with mock.patch.object(sp.sys, "platform", "win32"):
+        try:
+            sp.tts_bytes_for_bridge("hi")
+            raise AssertionError("must raise when SAPI also fails")
+        except RuntimeError as e:
+            assert "net down" in str(e) and "boom" in str(e), e
     sp._edge_tts_bytes_strict = lambda *a, **k: b"ID3x"
     data, ctype = sp.tts_bytes_for_bridge("hi")
     assert ctype == "audio/mpeg" and data, (ctype, len(data))

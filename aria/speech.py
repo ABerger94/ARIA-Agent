@@ -465,10 +465,12 @@ def edge_tts_bytes(text: str, whisper_mode: bool = False) -> bytes:
         return b""
 
 
-def _sapi_tts_wav(text: str, timeout: int = 60) -> bytes:
+def _sapi_tts_wav_ex(text: str, timeout: int = 60) -> Tuple[bytes, str]:
     """Offline Windows fallback: synthesize with a SAPI voice via PowerShell
     into WAV bytes. Separate process, so it never conflicts with the desktop
-    pyttsx3 engine. Returns b"" on failure."""
+    pyttsx3 engine. Returns (wav_bytes, error_reason) — error_reason is ""
+    on success and a short diagnosis on failure, so callers can report WHY
+    synthesis failed instead of failing silently."""
     import subprocess
     import tempfile
     script = (
@@ -490,17 +492,33 @@ def _sapi_tts_wav(text: str, timeout: int = 60) -> bytes:
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
              "-Command", script, path, text[:1000]],
             capture_output=True, timeout=timeout)
-        if r.returncode != 0 or not os.path.exists(path) or os.path.getsize(path) < 1000:
-            return b""
+        err = (r.stderr or b"").decode("utf-8", errors="replace").strip()
+        if r.returncode != 0:
+            reason = (err or f"powershell exit {r.returncode}")[-300:]
+            return b"", f"sapi powershell failed: {reason}"
+        if not os.path.exists(path):
+            return b"", "sapi produced no output file" + (f": {err[-200:]}" if err else "")
+        size = os.path.getsize(path)
+        if size < 1000:
+            return b"", f"sapi wav too small ({size}b)" + (f": {err[-200:]}" if err else "")
         with open(path, "rb") as f:
-            return f.read()
-    except Exception:
-        return b""
+            return f.read(), ""
+    except subprocess.TimeoutExpired:
+        return b"", f"sapi timed out after {timeout}s"
+    except Exception as e:
+        return b"", f"sapi error: {type(e).__name__}: {e}"[-300:]
     finally:
         try:
             os.remove(path)
         except Exception:
             pass
+
+
+def _sapi_tts_wav(text: str, timeout: int = 60) -> bytes:
+    """Bytes-only wrapper kept for the historical contract (tests monkeypatch
+    this signature). For the failure reason, use _sapi_tts_wav_ex."""
+    wav, _ = _sapi_tts_wav_ex(text, timeout)
+    return wav
 
 
 def tts_bytes_for_bridge(text: str) -> Tuple[bytes, str]:
@@ -516,10 +534,10 @@ def tts_bytes_for_bridge(text: str) -> Tuple[bytes, str]:
     except Exception as e:
         edge_err = str(e) or type(e).__name__
     if sys.platform == "win32":
-        wav = _sapi_tts_wav(text)
+        wav, sapi_err = _sapi_tts_wav_ex(text)
         if wav:
             return wav, "audio/wav"
-        raise RuntimeError(f"edge-tts failed ({edge_err}); SAPI fallback failed")
+        raise RuntimeError(f"edge-tts failed ({edge_err}); SAPI fallback failed ({sapi_err or 'unknown'})")
     raise RuntimeError(f"edge-tts failed ({edge_err})")
 
 
