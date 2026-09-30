@@ -912,7 +912,7 @@ button{padding:12px 18px;border-radius:8px;border:0;background:#ff5fa2;color:#ff
 font-weight:bold;font-size:16px}</style></head><body>
 <h2>A.R.I.A. // Phone Bridge</h2>
 <p>Enter your bridge token to connect. Find it in the ARIA console, or ask ARIA for it.</p>
-<form onsubmit="return login()"><input id="t" type="password" placeholder="Bridge token..."
+<form onsubmit="login();return false"><input id="t" type="password" placeholder="Bridge token..."
 autocomplete="off"><button>Connect</button></form>
 <script>
 async function login(){
@@ -1118,19 +1118,21 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
         path = self.path.split("?", 1)[0]
         if path == "/":
-            if self._authed():
-                self._send(200, BRIDGE_HTML.encode("utf-8"), "text/html; charset=utf-8")
-                return
-            # One-time upgrade: a valid legacy ?token= bookmark becomes a
-            # cookie, then redirects to the clean URL.
+            # One-time upgrade FIRST: a valid ?token= becomes a cookie and
+            # redirects to the clean URL, so the page's API calls (cookie /
+            # header auth only) stay authed. Must run before _authed() because
+            # the query param feeds _authed() - otherwise this branch is dead.
             qs = self.path.split("?", 1)[1] if "?" in self.path else ""
             qtok = urllib.parse.unquote_plus(
                 dict(p.split("=", 1) for p in qs.split("&") if "=" in p).get("token", ""))
-            if BRIDGE_TOKEN and qtok == BRIDGE_TOKEN:
+            if BRIDGE_TOKEN and qtok and qtok == BRIDGE_TOKEN:
                 self.send_response(302)
                 self.send_header("Location", "/")
                 self.send_header("Set-Cookie", self._bridge_cookie())
                 self.end_headers()
+                return
+            if self._authed():
+                self._send(200, BRIDGE_HTML.encode("utf-8"), "text/html; charset=utf-8")
                 return
             self._send(200, BRIDGE_LOGIN_HTML.encode("utf-8"), "text/html; charset=utf-8")
             return
