@@ -913,3 +913,28 @@ def tool_gemini_keys(action: str = "status", key: str = "") -> str:
         save_keys()
         return f"Added key {key_mask(k)} to pool ({len(GEMINI_KEY_POOL)} keys total)."
     return f"Unknown action '{action}'. Use 'status' or 'add'."
+
+
+# ---------------- Inbox (phone bridge uploads) ----------------
+
+def tool_inbox_list() -> str:
+    """List files in ARIA's inbox (phone bridge uploads + laptop drops)."""
+    from aria import inbox as inbox_mod
+    files = inbox_mod.list_inbox()
+    if not files:
+        return "Inbox is empty."
+    lines = [f"{i + 1}. {f['name']} ({f['size_h']}, {f['when']})"
+             for i, f in enumerate(files)]
+    return f"Inbox ({len(files)} file(s), newest first):\n" + "\n".join(lines)
+
+
+def tool_inbox_describe(name: str = "") -> str:
+    """Describe an inbox photo with vision. Blank name = latest image."""
+    from aria import inbox as inbox_mod
+    return inbox_mod.describe_inbox_image(name or "")
+
+
+def tool_inbox_read(name: str = "") -> str:
+    """Read a text file from the inbox. Blank name = latest text file."""
+    from aria import inbox as inbox_mod
+    return inbox_mod.read_inbox_text(name or "")

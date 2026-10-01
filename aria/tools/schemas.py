@@ -254,7 +254,19 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
         'parameters': {'properties': {}, 'type': 'OBJECT'}},
     {   'description': 'Hides the on-screen commands reference panel.',
         'name': 'hide_commands',
-        'parameters': {'properties': {}, 'type': 'OBJECT'}}]
+        'parameters': {'properties': {}, 'type': 'OBJECT'}},
+    {   'description': 'Lists files in my inbox - photos and files the user sent from the phone bridge upload page '
+                       'or dropped into the inbox folder. Newest first.',
+        'name': 'inbox_list',
+        'parameters': {'properties': {}, 'type': 'OBJECT'}},
+    {   'description': 'Describes an inbox photo with vision. Pass a file name (or number from inbox_list); '
+                       'blank describes the latest image.',
+        'name': 'inbox_describe',
+        'parameters': {'properties': {'name': {'type': 'STRING'}}, 'type': 'OBJECT'}},
+    {   'description': 'Reads a text file from the inbox (txt, md, csv, json, log...). Pass a file name (or number '
+                       'from inbox_list); blank reads the latest text file.',
+        'name': 'inbox_read',
+        'parameters': {'properties': {'name': {'type': 'STRING'}}, 'type': 'OBJECT'}}]
 
 TOOLS_DECLARATION = [
     {"function_declarations": ALL_FUNCTION_DECLARATIONS}
@@ -282,6 +294,9 @@ TOOLKITS = {   'admin': {   'summary': 'API keys, bridge token, command guide, v
                              'read_file',
                              'write_file',
                              'list_workspace',
+                             'inbox_list',
+                             'inbox_describe',
+                             'inbox_read',
                              'run_skill']},
     'github': {'summary': 'push files and create GitHub repos', 'tools': ['github_push_file', 'github_create_repo']},
     'memory_plus': {   'summary': 'notes, journal, forgetting memories, morning briefing',
@@ -326,6 +341,9 @@ COMMAND_GUIDE = [   ('Memory', 'save_memory', 'remember my Doja playlist is spot
     ('Laptop', 'read_file', 'read gig-ideas.txt back to me'),
     ('Laptop', 'list_workspace', 'what is in your workspace?'),
     ('Laptop', 'find_file', 'find my resume PDF'),
+    ('Inbox', 'inbox_list', 'what did I send you?'),
+    ('Inbox', 'inbox_describe', 'look at the latest photo I sent'),
+    ('Inbox', 'inbox_read', 'read that text file I uploaded'),
     ('Seeing', 'take_screenshot', 'take a screenshot'),
     ('Seeing', 'read_screen', 'what does this error say?'),
     ('Seeing', 'take_photo', 'take a photo'),

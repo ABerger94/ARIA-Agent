@@ -28,6 +28,7 @@ from aria.vision import (
 )
 from aria.speech import tts_bytes_for_bridge, transcribe_audio
 from aria.tools.schemas import COMMAND_GUIDE
+from aria import inbox as inbox_mod
 
 BRIDGE_SCHEME = "http"
 BRIDGE_CERT: Optional[str] = None
@@ -397,6 +398,7 @@ body.facemode #caption{display:none!important}
 </div>
 <div class="footrow">
 <a href="/commands">Command reference</a>
+<a href="/upload">Upload files</a>
 <span id="astat">Audio: ready</span>
 </div>
 </div>
@@ -957,6 +959,81 @@ def _commands_html() -> str:
     )
 
 
+UPLOAD_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport"
+content="width=device-width,initial-scale=1">
+<title>A.R.I.A. Upload</title>
+<style>
+:root{--acc:#ff5fa2;--bg:#05070a;--card:#0d1117;--line:#1c232c;--txt:#eef4fa;--dim:#8ba2b5}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;margin:0;padding:16px}
+#app{max-width:560px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+h2{color:var(--acc);font-size:18px;letter-spacing:2px;margin:4px 0}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
+#drop{border:2px dashed var(--line);border-radius:14px;padding:28px 14px;text-align:center;color:var(--dim);cursor:pointer}
+#drop.over{border-color:var(--acc);color:var(--txt)}
+#file{position:absolute;left:-9999px}
+#upbtn{padding:13px;border-radius:12px;border:0;background:var(--acc);color:#fff;font-weight:700;font-size:16px;cursor:pointer;width:100%}
+#upbtn:disabled{opacity:.5}
+#status{font-size:14px;color:var(--dim);min-height:20px}
+#status.ok{color:#28f078}#status.err{color:#ff6b6b}
+.item{font-size:14px;padding:8px 0;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px}
+.item span:last-child{color:var(--dim);font-size:12px;white-space:nowrap}
+a{color:var(--acc);text-decoration:none}
+</style></head><body>
+<div id="app">
+<h2>A.R.I.A. // UPLOAD</h2>
+<div class="panel">
+<div id="drop">Tap to pick photos or files<br><small>multiple allowed, up to 50 MB each</small></div>
+<input id="file" type="file" multiple>
+</div>
+<button id="upbtn" type="button" disabled>Upload</button>
+<div id="status"></div>
+<div class="panel">
+<h2 style="font-size:14px">INBOX</h2>
+<div id="list"><div class="item"><span>Loading...</span><span></span></div></div>
+</div>
+<p><a href="/">&larr; Bridge</a></p>
+</div>
+<script>
+var drop=document.getElementById('drop'),file=document.getElementById('file'),
+    upbtn=document.getElementById('upbtn'),status=document.getElementById('status'),
+    list=document.getElementById('list'),chosen=[];
+drop.onclick=function(){file.click();};
+file.onchange=function(){chosen=Array.prototype.slice.call(file.files);renderChosen();};
+function renderChosen(){
+  upbtn.disabled=!chosen.length;
+  drop.innerHTML=chosen.length?chosen.map(function(f){return f.name;}).join('<br>'):'Tap to pick photos or files<br><small>multiple allowed, up to 50 MB each</small>';
+}
+function note(msg,cls){status.className=cls||'';status.textContent=msg;}
+async function refresh(){
+  try{
+    var r=await fetch('/api/inbox');
+    if(r.status===401){location.href='/';return;}
+    var items=await r.json();
+    list.innerHTML=items.length?items.map(function(f){
+      return '<div class="item"><span>'+f.name+'</span><span>'+f.size+' &middot; '+f.when+'</span></div>';
+    }).join(''):'<div class="item"><span>Empty - send something up.</span><span></span></div>';
+  }catch(e){list.innerHTML='<div class="item"><span>Could not load inbox.</span><span></span></div>';}
+}
+upbtn.onclick=async function(){
+  if(!chosen.length)return;
+  upbtn.disabled=true;note('Uploading '+chosen.length+' file(s)...');
+  var fd=new FormData();
+  chosen.forEach(function(f){fd.append('files',f,f.name);});
+  try{
+    var r=await fetch('/api/upload',{method:'POST',body:fd});
+    if(r.status===401){location.href='/';return;}
+    var j=await r.json();
+    if(j.ok){
+      note('Saved: '+(j.saved.join(', ')||'nothing')+(j.skipped&&j.skipped.length?' - skipped: '+j.skipped.join(', '):''),'ok');
+      chosen=[];file.value='';renderChosen();refresh();
+    }else{note('Upload failed: '+(j.error||'unknown'),'err');}
+  }catch(e){note('Upload failed: '+e,'err');}
+  upbtn.disabled=!chosen.length;
+};
+refresh();
+</script></body></html>"""
+
 
 class BridgeHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -1025,6 +1102,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return
             if self.path.startswith("/api/camstatus"):
                 self._send(200, json.dumps(get_phone_frame_status()).encode("utf-8"))
+                return
+            if self.path.startswith("/api/inbox"):
+                files = inbox_mod.list_inbox()
+                self._send(200, json.dumps(
+                    [{"name": f["name"], "size": f["size_h"], "when": f["when"]}
+                     for f in files]).encode("utf-8"))
                 return
             if self.path.startswith("/api/say"):
                 qs = self.path.split("?", 1)[1] if "?" in self.path else ""
@@ -1146,6 +1229,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send(200, _commands_html().encode("utf-8"), "text/html; charset=utf-8")
             return
 
+        if path == "/upload":
+            if not self._authed():
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.end_headers()
+                return
+            self._send(200, UPLOAD_HTML.encode("utf-8"), "text/html; charset=utf-8")
+            return
+
         self._send(404, b'{"error":"not found"}')
 
     def do_POST(self):
@@ -1169,7 +1261,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send(401, b'{"error":"bad bridge token"}')
             return
         if not (self.path.startswith("/api/ask") or self.path.startswith("/api/voice")
-                or self.path.startswith("/api/camframe") or self.path.startswith("/api/look")):
+                or self.path.startswith("/api/camframe") or self.path.startswith("/api/look")
+                or self.path.startswith("/api/upload")):
             self.send_response(404)
             self.end_headers()
             return
@@ -1178,6 +1271,42 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
 
         length = int(self.headers.get("Content-Length", 0))
+        if self.path.startswith("/api/upload"):
+            # Files from the bridge /upload page land in ARIA's inbox.
+            ctype = self.headers.get("Content-Type", "")
+            if "multipart/form-data" not in ctype:
+                self._send(400, b'{"error":"multipart/form-data required"}')
+                return
+            if length > inbox_mod.MAX_UPLOAD_BYTES:
+                self._send(413, b'{"error":"upload too large (100 MB cap)"}')
+                return
+            body = self.rfile.read(length)
+            try:
+                parts = inbox_mod.parse_multipart(body, ctype)
+            except Exception as e:
+                add_log(f"Bridge upload parse failed: {e}")
+                self._send(400, b'{"error":"could not parse upload"}')
+                return
+            if not parts:
+                self._send(400, b'{"error":"no files in upload"}')
+                return
+            saved, skipped = [], []
+            for fname, data in parts:
+                if not data:
+                    skipped.append(fname or "unnamed")
+                    continue
+                if len(data) > inbox_mod.MAX_FILE_BYTES:
+                    skipped.append(fname or "unnamed")
+                    continue
+                try:
+                    saved.append(inbox_mod.save_upload(fname, data))
+                except Exception as e:
+                    add_log(f"Bridge upload save failed: {e}")
+                    skipped.append(fname or "unnamed")
+            add_log(f"Bridge upload: saved {len(saved)}, skipped {len(skipped)}")
+            self._send(200, json.dumps(
+                {"ok": True, "saved": saved, "skipped": skipped}).encode("utf-8"))
+            return
         if self.path.startswith("/api/look"):
             # Snapshot + describe: what does ARIA's camera see right now?
             try:
