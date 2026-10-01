@@ -53,6 +53,24 @@ def lan_ip() -> str:
         return "localhost"
 
 
+_INBOX_COUNT = -1
+_INBOX_COUNT_AT = 0.0
+
+
+def inbox_count_cached() -> int:
+    """Inbox file count, refreshed at most every 10s (draw_hud runs per frame)."""
+    global _INBOX_COUNT, _INBOX_COUNT_AT
+    now = time.time()
+    if _INBOX_COUNT < 0 or now - _INBOX_COUNT_AT > 10:
+        try:
+            from aria import inbox as _inbox_mod
+            _INBOX_COUNT = _inbox_mod.inbox_count()
+        except Exception:
+            _INBOX_COUNT = 0
+        _INBOX_COUNT_AT = now
+    return _INBOX_COUNT
+
+
 # Visual Palette (BGR)
 CYAN = (255, 220, 30)
 GLOW = (120, 90, 10)
@@ -378,7 +396,7 @@ def draw_hud() -> np.ndarray:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, ACC, 2, cv2.LINE_AA)
     sys_stats = f"TIME: {now_str}  |  CPU: {cpu_usage}%  |  MEM: {mem_usage}%  |  PWR: {bat_str}"
     cv2.putText(canvas, sys_stats, (650, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 170, 180), 1, cv2.LINE_AA)
-    cv2.putText(canvas, f"PHONE BRIDGE: https://{lan_ip()}:{PHONE_BRIDGE_PORT}  (LAN only)",
+    cv2.putText(canvas, f"PHONE BRIDGE: https://{lan_ip()}:{PHONE_BRIDGE_PORT}  (LAN only)   |   INBOX: {inbox_count_cached()}",
                 (30, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (120, 170, 200), 1, cv2.LINE_AA)
 
     # Whisper Toggle
