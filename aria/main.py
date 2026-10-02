@@ -136,6 +136,18 @@ def toggle_whisper_mode() -> bool:
     return set_whisper_mode(not WHISPER_MODE)
 
 
+_INBOX_REQUEST_WORDS = ("inbox", "i sent", "i've sent", "you sent", "uploaded", "upload")
+
+
+def _is_inbox_request(low: str) -> bool:
+    """True when the user means files in the inbox (sent/uploaded), not the webcam.
+
+    Catches "look at the photo I sent you" / "the photo in your inbox" before
+    the camera keyword branch can hijack them.
+    """
+    return any(k in low for k in _INBOX_REQUEST_WORDS)
+
+
 def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silent: bool = False) -> str:
     """Central action pipeline invoked from voice, PTT, HUD typed commands, or Phone Bridge."""
     agent.proactive.mood_note_interaction()
@@ -163,9 +175,13 @@ def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silen
 
 
     # 5. Multimodal context attachment
+    # Inbox-first: "the photo I sent / in the inbox / uploaded" means inbox
+    # files, not the webcam. Attach nothing so the agent uses the inbox tools.
     image_bytes = None
     is_screen = False
-    if mode == "screen" or any(k in low for k in ["screen", "display", "desktop", "my window"]):
+    if _is_inbox_request(low):
+        add_log(f"Inbox request, skipping camera/screen capture: {user_text[:60]}")
+    elif mode == "screen" or any(k in low for k in ["screen", "display", "desktop", "my window"]):
         image_bytes = vision.capture_screen_if_changed()
         is_screen = True
         if image_bytes is None:
