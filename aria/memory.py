@@ -13,6 +13,7 @@ import urllib.request
 import urllib.error
 import atexit
 import numpy as np
+from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime
 
 from aria.config import (
@@ -93,6 +94,14 @@ def _spine_digest(events):
             lines.append("restart")
         elif t == "ptt":
             lines.append("push-to-talk %.1fs" % float(e.get("seconds") or 0))
+        elif t == "autonomous_goal":
+            lines.append("goal [%s]: %s" % (e.get("title", ""), str(e.get("result", ""))[:100]))
+        elif t == "self_heal":
+            lines.append("self-healed [%s] %s" % (e.get("category", ""), e.get("action", "")))
+        elif t == "job_complete":
+            lines.append("job done #%s (%s, code %s)" % (e.get("job_id", ""), e.get("name", ""), e.get("exit_code", "")))
+        elif t == "download_complete":
+            lines.append("downloaded: %s" % e.get("name", ""))
     return lines
 
 
@@ -184,6 +193,36 @@ def init_databases():
         cur.execute('''CREATE TABLE IF NOT EXISTS scheduled_tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT,
             prompt TEXT, interval_s INTEGER, next_run TEXT, created TEXT)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS autonomous_goals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            description TEXT,
+            priority INTEGER DEFAULT 5,
+            interval_s INTEGER DEFAULT 0,
+            next_run REAL,
+            status TEXT DEFAULT 'pending',
+            last_result TEXT,
+            created_at REAL,
+            updated_at REAL)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS autonomous_incidents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL,
+            category TEXT,
+            source TEXT,
+            error_text TEXT,
+            diagnosis TEXT,
+            action_taken TEXT,
+            resolved INTEGER DEFAULT 0)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS background_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            command TEXT,
+            pid INTEGER,
+            status TEXT DEFAULT 'running',
+            exit_code INTEGER,
+            started_at REAL,
+            finished_at REAL,
+            log_file TEXT)''')
         # pruning retired — the spine keeps the full thread, and the
         # DB now keeps every chat row, like the markdown log always did.
         # cur.execute("DELETE FROM chat_history WHERE timestamp < datetime('now', ?)",
@@ -465,3 +504,159 @@ def memory_forget_entries(query: str) -> int:
         conn.commit()
         conn.close()
     return len(ids)
+
+
+# --- Autonomous Goals, Incidents, & Background Jobs Database Helpers ---
+
+def goal_db_create(title: str, description: str, interval_s: int = 0, priority: int = 5, delay_s: int = 0) -> int:
+    now = time.time()
+    next_run = now + max(0, delay_s)
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("""INSERT INTO autonomous_goals
+                   (title, description, priority, interval_s, next_run, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)""",
+                    (title, description, priority, interval_s, next_run, now, now))
+        gid = cur.lastrowid
+        conn.commit()
+        conn.close()
+    return gid
+
+
+def goal_db_list(status_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        if status_filter:
+            rows = cur.execute(
+                "SELECT * FROM autonomous_goals WHERE status = ? ORDER BY priority ASC, next_run ASC",
+                (status_filter,)).fetchall()
+        else:
+            rows = cur.execute(
+                "SELECT * FROM autonomous_goals ORDER BY priority ASC, next_run ASC").fetchall()
+        out = [dict(r) for r in rows]
+        conn.close()
+    return out
+
+
+def goal_db_get_due(now_ts: float) -> List[Dict[str, Any]]:
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        rows = cur.execute(
+            "SELECT * FROM autonomous_goals WHERE status IN ('pending', 'active') AND next_run <= ? ORDER BY priority ASC LIMIT 5",
+            (now_ts,)).fetchall()
+        out = [dict(r) for r in rows]
+        conn.close()
+    return out
+
+
+def goal_db_update(goal_id: int, status: Optional[str] = None, last_result: Optional[str] = None,
+                   next_run: Optional[float] = None) -> bool:
+    now = time.time()
+    updates = ["updated_at = ?"]
+    params: List[Any] = [now]
+    if status is not None:
+        updates.append("status = ?")
+        params.append(status)
+    if last_result is not None:
+        updates.append("last_result = ?")
+        params.append(last_result)
+    if next_run is not None:
+        updates.append("next_run = ?")
+        params.append(next_run)
+    params.append(goal_id)
+
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute(f"UPDATE autonomous_goals SET {', '.join(updates)} WHERE id = ?", params)
+        affected = cur.rowcount
+        conn.commit()
+        conn.close()
+    return affected > 0
+
+
+def goal_db_delete(goal_id: int) -> bool:
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("DELETE FROM autonomous_goals WHERE id = ?", (goal_id,))
+        affected = cur.rowcount
+        conn.commit()
+        conn.close()
+    return affected > 0
+
+
+def incident_db_log(category: str, source: str, error_text: str, diagnosis: str,
+                    action_taken: str, resolved: int = 0) -> int:
+    now = time.time()
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("""INSERT INTO autonomous_incidents
+                   (timestamp, category, source, error_text, diagnosis, action_taken, resolved)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (now, category, source, str(error_text)[:1000], str(diagnosis)[:1000],
+                     str(action_taken)[:1000], 1 if resolved else 0))
+        iid = cur.lastrowid
+        conn.commit()
+        conn.close()
+    return iid
+
+
+def incident_db_list(limit: int = 10) -> List[Dict[str, Any]]:
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        rows = cur.execute(
+            "SELECT * FROM autonomous_incidents ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        out = [dict(r) for r in rows]
+        conn.close()
+    return out
+
+
+def job_db_create(name: str, command: str, pid: int, log_file: str) -> int:
+    now = time.time()
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("""INSERT INTO background_jobs
+                   (name, command, pid, status, started_at, log_file)
+                   VALUES (?, ?, ?, 'running', ?, ?)""",
+                    (name or command[:30], command, pid, now, log_file))
+        jid = cur.lastrowid
+        conn.commit()
+        conn.close()
+    return jid
+
+
+def job_db_update(job_id: int, status: str, exit_code: Optional[int] = None) -> bool:
+    now = time.time()
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("""UPDATE background_jobs
+                   SET status = ?, exit_code = ?, finished_at = ?
+                   WHERE id = ?""",
+                    (status, exit_code, now, job_id))
+        affected = cur.rowcount
+        conn.commit()
+        conn.close()
+    return affected > 0
+
+
+def job_db_list(limit: int = 10) -> List[Dict[str, Any]]:
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        rows = cur.execute(
+            "SELECT * FROM background_jobs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        out = [dict(r) for r in rows]
+        conn.close()
+    return out

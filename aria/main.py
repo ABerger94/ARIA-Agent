@@ -120,7 +120,14 @@ def get_subsystem_statuses() -> List[Tuple[str, str, bool]]:
     gh_ok = bool(GITHUB_USERNAME and GITHUB_TOKEN and GITHUB_TOKEN != "INSERT")
     gh_entry = ("GitHub Tools", "ARMED" if gh_ok else "OFFLINE", gh_ok)
 
-    return [voice_entry, vision_entry, screen_entry, mem_entry, hw_entry, sched_entry, gh_entry]
+    # 7. Autonomous Daemon & Workers
+    try:
+        goals_count = len(agent.goal_list(status_filter="pending"))
+        workers_entry = ("Autonomy & Workers", f"ARMED ({goals_count} goals)" if goals_count else "ACTIVE", True)
+    except Exception:
+        workers_entry = ("Autonomy & Workers", "ACTIVE", True)
+
+    return [voice_entry, vision_entry, screen_entry, mem_entry, hw_entry, sched_entry, gh_entry, workers_entry]
 
 
 def set_whisper_mode(on: bool) -> bool:
@@ -428,9 +435,21 @@ def _extract_wake_command(text: str) -> Tuple[bool, str]:
     if prefix and len(prefix.split()) > 3:
         return False, ""
 
-    end_pos = match.end()
-    cleaned = low[end_pos:].strip(" ,.-!?:;—–\t\n")
-    return True, cleaned
+    # Repeatedly strip wake words from the beginning
+    remainder = low
+    while True:
+        m = re.search(pattern, remainder)
+        if m and m.start() == 0:
+            remainder = remainder[m.end():].strip(" ,.-!?:;—–\t\n")
+        else:
+            break
+
+    # If nothing left besides wake words/punctuation, it's a conversational wake
+    sub_cleaned = re.sub(pattern, "", low).strip(" ,.-!?:;—–\t\n")
+    if not sub_cleaned:
+        return True, ""
+
+    return True, remainder
 
 
 def continuous_voice_listener():
@@ -632,8 +651,12 @@ def start_all():
                      daemon=True).start()
 
     threading.Thread(target=agent.proactive_heartbeat_loop,
-                     args=(speech.speak, lambda: agent.BUSY_PROCESSING, lambda: WHISPER_MODE, lambda: agent.LAST_ACTIVITY),
+                     args=(speech.speak, lambda: agent.BUSY_PROCESSING, lambda: WHISPER_MODE,
+                           lambda: agent.LAST_ACTIVITY, lambda mode, prompt: handle_action(mode=mode, typed_prompt=prompt, silent=True)),
                      daemon=True).start()
+
+    # 4c. Persistent autonomous workers (jobs supervisor, downloads watcher, system resource monitor)
+    agent.workers.start_all_workers()
 
     threading.Thread(target=agent.idle_consolidation_loop,
                      args=(agent.gemini_text, lambda: agent.BUSY_PROCESSING, lambda: agent.LAST_ACTIVITY),

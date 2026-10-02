@@ -173,6 +173,40 @@ def _weather_now() -> str:
         return ""
 
 
+def _email_brief_section() -> str:
+    """Summarizes unread emails and notable items needing attention for the brief."""
+    try:
+        from aria.tools import builtins
+        res = builtins.tool_read_email(unread_only=True, limit=10)
+        if not res or "No messages match" in res or "No Gmail credentials" in res or "failed" in res.lower():
+            return " Inbox is clear."
+        lines = [l.strip() for l in res.split("\n") if l.strip().startswith("[uid=")]
+        if not lines:
+            return " Inbox is clear."
+
+        actionable = []
+        for l in lines:
+            parts = l.split(" | ")
+            if len(parts) >= 3:
+                sender = parts[1]
+                name_match = re.match(r"^([^<]+)", sender)
+                sender_name = name_match.group(1).strip().strip('"') if name_match else sender
+                subj = parts[2].strip('"')
+                if "security alert" in subj.lower() and "google" in sender_name.lower():
+                    continue
+                actionable.append(f"{sender_name} regarding '{subj}'")
+
+        count = len(lines)
+        if not actionable:
+            return f" You have {count} unread email{'s' if count != 1 else ''}, mostly automated alerts."
+
+        first_few = "; ".join(actionable[:2])
+        rest = f" and {count - len(actionable[:2])} other(s)" if count > len(actionable[:2]) else ""
+        return f" On email: {count} unread — notable: {first_few}{rest}."
+    except Exception:
+        return ""
+
+
 def tool_briefing() -> str:
     now = datetime.now()
     day = now.strftime("%A, %B %d")
@@ -189,6 +223,7 @@ def tool_briefing() -> str:
                            key=lambda e: e.get("start", ""))
     sched = f"You've got: {_entries_line(entries)}." if entries else "Nothing on the schedule today."
     tmrw = f" Tomorrow: {_entries_line(t_entries)}." if t_entries else ""
+    ebit = _email_brief_section()
     wf = _weather_full()
     if wf and wf.get("temp_F"):
         cond = f" and {wf['desc']}" if wf.get("desc") else ""
@@ -196,7 +231,7 @@ def tool_briefing() -> str:
     else:
         wn = _weather_now()
         wxbit = f" In Dundalk it's {wn}." if wn else ""
-    return f"Good morning, Alek. Today is {day}. {sched}{tmrw}{wxbit}"
+    return f"Good morning, Alek. Today is {day}. {sched}{tmrw}{ebit}{wxbit}"
 
 
 def sched_add(kind: str, prompt: str, delay_s: int = 0, interval_s: int = 0) -> int:

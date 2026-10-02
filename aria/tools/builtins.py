@@ -98,21 +98,33 @@ def tool_fetch_url(url: str) -> str:
 
 # ---------------- File Tools ----------------
 def tool_write_file(filename: str, content: str) -> str:
-    """Save content to a file in the workspace directory."""
+    """Save content to a file in the workspace directory (supports nested subdirectories)."""
     os.makedirs(WORKSPACE_DIR, exist_ok=True)
-    path = os.path.join(WORKSPACE_DIR, os.path.basename(filename))
+    clean = filename.strip().replace("\\", "/").lstrip("/")
+    if ".." in clean:
+        clean = os.path.basename(clean)
+    path = os.path.join(WORKSPACE_DIR, clean)
+    parent_dir = os.path.dirname(path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
-    add_log(f"File saved: {filename}")
-    return f"Successfully wrote {len(content)} characters to {filename}."
+    add_log(f"File saved: {clean}")
+    return f"Successfully wrote {len(content)} characters to {clean}."
 
 
 def tool_read_file(filename: str) -> str:
-    """Read a text file from the workspace directory."""
-    path = os.path.join(WORKSPACE_DIR, os.path.basename(filename))
+    """Read a text file from the workspace directory (supports nested subdirectories)."""
+    clean = filename.strip().replace("\\", "/").lstrip("/")
+    if ".." in clean:
+        clean = os.path.basename(clean)
+    path = os.path.join(WORKSPACE_DIR, clean)
+    if not os.path.exists(path):
+        # Fallback to base name in workspace root
+        path = os.path.join(WORKSPACE_DIR, os.path.basename(filename))
     if not os.path.exists(path):
         return f"File '{filename}' does not exist."
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
         return f.read()
 
 
@@ -938,3 +950,96 @@ def tool_inbox_read(name: str = "") -> str:
     """Read a text file from the inbox. Blank name = latest text file."""
     from aria import inbox as inbox_mod
     return inbox_mod.read_inbox_text(name or "")
+
+
+# ---------------- Autonomy & Background Workers ----------------
+
+def tool_manage_autonomous_goal(action: str = "list", title: str = "",
+                                description: str = "", goal_id: int = 0,
+                                interval_s: int = 0, priority: int = 5) -> str:
+    """Manage persistent autonomous background goals."""
+    import aria.agent as agent_mod
+    act = (action or "list").strip().lower()
+    if act == "create":
+        if not title:
+            return "Cannot create goal without a title."
+        gid = agent_mod.goal_create(title=title, description=description or title,
+                                    interval_s=int(interval_s or 0),
+                                    priority=int(priority or 5))
+        return f"Autonomous Goal #{gid} '{title}' created (priority {priority}, interval {interval_s}s)."
+
+    if act == "list":
+        goals = agent_mod.goal_list()
+        if not goals:
+            return "No autonomous goals currently registered."
+        lines = [f"Autonomous Goals ({len(goals)}):"]
+        for g in goals:
+            rec = f" (recur {g['interval_s']}s)" if g.get("interval_s") else ""
+            lines.append(f"- #{g['id']} [{g.get('status','pending')}] (prio {g.get('priority',5)}) '{g['title']}': {g.get('description','')}{rec}")
+            if g.get("last_result"):
+                lines.append(f"  Result: {str(g['last_result'])[:120]}")
+        return "\n".join(lines)
+
+    if act in ("cancel", "delete"):
+        if not goal_id:
+            return "Provide a goal_id to cancel."
+        ok = agent_mod.goal_cancel(int(goal_id))
+        return f"Goal #{goal_id} cancelled." if ok else f"Goal #{goal_id} not found or could not be cancelled."
+
+    if act in ("complete", "done"):
+        if not goal_id:
+            return "Provide a goal_id to complete."
+        ok = agent_mod.goal_complete(int(goal_id), result="Marked complete manually.")
+        return f"Goal #{goal_id} completed." if ok else f"Goal #{goal_id} not found."
+
+    return f"Unknown action '{action}'. Use 'create', 'list', 'cancel', or 'complete'."
+
+
+def tool_manage_background_job(action: str = "list", command: str = "",
+                               name: str = "", job_id: int = 0) -> str:
+    """Manage asynchronous background jobs and execution supervisor."""
+    import aria.agent as agent_mod
+    act = (action or "list").strip().lower()
+    if act == "start":
+        if not command:
+            return "Cannot start background job without a command."
+        res = agent_mod.start_background_job(command, name=name)
+        if "error" in res:
+            return f"Failed to start background job: {res['error']}"
+        return f"Background job #{res['job_id']} started (PID {res['pid']}): '{res['name']}'. Tracking in worker supervisor."
+
+    if act == "list":
+        jobs = agent_mod.list_background_jobs(15)
+        if not jobs:
+            return "No background jobs registered."
+        lines = [f"Background Jobs ({len(jobs)}):"]
+        for j in jobs:
+            lines.append(f"- #{j['id']} [{j['status']}] (PID {j.get('pid')}) '{j['name']}': cmd='{j.get('command','')[:50]}'")
+            if j.get("exit_code") is not None:
+                lines.append(f"  Exit code: {j['exit_code']}")
+        return "\n".join(lines)
+
+    if act in ("cancel", "kill", "stop"):
+        if not job_id:
+            return "Provide a job_id to cancel."
+        ok = agent_mod.cancel_background_job(int(job_id))
+        return f"Background job #{job_id} terminated." if ok else f"Job #{job_id} not found or already stopped."
+
+    if act in ("log", "logs", "output"):
+        if not job_id:
+            return "Provide a job_id to retrieve logs."
+        return agent_mod.get_background_job_log(int(job_id))
+
+    return f"Unknown action '{action}'. Use 'start', 'list', 'cancel', or 'logs'."
+
+
+def tool_system_health_audit() -> str:
+    """Inspect system resources, memory, disks, worker threads, and active jobs."""
+    import aria.agent as agent_mod
+    return agent_mod.system_health_audit()
+
+
+def tool_self_heal_diagnose(error_text: str = "", context: str = "") -> str:
+    """Diagnose errors and view self-healing incidents."""
+    import aria.agent as agent_mod
+    return agent_mod.tool_self_heal_diagnose(error_text=error_text, context=context)

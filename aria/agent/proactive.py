@@ -18,7 +18,11 @@ from typing import Optional, Callable, Dict, Any, Tuple
 import psutil
 
 from aria.config import WORKSPACE_DIR, add_log
-from aria.memory import DB_LOCK, DB_PATH, spine_append, spine_tail, spine_digest, memory_save
+from aria.memory import (
+    DB_LOCK, DB_PATH, spine_append, spine_tail, spine_digest, memory_save,
+    goal_db_create, goal_db_list, goal_db_get_due, goal_db_update, goal_db_delete
+)
+import aria.agent.workers as workers
 from aria.scheduler import BREAK_REMINDERS
 
 _HEARTBEAT_MEM_FILE = os.path.join(WORKSPACE_DIR, "heartbeat_memory.json")
@@ -106,15 +110,108 @@ def _get_user_name() -> str:
     return "Alek"
 
 
+# --- Autonomous Goals Engine ---
+
+def goal_create(title: str, description: str, interval_s: int = 0, priority: int = 5, delay_s: int = 0) -> int:
+    """Create a persistent autonomous goal to be executed proactively by ARIA."""
+    gid = goal_db_create(title=title, description=description, interval_s=interval_s,
+                         priority=priority, delay_s=delay_s)
+    spine_append("goal_created", {"goal_id": gid, "title": title, "priority": priority})
+    add_log(f"Autonomous Goal #{gid} created: '{title}' (priority {priority})")
+    return gid
+
+
+def goal_list(status_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+    """List registered autonomous goals."""
+    return goal_db_list(status_filter=status_filter)
+
+
+def goal_cancel(goal_id: int) -> bool:
+    """Cancel and delete an autonomous goal."""
+    res = goal_db_delete(goal_id)
+    if res:
+        add_log(f"Autonomous Goal #{goal_id} cancelled.")
+        spine_append("goal_cancelled", {"goal_id": goal_id})
+    return res
+
+
+def goal_complete(goal_id: int, result: str = "") -> bool:
+    """Mark an autonomous goal as completed."""
+    res = goal_db_update(goal_id, status="completed", last_result=result)
+    if res:
+        add_log(f"Autonomous Goal #{goal_id} completed: {result[:50]}")
+        spine_append("goal_complete", {"goal_id": goal_id, "result": result[:200]})
+    return res
+
+
+def evaluate_autonomous_goals(action_fn: Optional[Callable[..., str]] = None,
+                              speak_fn: Optional[Callable[[str], None]] = None,
+                              is_busy_fn: Optional[Callable[[], bool]] = None,
+                              is_whisper_fn: Optional[Callable[[], bool]] = None):
+    """Scan and execute due autonomous background goals when the system is idle."""
+    now = time.time()
+    due = goal_db_get_due(now)
+    if not due:
+        return
+
+    for goal in due:
+        gid = goal["id"]
+        title = goal["title"]
+        desc = goal["description"]
+        interval = goal.get("interval_s", 0)
+
+        add_log(f"Heartbeat: Executing Autonomous Goal #{gid} '{title}'...")
+        goal_db_update(gid, status="running")
+
+        res_text = ""
+        try:
+            if action_fn:
+                res_text = action_fn("autonomous", f"[Autonomous Task: {title}] {desc}")
+            else:
+                res_text = "Goal evaluated (no action dispatcher bound)."
+        except Exception as e:
+            res_text = f"Goal execution error: {e}"
+            add_log(f"Heartbeat: Goal #{gid} failed: {e}")
+
+        # If recurring, reschedule; otherwise mark complete
+        if interval > 0:
+            next_t = time.time() + interval
+            goal_db_update(gid, status="active", last_result=res_text, next_run=next_t)
+            add_log(f"Heartbeat: Goal #{gid} rescheduled in {interval}s.")
+        else:
+            goal_db_update(gid, status="completed", last_result=res_text)
+            add_log(f"Heartbeat: Goal #{gid} completed.")
+
+        spine_append("autonomous_goal", {"goal_id": gid, "title": title, "result": str(res_text)[:200]})
+
+        # If the goal returned a critical finding, inform the user concisely
+        if res_text and any(k in res_text.lower() for k in ["alert", "critical", "warning", "attention", "error"]):
+            if speak_fn and is_busy_fn and is_whisper_fn:
+                proactive_say("goal_alert", f"Autonomous update for {title}: {res_text[:120]}",
+                              speak_fn, is_busy_fn, is_whisper_fn)
+        break  # Process at most one goal per heartbeat cycle
+
+
 def proactive_heartbeat_loop(speak_fn: Callable[[str], None],
                              is_busy_fn: Callable[[], bool],
                              is_whisper_fn: Callable[[], bool],
-                             get_last_activity_fn: Callable[[], float]):
+                             get_last_activity_fn: Callable[[], float],
+                             action_fn: Optional[Callable[..., str]] = None):
+    """
+    Autonomous Proactive Heartbeat Daemon.
+    Monitors system conditions, hardware state, download completions,
+    resource anomalies, break nudges, and dispatches autonomous background goals.
+    """
     time.sleep(10)
     last_battery_alert = False
     session_start = time.time()
+    last_goal_check = 0.0
+
     while True:
         try:
+            now = time.time()
+
+            # 1. Hardware Battery Check
             battery = psutil.sensors_battery()
             if battery and not battery.power_plugged and battery.percent < 20 and not last_battery_alert:
                 last_battery_alert = True
@@ -124,14 +221,41 @@ def proactive_heartbeat_loop(speak_fn: Callable[[str], None],
             elif battery and battery.power_plugged:
                 last_battery_alert = False
 
-            if BREAK_REMINDERS and (time.time() - session_start) / 3600 >= 1.5:
-                session_start = time.time()
-                if (time.time() - get_last_activity_fn()) < 5400:
+            # 2. Ergonomic Break Reminders
+            if BREAK_REMINDERS and (now - session_start) / 3600 >= 1.5:
+                session_start = now
+                if (now - get_last_activity_fn()) < 5400:
                     proactive_say("break", "You have been at it a while, stretch and get some water.",
                                   speak_fn, is_busy_fn, is_whisper_fn)
+
+            # 3. Persistent Worker: Download Completions
+            new_downloads = workers.pop_pending_downloads()
+            for dl in new_downloads:
+                name = dl.get("name", "file")
+                proactive_say("download", f"Download '{name}' is complete.",
+                              speak_fn, is_busy_fn, is_whisper_fn)
+
+            # 4. Persistent Worker: System Resource Warnings
+            system_alerts = workers.pop_system_alerts()
+            for alert in system_alerts:
+                proactive_say("system_alert", alert,
+                              speak_fn, is_busy_fn, is_whisper_fn)
+
+            # 5. Persistent Worker: Background Job Notices
+            job_notices = workers.pop_job_notifications()
+            for notice in job_notices:
+                proactive_say("job_complete", notice,
+                              speak_fn, is_busy_fn, is_whisper_fn)
+
+            # 6. Autonomous Goal Engine (evaluates when user is idle > 45s)
+            idle_seconds = now - get_last_activity_fn()
+            if idle_seconds > 45 and not is_busy_fn() and (now - last_goal_check > 30):
+                last_goal_check = now
+                evaluate_autonomous_goals(action_fn, speak_fn, is_busy_fn, is_whisper_fn)
+
         except Exception as e:
             add_log(f"Heartbeat err: {e}")
-        time.sleep(30)
+        time.sleep(15)
 
 
 # --- Mood system ---

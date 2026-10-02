@@ -103,6 +103,7 @@ KEYWORD_TOOLKIT_MAP: Dict[str, List[str]] = {
     "comms": [r"\bemai(?:ls?)\b", r"\bgmail\b", r"\bmail\b", r"\binbox\b"],
     "admin": [r"\bvolume\b", r"\bmute\b", r"\bunmute\b", r"\bbridge\b", r"\btokens?\b", r"\bkeys?\b"],
     "github": [r"\bgithub\b", r"\bgit\b", r"\brepos?(?:itory)?\b", r"\bcommit\b", r"\bpush\b"],
+    "autonomy": [r"\bgoals?\b", r"\bautonom\w*", r"\bbackground\s*(?:task|job)?\b", r"\bworkers?\b", r"\bself[- ]heal\w*", r"\bdaemon\b", r"\bheartbeat\b", r"\bincidents?\b", r"\bhealth\s*(?:audit|check)?\b"],
 }
 
 TOOL_TO_TOOLKIT: Dict[str, str] = {
@@ -242,13 +243,31 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
         else:
             r = f"Unknown tool: {fn_name}"
     except Exception as e:
-        r = f"[Tool Error: {e}]"
+        try:
+            from aria.agent.self_healing import attempt_auto_heal
+            healed, healed_res, heal_msg = attempt_auto_heal(fn_name, args or {}, e, handler)
+            if healed:
+                r = f"{healed_res}\n[Autonomous Self-Healing: {heal_msg}]"
+            else:
+                r = f"[Tool Error: {e}]"
+        except Exception:
+            r = f"[Tool Error: {e}]"
     finally:
         if _HUD_HOOK and prev_face:
             try:
                 _HUD_HOOK(prev_face)
             except Exception:
                 pass
+
+    # Autonomous Self-Healing on tool output returning recoverable failure
+    if isinstance(r, str) and ("Traceback (most recent call last)" in r or "FileNotFoundError" in r or "No such file or directory" in r or "ModuleNotFoundError" in r or "unicodeescape" in r) and "[Autonomous Self-Healing:" not in r:
+        try:
+            from aria.agent.self_healing import attempt_auto_heal
+            healed, healed_res, heal_msg = attempt_auto_heal(fn_name, args or {}, r, handler)
+            if healed:
+                r = f"{healed_res}\n[Autonomous Self-Healing: {heal_msg}]"
+        except Exception:
+            pass
 
     # 7. Truncation and caching
     r = truncate_output(str(r), MAX_TOOL_OUTPUT)
@@ -316,6 +335,17 @@ def _init_default_registry():
     _REGISTRY["inbox_list"] = lambda a: builtins.tool_inbox_list()
     _REGISTRY["inbox_describe"] = lambda a: builtins.tool_inbox_describe(a.get("name", ""))
     _REGISTRY["inbox_read"] = lambda a: builtins.tool_inbox_read(a.get("name", ""))
+    _REGISTRY["manage_autonomous_goal"] = lambda a: builtins.tool_manage_autonomous_goal(
+        action=a.get("action", "list"), title=a.get("title", ""), description=a.get("description", ""),
+        goal_id=int(a.get("goal_id", 0)), interval_s=int(a.get("interval_s", 0)), priority=int(a.get("priority", 5))
+    )
+    _REGISTRY["manage_background_job"] = lambda a: builtins.tool_manage_background_job(
+        action=a.get("action", "list"), command=a.get("command", ""), name=a.get("name", ""), job_id=int(a.get("job_id", 0))
+    )
+    _REGISTRY["system_health_audit"] = lambda a: builtins.tool_system_health_audit()
+    _REGISTRY["self_heal_diagnose"] = lambda a: builtins.tool_self_heal_diagnose(
+        error_text=a.get("error_text", ""), context=a.get("context", "")
+    )
     _REGISTRY["load_toolkit"] = lambda a: tool_load_toolkit(a.get("toolkit", ""))
     _REGISTRY["run_skill"] = lambda a: tool_run_skill(
         a.get("skill_name", ""),
