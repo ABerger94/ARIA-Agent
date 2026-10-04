@@ -16,6 +16,9 @@ duckduckgo-search>=6.0
 aiohttp>=3.9
 requests>=2.31
 cryptography>=41.0
+# Optional: MCP client support (mcp_* tools). Pin <2: the v2 SDK renamed
+# FastMCP and changed client APIs; ARIA targets the v1 API.
+mcp>=1.0,<2
 # Optional (v9.14+): local speech recognition via Whisper on CPU.
 # Without it, ARIA uses Google's cloud recognizer exactly as before.
 faster-whisper>=1.0

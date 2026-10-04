@@ -255,18 +255,31 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
     {   'description': 'Hides the on-screen commands reference panel.',
         'name': 'hide_commands',
         'parameters': {'properties': {}, 'type': 'OBJECT'}},
-    {   'description': 'Lists files in my inbox - photos and files the user sent from the phone bridge upload page '
-                       'or dropped into the inbox folder. Newest first.',
-        'name': 'inbox_list',
-        'parameters': {'properties': {}, 'type': 'OBJECT'}},
-    {   'description': 'Describes an inbox photo with vision. Pass a file name (or number from inbox_list); '
-                       'blank describes the latest image.',
-        'name': 'inbox_describe',
+    {   'description': 'Adds an MCP (Model Context Protocol) server ARIA can use. stdio: pass command and args '
+                       '(e.g. command="npx", args=["-y","@modelcontextprotocol/server-filesystem","C:/data"]). '
+                       'sse/http: pass url instead. env/headers take JSON object strings for secrets.',
+        'name': 'mcp_setup',
+        'parameters': {   'properties': {   'name': {'type': 'STRING'},
+                                            'command': {'type': 'STRING'},
+                                            'args': {'type': 'STRING'},
+                                            'url': {'type': 'STRING'},
+                                            'env': {'type': 'STRING'},
+                                            'headers': {'type': 'STRING'}},
+                          'required': ['name'],
+                          'type': 'OBJECT'}},
+    {   'description': 'Connects to MCP server(s) and loads their tools as callable ARIA tools '
+                       '(mcp_<server>__<tool>). Omit name to connect all enabled servers.',
+        'name': 'mcp_connect',
         'parameters': {'properties': {'name': {'type': 'STRING'}}, 'type': 'OBJECT'}},
-    {   'description': 'Reads a text file from the inbox (txt, md, csv, json, log...). Pass a file name (or number '
-                       'from inbox_list); blank reads the latest text file.',
-        'name': 'inbox_read',
-        'parameters': {'properties': {'name': {'type': 'STRING'}}, 'type': 'OBJECT'}}]
+    {   'description': 'Disconnects an MCP server (or all) and unloads its tools.',
+        'name': 'mcp_disconnect',
+        'parameters': {'properties': {'name': {'type': 'STRING'}}, 'type': 'OBJECT'}},
+    {   'description': 'Lists configured MCP servers with connection status and loaded tool counts.',
+        'name': 'mcp_list_servers',
+        'parameters': {'properties': {}, 'type': 'OBJECT'}},
+    {   'description': 'Removes an MCP server configuration entirely (disconnects it first).',
+        'name': 'mcp_remove_server',
+        'parameters': {'properties': {'name': {'type': 'STRING'}}, 'required': ['name'], 'type': 'OBJECT'}}]
 
 TOOLS_DECLARATION = [
     {"function_declarations": ALL_FUNCTION_DECLARATIONS}
@@ -294,13 +307,12 @@ TOOLKITS = {   'admin': {   'summary': 'API keys, bridge token, command guide, v
                              'read_file',
                              'write_file',
                              'list_workspace',
-                             'inbox_list',
-                             'inbox_describe',
-                             'inbox_read',
                              'run_skill']},
     'github': {'summary': 'push files and create GitHub repos', 'tools': ['github_push_file', 'github_create_repo']},
     'memory_plus': {   'summary': 'notes, journal, forgetting memories, morning briefing',
                        'tools': ['forget_memory', 'journal_write', 'take_note', 'read_notes', 'morning_briefing']},
+    'mcp': {   'summary': 'Model Context Protocol: add/connect MCP servers, use their tools as ARIA tools',
+               'tools': ['mcp_setup', 'mcp_connect', 'mcp_disconnect', 'mcp_list_servers', 'mcp_remove_server']},
     'mtg': {   'summary': 'Magic card lookup, Commander deck advice, price watches',
                'tools': ['mtg_card', 'mtg_advice', 'watch_price', 'list_price_watches', 'unwatch_price']},
     'scheduler': {   'summary': 'reminders, spoken timers, recurring tasks, break nudges, live calendar',
@@ -341,9 +353,6 @@ COMMAND_GUIDE = [   ('Memory', 'save_memory', 'remember my Doja playlist is spot
     ('Laptop', 'read_file', 'read gig-ideas.txt back to me'),
     ('Laptop', 'list_workspace', 'what is in your workspace?'),
     ('Laptop', 'find_file', 'find my resume PDF'),
-    ('Inbox', 'inbox_list', 'what did I send you?'),
-    ('Inbox', 'inbox_describe', 'look at the latest photo I sent'),
-    ('Inbox', 'inbox_read', 'read that text file I uploaded'),
     ('Seeing', 'take_screenshot', 'take a screenshot'),
     ('Seeing', 'read_screen', 'what does this error say?'),
     ('Seeing', 'take_photo', 'take a photo'),
@@ -379,10 +388,33 @@ COMMAND_GUIDE = [   ('Memory', 'save_memory', 'remember my Doja playlist is spot
     ('Email', 'gmail_setup', 'save my Gmail and app password'),
     ('Email', 'send_email', 'email mom the deck list'),
     ('Email', 'read_email', 'check my unread email'),
+    ('MCP', 'mcp_setup', 'add an MCP server with command npx for the filesystem server'),
+    ('MCP', 'mcp_connect', 'connect my MCP servers'),
+    ('MCP', 'mcp_list_servers', 'what MCP servers are connected?'),
+    ('MCP', 'mcp_disconnect', 'disconnect the filesystem MCP server'),
     ('This screen', 'show_commands', 'show commands'),
     ('This screen', 'hide_commands', 'hide commands')]
 
 _DECLS_BY_NAME = {d["name"]: d for d in ALL_FUNCTION_DECLARATIONS}
+
+# Dynamic declarations (e.g. MCP server tools) registered at runtime.
+# keyed by tool name; toolkit membership is tracked in TOOLKITS[<toolkit>]["tools"].
+_DYNAMIC_DECLS: Dict[str, Dict[str, Any]] = {}
+
+
+def register_dynamic_tool_declaration(name: str, declaration: Dict[str, Any],
+                                      toolkit: str = "mcp") -> None:
+    """Register a runtime-discovered tool so it validates and is callable."""
+    _DYNAMIC_DECLS[name] = declaration
+    if toolkit in TOOLKITS and name not in TOOLKITS[toolkit]["tools"]:
+        TOOLKITS[toolkit]["tools"].append(name)
+
+
+def unregister_dynamic_tool_declaration(name: str, toolkit: str = "mcp") -> None:
+    """Remove a runtime-discovered tool (e.g. on MCP server disconnect)."""
+    _DYNAMIC_DECLS.pop(name, None)
+    if toolkit in TOOLKITS and name in TOOLKITS[toolkit]["tools"]:
+        TOOLKITS[toolkit]["tools"].remove(name)
 
 LOAD_TOOLKIT_DECLARATION = {
     "name": "load_toolkit",
@@ -400,15 +432,18 @@ LOAD_TOOLKIT_DECLARATION = {
 
 
 def get_tool_decls_by_name() -> Dict[str, Dict[str, Any]]:
-    """Return dictionary of function declarations keyed by tool name."""
-    return dict(_DECLS_BY_NAME)
+    """Return dictionary of function declarations keyed by tool name,
+    including runtime-registered dynamic tools (e.g. MCP server tools)."""
+    merged = dict(_DECLS_BY_NAME)
+    merged.update(_DYNAMIC_DECLS)
+    return merged
 
 
 def get_toolkit_declarations(loaded_toolkits: Set[str]) -> List[Dict[str, Any]]:
     """Build the tools payload from currently loaded toolkits.
     Always appends load_toolkit meta-tool.
     """
-    decls = _DECLS_BY_NAME
+    decls = get_tool_decls_by_name()
     out = []
     for tk in sorted(loaded_toolkits):
         if tk in TOOLKITS:

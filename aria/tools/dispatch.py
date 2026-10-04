@@ -270,11 +270,6 @@ def _init_default_registry():
     _REGISTRY["mtg_advice"] = lambda a: builtins.tool_mtg_advice(a.get("deck", ""), a.get("card_name", ""))
     _REGISTRY["bridge_token"] = lambda a: f"Your bridge token is: {BRIDGE_TOKEN}. Enter it on the phone bridge login page."
     _REGISTRY["gemini_keys"] = lambda a: builtins.tool_gemini_keys(a.get("action", "status"), a.get("key", ""))
-
-    # Inbox tools (phone bridge uploads)
-    _REGISTRY["inbox_list"] = lambda a: builtins.tool_inbox_list()
-    _REGISTRY["inbox_describe"] = lambda a: builtins.tool_inbox_describe(a.get("name", ""))
-    _REGISTRY["inbox_read"] = lambda a: builtins.tool_inbox_read(a.get("name", ""))
     _REGISTRY["load_toolkit"] = lambda a: tool_load_toolkit(a.get("toolkit", ""))
     _REGISTRY["run_skill"] = lambda a: tool_run_skill(
         a.get("skill_name", ""),
@@ -297,6 +292,15 @@ def _init_default_registry():
     _REGISTRY["break_reminders"] = lambda a: scheduler.tool_break_reminders(a.get("enabled", True))
     _REGISTRY["calendar_setup"] = lambda a: builtins.tool_calendar_setup(a.get("ical_url", ""))
     _REGISTRY["check_calendar"] = lambda a: builtins.tool_check_calendar(a.get("days", 1))
+
+    # MCP client tools — ARIA connects to MCP servers and uses their tools
+    _REGISTRY["mcp_setup"] = lambda a: builtins.tool_mcp_setup(
+        a.get("name", ""), a.get("command", ""), a.get("args", ""),
+        a.get("url", ""), a.get("env", ""), a.get("headers", ""))
+    _REGISTRY["mcp_connect"] = lambda a: builtins.tool_mcp_connect(a.get("name", ""))
+    _REGISTRY["mcp_disconnect"] = lambda a: builtins.tool_mcp_disconnect(a.get("name", ""))
+    _REGISTRY["mcp_list_servers"] = lambda a: builtins.tool_mcp_list_servers()
+    _REGISTRY["mcp_remove_server"] = lambda a: builtins.tool_mcp_remove_server(a.get("name", ""))
 
     # Vision tools
     _REGISTRY["take_photo"] = lambda a: vision.tool_take_photo(a.get("name", ""))

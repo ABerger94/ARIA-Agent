@@ -3,7 +3,7 @@
 A Python desktop AI companion. She lives on your Windows laptop as an animated
 face in an OpenCV HUD: she talks (natural Edge TTS voice), listens (mic +
 speech recognition), remembers, and acts through a Gemini-powered agent loop
-with 57 tools. Her phone bridge turns any phone into her face, voice, and
+with 62 tools. Her phone bridge turns any phone into her face, voice, and
 eyes — and an Arduino robot body gives her a pan/tilt head, with
 differential-drive wheels as the next phase.
 
@@ -30,8 +30,8 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
   going?" and "yes"/"continue" resumes the active chain).
 - **Progressive Tool Loading** — only 17 core tool schemas go to the model
   per call; specialist toolkits (Gmail, Spotify, scheduler, GitHub,
-  vision/hardware, Windows control, MTG, memory/notes, admin) unlock on demand
-  via `load_toolkit`. 57 tools total across 10 toolkits.
+  vision/hardware, Windows control, MTG, memory/notes, admin, MCP) unlock on demand
+  via `load_toolkit`. 62 tools total across 11 toolkits.
 - **Durable Memory & Spine** — SQLite semantic vector memory + Markdown journal;
   unbroken memory spine (`memory_spine.jsonl`) logging turns, tool invocations,
   and journal entries; session context (`where_we_left_off.md`) automatically
@@ -53,6 +53,15 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
   directives, settings (speak replies, test audio, camera), and a toggleable
   conversation log. Spoken replies use Edge TTS first with offline Windows
   SAPI as fallback.
+- **MCP Client** — she connects to Model Context Protocol servers and uses
+  their tools as her own. `mcp_setup` adds a server (stdio command or SSE/HTTP
+  URL), `mcp_connect` connects and registers every server tool as a first-class
+  ARIA tool named `mcp_<server>__<tool>` (with argument validation and output
+  truncation applied like any other tool), `mcp_list_servers` shows connection
+  status, `mcp_disconnect` unloads. Configured servers auto-connect in the
+  background at boot. Requires the `mcp` Python package (`pip install
+  "mcp>=1.0,<2"`); only connect servers you trust, since stdio servers run
+  local commands.
 - **Robot Body** — Arduino Nano firmware (`arduino/aria_body/aria_body.ino`)
   driving a pan/tilt head (`P<pos>T<pos>`) and differential-drive wheels
   (`W<l>,<r>`) over a no-solder Nano + sensor shield, with a dedicated stop
@@ -119,6 +128,8 @@ aria/                    Modular system package
   bridge.py              HTTPS phone bridge server: face/eyes UI, live MJPEG
                          streams, voice + camera endpoints
   memory.py              SQLite semantic vector memory, journal, and memory spine
+  mcp.py                 MCP client: connect to MCP servers, register their
+                         tools as ARIA tools (mcp_<server>__<tool>)
   scheduler.py           Autonomous scheduler, reminders, proactive heartbeat
   spotify.py             Desktop Spotify player control & DJ mode
   hardware.py            Arduino serial: servo head, drive wheels, body tools
@@ -140,6 +151,16 @@ tools/                   Helper scripts (key manager)
 
 ### Since v9.36
 
+- **MCP client** — ARIA connects to Model Context Protocol servers and uses
+  their tools: `mcp_setup` / `mcp_connect` / `mcp_disconnect` /
+  `mcp_list_servers` / `mcp_remove_server` (new `mcp` toolkit); every server
+  tool is registered at connect time as a first-class ARIA tool
+  (`mcp_<server>__<tool>`) with its JSON Schema converted to Gemini function
+  declarations, so argument validation, duplicate-call blocking, and output
+  truncation all apply. stdio and SSE/HTTP transports, persistent sessions on
+  a background asyncio loop, background auto-connect of enabled servers at
+  boot; `mcp>=1.0,<2` added to requirements. 62 tools across 11 toolkits;
+  headless suite 30/30.
 - **Robot body** — Arduino Nano firmware with eased pan/tilt head, timed
   differential-drive wheels, and dedicated stop; `drive_wheels` / `body_stop`
   agent tools; `ARIA_BODY_SERIAL_URL` for network serial; `sim/robot_sim.py`
