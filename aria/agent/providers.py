@@ -30,6 +30,22 @@ from aria.config import (
 ACTIVE_PROVIDER = "gemini"
 
 
+# Session stats for the OPS dashboard: failover count, per-provider call
+# counts, and the most recent failover (failed_name, epoch).
+PROVIDER_STATS: Dict[str, Any] = {
+    "failovers": 0, "calls": {}, "last_failover": None,
+}
+
+
+def _note_failover(failed_name: str) -> None:
+    PROVIDER_STATS["failovers"] += 1
+    PROVIDER_STATS["last_failover"] = (failed_name, time.time())
+
+
+def _note_call(name: str) -> None:
+    PROVIDER_STATS["calls"][name] = PROVIDER_STATS["calls"].get(name, 0) + 1
+
+
 def get_active_provider() -> str:
     return ACTIVE_PROVIDER
 
@@ -383,6 +399,7 @@ def provider_call(
     for provider in chain:
         if not provider.is_available():
             continue
+        _note_call(provider.name)
         try:
             data = provider.call(
                 system_instruction, contents,
@@ -390,6 +407,7 @@ def provider_call(
             )
         except Exception as e:  # never let one provider kill the turn
             add_log(f"provider {provider.name} raised: {e}")
+            _note_failover(provider.name)
             data = None
         if data and data.get("candidates"):
             if ACTIVE_PROVIDER != provider.name:
@@ -397,6 +415,7 @@ def provider_call(
                 add_log(f"provider now serving: {provider.name}{note}")
                 ACTIVE_PROVIDER = provider.name
             return data
+        _note_failover(provider.name)
         add_log(f"provider {provider.name} returned nothing, trying next")
     add_log("provider_call: chain exhausted, all providers down")
     return None

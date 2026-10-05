@@ -32,6 +32,7 @@ import aria.vision as vision
 import aria.scheduler as scheduler
 import aria.spotify as spotify
 import aria.hud as hud
+import aria.ops as _ops
 import aria.pixel_avatar as pixel_avatar
 import aria.bridge as bridge
 import aria.agent as agent
@@ -140,6 +141,23 @@ def set_whisper_mode(on: bool) -> bool:
 
 def toggle_whisper_mode() -> bool:
     return set_whisper_mode(not WHISPER_MODE)
+
+
+def _ops_read_selected_aloud() -> None:
+    """Speak the currently selected OPS inbox item (runs in a thread)."""
+    try:
+        dash = _ops.get_dashboard()
+        items = ((dash.get("inbox") or {}).get("data") or {}).get("items", [])
+        idx = _ops.SELECTED_MAIL
+        if idx >= len(items):
+            speech.speak("No email selected.")
+            return
+        it = items[idx]
+        add_log(f"Reading mail {idx + 1} aloud.")
+        body = _ops.read_mail_body(it["uid"])
+        speech.speak(f"From {it['sender']}. Subject: {it['subject']}. {body}")
+    except Exception as e:
+        add_log(f"Read-aloud failed: {e}")
 
 
 def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silent: bool = False) -> str:
@@ -812,7 +830,32 @@ def main():
                         hud.TYPING_BUFFER += chr(key_raw)
                         agent.LAST_ACTIVITY = time.time()
                 else:
-                    if key in (ord('q'), ord('Q'), 27):  # ESC or Q
+                    if hud.HUD_MODE == "ops" and key in (ord('o'), ord('O'), 27):
+                        hud.HUD_MODE = "visor"  # O or ESC: back to face
+                        add_log("OPS closed.")
+                        agent.LAST_ACTIVITY = time.time()
+                    elif hud.HUD_MODE == "ops" and key in (ord('q'), ord('Q')):
+                        hud.HUD_MODE = "visor"  # Q exits OPS; shutdown from visor only
+                        add_log("OPS closed.")
+                        agent.LAST_ACTIVITY = time.time()
+                    elif hud.HUD_MODE == "ops" and key in tuple(ord(str(d)) for d in range(1, 9)):
+                        idx = int(chr(key)) - 1
+                        items = ((_ops.get_dashboard().get("inbox") or {}).get("data") or {}).get("items", [])
+                        if idx < len(items):
+                            _ops.SELECTED_MAIL = idx
+                            it = items[idx]
+                            add_log(f"Mail {idx + 1}: {it['sender']} | {it['subject'][:40]}")
+                        else:
+                            add_log(f"No mail #{idx + 1}.")
+                        agent.LAST_ACTIVITY = time.time()
+                    elif hud.HUD_MODE == "ops" and key in (ord('e'), ord('E')):
+                        threading.Thread(target=_ops_read_selected_aloud, daemon=True).start()
+                        agent.LAST_ACTIVITY = time.time()
+                    elif hud.HUD_MODE == "ops" and key in (ord('r'), ord('R')):
+                        _ops.refresh_all()
+                        add_log("OPS refreshing...")
+                        agent.LAST_ACTIVITY = time.time()
+                    elif key in (ord('q'), ord('Q'), 27):  # ESC or Q
                         add_log("Shutdown requested by user.")
                         break
                     elif key in (ord('t'), ord('T'), 13):  # T or Enter: activate typing
@@ -833,6 +876,11 @@ def main():
                         add_log(f"Context tile: {cm.upper()}")
                     elif key in (ord('v'), ord('V')) and not is_ctrl:
                         hud.HUD_MODE = "chat_log" if hud.HUD_MODE == "visor" else "visor"
+                    elif key in (ord('o'), ord('O')):
+                        hud.HUD_MODE = "ops"
+                        _ops.refresh_all()
+                        add_log("OPS command center.")
+                        agent.LAST_ACTIVITY = time.time()
                     elif key in (ord('w'), ord('W')):
                         on = toggle_whisper_mode()
                         speech.speak(f"Whisper mode {'on' if on else 'off'}.")

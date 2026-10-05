@@ -27,6 +27,7 @@ load_theme()  # restore Alek's saved HUD color theme
 from aria.config import PHONE_BRIDGE_PORT, GITHUB_USERNAME, GITHUB_TOKEN
 from aria.vision import publish_face_frame
 import aria.vision as _vision  # module ref: read LATEST_CAMERA_FRAME live (see Optical PIP)
+import aria.ops as _ops  # OPS command-center data (no cv2 dep)
 from aria.tools.schemas import COMMAND_GUIDE
 
 _HUD_SUBS = {
@@ -1199,6 +1200,234 @@ def _draw_context_tiles(canvas: np.ndarray, ACC: Tuple[int, int, int], ACC2: Tup
         cv2.putText(canvas, evol_str, (etx, ety), cv2.FONT_HERSHEY_SIMPLEX, 0.34, WHITE_TEXT, 1, cv2.LINE_AA)
 
 
+
+def _ops_panel(canvas, x1, y1, x2, y2, title, ACC, stale=False):
+    cv2.rectangle(canvas, (x1, y1), (x2, y2), PANEL_BG, -1)
+    cv2.rectangle(canvas, (x1, y1), (x2, y2), BORDER, 1)
+    cv2.putText(canvas, "[ " + title + " ]", (x1 + 12, y1 + 22),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACC, 1, cv2.LINE_AA)
+    if stale:
+        cv2.putText(canvas, "(stale)", (x2 - 72, y1 + 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.34, DIM, 1, cv2.LINE_AA)
+    return x1 + 12, y1 + 46
+
+
+def _ops_row(canvas, x, y, text, color=WHITE_TEXT, scale=0.38, max_chars=52):
+    t = hud_ascii(text)
+    if len(t) > max_chars:
+        t = t[:max_chars - 1] + "..."
+    cv2.putText(canvas, t, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale,
+                color, 1, cv2.LINE_AA)
+
+
+def _ops_bar(canvas, x, y, w, pct, color):
+    pct = max(0.0, min(100.0, float(pct)))
+    cv2.rectangle(canvas, (x, y), (x + w, y + 10), (30, 34, 44), -1)
+    fw = int(w * pct / 100.0)
+    if fw > 1:
+        cv2.rectangle(canvas, (x, y), (x + fw, y + 10), color, -1)
+
+
+def _ops_spark(canvas, x, y, w, h, hist, color):
+    if not hist or len(hist) < 2:
+        return
+    n = len(hist)
+    bw = max(2, w // n)
+    for i, v in enumerate(hist):
+        bh = int(h * max(0.0, min(100.0, float(v))) / 100.0)
+        bx = x + i * bw
+        if bh > 0:
+            cv2.rectangle(canvas, (bx, y + h - bh), (bx + bw - 1, y + h),
+                          color, -1)
+
+
+def _draw_ops_body(canvas, ACC, ACC2):
+    """OPS command center dashboard. Drawn when HUD_MODE == 'ops'."""
+    from datetime import timedelta
+    dash = _ops.get_dashboard()
+    now = datetime.now()
+
+    def entry(name):
+        return dash.get(name) or {"data": None, "stale": True}
+
+    # Title override
+    cv2.rectangle(canvas, (28, 16), (700, 46), BG, -1)
+    cv2.putText(canvas, "A.R.I.A. // OPS COMMAND CENTER", (30, 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65, ACC, 2, cv2.LINE_AA)
+
+    # ---- attention strip
+    cv2.rectangle(canvas, (20, 82), (1260, 118), PANEL_BG, -1)
+    cv2.rectangle(canvas, (20, 82), (1260, 118), BORDER, 1)
+    attn = _ops.compute_attention(dash, now)
+    if attn:
+        cv2.putText(canvas, "ATTENTION", (34, 106),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (60, 180, 255), 1, cv2.LINE_AA)
+        _ops_row(canvas, 170, 106, " | ".join(attn), (255, 200, 120), 0.4, 110)
+    else:
+        cv2.putText(canvas, "STATUS", (34, 106),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, GREEN, 1, cv2.LINE_AA)
+        _ops_row(canvas, 170, 106, "All clear.", GREEN, 0.4, 110)
+
+    sched_e, inbox_e, tasks_e = entry("schedule"), entry("inbox"), entry("tasks")
+    prov_e, sys_e = entry("providers"), entry("systems")
+    sched = (sched_e["data"] or {})
+    inbox = (inbox_e["data"] or {})
+    tasks = (tasks_e["data"] or {})
+    prov = (prov_e["data"] or {})
+    sysd = (sys_e["data"] or {})
+
+    # ---- left column: day timeline + schedule
+    px, rx, ry = _ops_panel(canvas, 20, 128, 430, 200, "DAY", ACC)
+    events = sched.get("events", []) if sched.get("connected") else []
+    if events:
+        blocks = _ops.compute_timeline(events, now)
+        midnight = now.replace(hour=0, minute=0, second=0,
+                               microsecond=0) + timedelta(days=1)
+        span = max(1.0, (midnight - now).total_seconds())
+        bx1, bx2, by = px, 430 - 14, ry + 6
+        cv2.rectangle(canvas, (bx1, by), (bx2, by + 14), (30, 34, 44), -1)
+        for b in blocks:
+            x0 = int(bx1 + b["x0"] * (bx2 - bx1))
+            x1b = int(bx1 + b["x1"] * (bx2 - bx1))
+            col = ACC if b["active"] else (90, 140, 200)
+            cv2.rectangle(canvas, (x0, by), (max(x0 + 2, x1b), by + 14), col, -1)
+        for h in range(now.hour + 1, 24):
+            frac = (now.replace(hour=h, minute=0, second=0,
+                                microsecond=0) - now).total_seconds() / span
+            tx = int(bx1 + frac * (bx2 - bx1))
+            cv2.line(canvas, (tx, by), (tx, by + 14), BORDER, 1)
+            if h % 3 == 0:
+                cv2.putText(canvas, f"{h % 12 or 12}p", (tx - 8, by + 28),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.3, DIM, 1, cv2.LINE_AA)
+    else:
+        _ops_row(canvas, px, ry + 16,
+                 "no calendar" if not sched.get("connected") else "nothing scheduled",
+                 DIM, 0.36, 40)
+
+    px, ry = _ops_panel(canvas, 20, 210, 430, 436, "SCHEDULE", ACC,
+                        sched_e["stale"])
+    if not sched.get("connected"):
+        _ops_row(canvas, px, ry, "set ICAL_URL in aria_keys.json", DIM, 0.36, 40)
+    else:
+        evs = [e for e in events if e["end"] > now][:8]
+        if not evs:
+            _ops_row(canvas, px, ry, "nothing upcoming", DIM, 0.36, 40)
+        for i, e in enumerate(evs):
+            y = ry + i * 20
+            if y > 428:
+                break
+            active = e["start"] <= now <= e["end"]
+            if e["all_day"]:
+                txt = f"[all day] {e['summary']}"
+            else:
+                s = e["start"].strftime("%I:%M%p").lstrip("0").lower()
+                txt = f"{s} {e['summary']}"
+            _ops_row(canvas, px + (14 if active else 0), y,
+                     ("> " if active else "") + txt,
+                     ACC if active else WHITE_TEXT, 0.36, 42)
+
+    # ---- middle column: inbox + providers
+    px, ry = _ops_panel(canvas, 445, 128, 845, 322, "INBOX", ACC,
+                        inbox_e["stale"])
+    items = inbox.get("items", [])
+    if not inbox.get("connected", True):
+        _ops_row(canvas, px, ry, "no Gmail credentials", DIM, 0.36, 40)
+    elif not items:
+        _ops_row(canvas, px, ry, "inbox zero", GREEN, 0.36, 40)
+    else:
+        for i, it in enumerate(items[:7]):
+            y = ry + i * 20
+            if y > 314:
+                break
+            if i == _ops.SELECTED_MAIL:
+                cv2.rectangle(canvas, (445 + 4, y - 14),
+                              (845 - 4, y + 4), (28, 38, 52), -1)
+            star = "*" if it.get("important") else " "
+            _ops_row(canvas, px, y,
+                     f"{i + 1}{star} {it['sender']} | {it['subject']}",
+                     ACC2 if it.get("important") else WHITE_TEXT, 0.34, 46)
+
+    px, ry = _ops_panel(canvas, 445, 332, 845, 436, "PROVIDERS", ACC,
+                        prov_e["stale"])
+    chain = prov.get("chain", [])
+    if not chain:
+        _ops_row(canvas, px, ry, "loading...", DIM, 0.36, 40)
+    else:
+        for i, c in enumerate(chain):
+            y = ry + i * 20
+            col = {"live": GREEN, "standby": DIM,
+                   "quarantined": (60, 180, 255)}.get(c["state"], DIM)
+            mark = ">" if c["name"] == prov.get("active") else " "
+            det = f" ({c['detail']})" if c.get("detail") else ""
+            _ops_row(canvas, px, y,
+                     f"{mark} {c['name']}{det}", col, 0.36, 44)
+        stats = prov.get("stats", {})
+        _ops_row(canvas, px, ry + len(chain) * 20,
+                 f"failovers: {stats.get('failovers', 0)}", DIM, 0.34, 44)
+
+    # ---- right column: tasks
+    px, ry = _ops_panel(canvas, 860, 128, 1260, 436, "TASKS", ACC,
+                        tasks_e["stale"])
+    titems = tasks.get("items", [])
+    if not titems:
+        _ops_row(canvas, px, ry, "no scheduled tasks", DIM, 0.36, 40)
+    for i, t in enumerate(titems[:12]):
+        y = ry + i * 20
+        if y > 428:
+            break
+        cd = _ops.fmt_countdown(t["delta_s"])
+        rec = " (R)" if t["recurring"] else ""
+        _ops_row(canvas, px, y, f"{t['prompt']}{rec} -- {cd}",
+                 (60, 180, 255) if t["overdue"] else WHITE_TEXT, 0.34, 46)
+
+    # ---- systems strip
+    px, ry = _ops_panel(canvas, 20, 446, 1260, 636, "SYSTEMS", ACC,
+                        sys_e["stale"])
+    if not sysd.get("available"):
+        _ops_row(canvas, px, ry + 10, "pip install psutil for live stats",
+                 DIM, 0.38, 60)
+    else:
+        # bars
+        labels = [("CPU", sysd["cpu"], GREEN), ("MEM", sysd["mem"], CYAN),
+                  ("DISK", sysd["disk"],
+                   (60, 180, 255) if sysd["disk"] > 90 else WHITE_TEXT)]
+        bx = px
+        for lab, pct, col in labels:
+            cv2.putText(canvas, lab, (bx, ry + 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, DIM, 1, cv2.LINE_AA)
+            _ops_bar(canvas, bx + 52, ry + 1, 150, pct, col)
+            cv2.putText(canvas, f"{pct:.0f}%", (bx + 210, ry + 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, WHITE_TEXT, 1,
+                        cv2.LINE_AA)
+            bx += 300
+        # sparklines
+        _ops_spark(canvas, px, ry + 30, 260, 40, sysd.get("cpu_hist"), GREEN)
+        cv2.putText(canvas, "cpu hist", (px, ry + 84),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.3, DIM, 1, cv2.LINE_AA)
+        _ops_spark(canvas, px + 300, ry + 30, 260, 40, sysd.get("mem_hist"), CYAN)
+        cv2.putText(canvas, "mem hist", (px + 300, ry + 84),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.3, DIM, 1, cv2.LINE_AA)
+        # net / uptime / battery
+        net_txt = (f"NET ^ {sysd['up_kbs']:.0f} KB/s  v {sysd['down_kbs']:.0f} KB/s"
+                   f"    UP {_ops.fmt_uptime(sysd['uptime_s'])}")
+        b = sysd.get("batt")
+        if b:
+            net_txt += f"    BATT {b['pct']}%{' (chg)' if b['plugged'] else ''}"
+        _ops_row(canvas, px + 620, ry + 10, net_txt, DIM, 0.36, 60)
+        fails = (prov.get("stats") or {}).get("last_failover")
+        if fails:
+            _ops_row(canvas, px + 620, ry + 34,
+                     f"last failover: {fails[0]} "
+                     f"{int((now.timestamp() - fails[1]) // 60)}m ago",
+                     DIM, 0.34, 60)
+
+    # footer hints
+    _ops_row(canvas, 34, 664,
+             "[O] face   [1-8] select mail   [E] read aloud   [R] refresh"
+             "   [T] directive   [V] visor",
+             DIM, 0.36, 120)
+
+
 def draw_hud() -> np.ndarray:
     """Render full 1280x720 HUD frame and publish face frame for phone bridge."""
     ACC, ACC2 = theme_colors()
@@ -1248,6 +1477,16 @@ def draw_hud() -> np.ndarray:
     cv2.putText(canvas, mood_str, (bx - 20 - mw, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (170, 190, 200), 1, cv2.LINE_AA)
 
     cv2.line(canvas, (20, 72), (1260, 72), ACC, 1)
+
+    if HUD_MODE == "ops":
+        _draw_ops_body(canvas, ACC, ACC2)
+        status_bar = ("STATUS: OPS COMMAND CENTER  |  [O] FACE  |  [1-8] SELECT MAIL"
+                      "  |  [E] READ ALOUD  |  [R] REFRESH  |  [T] DIRECTIVE")
+        cv2.putText(canvas, status_bar, (35, 700), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.35, DIM, 1, cv2.LINE_AA)
+        if SHOW_COMMANDS:
+            _draw_commands_overlay(canvas)
+        return canvas
 
     # Left Panel: Subsystems
     cv2.putText(canvas, "[ SUBSYSTEMS ]", (35, 102), cv2.FONT_HERSHEY_SIMPLEX, 0.5, ACC, 1, cv2.LINE_AA)
@@ -1483,7 +1722,7 @@ def draw_hud() -> np.ndarray:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.36, DIM, 1, cv2.LINE_AA)
 
     # Bottom status bar
-    status_bar = f"STATUS: {CURRENT_STATE.upper()}  |  [T] TYPE  |  [1-5] TILES  |  [TAB] FLIP  |  [SPACE] PTT  |  [X] CUT  |  [C] COLORS  |  [V] VISOR  |  [H] COMMANDS"
+    status_bar = f"STATUS: {CURRENT_STATE.upper()}  |  [T] TYPE  |  [1-5] TILES  |  [TAB] FLIP  |  [SPACE] PTT  |  [X] CUT  |  [C] COLORS  |  [V] VISOR  |  [O] OPS  |  [H] COMMANDS"
     cv2.putText(canvas, status_bar, (35, 700), cv2.FONT_HERSHEY_SIMPLEX, 0.35, DIM, 1, cv2.LINE_AA)
 
     if SHOW_COMMANDS:
