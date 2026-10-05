@@ -128,6 +128,16 @@ def test_chain_order():
     print("ok chain_order", names)
 
 
+
+
+def test_user_agent_header():
+    from aria.agent.providers import OpenAICompatProvider
+    p = OpenAICompatProvider("groq", "https://api.groq.com/openai/v1", "k", "m")
+    h = p._headers()
+    assert "Python-urllib" not in h.get("User-Agent", ""), h
+    assert h["User-Agent"], "User-Agent must be set (Cloudflare 403/1010 otherwise)"
+    print("ok user_agent_header")
+
 if __name__ == "__main__":
     test_system_and_user_text()
     test_model_function_call_roundtrip()
@@ -137,4 +147,14 @@ if __name__ == "__main__":
     test_synth_id_deterministic()
     test_images_dropped()
     test_chain_order()
+    test_user_agent_header()
     print("ALL PROVIDER TESTS PASSED")
+
+
+def test_user_agent_header():
+    from aria.agent.providers import OpenAICompatProvider
+    p = OpenAICompatProvider("groq", "https://api.groq.com/openai/v1", "k", "m")
+    h = p._headers()
+    assert "Python-urllib" not in h.get("User-Agent", ""), h
+    assert h["User-Agent"], "User-Agent must be set (Cloudflare 403/1010 otherwise)"
+    print("ok user_agent_header")

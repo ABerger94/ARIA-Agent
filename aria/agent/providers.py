@@ -222,7 +222,12 @@ class OpenAICompatProvider(Provider):
         return bool(self.base_url and self.model) and not key_is_quarantined(self.api_key)
 
     def _headers(self) -> Dict[str, str]:
-        headers = {"Content-Type": "application/json"}
+        # Groq sits behind Cloudflare, which 403s (error 1010) Python's
+        # default urllib User-Agent before the API key is even read.
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "ARIA-Agent/1.0 (Windows NT 10.0; Win64; x64)",
+        }
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
