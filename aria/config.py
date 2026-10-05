@@ -111,7 +111,7 @@ OPENROUTER_API_KEY, _OPENROUTER_SOURCE = key_get("OPENROUTER_API_KEY")
 MISTRAL_API_KEY, _MISTRAL_SOURCE = key_get("MISTRAL_API_KEY")
 
 GROQ_MODEL, _ = key_get("GROQ_MODEL", "openai/gpt-oss-120b")
-OPENROUTER_MODEL, _ = key_get("OPENROUTER_MODEL", "openai/gpt-oss-120b:free")
+OPENROUTER_MODEL, _ = key_get("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free")
 MISTRAL_MODEL, _ = key_get("MISTRAL_MODEL", "mistral-large-latest")
 OLLAMA_HOST, _ = key_get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL, _ = key_get("OLLAMA_MODEL", "qwen2.5:7b")
