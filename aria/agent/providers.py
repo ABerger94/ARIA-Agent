@@ -216,6 +216,7 @@ class OpenAICompatProvider(Provider):
         self.base_url = (base_url or "").rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.last_error: Optional[str] = None
 
     def is_available(self) -> bool:
         return bool(self.base_url and self.model) and not key_is_quarantined(self.api_key)
@@ -313,6 +314,11 @@ class OpenAICompatProvider(Provider):
                     data = json.loads(resp.read().decode("utf-8"))
                 return {"candidates": [{"content": {"parts": oai_response_to_parts(data)}}]}
             except urllib.error.HTTPError as e:
+                try:
+                    detail = e.read().decode("utf-8", errors="replace")[:200]
+                except Exception:
+                    detail = ""
+                self.last_error = f"HTTP {e.code}: {detail}".strip()
                 if e.code == 429:
                     quarantine_key(self.api_key, 60, 429)
                     add_log(f"{self.name}: rate-limited (429), key quarantined 60s")
@@ -333,8 +339,10 @@ class OpenAICompatProvider(Provider):
                 time.sleep(2 * (attempt + 1))
                 continue
             except Exception as e:
+                self.last_error = f"{type(e).__name__}: {e}"[:200]
                 add_log(f"{self.name}: error: {e}")
                 return None
+        self.last_error = self.last_error or "no response after retries"
         return None
 
 
@@ -405,11 +413,15 @@ def provider_ping() -> Dict[str, Dict[str, Any]]:
             )
             parts = ((data or {}).get("candidates") or [{}])[0].get("content", {}).get("parts", [])
             text = "".join(p.get("text", "") for p in parts if "text" in p)
-            results[provider.name] = {
+            entry: Dict[str, Any] = {
                 "ok": bool(text.strip()),
                 "latency_s": round(time.time() - t0, 2),
                 "reply": text.strip()[:80],
             }
+            err = getattr(provider, "last_error", None)
+            if not entry["ok"] and err:
+                entry["why"] = err
+            results[provider.name] = entry
         except Exception as e:
             results[provider.name] = {"ok": False, "why": str(e)[:120]}
     return results
