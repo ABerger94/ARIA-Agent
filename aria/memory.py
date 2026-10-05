@@ -248,10 +248,10 @@ def _embed(text):
                 return json.loads(resp.read().decode())["embedding"]["values"]
         except urllib.error.HTTPError as e:
             if e.code == 429:
-                _key_cooldown(idx, 60)
+                quarantine_key(key, 60, 429)
                 continue
             if e.code in (400, 402, 403, 404):
-                _key_quarantine(idx, key, e.code)
+                quarantine_key(key, code=e.code)
                 continue
             add_log(f"Embed err: {e}")
             return None
