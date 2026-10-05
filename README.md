@@ -3,20 +3,25 @@
 A Python desktop AI companion. She lives on your Windows laptop as an animated
 face in an OpenCV HUD: she talks (natural Edge TTS voice), listens (mic +
 speech recognition), remembers, and acts through a Gemini-powered agent loop
-with 62 tools. Her phone bridge turns any phone into her face, voice, and
-eyes — and an Arduino robot body gives her a pan/tilt head, with
-differential-drive wheels as the next phase.
+with 60+ tools across 11 toolkits. Her phone bridge turns any phone into her
+face, voice, and eyes; she connects to MCP servers and uses their tools as her
+own; an Arduino robot body gives her a pan/tilt head and differential-drive
+wheels.
 
 Built by Alek Berger. Not a framework, not a demo — a finished companion.
 
 ## Features
 
-- **Animated HUD Face & Pixel Avatar** (OpenCV) — expressive pixel avatar
-  with animated idle, listening, speaking, thinking, tool-running (code-eyes),
-  and sleepy states; waveform mouth; twin ear antennae with synchronous pulsing
-  tips and ear twitches; customizable HUD color themes (`aria/theme.cfg`).
-  The HUD subsystem box reports live status for every subsystem, including
-  which camera her eyes use (`[bridge]`, `[cam N]`, or `[net]`).
+- **Animated HUD Face & Full-Body Pixel Avatar** (OpenCV) — expressive
+  pixel-person avatar with fluid cognitive-state expressions: idle, listening,
+  speaking, thinking, tool-running (code-eyes), sleepy, and reactive poses
+  (arms, scratch, listen). Waveform mouth; twin ear antennae with synchronous
+  pulsing tips and ear twitches; customizable HUD color themes
+  (`aria/theme.cfg`). Interactive **context tiles** (dashboard, subtitles,
+  audio, tasks, Spotify) that collapse and cycle. The subsystem box reports
+  live status for every subsystem, including which camera her eyes use
+  (`[bridge]`, `[cam N]`, or `[net]`), and the CAM.01 optic PIP shows the live
+  camera feed.
 - **Voice In / Voice Out** — Edge TTS neural voice with sentence boundary
   streaming and pipelined TTS synthesis prefetch; instant speech interruption
   barge-in via the `X` key or voice; desktop mic input prefers local
@@ -27,11 +32,30 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
   (energy/warmth axes) flavoring idle facial tempo and greetings.
 - **Agent Brain** — Gemini function-calling loop (no arbitrary turn cap;
   30-minute reasoning budget per request — on timeout she asks "Should I keep
-  going?" and "yes"/"continue" resumes the active chain).
-- **Progressive Tool Loading** — only 17 core tool schemas go to the model
-  per call; specialist toolkits (Gmail, Spotify, scheduler, GitHub,
-  vision/hardware, Windows control, MTG, memory/notes, admin, MCP) unlock on demand
-  via `load_toolkit`. 62 tools total across 11 toolkits.
+  going?" and "yes"/"continue" resumes the active chain). Multi-key rotation
+  with automatic quarantine on rate limits and errors.
+- **Progressive Tool Loading** — only the core tool schemas go to the model
+  per call; specialist toolkits (autonomy, Gmail, Spotify, scheduler, GitHub,
+  vision/hardware, Windows control, MTG, memory/notes, admin, MCP) unlock on
+  demand via `load_toolkit`. 60+ tools total across 11 toolkits, with
+  duplicate-call blocking, argument repair, and parallel execution of
+  independent calls.
+- **MCP Client** — she connects to Model Context Protocol servers and uses
+  their tools as her own. `mcp_setup` adds a server (stdio command or
+  SSE/streamable-HTTP URL), `mcp_connect` connects and registers every server
+  tool as a first-class ARIA tool named `mcp_<server>__<tool>` (argument
+  validation and output truncation apply like any other tool),
+  `mcp_list_servers` shows connection status, `mcp_disconnect` unloads.
+  Configured servers auto-connect in the background at boot. Requires the
+  `mcp` Python package; only connect servers you trust, since stdio servers
+  run local commands.
+- **Autonomy: Heartbeat, Workers, Self-Healing** — a proactive heartbeat daemon
+  that acts on important events on its own; persistent background workers for
+  long jobs, a downloads watcher, and system resource monitoring (with alerts
+  when CPU/memory/disk cross thresholds); and a self-healing loop that
+  records incidents, diagnoses errors, and attempts automatic recovery.
+  Manage it all with `manage_autonomous_goal`, `manage_background_job`,
+  `system_health_audit`, and `self_heal_diagnose`.
 - **Durable Memory & Spine** — SQLite semantic vector memory + Markdown journal;
   unbroken memory spine (`memory_spine.jsonl`) logging turns, tool invocations,
   and journal entries; session context (`where_we_left_off.md`) automatically
@@ -39,53 +63,44 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
 - **Hot Package Self-Restart** — she can edit her own codebase or `soul.md`;
   the agent fingerprints every `.py` file in the `aria/` package plus
   `soul.md` at boot and cleanly re-executes on verified modifications.
-- **Scheduler & Proactive Heartbeat** — one-shot and recurring reminders/jobs;
-  autonomous background heartbeat when important events or tasks occur.
+- **Scheduler** — one-shot and recurring reminders/jobs, morning briefings,
+  break reminders.
 - **Phone Bridge (HTTPS)** — secure mobile companion web app (token login +
-  cookie auth, per-machine self-signed certificate, reachable over Tailscale)
-  with a sleek minimal UI: her big pixel face as the hero, Face / Eyes / Full
-  view modes, and fullscreen face mode for the mounted phone (tap to exit).
-  The bridge page can be her camera: tap Camera ON and the phone streams its
-  front (or rear, via the flip switch) camera to the laptop as
-  `ARIA_BODY_CAMERA=bridge`. Eyes mode shows the live camera view
-  (`/phone_cam.mjpg`); "Describe what you see" snapshots a frame and has her
-  narrate it (`/api/look`). Hold-to-talk and tap-to-talk voice, text
-  directives, settings (speak replies, test audio, camera), and a toggleable
-  conversation log. Spoken replies use Edge TTS first with offline Windows
-  SAPI as fallback.
-- **MCP Client** — she connects to Model Context Protocol servers and uses
-  their tools as her own. `mcp_setup` adds a server (stdio command or SSE/HTTP
-  URL), `mcp_connect` connects and registers every server tool as a first-class
-  ARIA tool named `mcp_<server>__<tool>` (with argument validation and output
-  truncation applied like any other tool), `mcp_list_servers` shows connection
-  status, `mcp_disconnect` unloads. Configured servers auto-connect in the
-  background at boot. Requires the `mcp` Python package (`pip install
-  "mcp>=1.0,<2"`); only connect servers you trust, since stdio servers run
-  local commands.
+  cookie auth, per-machine self-signed certificate) with a sleek minimal UI:
+  her big pixel face as the hero, Face / Eyes / Full view modes, and
+  fullscreen face mode for the mounted phone (tap to exit). The bridge page
+  can be her camera: tap Camera ON and the phone streams its front (or rear,
+  via the flip switch) camera to the laptop as `ARIA_BODY_CAMERA=bridge`.
+  Eyes mode shows the live camera view (`/phone_cam.mjpg`); "Describe what
+  you see" snapshots a frame and has her narrate it (`/api/look`).
+  Hold-to-talk and tap-to-talk voice, text directives, settings (speak
+  replies, test audio, camera), and a toggleable conversation log. Spoken
+  replies use Edge TTS first with offline Windows SAPI as fallback.
+  The **/upload page** lets you send files from the phone straight into her
+  inbox — a background watcher picks them up and she can read, describe, or
+  act on them (`inbox_list`, `inbox_describe`, `inbox_read`).
 - **Robot Body** — Arduino Nano firmware (`arduino/aria_body/aria_body.ino`)
   driving a pan/tilt head (`P<pos>T<pos>`) and differential-drive wheels
   (`W<l>,<r>`) over a no-solder Nano + sensor shield, with a dedicated stop
   command (`S`) and an animated OLED face — eyes that blink and glance where
-  the head turns, plus a smile (1.3" SH1106 I2C display, U8g2 library).
+  the head turns, plus a smile (1.3" SH1106 I2C display, U8G2 library).
   `drive_wheels` / `body_stop` tools, `ARIA_BODY_SERIAL_URL`
   for network serial, and `sim/robot_sim.py`, a virtual body for testing
   without hardware. Her eyes select via `ARIA_BODY_CAMERA`: USB index, IP
   camera URL, or `bridge`. Full build guide in `docs/ROBOT_BODY.md`.
-- **54 Built-in Tools** — Spotify control & DJ mode, Windows desktop automation
-  (apps, URLs, mouse clicks, keystrokes, window focus, media keys), file search,
-  Gmail send/read, GitHub repository operations, MTG Commander lookups, robot
-  head/wheel control, vision screen-reading and camera description, and more.
 
 ## Requirements
 
-- Windows 10/11, Python 3.10+
+- Windows 10/11, Python 3.9+ (**Python 3.9 recommended** — PyAudio and pygame
+  install cleanly there; if you launch under a newer Python that's missing
+  them, `aria.py` automatically relaunches under 3.9 when it's installed)
 - A free [Google AI Studio](https://aistudio.google.com/) Gemini API key
 - Microphone + speakers (webcam optional, used for face tracking / vision)
 
 ## Quick start
 
 ```bat
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 python aria.py
 ```
 
@@ -104,6 +119,24 @@ To give her the phone face: on the laptop `set ARIA_BODY_CAMERA=bridge`,
 open the bridge page on the phone (see Bridge URL printed at startup), log in
 with your bridge token, and tap Camera ON in the ⚙ settings panel.
 
+## Troubleshooting
+
+- **`ModuleNotFoundError: No module named 'numpy'`** (or cv2, etc.) — the
+  interpreter running `aria.py` doesn't have the dependencies. Run
+  `python -m pip install -r requirements.txt` with the *same* `python` you
+  launch her with. If `pip` and `python` disagree about environments
+  (`where python` shows more than one), install into the right one explicitly.
+- **`pygame` fails to build** — pip couldn't find a prebuilt wheel for your
+  Python and the from-source build needs a C++ toolchain. Upgrade pip first
+  (`python -m pip install --upgrade pip setuptools wheel`) and retry. If it
+  still fails, skip it: pygame is only used for local audio playback and is
+  imported lazily — she boots and runs fine without it. Install everything
+  else with:
+  `findstr /v /b "pygame" requirements.txt > %TEMP%\aria-req.txt`
+  followed by `python -m pip install -r %TEMP%\aria-req.txt`.
+- **She goes quiet after an update** — pull the latest code and restart her;
+  she also restarts herself when she edits her own code.
+
 ## Auto-start on boot
 
 1. Copy `windows\aria_autostart.bat` and `windows\aria_watchdog.bat` to the
@@ -116,26 +149,42 @@ with your bridge token, and tap Camera ON in the ⚙ settings panel.
 ## Project layout
 
 ```
-aria.py                  Root entrypoint / launcher
+aria.py                  Root entrypoint / launcher (auto-redirects to
+                         Python 3.9 when PyAudio/pygame are missing)
 aria/                    Modular system package
   agent/                 Gemini agent loop, streaming, prompt engineering,
                          self-edit auto-restart watcher
-  hud.py                 OpenCV HUD, subsystem status rows, overlay renderer
-  pixel_avatar.py        Pixel-person avatar, animated expressions, ear antennae
+    brain.py             Central orchestrator: prompt building, function-
+                         calling loop, sandboxing, supervision
+    proactive.py         Proactive heartbeat daemon
+    workers.py           Persistent background jobs, downloads watcher,
+                         system resource monitor
+    self_healing.py      Incident log, error diagnosis, auto-heal attempts
+    shortcuts.py         Voice/text shortcuts
+  hud.py                 OpenCV HUD: subsystem status rows, optic PIP,
+                         collapsible context tiles, overlay renderer
+  pixel_avatar.py        Full-body pixel-person avatar, reactive cognitive
+                         expressions, ear antennae
   theme.cfg              HUD color theme definitions
   speech.py              Edge TTS streaming prefetch, Whisper/Google STT,
                          bridge TTS + transcription
   bridge.py              HTTPS phone bridge server: face/eyes UI, live MJPEG
-                         streams, voice + camera endpoints
-  memory.py              SQLite semantic vector memory, journal, and memory spine
+                         streams, voice + camera endpoints, /upload page
+  inbox.py               Phone-upload inbox: watcher + list/describe/read
+  memory.py              SQLite semantic vector memory, journal, memory spine
   mcp.py                 MCP client: connect to MCP servers, register their
                          tools as ARIA tools (mcp_<server>__<tool>)
-  scheduler.py           Autonomous scheduler, reminders, proactive heartbeat
+  scheduler.py           Autonomous scheduler and reminders
   spotify.py             Desktop Spotify player control & DJ mode
   hardware.py            Arduino serial: servo head, drive wheels, body tools
   vision.py              Camera capture (USB / IP / bridge), face tracking,
                          screen analysis, phone-frame ingest
   tools/                 Core tools & on-demand specialist toolkits
+    schemas.py           Tool declarations + 11 progressive toolkits
+    dispatch.py          Registry, execution, parallel calls, dedup
+    sandbox.py           Risky-tool gating, argument validation
+    builtins.py          Tool implementations
+    skills.py            Bounded workflow skills
 arduino/aria_body/       Nano firmware: P/T head, W wheels, S stop protocol
 sim/robot_sim.py         Virtual robot body (TCP) for hardware-free testing
 docs/ROBOT_BODY.md       No-solder robot body build guide
@@ -149,6 +198,33 @@ tools/                   Helper scripts (key manager)
 
 ## Version history
 
+### Latest
+
+- **Optic PIP live-frame fix** — the CAM.01 picture-in-picture box could never
+  render video: `hud.py` bound `LATEST_CAMERA_FRAME` by value at import time
+  (permanently `None`) while `vision.py` rebinds it per capture. The frame is
+  now read live off the vision module on every draw.
+- **Python 3.9 auto-redirect** — `aria.py` detects a Python missing PyAudio /
+  pygame at launch and relaunches itself under the Python 3.9 install when
+  present; self-restarts prefer 3.9 too. Ends the "works on one interpreter,
+  breaks on another" era.
+- **HUD upgrade** — collapsible context tiles (dashboard, subtitles, audio,
+  tasks, Spotify), full-body pixel avatar with reactive cognitive-state
+  expressions and poses, subsystem rows capped to fit cleanly above the optic
+  PIP, which moved, resized, and was relabeled CAM.01.
+- **Autonomy pack** — proactive heartbeat daemon, persistent background
+  workers (long jobs, downloads watcher, system resource monitor with
+  alerts), and a self-healing loop (incident log → diagnosis → auto-heal
+  attempts). New `autonomy` toolkit: `manage_autonomous_goal`,
+  `manage_background_job`, `system_health_audit`, `self_heal_diagnose`.
+- **Phone bridge inbox uploads** — `/upload` page on the bridge sends files
+  straight into her inbox; a background watcher picks them up and
+  `inbox_list` / `inbox_describe` / `inbox_read` let her work with them.
+  Inbox-first photo routing: "look at" a sent/uploaded photo uses the inbox,
+  never the webcam.
+- **MCP streamable-HTTP transport** — pure-Python MCP client support for
+  streamable-HTTP servers alongside stdio and SSE; UI dynamic scaling.
+
 ### Since v9.36
 
 - **MCP client** — ARIA connects to Model Context Protocol servers and uses
@@ -159,8 +235,7 @@ tools/                   Helper scripts (key manager)
   declarations, so argument validation, duplicate-call blocking, and output
   truncation all apply. stdio and SSE/HTTP transports, persistent sessions on
   a background asyncio loop, background auto-connect of enabled servers at
-  boot; `mcp>=1.0,<2` added to requirements. 62 tools across 11 toolkits;
-  headless suite 30/30.
+  boot; `mcp>=1.0,<2` added to requirements.
 - **Robot body** — Arduino Nano firmware with eased pan/tilt head, timed
   differential-drive wheels, and dedicated stop; `drive_wheels` / `body_stop`
   agent tools; `ARIA_BODY_SERIAL_URL` for network serial; `sim/robot_sim.py`
@@ -302,7 +377,8 @@ tools/                   Helper scripts (key manager)
 
 - `aria_keys.json`, logs, memory DB, and journal are gitignored — they stay
   on your machine and never get committed.
-- Tested on Windows 11 with Python 3.12.
+- Tested on Windows 11 (Python 3.9 for full audio support; 3.10+ works, and
+  `aria.py` redirects to 3.9 automatically when PyAudio/pygame are missing).
 - The v9.17 changelog entry ("Google cloud transcription by default, local
   faster-whisper dormant behind `_USE_LOCAL_STT`") was never implemented —
   no such flag exists in the code. Current behavior: the desktop mic prefers
