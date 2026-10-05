@@ -295,6 +295,9 @@ class OpenAICompatProvider(Provider):
         return parts
 
     def call(self, system_instruction, contents, tool_decls=None, on_text_chunk=None):
+        # Fail fast (Alek 2026-10-05): one attempt, then the turn moves to the
+        # next provider immediately. No retries, no backoff sleeps.
+        self.last_error = None
         if not self.is_available():
             return None
         messages = gemini_contents_to_oai_messages(system_instruction, contents)
@@ -305,51 +308,48 @@ class OpenAICompatProvider(Provider):
         url = self.base_url + "/chat/completions"
         body = json.dumps(payload).encode("utf-8")
 
-        for attempt in range(3):
-            try:
-                if on_text_chunk:
-                    payload["stream"] = True
-                    sbody = json.dumps(payload).encode("utf-8")
-                    req = urllib.request.Request(url, data=sbody, headers=self._headers())
-                    with urllib.request.urlopen(req, timeout=90) as resp:
-                        parts = self._parse_sse_stream(resp, on_text_chunk)
-                    return {"candidates": [{"content": {"parts": parts}}]}
-                req = urllib.request.Request(url, data=body, headers=self._headers())
+        try:
+            if on_text_chunk:
+                payload["stream"] = True
+                sbody = json.dumps(payload).encode("utf-8")
+                req = urllib.request.Request(url, data=sbody, headers=self._headers())
                 with urllib.request.urlopen(req, timeout=90) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                return {"candidates": [{"content": {"parts": oai_response_to_parts(data)}}]}
-            except urllib.error.HTTPError as e:
-                try:
-                    detail = e.read().decode("utf-8", errors="replace")[:200]
-                except Exception:
-                    detail = ""
-                self.last_error = f"HTTP {e.code}: {detail}".strip()
-                if e.code == 429:
-                    quarantine_key(self.api_key, 60, 429)
-                    add_log(f"{self.name}: rate-limited (429), key quarantined 60s")
-                    return None
-                if e.code in (400, 401, 402, 403, 404):
-                    quarantine_key(self.api_key, KEY_QUARANTINE_DURATION_S, e.code)
-                    add_log(f"{self.name}: HTTP {e.code} ({key_mask(self.api_key)}), key quarantined")
-                    return None
-                if e.code in (500, 502, 503, 504):
-                    add_log(f"{self.name}: HTTP {e.code}, retrying...")
-                    time.sleep(2 * (attempt + 1))
-                    continue
-                add_log(f"{self.name}: unhandled HTTP {e.code}")
+                    parts = self._parse_sse_stream(resp, on_text_chunk)
+                return {"candidates": [{"content": {"parts": parts}}]}
+            req = urllib.request.Request(url, data=body, headers=self._headers())
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            return {"candidates": [{"content": {"parts": oai_response_to_parts(data)}}]}
+        except urllib.error.HTTPError as e:
+            try:
+                detail = e.read().decode("utf-8", errors="replace")[:200]
+            except Exception:
+                detail = ""
+            self.last_error = f"HTTP {e.code}: {detail}".strip()
+            if e.code == 429:
+                quarantine_key(self.api_key, 60, 429)
+                add_log(f"{self.name}: rate-limited (429), key quarantined 60s")
                 return None
-            except (urllib.error.URLError, TimeoutError, ConnectionError,
-                    socket.timeout) as e:
-                add_log(f"{self.name}: network drop ({e}), retrying...")
-                time.sleep(2 * (attempt + 1))
-                continue
-            except Exception as e:
-                self.last_error = f"{type(e).__name__}: {e}"[:200]
-                add_log(f"{self.name}: error: {e}")
+            if e.code in (400, 401, 402, 403, 404):
+                quarantine_key(self.api_key, KEY_QUARANTINE_DURATION_S, e.code)
+                add_log(f"{self.name}: HTTP {e.code} ({key_mask(self.api_key)}), key quarantined")
                 return None
-        self.last_error = self.last_error or "no response after retries"
-        return None
-
+            if e.code in (500, 502, 503, 504):
+                # Transient: move on now, retried next turn (no quarantine).
+                add_log(f"{self.name}: HTTP {e.code}, moving on")
+                return None
+            add_log(f"{self.name}: unhandled HTTP {e.code}")
+            return None
+        except (urllib.error.URLError, TimeoutError, ConnectionError,
+                socket.timeout) as e:
+            self.last_error = f"network drop: {e}"[:200]
+            quarantine_key(self.api_key, 60, "network_drop")
+            add_log(f"{self.name}: network drop, moving on")
+            return None
+        except Exception as e:
+            self.last_error = f"{type(e).__name__}: {e}"[:200]
+            add_log(f"{self.name}: error: {e}")
+            return None
 
 def _build_chain() -> List[Provider]:
     """Providers in configured order. Phase 2/3 entries plug in here."""

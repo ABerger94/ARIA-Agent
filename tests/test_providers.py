@@ -138,6 +138,28 @@ def test_user_agent_header():
     assert h["User-Agent"], "User-Agent must be set (Cloudflare 403/1010 otherwise)"
     print("ok user_agent_header")
 
+
+
+def test_fail_fast_single_attempt():
+    # A dead provider must NOT retry: exactly one HTTP attempt, then None.
+    import urllib.request, urllib.error
+    from aria.agent.providers import OpenAICompatProvider
+    calls = {"n": 0}
+    real_urlopen = urllib.request.urlopen
+
+    def boom(req, timeout=None):
+        calls["n"] += 1
+        raise urllib.error.URLError("simulated drop")
+
+    urllib.request.urlopen = boom
+    try:
+        p = OpenAICompatProvider("groq", "https://x", "k", "m")
+        assert p.call("sys", [{"role": "user", "parts": [{"text": "hi"}]}]) is None
+        assert calls["n"] == 1, f"retried {calls['n']}x, want 1"
+    finally:
+        urllib.request.urlopen = real_urlopen
+    print("ok fail_fast_single_attempt")
+
 if __name__ == "__main__":
     test_system_and_user_text()
     test_model_function_call_roundtrip()
@@ -148,6 +170,7 @@ if __name__ == "__main__":
     test_images_dropped()
     test_chain_order()
     test_user_agent_header()
+    test_fail_fast_single_attempt()
     print("ALL PROVIDER TESTS PASSED")
 
 
