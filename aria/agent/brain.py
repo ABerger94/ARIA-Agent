@@ -116,7 +116,11 @@ def _restart_process():
         return
     add_log("Self-restart: relaunching with updated code...")
     try:
-        subprocess.Popen([sys.executable, _RUNNING_SCRIPT] + sys.argv[1:])
+        py_exe = sys.executable
+        py39 = r"C:\Users\Allen\AppData\Local\Programs\Python\Python39\python.exe"
+        if os.path.exists(py39):
+            py_exe = py39
+        subprocess.Popen([py_exe, _RUNNING_SCRIPT] + sys.argv[1:])
     except Exception as e:
         add_log(f"Self-restart relaunch failed: {e}")
         return

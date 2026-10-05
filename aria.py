@@ -6,6 +6,17 @@ Backward-compatible root entrypoint wrapping the modular `aria` package.
 
 import sys
 import os
+import subprocess
+
+# Relaunch under Python 3.9 if launched under an environment missing PyAudio/pygame
+_PY39 = r"C:\Users\Allen\AppData\Local\Programs\Python\Python39\python.exe"
+if os.path.exists(_PY39) and os.path.abspath(sys.executable).lower() != os.path.abspath(_PY39).lower():
+    try:
+        import pyaudio
+        import pygame
+    except ImportError:
+        subprocess.Popen([_PY39] + sys.argv)
+        sys.exit(0)
 
 # Ensure package directory is on path
 _ROOT = os.path.dirname(os.path.abspath(__file__))
