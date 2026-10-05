@@ -25,7 +25,8 @@ from aria.pixel_avatar import draw_pixel_aria, theme_colors, load_theme
 load_theme()  # restore Alek's saved HUD color theme
 
 from aria.config import PHONE_BRIDGE_PORT, GITHUB_USERNAME, GITHUB_TOKEN
-from aria.vision import publish_face_frame, LATEST_CAMERA_FRAME
+from aria.vision import publish_face_frame
+import aria.vision as _vision  # module ref: read LATEST_CAMERA_FRAME live (see Optical PIP)
 from aria.tools.schemas import COMMAND_GUIDE
 
 _HUD_SUBS = {
@@ -978,9 +979,14 @@ def draw_hud() -> np.ndarray:
     # Optical PIP
     pip_x, pip_y, pip_w, pip_h = 35, 315, 230, 130
     cv2.rectangle(canvas, (pip_x, pip_y), (pip_x + pip_w, pip_y + pip_h), (30, 35, 45), -1)
-    if LATEST_CAMERA_FRAME is not None:
+    # NOTE: read the frame live off the vision module every draw. A
+    # `from aria.vision import LATEST_CAMERA_FRAME` here would bind the
+    # import-time value (None) forever, since vision.py *rebinds* the name
+    # on each capture — the PIP would never render. (Fixed 2026-10-05.)
+    _cam_frame = _vision.LATEST_CAMERA_FRAME
+    if _cam_frame is not None:
         try:
-            thumb = cv2.resize(LATEST_CAMERA_FRAME, (pip_w, pip_h))
+            thumb = cv2.resize(_cam_frame, (pip_w, pip_h))
             canvas[pip_y:pip_y + pip_h, pip_x:pip_x + pip_w] = thumb
         except Exception:
             pass
