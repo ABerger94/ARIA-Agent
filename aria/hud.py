@@ -459,12 +459,18 @@ def draw_hud() -> np.ndarray:
 
     # Subsystems
     cv2.putText(canvas, "[ SUBSYSTEMS ]", (35, 102), cv2.FONT_HERSHEY_SIMPLEX, 0.5, ACC, 1, cv2.LINE_AA)
+    n_mods = max(1, len(modules))
+    # Dynamic step ensures all items fit cleanly above Optic PIP (pip_y = 340)
+    sub_step = min(25, int(185 / (n_mods - 1))) if n_mods > 1 else 25
+    sub_start_y = 125
     for i, (mod, stat, ok) in enumerate(modules):
+        item_y = sub_start_y + i * sub_step
         dot = GREEN if ok else (160, 160, 160)
-        cv2.circle(canvas, (43, 131 + i * 32), 4, dot, -1)
-        cv2.putText(canvas, mod, (55, 136 + i * 32), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
-        (tw, _), _ = cv2.getTextSize(stat, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
-        cv2.putText(canvas, stat, (275 - tw, 136 + i * 32), cv2.FONT_HERSHEY_SIMPLEX, 0.4, dot, 1, cv2.LINE_AA)
+        cv2.circle(canvas, (43, item_y - 5), 4, dot, -1)
+        (tw, _), _ = cv2.getTextSize(stat, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+        stat_x = 275 - tw
+        cv2.putText(canvas, stat, (stat_x, item_y), cv2.FONT_HERSHEY_SIMPLEX, 0.38, dot, 1, cv2.LINE_AA)
+        cv2.putText(canvas, mod, (55, item_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 1, cv2.LINE_AA)
 
     # Optic PIP
     pip_x, pip_y, pip_w, pip_h = 35, 340, 230, 115

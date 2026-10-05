@@ -122,7 +122,7 @@ def get_subsystem_statuses() -> List[Tuple[str, str, bool]]:
     # 7. Autonomous Daemon & Workers
     try:
         goals_count = len(agent.goal_list(status_filter="pending"))
-        workers_entry = ("Autonomy & Workers", f"ARMED ({goals_count} goals)" if goals_count else "ACTIVE", True)
+        workers_entry = ("Autonomy & Workers", f"ARMED ({goals_count})" if goals_count else "ACTIVE", True)
     except Exception:
         workers_entry = ("Autonomy & Workers", "ACTIVE", True)
 

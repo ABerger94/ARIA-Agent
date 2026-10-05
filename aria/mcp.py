@@ -16,6 +16,8 @@ dispatch can call them without an event loop of its own.
 from __future__ import annotations
 
 import asyncio
+import os
+from types import SimpleNamespace
 import json
 import re
 import shlex
@@ -153,6 +155,114 @@ def remove_server(name: str) -> str:
 # Bridge: background asyncio loop owning live MCP sessions
 # ---------------------------------------------------------------------------
 
+
+# ---------------------------------------------------------------------------
+# HTTP / Streamable-HTTP MCP Client (Pure Python, no mcp package required)
+# ---------------------------------------------------------------------------
+
+class HTTPMCPClient:
+    """Lightweight pure-Python MCP client for streamable-HTTP and JSON-RPC servers."""
+
+    def __init__(self, url: str, headers: Optional[Dict[str, str]] = None):
+        self.url = url
+        self.headers = dict(headers or {})
+        self.session = None
+        self.session_id = None
+        self._id = 0
+
+    def _get_session(self):
+        if self.session is None:
+            import requests
+            self.session = requests.Session()
+        return self.session
+
+    def _next_id(self) -> int:
+        self._id += 1
+        return self._id
+
+    def _post(self, payload: dict) -> dict:
+        s = self._get_session()
+        h = dict(self.headers)
+        h["Content-Type"] = "application/json"
+        if self.session_id:
+            h["Mcp-Session-Id"] = self.session_id
+        r = s.post(self.url, headers=h, json=payload, timeout=30)
+        r.raise_for_status()
+        if "mcp-session-id" in r.headers:
+            self.session_id = r.headers["mcp-session-id"]
+
+        text = r.text.strip()
+        data = None
+        if text.startswith("event:") or "data:" in text:
+            for line in text.split("\n"):
+                line = line.strip()
+                if line.startswith("data:"):
+                    data = json.loads(line[5:].strip())
+                    break
+        else:
+            data = r.json()
+        return data or {}
+
+    def initialize(self):
+        req = {
+            "jsonrpc": "2.0",
+            "id": self._next_id(),
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "ARIA", "version": "1.0.0"}
+            }
+        }
+        return self._post(req)
+
+    def list_tools(self) -> list:
+        req = {
+            "jsonrpc": "2.0",
+            "id": self._next_id(),
+            "method": "tools/list",
+            "params": {}
+        }
+        res = self._post(req)
+        raw_tools = res.get("result", {}).get("tools", [])
+        tools = []
+        for t in raw_tools:
+            tools.append(SimpleNamespace(
+                name=t.get("name", ""),
+                description=t.get("description", ""),
+                inputSchema=t.get("inputSchema", {})
+            ))
+        return tools
+
+    def call_tool(self, name: str, arguments: dict):
+        req = {
+            "jsonrpc": "2.0",
+            "id": self._next_id(),
+            "method": "tools/call",
+            "params": {
+                "name": name,
+                "arguments": arguments or {}
+            }
+        }
+        res = self._post(req)
+        if "error" in res:
+            err = res["error"]
+            msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+            return SimpleNamespace(isError=True, content=[SimpleNamespace(type="text", text=f"Error: {msg}")])
+
+        result_obj = res.get("result", {})
+        raw_content = result_obj.get("content", [])
+        content = []
+        for b in raw_content:
+            if isinstance(b, dict):
+                content.append(SimpleNamespace(
+                    type=b.get("type", "text"),
+                    text=b.get("text", str(b))
+                ))
+            else:
+                content.append(SimpleNamespace(type="text", text=str(b)))
+        return SimpleNamespace(isError=result_obj.get("isError", False), content=content)
+
 class MCPBridge:
     """Owns one background thread + asyncio loop; sessions live in that loop."""
 
@@ -208,7 +318,37 @@ class MCPBridge:
                             ready: "asyncio.Future") -> None:
         try:
             transport = cfg.get("transport", "stdio")
-            if transport == "stdio":
+            if transport == "http":
+                headers = dict(cfg.get("headers") or {})
+                if "robinhood.com" in cfg.get("url", "") and "Authorization" not in headers:
+                    tfile = os.path.join(config.WORKSPACE_DIR, "robinhood_token.json")
+                    if os.path.exists(tfile):
+                        try:
+                            with open(tfile, "r") as tf:
+                                tdata = json.load(tf)
+                                tok = tdata.get("access_token")
+                                if tok:
+                                    headers["Authorization"] = f"Bearer {tok}"
+                        except Exception:
+                            pass
+                client = HTTPMCPClient(cfg["url"], headers=headers)
+                await asyncio.to_thread(client.initialize)
+                tools = await asyncio.to_thread(client.list_tools)
+                if not ready.done():
+                    ready.set_result(list(tools or []))
+                while True:
+                    item = await queue.get()
+                    if item is None:
+                        return
+                    tool, args, fut = item
+                    try:
+                        result = await asyncio.to_thread(client.call_tool, tool, args or {})
+                        if not fut.done():
+                            fut.set_result(result)
+                    except Exception as e:
+                        if not fut.done():
+                            fut.set_exception(e)
+            elif transport == "stdio":
                 from mcp import ClientSession, StdioServerParameters
                 from mcp.client.stdio import stdio_client
                 params = StdioServerParameters(
@@ -218,29 +358,48 @@ class MCPBridge:
                     cwd=cfg.get("cwd") or None,
                 )
                 cm = stdio_client(params)
+                async with cm as streams:
+                    read, write = streams
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        tools = await session.list_tools()
+                        if not ready.done():
+                            ready.set_result(list(tools.tools or []))
+                        while True:
+                            item = await queue.get()
+                            if item is None:  # shutdown sentinel
+                                return
+                            tool, args, fut = item
+                            try:
+                                result = await session.call_tool(tool, args or {})
+                                if not fut.done():
+                                    fut.set_result(result)
+                            except Exception as e:
+                                if not fut.done():
+                                    fut.set_exception(e)
             else:
                 from mcp import ClientSession
                 from mcp.client.sse import sse_client
                 cm = sse_client(cfg["url"], headers=dict(cfg.get("headers") or {}) or None)
-            async with cm as streams:
-                read, write = streams
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    tools = await session.list_tools()
-                    if not ready.done():
-                        ready.set_result(list(tools.tools or []))
-                    while True:
-                        item = await queue.get()
-                        if item is None:  # shutdown sentinel
-                            return
-                        tool, args, fut = item
-                        try:
-                            result = await session.call_tool(tool, args or {})
-                            if not fut.done():
-                                fut.set_result(result)
-                        except Exception as e:
-                            if not fut.done():
-                                fut.set_exception(e)
+                async with cm as streams:
+                    read, write = streams
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        tools = await session.list_tools()
+                        if not ready.done():
+                            ready.set_result(list(tools.tools or []))
+                        while True:
+                            item = await queue.get()
+                            if item is None:  # shutdown sentinel
+                                return
+                            tool, args, fut = item
+                            try:
+                                result = await session.call_tool(tool, args or {})
+                                if not fut.done():
+                                    fut.set_result(result)
+                            except Exception as e:
+                                if not fut.done():
+                                    fut.set_exception(e)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -289,16 +448,16 @@ class MCPBridge:
 
     def connect(self, name: str, timeout: float = 30.0) -> Tuple[bool, str]:
         """Connect one server and register its tools. Returns (ok, message)."""
-        if not _mcp_available():
-            return False, _missing_dep_message()
         servers = get_servers()
         key = (name or "").strip().lower()
         if key not in servers:
             return False, (f"No MCP server named '{name}'. "
                            f"Known: {', '.join(sorted(servers)) or 'none'}.")
+        cfg = servers[key]
+        if cfg.get("transport") != "http" and not _mcp_available():
+            return False, _missing_dep_message()
         if key in self._sessions:
             return True, f"MCP server '{key}' is already connected."
-        cfg = servers[key]
         try:
             task, queue, tools = self._run(self._spawn_actor(key, cfg), timeout=35.0)
         except Exception as e:
@@ -417,8 +576,6 @@ def disconnect(name: str) -> Tuple[bool, str]:
 
 def autoconnect_enabled_servers() -> str:
     """Connect every enabled server; failures are collected, never raised."""
-    if not _mcp_available():
-        return "skipped (mcp package not installed)"
     bridge = get_bridge()
     ok, failed = [], []
     for name, cfg in get_servers().items():
