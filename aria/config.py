@@ -110,7 +110,7 @@ GROQ_API_KEY, _GROQ_SOURCE = key_get("GROQ_API_KEY")
 OPENROUTER_API_KEY, _OPENROUTER_SOURCE = key_get("OPENROUTER_API_KEY")
 MISTRAL_API_KEY, _MISTRAL_SOURCE = key_get("MISTRAL_API_KEY")
 
-GROQ_MODEL, _ = key_get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL, _ = key_get("GROQ_MODEL", "openai/gpt-oss-120b")
 OPENROUTER_MODEL, _ = key_get("OPENROUTER_MODEL", "")
 MISTRAL_MODEL, _ = key_get("MISTRAL_MODEL", "mistral-small-latest")
 OLLAMA_HOST, _ = key_get("OLLAMA_HOST", "http://localhost:11434")

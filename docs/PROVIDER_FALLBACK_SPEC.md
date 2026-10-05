@@ -70,7 +70,7 @@ The **only** change in `run_agent`: `data = gemini_call(...)` becomes `data = pr
 | # | Provider | Endpoint | Model (default) | Key source | Free-tier shape |
 |---|----------|----------|-----------------|------------|-----------------|
 | 1 | Gemini pool | existing | `MODEL_NAME` (existing) | `GEMINI_KEY_POOL` (existing) | unchanged |
-| 2 | Groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | `GROQ_API_KEY` | ~30 req/min, generous daily |
+| 2 | Groq | `https://api.groq.com/openai/v1` | `openai/gpt-oss-120b` | `GROQ_API_KEY` | ~30 req/min, generous daily |
 | 3 | OpenRouter | `https://openrouter.ai/api/v1` | configurable `:free` model (default TBD) | `OPENROUTER_API_KEY` | ~20 req/min, ~50/day |
 | 4 | Mistral | `https://api.mistral.ai/v1` | `mistral-small-latest` | `MISTRAL_API_KEY` | ~1 req/sec, 1B tok/mo cap |
 | 5 | Ollama | `http://localhost:11434/v1` | configurable (default TBD, e.g. `qwen2.5:7b`) | none (local) | offline floor |
@@ -116,7 +116,7 @@ Chain order itself is configurable (`PROVIDER_CHAIN` list in config); any provid
 
 ## 13. Open questions for Alek
 
-1. **Groq model:** `llama-3.3-70b-versatile` default, or something else?
+1. **Groq model:** `openai/gpt-oss-120b` default, or something else?
 2. **OpenRouter model:** which `:free` model? (Options: a Llama 3.3 70B free variant, Qwen 3 235B free, or leave configurable with no default.)
 3. **Ollama model + safe mode:** which local model, and is read-only-by-default on the Ollama floor the right call?
 4. **Recovery:** auto re-probe to Gemini every 15 min (spec default), or sticky fallback until restart?
