@@ -123,9 +123,19 @@ def test_images_dropped():
 def test_chain_order():
     chain = _build_chain()
     names = [p.name for p in chain]
-    assert names[0] == "gemini", names
-    assert "groq" in names, names  # present even without a key configured
+    assert names == ["gemini", "groq", "openrouter", "mistral"], names
     print("ok chain_order", names)
+
+
+def test_openrouter_extra_headers():
+    from aria.agent.providers import OpenAICompatProvider
+    p = OpenAICompatProvider("openrouter", "https://openrouter.ai/api/v1",
+                             "k", "m",
+                             extra_headers={"HTTP-Referer": "r", "X-Title": "t"})
+    h = p._headers()
+    assert h["HTTP-Referer"] == "r" and h["X-Title"] == "t", h
+    assert "Python-urllib" not in h.get("User-Agent", "")
+    print("ok openrouter_extra_headers")
 
 
 

@@ -111,18 +111,20 @@ OPENROUTER_API_KEY, _OPENROUTER_SOURCE = key_get("OPENROUTER_API_KEY")
 MISTRAL_API_KEY, _MISTRAL_SOURCE = key_get("MISTRAL_API_KEY")
 
 GROQ_MODEL, _ = key_get("GROQ_MODEL", "openai/gpt-oss-120b")
-OPENROUTER_MODEL, _ = key_get("OPENROUTER_MODEL", "")
-MISTRAL_MODEL, _ = key_get("MISTRAL_MODEL", "mistral-small-latest")
+OPENROUTER_MODEL, _ = key_get("OPENROUTER_MODEL", "openai/gpt-oss-120b:free")
+MISTRAL_MODEL, _ = key_get("MISTRAL_MODEL", "mistral-large-latest")
 OLLAMA_HOST, _ = key_get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL, _ = key_get("OLLAMA_MODEL", "qwen2.5:7b")
 
-# Phase 1 chain: gemini -> groq. openrouter/mistral/ollama land in Phase 2/3.
-# Override order via PROVIDER_CHAIN="gemini,groq" env or keys file.
+# Phase 2 chain: gemini -> groq -> openrouter -> mistral. Free before paid:
+# OpenRouter's :free models cost nothing; Mistral direct is pay-per-token.
+# ollama lands in Phase 3. Override order via PROVIDER_CHAIN env or keys file,
+# e.g. PROVIDER_CHAIN="gemini,groq,openrouter,mistral".
 _PROVIDER_CHAIN_RAW, _ = key_get("PROVIDER_CHAIN", "")
 if _PROVIDER_CHAIN_RAW and _PROVIDER_CHAIN_RAW != "INSERT":
     PROVIDER_CHAIN = [p.strip().lower() for p in _PROVIDER_CHAIN_RAW.split(",") if p.strip()]
 else:
-    PROVIDER_CHAIN = ["gemini", "groq"]
+    PROVIDER_CHAIN = ["gemini", "groq", "openrouter", "mistral"]
 
 # Ollama safe mode (Phase 3): local model gets read-only tools only.
 OLLAMA_SAFE_MODE = True

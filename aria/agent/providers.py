@@ -23,6 +23,7 @@ from typing import Optional, Callable, List, Dict, Any
 
 from aria.config import (
     GEMINI_KEY_POOL, GROQ_API_KEY, GROQ_MODEL,
+    OPENROUTER_API_KEY, OPENROUTER_MODEL, MISTRAL_API_KEY, MISTRAL_MODEL,
     PROVIDER_CHAIN, KEY_QUARANTINE_DURATION_S,
     quarantine_key, key_is_quarantined, key_mask, add_log,
 )
@@ -245,11 +246,13 @@ class GeminiProvider(Provider):
 class OpenAICompatProvider(Provider):
     """One class for Groq / OpenRouter / Mistral (and Ollama's /v1)."""
 
-    def __init__(self, name: str, base_url: str, api_key: str, model: str):
+    def __init__(self, name: str, base_url: str, api_key: str, model: str,
+                 extra_headers: Optional[Dict[str, str]] = None):
         self.name = name
         self.base_url = (base_url or "").rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.extra_headers = extra_headers or {}
         self.last_error: Optional[str] = None
 
     def is_available(self) -> bool:
@@ -262,6 +265,7 @@ class OpenAICompatProvider(Provider):
             "Content-Type": "application/json",
             "User-Agent": "ARIA-Agent/1.0 (Windows NT 10.0; Win64; x64)",
         }
+        headers.update(self.extra_headers)
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
@@ -397,7 +401,14 @@ def _build_chain() -> List[Provider]:
         "gemini": GeminiProvider(),
         "groq": OpenAICompatProvider(
             "groq", "https://api.groq.com/openai/v1", GROQ_API_KEY, GROQ_MODEL),
-        # Phase 2: "openrouter", "mistral". Phase 3: "ollama".
+        "openrouter": OpenAICompatProvider(
+            "openrouter", "https://openrouter.ai/api/v1",
+            OPENROUTER_API_KEY, OPENROUTER_MODEL,
+            extra_headers={"HTTP-Referer": "https://github.com/ABerger94/ARIA-Agent",
+                           "X-Title": "ARIA-Agent"}),
+        "mistral": OpenAICompatProvider(
+            "mistral", "https://api.mistral.ai/v1", MISTRAL_API_KEY, MISTRAL_MODEL),
+        # Phase 3: "ollama".
     }
     return [registry[n] for n in PROVIDER_CHAIN if n in registry]
 

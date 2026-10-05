@@ -105,6 +105,10 @@ Chain order itself is configurable (`PROVIDER_CHAIN` list in config); any provid
 
 - **Phase 1:** `providers.py` + `GeminiProvider` + `OpenAICompatProvider` + Groq only. Proves the translation pattern end-to-end. Ship bar: one real tool-calling turn on Groq, byte-identical behavior downstream.
 - **Phase 2:** + OpenRouter, + Mistral. Config-only additions on the proven path.
+  Chain: gemini -> groq -> openrouter -> mistral (free before paid).
+  Defaults (2026-10-05): OPENROUTER_MODEL=`openai/gpt-oss-120b:free`,
+  MISTRAL_MODEL=`mistral-large-latest`. OpenRouter sends HTTP-Referer/X-Title.
+  Keys: OPENROUTER_API_KEY, MISTRAL_API_KEY (aria_keys.json, gitignored).
 - **Phase 3:** Ollama floor + safe-mode tool filtering + HUD failover indicator.
 
 ## 12. Testing (no quota burned)
