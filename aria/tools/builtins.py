@@ -924,7 +924,27 @@ def tool_gemini_keys(action: str = "status", key: str = "") -> str:
         _KEYS.pop("GEMINI_API_KEY", None)
         save_keys()
         return f"Added key {key_mask(k)} to pool ({len(GEMINI_KEY_POOL)} keys total)."
-    return f"Unknown action '{action}'. Use 'status' or 'add'."
+    if a == "remove":
+        target = str(key).strip()
+        idx = None
+        if target.isdigit():
+            idx = int(target) - 1
+        elif target.startswith("#") and target[1:].isdigit():
+            idx = int(target[1:]) - 1
+        else:
+            for i, k in enumerate(GEMINI_KEY_POOL):
+                if target and (target in k or key_mask(k) in target):
+                    idx = i
+                    break
+        if idx is None or idx < 0 or idx >= len(GEMINI_KEY_POOL):
+            return f"Invalid key identifier '{key}'. Pool has {len(GEMINI_KEY_POOL)} keys (1-{len(GEMINI_KEY_POOL)})."
+        removed = GEMINI_KEY_POOL.pop(idx)
+        _KEY_QUARANTINE_UNTIL.pop(removed, None)
+        _KEY_QUARANTINE_CODE.pop(removed, None)
+        _KEYS["GEMINI_API_KEYS"] = list(GEMINI_KEY_POOL)
+        save_keys()
+        return f"Removed key #{idx + 1} ({key_mask(removed)}) from pool ({len(GEMINI_KEY_POOL)} keys remaining)."
+    return f"Unknown action '{action}'. Use 'status', 'add', or 'remove'."
 
 
 # ---------------------------------------------------------------------------

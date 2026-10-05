@@ -54,3 +54,9 @@ if __name__ == "__main__":
 # STT phantom wake-word hallucination fix applied - 1790641499.1844068
 
 # Upgraded HUD: collapsible context tiles (waveforms, task chips, spotify) and cognitive avatar expressions
+
+# Tactical chatlog header and transcript overlap fix applied - 1791173834.8626678
+
+# Added interactive device/spotify volume slider and toggle to Spotify card - 1791176772.8293445
+
+# Fixed Spotify mood buttons (chill, focus, energy) curated playlists and DJ dispatch - 1791177341.1825964

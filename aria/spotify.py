@@ -18,6 +18,19 @@ from aria.memory import DB_LOCK, DB_PATH
 from aria.tools.builtins import tool_focus_window
 
 
+CURATED_MOODS = {
+    "chill": ("spotify:playlist:37i9dQZF1DWWQRwui0ExPn", "Lofi Beats"),
+    "lofi": ("spotify:playlist:37i9dQZF1DWWQRwui0ExPn", "Lofi Beats"),
+    "focus": ("spotify:playlist:37i9dQZF1DWZeKCadgRdKQ", "Deep Focus"),
+    "ambient": ("spotify:playlist:37i9dQZF1DWZeKCadgRdKQ", "Deep Focus"),
+    "study": ("spotify:playlist:37i9dQZF1DWZeKCadgRdKQ", "Deep Focus"),
+    "energy": ("spotify:playlist:37i9dQZF1DX76Wlfdnj7AP", "Beast Mode"),
+    "workout": ("spotify:playlist:37i9dQZF1DX76Wlfdnj7AP", "Beast Mode"),
+    "gym": ("spotify:playlist:37i9dQZF1DX76Wlfdnj7AP", "Beast Mode"),
+    "electronic workout": ("spotify:playlist:37i9dQZF1DX76Wlfdnj7AP", "Beast Mode"),
+}
+
+
 def _tap_ctrl_s() -> bool:
     """Best-effort Spotify shuffle toggle (Ctrl+S); needs Spotify focused."""
     try:
@@ -116,6 +129,12 @@ def tool_spotify(action: str = "play_pause", query: str = "") -> str:
         if saved_uri:
             return tool_spotify(action="play_uri", query=saved_uri)
 
+        # Check curated mood playlists
+        ql = q.lower()
+        for m_key, (m_uri, m_label) in CURATED_MOODS.items():
+            if m_key in ql:
+                return tool_spotify(action="play_uri", query=m_uri)
+
         # Launch search in Spotify
         try:
             os.startfile("spotify:search:" + urllib.parse.quote(q))
@@ -162,15 +181,37 @@ def tool_dj(request: str) -> str:
         uri, label = "spotify:collection:tracks", "Liked Songs"
     else:
         name = re.sub(r"\b(play|shuffle|shuffled|some|something|music|me|my|"
-                      r"playlist|playlists|on|spotify)\b", "", q)
+                      r"playlist|playlists|on|spotify)\b", "", q).strip()
         uri, label = _find_playlist(name)
+
     if not uri:
+        # Check curated mood playlists
+        for m_key, (m_uri, m_label) in CURATED_MOODS.items():
+            if m_key in q:
+                uri, label = m_uri, m_label
+                break
+
+    if not uri:
+        clean_name = re.sub(r"\b(play|shuffle|shuffled|some|something|music|me|my|"
+                            r"playlist|playlists|on|spotify)\b", "", q).strip()
+        if clean_name:
+            try:
+                os.startfile("spotify:search:" + urllib.parse.quote(clean_name))
+                time.sleep(1.8)
+                tool_focus_window("Spotify")
+                time.sleep(0.3)
+                _tap_media_vk(0xB3)
+                return f"Spotify DJ: searching '{clean_name}' and playing."
+            except Exception as e:
+                return f"[Could not open Spotify search: {e}]"
         return (f"[I don't have a playlist saved for '{request}' - tell me the "
                 f"Spotify link once and I'll remember it for next time.]")
+
     try:
         os.startfile(uri)
     except Exception as e:
         return f"[Could not open Spotify: {e}]"
+
     if shuffle:
         time.sleep(1.8)
         tool_focus_window("Spotify")

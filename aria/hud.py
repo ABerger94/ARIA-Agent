@@ -178,6 +178,150 @@ def _get_spotify_telemetry() -> Dict[str, Any]:
     return info
 
 
+class VolumeManager:
+    """Non-blocking volume controller for Windows master device and Spotify audio session."""
+    def __init__(self):
+        self.target = "device"  # "device" or "spotify"
+        self.device_vol = 0.5
+        self.spotify_vol = 1.0
+        self._desired_device = None
+        self._desired_spotify = None
+        self._event = threading.Event()
+        self._lock = threading.Lock()
+        self._running = True
+        self._thread = threading.Thread(target=self._worker, daemon=True)
+        self._thread.start()
+
+    def _worker(self):
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+        except Exception:
+            pass
+        try:
+            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+            from comtypes import CLSCTX_ALL
+            from ctypes import cast, POINTER
+
+            def _query_dev():
+                dev = AudioUtilities.GetSpeakers()
+                if hasattr(dev, "EndpointVolume"):
+                    vol = dev.EndpointVolume
+                else:
+                    iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                    vol = cast(iface, POINTER(IAudioEndpointVolume))
+                return float(vol.GetMasterVolumeLevelScalar())
+
+            def _apply_dev(level):
+                dev = AudioUtilities.GetSpeakers()
+                if hasattr(dev, "EndpointVolume"):
+                    vol = dev.EndpointVolume
+                else:
+                    iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                    vol = cast(iface, POINTER(IAudioEndpointVolume))
+                vol.SetMasterVolumeLevelScalar(max(0.0, min(1.0, level)), None)
+
+            def _query_spot():
+                sessions = AudioUtilities.GetAllSessions()
+                for s in sessions:
+                    if s.Process and s.Process.name().lower() == "spotify.exe":
+                        return float(s.SimpleAudioVolume.GetMasterVolume())
+                return 1.0
+
+            def _apply_spot(level):
+                sessions = AudioUtilities.GetAllSessions()
+                for s in sessions:
+                    if s.Process and s.Process.name().lower() == "spotify.exe":
+                        s.SimpleAudioVolume.SetMasterVolume(max(0.0, min(1.0, level)), None)
+
+            try:
+                self.device_vol = _query_dev()
+            except Exception:
+                pass
+            try:
+                self.spotify_vol = _query_spot()
+            except Exception:
+                pass
+
+            last_poll = time.time()
+            while self._running:
+                self._event.wait(timeout=1.0)
+                self._event.clear()
+
+                with self._lock:
+                    s_dev = self._desired_device
+                    s_spot = self._desired_spotify
+                    self._desired_device = None
+                    self._desired_spotify = None
+
+                if s_dev is not None:
+                    try:
+                        _apply_dev(s_dev)
+                        self.device_vol = s_dev
+                    except Exception:
+                        pass
+
+                if s_spot is not None:
+                    try:
+                        _apply_spot(s_spot)
+                        self.spotify_vol = s_spot
+                    except Exception:
+                        pass
+
+                now = time.time()
+                if now - last_poll > 1.5 and s_dev is None and s_spot is None:
+                    try:
+                        self.device_vol = _query_dev()
+                    except Exception:
+                        pass
+                    try:
+                        self.spotify_vol = _query_spot()
+                    except Exception:
+                        pass
+                    last_poll = now
+        except Exception:
+            pass
+        finally:
+            try:
+                import pythoncom
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+
+    def get_level(self) -> float:
+        return self.device_vol if self.target == "device" else self.spotify_vol
+
+    def set_level(self, level: float):
+        level = max(0.0, min(1.0, float(level)))
+        with self._lock:
+            if self.target == "device":
+                self.device_vol = level
+                self._desired_device = level
+            else:
+                self.spotify_vol = level
+                self._desired_spotify = level
+        self._event.set()
+
+    def toggle_target(self) -> str:
+        self.target = "spotify" if self.target == "device" else "device"
+        return self.target
+
+
+_VOL_MGR = VolumeManager()
+
+
+def get_hud_volume() -> float:
+    return _VOL_MGR.get_level()
+
+
+def set_hud_volume(pct: float):
+    _VOL_MGR.set_level(pct)
+
+
+def toggle_volume_target() -> str:
+    return _VOL_MGR.toggle_target()
+
+
 # Colors (BGR)
 BG = (10, 12, 16)
 PANEL_BG = (14, 16, 22)
@@ -216,21 +360,25 @@ _TAB_SPOTIFY   = (537, 486, 105, 20)
 _TAB_MINIMIZE  = (1155, 486, 90, 20)
 
 # Spotify interactive transport buttons in DASHBOARD split view:
-_DASH_SPOTIFY_PREV  = (845, 608, 30, 22)
-_DASH_SPOTIFY_PLAY  = (883, 608, 48, 22)
-_DASH_SPOTIFY_NEXT  = (939, 608, 30, 22)
-_DASH_SPOTIFY_DJ    = (977, 608, 36, 22)
-_DASH_SPOTIFY_FOCUS = (1021, 608, 42, 22)
+_DASH_SPOTIFY_PREV   = (845, 608, 30, 22)
+_DASH_SPOTIFY_PLAY   = (883, 608, 48, 22)
+_DASH_SPOTIFY_NEXT   = (939, 608, 30, 22)
+_DASH_SPOTIFY_DJ     = (977, 608, 36, 22)
+_DASH_SPOTIFY_FOCUS  = (1021, 608, 42, 22)
+_DASH_VOL_TARGET_BTN = (1070, 608, 42, 22)
+_DASH_VOL_SLIDER     = (1118, 608, 122, 22)
 
 # Spotify interactive buttons in expanded SPOTIFY view:
-_EXP_SPOTIFY_PREV   = (60, 595, 90, 28)
-_EXP_SPOTIFY_PLAY   = (160, 595, 120, 28)
-_EXP_SPOTIFY_NEXT   = (290, 595, 90, 28)
-_EXP_SPOTIFY_DJ     = (390, 595, 130, 28)
-_EXP_SPOTIFY_FOCUS  = (530, 595, 100, 28)
-_EXP_SPOTIFY_CHILL  = (640, 595, 95, 28)
-_EXP_SPOTIFY_FOCUSM = (745, 595, 95, 28)
-_EXP_SPOTIFY_ENERGY = (850, 595, 95, 28)
+_EXP_SPOTIFY_PREV    = (60, 595, 90, 28)
+_EXP_SPOTIFY_PLAY    = (160, 595, 120, 28)
+_EXP_SPOTIFY_NEXT    = (290, 595, 90, 28)
+_EXP_SPOTIFY_DJ      = (390, 595, 130, 28)
+_EXP_SPOTIFY_FOCUS   = (530, 595, 100, 28)
+_EXP_SPOTIFY_CHILL   = (640, 595, 95, 28)
+_EXP_SPOTIFY_FOCUSM  = (745, 595, 95, 28)
+_EXP_SPOTIFY_ENERGY  = (850, 595, 95, 28)
+_EXP_VOL_TARGET_BTN  = (955, 595, 80, 28)
+_EXP_VOL_SLIDER      = (1045, 595, 195, 28)
 
 
 def get_clipboard_text() -> str:
@@ -279,6 +427,13 @@ COMMANDS_PAGE = 0
 COMMANDS_PAGES: List[Any] = []
 SUBTITLE_TEXT = ""
 LOG_STREAM: List[str] = []
+DISPLAY_CHAT_LOG: List[Tuple[str, str, str]] = []
+
+
+def add_display_chat(ts: str, sender: str, msg: str):
+    DISPLAY_CHAT_LOG.append((str(ts), str(sender), str(msg)))
+    if len(DISPLAY_CHAT_LOG) > 60:
+        DISPLAY_CHAT_LOG.pop(0)
 
 # Context Tiles State
 TILE_MODE: str = "dashboard"  # "dashboard", "subtitles", "audio", "tasks", "spotify"
@@ -352,24 +507,24 @@ def _dispatch_spotify_action(action: str):
         try:
             from aria import spotify
             if action in ("play_pause", "previous", "next"):
-                spotify.tool_spotify(action)
-                add_hud_log(f"Spotify: {action}")
+                res = spotify.tool_spotify(action)
+                add_hud_log(res)
             elif action == "dj":
-                spotify.tool_dj("liked songs")
-                add_hud_log("Spotify DJ: Liked Songs")
+                res = spotify.tool_dj("liked songs")
+                add_hud_log(res)
             elif action == "focus":
                 from aria.tools.builtins import tool_focus_window
-                tool_focus_window("Spotify")
-                add_hud_log("Focused Spotify window.")
+                res = tool_focus_window("Spotify")
+                add_hud_log(res)
             elif action == "chill":
-                spotify.tool_dj("chill lofi")
-                add_hud_log("Spotify: Chill playlist")
+                res = spotify.tool_dj("chill")
+                add_hud_log(res)
             elif action == "focus_music":
-                spotify.tool_dj("deep focus ambient")
-                add_hud_log("Spotify: Focus playlist")
+                res = spotify.tool_dj("focus")
+                add_hud_log(res)
             elif action == "energy":
-                spotify.tool_dj("electronic workout energy")
-                add_hud_log("Spotify: Energy playlist")
+                res = spotify.tool_dj("energy")
+                add_hud_log(res)
         except Exception as e:
             add_hud_log(f"Spotify action error: {e}")
     threading.Thread(target=_run, daemon=True).start()
@@ -401,8 +556,23 @@ def handle_click(x: int, y: int) -> bool:
             add_hud_log(f"Context tile: {mode.upper()}")
             return True
 
-    # 3. Spotify transport buttons in DASHBOARD split view
+    # 3. Spotify transport buttons and volume slider in DASHBOARD split view
     if not TILE_COLLAPSED and TILE_MODE == "dashboard":
+        # Target toggle button
+        vx, vy, vw, vh = _DASH_VOL_TARGET_BTN
+        if vx <= x <= vx + vw and vy <= y <= vy + vh:
+            t = _VOL_MGR.toggle_target()
+            add_hud_log(f"Volume target: {t.upper()}")
+            return True
+
+        # Volume slider click
+        sx, sy, sw, sh = _DASH_VOL_SLIDER
+        if sx <= x <= sx + sw and sy <= y <= sy + sh:
+            pct = (x - sx) / float(sw)
+            _VOL_MGR.set_level(pct)
+            add_hud_log(f"{_VOL_MGR.target.upper()} vol: {int(_VOL_MGR.get_level() * 100)}%")
+            return True
+
         btns = [
             (_DASH_SPOTIFY_PREV, "previous"),
             (_DASH_SPOTIFY_PLAY, "play_pause"),
@@ -415,8 +585,23 @@ def handle_click(x: int, y: int) -> bool:
                 _dispatch_spotify_action(action)
                 return True
 
-    # 4. Spotify transport buttons in expanded SPOTIFY view
+    # 4. Spotify transport buttons and volume slider in expanded SPOTIFY view
     if not TILE_COLLAPSED and TILE_MODE == "spotify":
+        # Target toggle button
+        vx, vy, vw, vh = _EXP_VOL_TARGET_BTN
+        if vx <= x <= vx + vw and vy <= y <= vy + vh:
+            t = _VOL_MGR.toggle_target()
+            add_hud_log(f"Volume target: {t.upper()}")
+            return True
+
+        # Volume slider click
+        sx, sy, sw, sh = _EXP_VOL_SLIDER
+        if sx <= x <= sx + sw and sy <= y <= sy + sh:
+            pct = (x - sx) / float(sw)
+            _VOL_MGR.set_level(pct)
+            add_hud_log(f"{_VOL_MGR.target.upper()} vol: {int(_VOL_MGR.get_level() * 100)}%")
+            return True
+
         exp_btns = [
             (_EXP_SPOTIFY_PREV, "previous"),
             (_EXP_SPOTIFY_PLAY, "play_pause"),
@@ -433,6 +618,50 @@ def handle_click(x: int, y: int) -> bool:
                 return True
 
     return False
+
+
+def handle_drag(x: int, y: int) -> bool:
+    """Handle mouse drag over volume slider in active tile."""
+    if TILE_COLLAPSED:
+        return False
+    if TILE_MODE == "dashboard":
+        sx, sy, sw, sh = _DASH_VOL_SLIDER
+        if sx - 10 <= x <= sx + sw + 10 and sy - 8 <= y <= sy + sh + 8:
+            pct = (x - sx) / float(sw)
+            _VOL_MGR.set_level(pct)
+            return True
+    elif TILE_MODE == "spotify":
+        sx, sy, sw, sh = _EXP_VOL_SLIDER
+        if sx - 10 <= x <= sx + sw + 10 and sy - 8 <= y <= sy + sh + 8:
+            pct = (x - sx) / float(sw)
+            _VOL_MGR.set_level(pct)
+            return True
+    return False
+
+
+def handle_wheel(x: int, y: int, up: bool) -> bool:
+    """Handle mouse wheel scrolling over volume slider or target button."""
+    if TILE_COLLAPSED:
+        return False
+    delta = 0.05 if up else -0.05
+    if TILE_MODE == "dashboard":
+        for (bx, by, bw, bh) in (_DASH_VOL_SLIDER, _DASH_VOL_TARGET_BTN):
+            if bx <= x <= bx + bw and by <= y <= by + bh:
+                _VOL_MGR.set_level(_VOL_MGR.get_level() + delta)
+                add_hud_log(f"{_VOL_MGR.target.upper()} vol: {int(_VOL_MGR.get_level() * 100)}%")
+                return True
+    elif TILE_MODE == "spotify":
+        for (bx, by, bw, bh) in (_EXP_VOL_SLIDER, _EXP_VOL_TARGET_BTN):
+            if bx <= x <= bx + bw and by <= y <= by + bh:
+                _VOL_MGR.set_level(_VOL_MGR.get_level() + delta)
+                add_hud_log(f"{_VOL_MGR.target.upper()} vol: {int(_VOL_MGR.get_level() * 100)}%")
+                return True
+    return False
+
+
+def handle_release(x: int, y: int):
+    """Handle mouse button release."""
+    pass
 
 
 def _get_active_task_chips() -> List[Tuple[str, str, Tuple[int, int, int]]]:
@@ -463,6 +692,10 @@ def _get_active_task_chips() -> List[Tuple[str, str, Tuple[int, int, int]]]:
 
     chips.append(("STATE", CURRENT_STATE.upper()[:9], CYAN))
     chips.append(("INBOX", str(inbox_count_cached()), (240, 160, 60)))
+    vtgt = _VOL_MGR.target.upper()[:3]
+    cur_vol = int(_VOL_MGR.get_level() * 100)
+    vol_col = CYAN if _VOL_MGR.target == "device" else GREEN
+    chips.append((f"VOL:{vtgt}", f"{cur_vol}%", vol_col))
     return chips
 
 
@@ -789,6 +1022,32 @@ def _draw_context_tiles(canvas: np.ndarray, ACC: Tuple[int, int, int], ACC2: Tup
             cv2.rectangle(canvas, (bx, by), (bx + bw, by + bh), bcol, 1)
             cv2.putText(canvas, blabel, (bx + 6, by + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.34, bcol, 1, cv2.LINE_AA)
 
+        # Volume Mode Toggle Button & Volume Slider
+        vtgt = _VOL_MGR.target
+        vcol = CYAN if vtgt == "device" else GREEN
+        vlbl = "DEV" if vtgt == "device" else "SPT"
+        vx, vy, vw, vh = _DASH_VOL_TARGET_BTN
+        cv2.rectangle(canvas, (vx, vy), (vx + vw, vy + vh), (24, 28, 36), -1)
+        cv2.rectangle(canvas, (vx, vy), (vx + vw, vy + vh), vcol, 1)
+        cv2.putText(canvas, vlbl, (vx + 8, vy + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.33, vcol, 1, cv2.LINE_AA)
+
+        sx, sy, sw, sh = _DASH_VOL_SLIDER
+        v_level = _VOL_MGR.get_level()
+        fill_w = int(max(0.0, min(1.0, v_level)) * (sw - 2))
+        cv2.rectangle(canvas, (sx, sy), (sx + sw, sy + sh), (18, 22, 28), -1)
+        if fill_w > 0:
+            fill_tint = (int(vcol[0] * 0.35), int(vcol[1] * 0.35), int(vcol[2] * 0.35))
+            cv2.rectangle(canvas, (sx + 1, sy + 1), (sx + 1 + fill_w, sy + sh - 1), fill_tint, -1)
+            cv2.rectangle(canvas, (sx + fill_w - 1, sy + 1), (sx + fill_w + 1, sy + sh - 1), vcol, -1)
+        cv2.rectangle(canvas, (sx, sy), (sx + sw, sy + sh), BORDER, 1)
+
+        vol_pct_str = f"VOL {int(v_level * 100)}%"
+        (tw, th), _ = cv2.getTextSize(vol_pct_str, cv2.FONT_HERSHEY_SIMPLEX, 0.32, 1)
+        tx = sx + (sw - tw) // 2
+        ty = sy + (sh + th) // 2 - 1
+        cv2.putText(canvas, vol_pct_str, (tx + 1, ty + 1), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (10, 12, 16), 1, cv2.LINE_AA)
+        cv2.putText(canvas, vol_pct_str, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.32, WHITE_TEXT, 1, cv2.LINE_AA)
+
     # 4. View: SUBTITLES (Expanded Stream)
     elif TILE_MODE == "subtitles":
         cv2.rectangle(canvas, (35, 512), (1250, 638), (16, 18, 24), -1)
@@ -913,6 +1172,32 @@ def _draw_context_tiles(canvas: np.ndarray, ACC: Tuple[int, int, int], ACC2: Tup
             cv2.rectangle(canvas, (bx, by), (bx + bw, by + bh), bcol, 1)
             cv2.putText(canvas, blabel, (bx + 8, by + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.34, bcol, 1, cv2.LINE_AA)
 
+        # Volume controls in Expanded Spotify view
+        vtgt = _VOL_MGR.target
+        vcol = CYAN if vtgt == "device" else GREEN
+        v_level = _VOL_MGR.get_level()
+
+        evx, evy, evw, evh = _EXP_VOL_TARGET_BTN
+        cv2.rectangle(canvas, (evx, evy), (evx + evw, evy + evh), (24, 28, 36), -1)
+        cv2.rectangle(canvas, (evx, evy), (evx + evw, evy + evh), vcol, 1)
+        ev_lbl = "DEV VOL" if vtgt == "device" else "SPOT VOL"
+        cv2.putText(canvas, ev_lbl, (evx + 9, evy + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.34, vcol, 1, cv2.LINE_AA)
+
+        esx, esy, esw, esh = _EXP_VOL_SLIDER
+        efill_w = int(max(0.0, min(1.0, v_level)) * (esw - 2))
+        cv2.rectangle(canvas, (esx, esy), (esx + esw, esy + esh), (18, 22, 28), -1)
+        if efill_w > 0:
+            fill_tint = (int(vcol[0] * 0.35), int(vcol[1] * 0.35), int(vcol[2] * 0.35))
+            cv2.rectangle(canvas, (esx + 1, esy + 1), (esx + 1 + efill_w, esy + esh - 1), fill_tint, -1)
+            cv2.rectangle(canvas, (esx + efill_w - 2, esy + 1), (esx + efill_w + 1, esy + esh - 1), vcol, -1)
+        cv2.rectangle(canvas, (esx, esy), (esx + esw, esy + esh), BORDER, 1)
+        evol_str = f"{'DEVICE' if vtgt == 'device' else 'SPOTIFY'} VOL: {int(v_level * 100)}%"
+        (etw, eth), _ = cv2.getTextSize(evol_str, cv2.FONT_HERSHEY_SIMPLEX, 0.34, 1)
+        etx = esx + (esw - etw) // 2
+        ety = esy + (esh + eth) // 2 - 1
+        cv2.putText(canvas, evol_str, (etx + 1, ety + 1), cv2.FONT_HERSHEY_SIMPLEX, 0.34, (10, 12, 16), 1, cv2.LINE_AA)
+        cv2.putText(canvas, evol_str, (etx, ety), cv2.FONT_HERSHEY_SIMPLEX, 0.34, WHITE_TEXT, 1, cv2.LINE_AA)
+
 
 def draw_hud() -> np.ndarray:
     """Render full 1280x720 HUD frame and publish face frame for phone bridge."""
@@ -945,7 +1230,7 @@ def draw_hud() -> np.ndarray:
 
     sys_stats = f"TIME: {now_str}  |  CPU: {cpu_usage}%  |  MEM: {mem_usage}%  |  PWR: {bat_str}"
     cv2.putText(canvas, sys_stats, (650, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 170, 180), 1, cv2.LINE_AA)
-    cv2.putText(canvas, f"PHONE BRIDGE: https://{lan_ip()}:{PHONE_BRIDGE_PORT}  (LAN only)   |   INBOX: {inbox_cnt}",
+    cv2.putText(canvas, f"PHONE BRIDGE: https://{lan_ip()}:{PHONE_BRIDGE_PORT}   |   INBOX: {inbox_cnt}",
                 (30, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (120, 150, 170), 1, cv2.LINE_AA)
 
     # Whisper Mode Button
@@ -1002,26 +1287,70 @@ def draw_hud() -> np.ndarray:
             cv2.putText(canvas, sub_line, (1015, log_y), cv2.FONT_HERSHEY_SIMPLEX, 0.38, WHITE_TEXT, 1, cv2.LINE_AA)
             log_y += 18
 
-    # Center Stage: Avatar
+    # Center Stage: Avatar or Chat Log
     if HUD_MODE == "chat_log":
-        log_y = 115
-        from aria import memory
-        display_log = memory.get_display_chat_log()
-        rendered_lines = []
-        for role, text in display_log:
-            header_color = ACC if role == "A.R.I.A." else CYAN
-            header = f"{role}: "
-            msg_lines = textwrap.wrap(text, width=72)
-            if msg_lines:
-                rendered_lines.append([(320, header, header_color), (465, msg_lines[0], WHITE_TEXT)])
-                for sub_line in msg_lines[1:]:
-                    rendered_lines.append([(465, sub_line, WHITE_TEXT)])
-        start_idx = max(0, min(max(0, len(rendered_lines) - 13), len(rendered_lines) - CHAT_SCROLL - 13))
-        view_lines = rendered_lines[start_idx:start_idx + 13]
-        for line_segs in view_lines:
-            for x, text, col in line_segs:
-                cv2.putText(canvas, text, (x, log_y), cv2.FONT_HERSHEY_SIMPLEX, 0.38, col, 1, cv2.LINE_AA)
-            log_y += 22
+        cv2.rectangle(canvas, (300, 76), (980, 460), (12, 14, 18), -1)
+        cv2.rectangle(canvas, (300, 76), (980, 460), ACC, 1)
+
+        # Header bar with clean separation and zero text overlap
+        title_text = "[ TACTICAL CHAT LOG ]"
+        cv2.putText(canvas, title_text, (315, 101),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.44, CYAN, 1, cv2.LINE_AA)
+
+        ctrl_text = "[V] VISOR  |  [UP/DN / WHEEL] SCROLL"
+        (cw, _), _ = cv2.getTextSize(ctrl_text, cv2.FONT_HERSHEY_SIMPLEX, 0.34, 1)
+        cv2.putText(canvas, ctrl_text, (965 - cw, 101),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.34, DIM, 1, cv2.LINE_AA)
+
+        # Divider line between header and chat log lines
+        cv2.line(canvas, (300, 114), (980, 114), BORDER, 1)
+
+        try:
+            from aria import memory
+            raw_log = list(DISPLAY_CHAT_LOG) if DISPLAY_CHAT_LOG else list(memory.get_display_chat_log())
+            rendered_lines = []
+            for entry in raw_log:
+                if not entry:
+                    continue
+                if isinstance(entry, (tuple, list)):
+                    if len(entry) >= 3:
+                        ts, role, text = entry[0], entry[1], entry[2]
+                        ts_str = str(ts).strip()
+                        if len(ts_str) > 8 and " " in ts_str:
+                            ts_str = ts_str.split()[-1]
+                        header = hud_ascii(f"[{ts_str}] {role}: ")
+                    elif len(entry) == 2:
+                        role, text = entry[0], entry[1]
+                        header = hud_ascii(f"{role}: ")
+                    else:
+                        role, text = "MSG", str(entry[0])
+                        header = "MSG: "
+                else:
+                    role, text = "MSG", str(entry)
+                    header = "MSG: "
+
+                header_color = ACC if str(role).upper() in ("A.R.I.A.", "ARIA") else CYAN
+                (hw, _), _ = cv2.getTextSize(header, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+                content_x = max(465, 315 + hw + 8)
+                msg_lines = textwrap.wrap(hud_ascii(text), width=58)
+                if msg_lines:
+                    rendered_lines.append([(315, header, header_color), (content_x, msg_lines[0], WHITE_TEXT)])
+                    for sub_line in msg_lines[1:]:
+                        rendered_lines.append([(content_x, sub_line, WHITE_TEXT)])
+
+            max_visible = 14
+            max_scroll = max(0, len(rendered_lines) - max_visible)
+            effective_scroll = max(0, min(CHAT_SCROLL, max_scroll))
+            start_idx = max(0, len(rendered_lines) - max_visible - effective_scroll)
+            view_lines = rendered_lines[start_idx:start_idx + max_visible]
+            log_y = 134
+            for line_segs in view_lines:
+                for x, text, col in line_segs:
+                    cv2.putText(canvas, text, (x, log_y), cv2.FONT_HERSHEY_SIMPLEX, 0.38, col, 1, cv2.LINE_AA)
+                log_y += 22
+        except Exception as e:
+            cv2.putText(canvas, f"Chat log render error: {hud_ascii(e)}", (320, 140),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1, cv2.LINE_AA)
     else:
         # Visor Mode (Pixel Avatar with Fluid Cognitive Reactions)
         lx, rx, cy = 520, 760, 235

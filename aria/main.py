@@ -67,7 +67,7 @@ def _init_wiring():
     set_history_hook(lambda entry: agent.CONVERSATION_HISTORY.append(entry))
 
     # 2. Chat history listener
-    memory.register_chat_listener(lambda ts, sender, msg: hud.DISPLAY_CHAT_LOG.append((ts, sender, msg)))
+    memory.register_chat_listener(hud.add_display_chat)
 
     # 3. Vision callers
     vision.set_vision_text_caller(agent.gemini_text)
@@ -278,7 +278,7 @@ def _ptt_poll_loop():
 
 def _on_hud_mouse(event, x, y, flags, param):
     """Handle mouse clicks and wheel on HUD interactive buttons."""
-    # Mouse wheel support for paging commands or scrolling chat
+    # Mouse wheel support for paging commands, scrolling chat, or adjusting volume
     if event == getattr(cv2, "EVENT_MOUSEWHEEL", 10):
         if hud.SHOW_COMMANDS:
             if flags > 0:
@@ -288,10 +288,20 @@ def _on_hud_mouse(event, x, y, flags, param):
             return
         elif hud.HUD_MODE == "chat_log":
             if flags > 0:
-                hud.CHAT_SCROLL = max(0, hud.CHAT_SCROLL - 1)
+                hud.CHAT_SCROLL = hud.CHAT_SCROLL + 1
             else:
-                hud.CHAT_SCROLL = max(0, hud.CHAT_SCROLL + 1)
+                hud.CHAT_SCROLL = max(0, hud.CHAT_SCROLL - 1)
             return
+        elif hud.handle_wheel(x, y, flags > 0):
+            return
+
+    # Mouse drag over interactive sliders (e.g. volume)
+    if event == cv2.EVENT_MOUSEMOVE and (flags & cv2.EVENT_FLAG_LBUTTON):
+        if hud.handle_drag(x, y):
+            return
+
+    if event == cv2.EVENT_LBUTTONUP:
+        hud.handle_release(x, y)
 
     if event == cv2.EVENT_RBUTTONDOWN:
         # Right click anywhere on directive bar pastes from clipboard
@@ -721,7 +731,12 @@ def main():
 
     try:
         while RUNNING:
-            frame = hud.draw_hud()
+            try:
+                frame = hud.draw_hud()
+            except Exception as e:
+                frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+                cv2.putText(frame, f"HUD RENDER FAULT: {e}", (50, 360),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1, cv2.LINE_AA)
             cv2.imshow(win_name, frame)
 
             # wake-up burst expiry: settle back once her excited moment passes
@@ -824,9 +839,9 @@ def main():
                     elif key in (ord('h'), ord('H')):
                         hud.SHOW_COMMANDS = not hud.SHOW_COMMANDS
                     elif key in (ord('j'), ord('J')) or is_down:
-                        hud.CHAT_SCROLL = max(0, hud.CHAT_SCROLL + 1)
-                    elif key in (ord('k'), ord('K')) or is_up:
                         hud.CHAT_SCROLL = max(0, hud.CHAT_SCROLL - 1)
+                    elif key in (ord('k'), ord('K')) or is_up:
+                        hud.CHAT_SCROLL = hud.CHAT_SCROLL + 1
 
     except KeyboardInterrupt:
         pass
