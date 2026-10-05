@@ -511,5 +511,150 @@ def t_body_protocol():
 check("robot body: head/drive wire protocol, auto-stop, firmware parity, body camera", t_body_protocol)
 
 print(f"\n{sum(1 for _, s, _ in results if s=='PASS')}/{len(results)} passed")
+
+# 40. MCP client: schema conversion + name sanitization (no mcp package needed)
+mcp_mod = importlib.import_module("aria.mcp")
+
+def t_mcp_schema():
+    assert mcp_mod.sanitize_tool_name("mcp_fs__read-file!") == "mcp_fs__read-file_"
+    assert len(mcp_mod.sanitize_tool_name("x" * 200)) == 64
+    conv = mcp_mod.convert_schema({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "file path"},
+            "count": {"type": "integer"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "opts": {"type": "object", "properties": {"v": {"type": "boolean"}}, "required": ["v"]},
+        },
+        "required": ["path"],
+    })
+    assert conv["type"] == "OBJECT"
+    assert conv["properties"]["path"]["type"] == "STRING"
+    assert conv["properties"]["path"]["description"] == "file path"
+    assert conv["properties"]["tags"]["items"]["type"] == "STRING"
+    assert conv["properties"]["opts"]["properties"]["v"]["type"] == "BOOLEAN"
+    assert conv["required"] == ["path"]
+    assert mcp_mod.convert_schema(None) == {"type": "OBJECT"}
+check("mcp: schema conversion + name sanitization", t_mcp_schema)
+
+# 41. MCP server config add/remove round-trip (isolated settings file)
+def t_mcp_config_roundtrip():
+    import tempfile as _tf
+    orig = config.SETTINGS_FILE
+    tmp = _tf.NamedTemporaryFile(delete=False, suffix=".json")
+    tmp.close()
+    config.SETTINGS_FILE = tmp.name
+    try:
+        msg = mcp_mod.add_server(name="testfs", command="npx",
+                                 args='["-y", "x"]', env='{"K": "v"}')
+        assert "saved" in msg, msg
+        servers = mcp_mod.get_servers()
+        assert servers["testfs"]["args"] == ["-y", "x"], servers
+        assert servers["testfs"]["env"] == {"K": "v"}
+        assert servers["testfs"]["transport"] == "stdio"
+        bad = mcp_mod.add_server(name="bad", transport="carrier-pigeon")
+        assert "Unknown transport" in bad, bad
+        bad2 = mcp_mod.add_server(name="bad2")
+        assert "need a command" in bad2, bad2
+        sse = mcp_mod.add_server(name="websvc", transport="sse", url="http://x:1/sse")
+        assert "saved" in sse, sse
+        assert mcp_mod.get_servers()["websvc"]["url"] == "http://x:1/sse"
+        rm = mcp_mod.remove_server("testfs")
+        assert "removed" in rm, rm
+        assert "testfs" not in mcp_mod.get_servers()
+        missing = mcp_mod.remove_server("nope")
+        assert "No MCP server" in missing, missing
+    finally:
+        config.SETTINGS_FILE = orig
+        os.unlink(tmp.name)
+check("mcp: server config add/remove round-trip", t_mcp_config_roundtrip)
+
+# 42. MCP tool result formatting
+def t_mcp_format():
+    T = types.SimpleNamespace(type="text", text="hello")
+    ok = types.SimpleNamespace(isError=False, content=[T])
+    err = types.SimpleNamespace(isError=True,
+                                content=[types.SimpleNamespace(type="text", text="nope")])
+    img = types.SimpleNamespace(isError=False,
+                                content=[types.SimpleNamespace(type="image")])
+    empty = types.SimpleNamespace(isError=False, content=[])
+    assert mcp_mod.format_tool_result(ok) == "hello"
+    r = mcp_mod.format_tool_result(err)
+    assert r.startswith("[MCP tool error]") and "nope" in r, r
+    assert "image" in mcp_mod.format_tool_result(img)
+    assert "empty" in mcp_mod.format_tool_result(empty)
+check("mcp: tool result formatting", t_mcp_format)
+
+# 43. MCP live stdio server: connect, register, call, disconnect (needs mcp pkg)
+def t_mcp_live_stdio():
+    import json as _json, tempfile as _tf
+    try:
+        import mcp  # noqa: F401
+    except Exception:
+        print("SKIP  mcp live stdio (mcp package not installed)")
+        return
+    dispatch.set_spine_hook(lambda *a, **k: None)
+    orig = config.SETTINGS_FILE
+    tmp = _tf.NamedTemporaryFile(delete=False, suffix=".json")
+    tmp.close()
+    srv = _tf.NamedTemporaryFile(delete=False, suffix=".py")
+    srv.close()
+    config.SETTINGS_FILE = tmp.name
+    try:
+        with open(srv.name, "w", encoding="utf-8") as f:
+            f.write(
+                "from mcp.server.fastmcp import FastMCP\n"
+                "srv = FastMCP('aria-test')\n"
+                "@srv.tool()\n"
+                "def add(a: int, b: int) -> int:\n"
+                "    \"\"\"Add two numbers.\"\"\"\n"
+                "    return a + b\n"
+                "@srv.tool()\n"
+                "def boom() -> str:\n"
+                "    \"\"\"Always fails.\"\"\"\n"
+                "    raise ValueError('kaboom')\n"
+                "if __name__ == '__main__':\n"
+                "    srv.run()\n"
+            )
+        setup_msg = builtins_mod.tool_mcp_setup(
+            name="test", command=sys.executable, args=_json.dumps(["-u", srv.name]))
+        assert "saved" in setup_msg, setup_msg
+        conn = builtins_mod.tool_mcp_connect(name="test")
+        assert "Connected" in conn, conn
+        decls = schemas.get_tool_decls_by_name()
+        assert "mcp_test__add" in decls, [k for k in decls if k.startswith("mcp_")]
+        miss = sandbox.missing_required_args("mcp_test__add", {"a": 1}, decls)
+        assert miss == ["b"], miss
+        res, _ = dispatch.execute_tool("mcp_test__add", {"a": 2, "b": 3})
+        assert res.strip() == "5", res
+        err_res, _ = dispatch.execute_tool("mcp_test__boom", {})
+        assert "kaboom" in err_res or "error" in err_res.lower(), err_res
+        payload = schemas.get_toolkit_declarations({"core", "mcp"})
+        names = [d["name"] for d in payload[0]["function_declarations"]]
+        assert "mcp_test__add" in names and "mcp_connect" in names, names
+        disc = builtins_mod.tool_mcp_disconnect(name="test")
+        assert "Disconnected" in disc, disc
+        assert "mcp_test__add" not in schemas.get_tool_decls_by_name()
+        rm = builtins_mod.tool_mcp_remove_server(name="test")
+        assert "removed" in rm, rm
+        # connecting to a bogus command fails cleanly, no crash
+        builtins_mod.tool_mcp_setup(name="bogus", command="/nonexistent/binary_xyz")
+        bad_conn = builtins_mod.tool_mcp_connect(name="bogus")
+        assert "Could not connect" in bad_conn, bad_conn
+        builtins_mod.tool_mcp_remove_server(name="bogus")
+    finally:
+        try:
+            mcp_mod.get_bridge().disconnect_all()
+        except Exception:
+            pass
+        config.SETTINGS_FILE = orig
+        for p in (tmp.name, srv.name):
+            try:
+                os.unlink(p)
+            except Exception:
+                pass
+check("mcp: live stdio server connect/call/disconnect", t_mcp_live_stdio)
+
+print(f"\n{sum(1 for _, s, _ in results if s=='PASS')}/{len(results)} passed")
 fails = [r for r in results if r[1] != "PASS"]
 sys.exit(1 if fails else 0)

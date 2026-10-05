@@ -927,23 +927,73 @@ def tool_gemini_keys(action: str = "status", key: str = "") -> str:
     return f"Unknown action '{action}'. Use 'status' or 'add'."
 
 
-# ---------------- Inbox (phone bridge uploads) ----------------
+# ---------------------------------------------------------------------------
+# MCP client tools — ARIA connects to MCP servers and uses their tools
+# ---------------------------------------------------------------------------
 
-def tool_inbox_list() -> str:
-    """List files in ARIA's inbox (phone bridge uploads + laptop drops)."""
-    from aria import inbox as inbox_mod
-    files = inbox_mod.list_inbox()
-    if not files:
-        return "Inbox is empty."
-    lines = [f"{i + 1}. {f['name']} ({f['size_h']}, {f['when']})"
-             for i, f in enumerate(files)]
-    return f"Inbox ({len(files)} file(s), newest first):\n" + "\n".join(lines)
+def tool_mcp_setup(name: str = "", command: str = "", args: str = "",
+                   url: str = "", env: str = "", headers: str = "") -> str:
+    """Add an MCP server configuration. stdio needs command+args; sse/http need url."""
+    from aria import mcp as mcp_mod
+    transport = "stdio" if command else ("sse" if url else "stdio")
+    return mcp_mod.add_server(name=name, transport=transport, command=command,
+                              args=args, env=env, url=url, headers=headers)
 
 
-def tool_inbox_describe(name: str = "") -> str:
-    """Describe an inbox photo with vision. Blank name = latest image."""
-    from aria import inbox as inbox_mod
-    return inbox_mod.describe_inbox_image(name or "")
+def tool_mcp_connect(name: str = "") -> str:
+    """Connect to one MCP server (by name) or all enabled servers; loads their tools."""
+    from aria import mcp as mcp_mod
+    bridge = mcp_mod.get_bridge()
+    if name and name.strip():
+        ok, msg = bridge.connect(name.strip())
+        return msg
+    servers = mcp_mod.get_servers()
+    enabled = [n for n, c in servers.items() if c.get("enabled", True)]
+    if not enabled:
+        return ("No MCP servers configured yet. Add one with mcp_setup, e.g. "
+                "mcp_setup(name='filesystem', command='npx', "
+                "args='[\"-y\", \"@modelcontextprotocol/server-filesystem\", \"C:/data\"]').")
+    lines = []
+    for n in enabled:
+        ok, msg = bridge.connect(n)
+        lines.append(("OK  " if ok else "FAIL") + f" {msg}")
+    return "\n".join(lines)
+
+
+def tool_mcp_disconnect(name: str = "") -> str:
+    """Disconnect one MCP server (by name) or all; unloads their tools."""
+    from aria import mcp as mcp_mod
+    bridge = mcp_mod.get_bridge()
+    if name and name.strip():
+        ok, msg = bridge.disconnect(name.strip())
+        return msg
+    return bridge.disconnect_all()
+
+
+def tool_mcp_list_servers() -> str:
+    """List configured MCP servers with connection status and tool counts."""
+    from aria import mcp as mcp_mod
+    rows = mcp_mod.get_bridge().status()
+    if not rows:
+        return ("No MCP servers configured. Add one with mcp_setup, e.g. "
+                "mcp_setup(name='filesystem', command='npx', "
+                "args='[\"-y\", \"@modelcontextprotocol/server-filesystem\", \"C:/data\"]').")
+    lines = []
+    for r in rows:
+        state = f"connected ({r['tools']} tools)" if r["connected"] else "disconnected"
+        if not r["enabled"]:
+            state += ", disabled"
+        lines.append(f"- {r['name']} [{r['transport']}] — {state}")
+    lines.append("MCP tools appear as mcp_<server>__<tool>; they live in the 'mcp' toolkit.")
+    return "\n".join(lines)
+
+
+def tool_mcp_remove_server(name: str = "") -> str:
+    """Remove an MCP server configuration entirely (disconnects it first)."""
+    from aria import mcp as mcp_mod
+    if not (name or "").strip():
+        return "Tell me which server to remove, e.g. mcp_remove_server(name='filesystem')."
+    return mcp_mod.remove_server(name.strip())
 
 
 def tool_inbox_read(name: str = "") -> str:

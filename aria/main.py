@@ -34,7 +34,6 @@ import aria.spotify as spotify
 import aria.hud as hud
 import aria.pixel_avatar as pixel_avatar
 import aria.bridge as bridge
-import aria.inbox as inbox
 import aria.agent as agent
 from aria.tools.dispatch import (
     execute_tool, set_log_hook, set_hud_hook, set_history_hook, set_spine_hook,
@@ -143,18 +142,6 @@ def toggle_whisper_mode() -> bool:
     return set_whisper_mode(not WHISPER_MODE)
 
 
-_INBOX_REQUEST_WORDS = ("inbox", "i sent", "i've sent", "you sent", "uploaded", "upload")
-
-
-def _is_inbox_request(low: str) -> bool:
-    """True when the user means files in the inbox (sent/uploaded), not the webcam.
-
-    Catches "look at the photo I sent you" / "the photo in your inbox" before
-    the camera keyword branch can hijack them.
-    """
-    return any(k in low for k in _INBOX_REQUEST_WORDS)
-
-
 def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silent: bool = False) -> str:
     """Central action pipeline invoked from voice, PTT, HUD typed commands, or Phone Bridge."""
     agent.proactive.mood_note_interaction()
@@ -182,13 +169,9 @@ def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silen
 
 
     # 5. Multimodal context attachment
-    # Inbox-first: "the photo I sent / in the inbox / uploaded" means inbox
-    # files, not the webcam. Attach nothing so the agent uses the inbox tools.
     image_bytes = None
     is_screen = False
-    if _is_inbox_request(low):
-        add_log(f"Inbox request, skipping camera/screen capture: {user_text[:60]}")
-    elif mode == "screen" or any(k in low for k in ["screen", "display", "desktop", "my window"]):
+    if mode == "screen" or any(k in low for k in ["screen", "display", "desktop", "my window"]):
         image_bytes = vision.capture_screen_if_changed()
         is_screen = True
         if image_bytes is None:
@@ -680,30 +663,17 @@ def start_all():
 
     threading.Thread(target=bridge.start_bridge_server, daemon=True).start()
 
-    # 4b. Inbox watcher — announce phone bridge uploads / laptop drops.
-    def _announce_inbox_uploads(names):
+    # 4b. MCP servers: connect configured servers in the background.
+    #     Failures are logged, never fatal — ARIA boots fine without them.
+    def _mcp_autoconnect():
         try:
-            photos = [n for n in names
-                      if os.path.splitext(n)[1].lower() in inbox.IMAGE_EXTS]
-            others = [n for n in names if n not in photos]
-            bits = []
-            if photos:
-                bits.append(f"{len(photos)} photo{'s' if len(photos) != 1 else ''}")
-            if others:
-                bits.append(f"{len(others)} file{'s' if len(others) != 1 else ''}")
-            label = " and ".join(bits) if bits else "something"
-            add_log(f"Inbox: new arrival(s): {', '.join(names)}")
-            speech.speak(f"You sent me {label}.")
-            if photos and inbox.inbox_auto_describe():
-                try:
-                    speech.speak(inbox.describe_inbox_image(photos[0]))
-                except Exception as e:
-                    add_log(f"Inbox auto-describe failed: {e}")
+            from aria import mcp as mcp_mod
+            summary = mcp_mod.autoconnect_enabled_servers()
+            add_log(f"MCP autoconnect: {summary}")
         except Exception as e:
-            add_log(f"Inbox announce failed: {e}")
+            add_log(f"MCP autoconnect failed: {e}")
 
-    threading.Thread(target=inbox.start_inbox_watcher,
-                     args=(_announce_inbox_uploads,), daemon=True).start()
+    threading.Thread(target=_mcp_autoconnect, daemon=True).start()
 
     # 5. PTT Poller on Windows
     if sys.platform == "win32" and hasattr(ctypes, "windll"):
