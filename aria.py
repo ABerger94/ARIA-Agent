@@ -52,3 +52,5 @@ if __name__ == "__main__":
 # Theme changed to ocean - 1790577498.402519
 # Phone bridge speech playback fix (dual HTML5/WebAudio + silent wav unlock + direct TTS response) - 1790620634.6790798
 # STT phantom wake-word hallucination fix applied - 1790641499.1844068
+
+# Upgraded HUD: collapsible context tiles (waveforms, task chips, spotify) and cognitive avatar expressions

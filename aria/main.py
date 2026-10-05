@@ -340,6 +340,10 @@ def _on_hud_mouse(event, x, y, flags, param):
 
             return
 
+        # Check if HUD interactive context tiles or tabs handled the click
+        if hud.handle_click(x, y):
+            return
+
         # Whisper button
         bx, by, bw, bh = hud._WHISPER_BTN
         if bx <= x <= bx + bw and by <= y <= by + bh:
@@ -799,6 +803,19 @@ def main():
                     elif key in (ord('t'), ord('T'), 13):  # T or Enter: activate typing
                         hud.TYPING_ACTIVE = True
                         add_log("Typing mode: type your directive and press Enter.")
+                    elif key in (ord('1'), ord('2'), ord('3'), ord('4'), ord('5')):
+                        tile_map = {
+                            ord('1'): "dashboard",
+                            ord('2'): "subtitles",
+                            ord('3'): "audio",
+                            ord('4'): "tasks",
+                            ord('5'): "spotify"
+                        }
+                        hud.set_tile_mode(tile_map[key])
+                        add_log(f"Context tile: {tile_map[key].upper()}")
+                    elif key in (9, ord('\t')):
+                        cm = hud.cycle_tile_mode()
+                        add_log(f"Context tile: {cm.upper()}")
                     elif key in (ord('v'), ord('V')) and not is_ctrl:
                         hud.HUD_MODE = "chat_log" if hud.HUD_MODE == "visor" else "visor"
                     elif key in (ord('w'), ord('W')):

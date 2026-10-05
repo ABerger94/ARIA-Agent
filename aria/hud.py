@@ -1,7 +1,8 @@
 """
 ARIA HUD (Heads-Up Display) and Visual Interface.
 Renders the 1280x720 cybernetic interface, animated cyber-girl face,
-waveform mouth, system telemetry, optical PIP, and commands overlay.
+waveform mouth, system telemetry, optical PIP, and interactive context tiles:
+Live Audio Waveforms, Active Task Chips, and Spotify Telemetry.
 """
 
 from __future__ import annotations
@@ -28,109 +29,168 @@ from aria.vision import publish_face_frame, LATEST_CAMERA_FRAME
 from aria.tools.schemas import COMMAND_GUIDE
 
 _HUD_SUBS = {
-    "•": "-", "—": "-", "–": "-", "°": "deg",
-    "→": "->", "←": "<-", "“": '"', "”": '"',
-    "‘": "'", "’": "'", "…": "..."
+    "\u2022": "-", "\u2014": "-", "\u2013": "-", "\u00b0": "deg",
+    "\u2192": "->", "\u2190": "<-", "\u201c": '"', "\u201d": '"',
+    "\u2018": "'", "\u2019": "'", "\u2026": "..."
 }
+
 
 def hud_ascii(s: Any) -> str:
     """Map Unicode characters to ASCII lookalikes so OpenCV Hershey fonts never render '?'."""
     res = str(s)
     for k, v in _HUD_SUBS.items():
         res = res.replace(k, v)
-    return res.encode("ascii", "replace").decode("ascii")
+    return res.encode("ascii", errors="replace").decode("ascii")
 
-
-_CACHED_IP = "localhost"
-_IP_LAST_CHECK = 0.0
 
 def lan_ip() -> str:
-    """Find local network IP address, cached for 60 seconds."""
-    global _CACHED_IP, _IP_LAST_CHECK
-    now = time.time()
-    if now - _IP_LAST_CHECK < 60.0 and _CACHED_IP != "localhost":
-        return _CACHED_IP
+    """Best-effort local LAN IP for display; cached after first resolve."""
+    global _CACHED_LAN_IP
+    if _CACHED_LAN_IP:
+        return _CACHED_LAN_IP
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
+        _CACHED_LAN_IP = s.getsockname()[0]
         s.close()
-        _CACHED_IP = ip
     except Exception:
-        _CACHED_IP = "localhost"
-    _IP_LAST_CHECK = now
-    return _CACHED_IP
+        _CACHED_LAN_IP = "127.0.0.1"
+    return _CACHED_LAN_IP
 
-_CACHED_TELEMETRY = {
+
+_CACHED_LAN_IP = ""
+
+# Telemetry Cache
+_LAST_TELEMETRY_SAMPLE = 0.0
+_CACHED_TELEMETRY: Dict[str, Any] = {
     "cpu": 0.0,
     "mem": 0.0,
-    "bat_str": "AC",
-    "subsystems": [],
-    "last_check": 0.0,
+    "battery": "100%",
+    "subsystems": []
 }
 
+
 def get_cached_telemetry() -> Tuple[float, float, str, List[Tuple[str, str, bool]]]:
-    """Returns (cpu, mem, bat_str, subsystems) throttled to 1.0s interval."""
+    """Sample hardware metrics at most once every 1.0s to avoid bogging down render loop."""
+    global _LAST_TELEMETRY_SAMPLE, _CACHED_TELEMETRY
     now = time.time()
-    if now - _CACHED_TELEMETRY["last_check"] >= 1.0:
+    if now - _LAST_TELEMETRY_SAMPLE >= 1.0:
+        _LAST_TELEMETRY_SAMPLE = now
         try:
-            _CACHED_TELEMETRY["cpu"] = psutil.cpu_percent()
-        except Exception:
-            pass
-        try:
+            _CACHED_TELEMETRY["cpu"] = psutil.cpu_percent(interval=None)
             _CACHED_TELEMETRY["mem"] = psutil.virtual_memory().percent
+            bat = psutil.sensors_battery()
+            _CACHED_TELEMETRY["battery"] = f"{int(bat.percent)}%" if bat else "PWR"
         except Exception:
             pass
-        try:
-            bat = psutil.sensors_battery()
-            _CACHED_TELEMETRY["bat_str"] = f"{bat.percent}%" if bat else "AC"
-        except Exception:
-            _CACHED_TELEMETRY["bat_str"] = "AC"
+
         if _SUBSYSTEMS_CALLBACK:
             try:
                 _CACHED_TELEMETRY["subsystems"] = _SUBSYSTEMS_CALLBACK() or []
             except Exception:
                 pass
-        _CACHED_TELEMETRY["last_check"] = now
+
     return (
         _CACHED_TELEMETRY["cpu"],
         _CACHED_TELEMETRY["mem"],
-        _CACHED_TELEMETRY["bat_str"],
-        _CACHED_TELEMETRY["subsystems"],
+        _CACHED_TELEMETRY["battery"],
+        _CACHED_TELEMETRY["subsystems"]
     )
 
 
-_INBOX_COUNT = -1
-_INBOX_COUNT_AT = 0.0
+_LAST_INBOX_SAMPLE = 0.0
+_CACHED_INBOX_COUNT = 0
 
 
 def inbox_count_cached() -> int:
-    """Inbox file count, refreshed at most every 10s (draw_hud runs per frame)."""
-    global _INBOX_COUNT, _INBOX_COUNT_AT
+    """Cache inbox file count: sampled at most once every 3 seconds."""
+    global _LAST_INBOX_SAMPLE, _CACHED_INBOX_COUNT
     now = time.time()
-    if _INBOX_COUNT < 0 or now - _INBOX_COUNT_AT > 10:
+    if now - _LAST_INBOX_SAMPLE >= 3.0:
+        _LAST_INBOX_SAMPLE = now
         try:
-            from aria import inbox as _inbox_mod
-            _INBOX_COUNT = _inbox_mod.inbox_count()
+            from aria import inbox
+            _CACHED_INBOX_COUNT = inbox.inbox_count()
         except Exception:
-            _INBOX_COUNT = 0
-        _INBOX_COUNT_AT = now
-    return _INBOX_COUNT
+            _CACHED_INBOX_COUNT = 0
+    return _CACHED_INBOX_COUNT
 
 
-# Visual Palette (BGR)
-CYAN = (255, 220, 30)
-GLOW = (120, 90, 10)
-AMBER = (30, 160, 255)
+# Spotify Telemetry Cache
+_SPOTIFY_CACHE: Dict[str, Any] = {
+    "time": 0.0,
+    "running": False,
+    "playing": False,
+    "title": "Spotify Standby",
+    "artist": "",
+    "track": ""
+}
+
+
+def _get_spotify_telemetry() -> Dict[str, Any]:
+    """Detect Spotify window status and track title without lag."""
+    global _SPOTIFY_CACHE
+    now = time.time()
+    if now - _SPOTIFY_CACHE["time"] < 0.6:
+        return _SPOTIFY_CACHE
+
+    info = {
+        "time": now,
+        "running": False,
+        "playing": False,
+        "title": "Spotify Standby",
+        "artist": "",
+        "track": ""
+    }
+    try:
+        import ctypes
+
+        def enum_cb(hwnd, extra):
+            if ctypes.windll.user32.IsWindowVisible(hwnd):
+                length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    buff = ctypes.create_unicode_buffer(length + 1)
+                    ctypes.windll.user32.GetWindowTextW(hwnd, buff, length + 1)
+                    txt = buff.value.strip()
+                    if "spotify" in txt.lower():
+                        info["running"] = True
+                        if txt in ("Spotify", "Spotify Free", "Spotify Premium"):
+                            info["playing"] = False
+                            info["title"] = txt
+                        elif " - " in txt:
+                            info["playing"] = True
+                            parts = txt.split(" - ", 1)
+                            info["artist"] = parts[0].strip()
+                            info["track"] = parts[1].strip()
+                            info["title"] = txt
+                        else:
+                            info["playing"] = True
+                            info["title"] = txt
+            return True
+
+        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
+        ctypes.windll.user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
+    except Exception:
+        pass
+
+    _SPOTIFY_CACHE = info
+    return info
+
+
+# Colors (BGR)
+BG = (10, 12, 16)
+PANEL_BG = (14, 16, 22)
+BORDER = (38, 48, 64)
+ACC = (240, 160, 40)
+CYAN = (255, 230, 40)
 GREEN = (40, 240, 120)
-BORDER = (45, 50, 60)
-PANEL_BG = (15, 17, 22)
-WHITE_TEXT = (235, 242, 255)
-PINK = (170, 90, 255)
-MOUTH_YELLOW = (0, 220, 255)
+WHITE_TEXT = (230, 235, 240)
+PINK = (180, 80, 255)
+MOUTH_YELLOW = (40, 220, 255)
 PINK_DEEP = (110, 45, 190)
 LINER = (70, 25, 120)
 DIM = (150, 160, 170)
+AMBER = (0, 180, 255)
 
 # Buttons
 _WHISPER_BTN = (580, 52, 105, 22)
@@ -145,6 +205,31 @@ _INPUT_PASTE_BTN = (965, 648, 70, 24)
 _INPUT_SEND_BTN = (1041, 648, 66, 24)
 _INPUT_CLEAR_BTN = (1113, 648, 54, 24)
 _INPUT_ESC_BTN = (1173, 648, 66, 24)
+
+# Context Tabs bounds (x, y, w, h)
+_TAB_DASHBOARD = (35, 486, 125, 20)
+_TAB_SUBTITLES = (168, 486, 115, 20)
+_TAB_AUDIO     = (291, 486, 115, 20)
+_TAB_TASKS     = (414, 486, 115, 20)
+_TAB_SPOTIFY   = (537, 486, 105, 20)
+_TAB_MINIMIZE  = (1155, 486, 90, 20)
+
+# Spotify interactive transport buttons in DASHBOARD split view:
+_DASH_SPOTIFY_PREV  = (845, 608, 30, 22)
+_DASH_SPOTIFY_PLAY  = (883, 608, 48, 22)
+_DASH_SPOTIFY_NEXT  = (939, 608, 30, 22)
+_DASH_SPOTIFY_DJ    = (977, 608, 36, 22)
+_DASH_SPOTIFY_FOCUS = (1021, 608, 42, 22)
+
+# Spotify interactive buttons in expanded SPOTIFY view:
+_EXP_SPOTIFY_PREV   = (60, 595, 90, 28)
+_EXP_SPOTIFY_PLAY   = (160, 595, 120, 28)
+_EXP_SPOTIFY_NEXT   = (290, 595, 90, 28)
+_EXP_SPOTIFY_DJ     = (390, 595, 130, 28)
+_EXP_SPOTIFY_FOCUS  = (530, 595, 100, 28)
+_EXP_SPOTIFY_CHILL  = (640, 595, 95, 28)
+_EXP_SPOTIFY_FOCUSM = (745, 595, 95, 28)
+_EXP_SPOTIFY_ENERGY = (850, 595, 95, 28)
 
 
 def get_clipboard_text() -> str:
@@ -185,7 +270,7 @@ def get_clipboard_text() -> str:
 CURRENT_STATE = "idle"
 HUD_MODE = "visor"  # "visor" or "chat_log"
 CHAT_SCROLL = 0
-USE_PIXEL_AVATAR = True  # pixel-person face; set False to restore v9.34 eyes
+USE_PIXEL_AVATAR = True
 SHOW_COMMANDS = False
 TYPING_ACTIVE: bool = False
 TYPING_BUFFER: str = ""
@@ -193,16 +278,23 @@ COMMANDS_PAGE = 0
 COMMANDS_PAGES: List[Any] = []
 SUBTITLE_TEXT = ""
 LOG_STREAM: List[str] = []
-DISPLAY_CHAT_LOG: List[Tuple[str, str, str]] = []
 
-WHISPER_MODE = False
+# Context Tiles State
+TILE_MODE: str = "dashboard"  # "dashboard", "subtitles", "audio", "tasks", "spotify"
+TILE_COLLAPSED: bool = False
+_TILE_MODES_ORDER = ["dashboard", "subtitles", "audio", "tasks", "spotify"]
 
-_FACE = {
-    "eye_dx": 0.0, "eye_dy": 0.0,
-    "eye_tdx": 0.0, "eye_tdy": 0.0,
+# Whispering mode toggle
+WHISPER_MODE: bool = False
+
+_FACE: Dict[str, Any] = {
+    "eye_dx": 0.0,
+    "eye_dy": 0.0,
+    "target_dx": 0.0,
+    "target_dy": 0.0,
     "next_glance": 0.0,
-    "blink_until": 0.0,
     "next_blink": 0.0,
+    "blink_until": 0.0,
 }
 
 _MOOD_CALLBACK = None
@@ -220,7 +312,7 @@ def set_subsystems_callback(fn):
 
 
 def add_hud_log(msg: str):
-    msg = hud_ascii(msg)
+    global LOG_STREAM
     LOG_STREAM.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     if len(LOG_STREAM) > 8:
         LOG_STREAM.pop(0)
@@ -238,143 +330,294 @@ def set_hud_subtitle(text: str):
     SUBTITLE_TEXT = hud_ascii(text)
 
 
+def set_tile_mode(mode: str):
+    global TILE_MODE, TILE_COLLAPSED
+    if mode in _TILE_MODES_ORDER:
+        TILE_MODE = mode
+        TILE_COLLAPSED = False
+
+
+def cycle_tile_mode() -> str:
+    global TILE_MODE, TILE_COLLAPSED
+    TILE_COLLAPSED = False
+    idx = (_TILE_MODES_ORDER.index(TILE_MODE) + 1) % len(_TILE_MODES_ORDER)
+    TILE_MODE = _TILE_MODES_ORDER[idx]
+    return TILE_MODE
+
+
+def _dispatch_spotify_action(action: str):
+    """Trigger Spotify action asynchronously in background thread."""
+    def _run():
+        try:
+            from aria import spotify
+            if action in ("play_pause", "previous", "next"):
+                spotify.tool_spotify(action)
+                add_hud_log(f"Spotify: {action}")
+            elif action == "dj":
+                spotify.tool_dj("liked songs")
+                add_hud_log("Spotify DJ: Liked Songs")
+            elif action == "focus":
+                from aria.tools.builtins import tool_focus_window
+                tool_focus_window("Spotify")
+                add_hud_log("Focused Spotify window.")
+            elif action == "chill":
+                spotify.tool_dj("chill lofi")
+                add_hud_log("Spotify: Chill playlist")
+            elif action == "focus_music":
+                spotify.tool_dj("deep focus ambient")
+                add_hud_log("Spotify: Focus playlist")
+            elif action == "energy":
+                spotify.tool_dj("electronic workout energy")
+                add_hud_log("Spotify: Energy playlist")
+        except Exception as e:
+            add_hud_log(f"Spotify action error: {e}")
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def handle_click(x: int, y: int) -> bool:
+    """Handle mouse clicks on HUD context tabs, collapse toggle, and Spotify transport."""
+    global TILE_MODE, TILE_COLLAPSED
+
+    # 1. Collapse toggle button
+    bx, by, bw, bh = _TAB_MINIMIZE
+    if bx <= x <= bx + bw and by <= y <= by + bh:
+        TILE_COLLAPSED = not TILE_COLLAPSED
+        add_hud_log(f"Context tiles {'minimized' if TILE_COLLAPSED else 'expanded'}.")
+        return True
+
+    # 2. Context Tab clicks
+    tabs = [
+        (_TAB_DASHBOARD, "dashboard"),
+        (_TAB_SUBTITLES, "subtitles"),
+        (_TAB_AUDIO,     "audio"),
+        (_TAB_TASKS,     "tasks"),
+        (_TAB_SPOTIFY,   "spotify"),
+    ]
+    for (tx, ty, tw, th), mode in tabs:
+        if tx <= x <= tx + tw and ty <= y <= ty + th:
+            TILE_COLLAPSED = False
+            TILE_MODE = mode
+            add_hud_log(f"Context tile: {mode.upper()}")
+            return True
+
+    # 3. Spotify transport buttons in DASHBOARD split view
+    if not TILE_COLLAPSED and TILE_MODE == "dashboard":
+        btns = [
+            (_DASH_SPOTIFY_PREV, "previous"),
+            (_DASH_SPOTIFY_PLAY, "play_pause"),
+            (_DASH_SPOTIFY_NEXT, "next"),
+            (_DASH_SPOTIFY_DJ,   "dj"),
+            (_DASH_SPOTIFY_FOCUS,"focus"),
+        ]
+        for (bx, by, bw, bh), action in btns:
+            if bx <= x <= bx + bw and by <= y <= by + bh:
+                _dispatch_spotify_action(action)
+                return True
+
+    # 4. Spotify transport buttons in expanded SPOTIFY view
+    if not TILE_COLLAPSED and TILE_MODE == "spotify":
+        exp_btns = [
+            (_EXP_SPOTIFY_PREV, "previous"),
+            (_EXP_SPOTIFY_PLAY, "play_pause"),
+            (_EXP_SPOTIFY_NEXT, "next"),
+            (_EXP_SPOTIFY_DJ,   "dj"),
+            (_EXP_SPOTIFY_FOCUS,"focus"),
+            (_EXP_SPOTIFY_CHILL,"chill"),
+            (_EXP_SPOTIFY_FOCUSM,"focus_music"),
+            (_EXP_SPOTIFY_ENERGY,"energy"),
+        ]
+        for (bx, by, bw, bh), action in exp_btns:
+            if bx <= x <= bx + bw and by <= y <= by + bh:
+                _dispatch_spotify_action(action)
+                return True
+
+    return False
+
+
+def _get_active_task_chips() -> List[Tuple[str, str, Tuple[int, int, int]]]:
+    """Returns list of (label, value, color) chips for active tasks."""
+    chips = []
+    latest_tool = "IDLE"
+    for log in reversed(LOG_STREAM):
+        if "Tool " in log or "tool_" in log or "run_python_code" in log or "fetch_url" in log or "read_screen" in log:
+            import re
+            m = re.search(r"(?:tool_|Tool\s+|call:\s*)([a-zA-Z0-9_]+)", log)
+            if m:
+                latest_tool = m.group(1)[:14]
+                break
+            elif "run_python_code" in log:
+                latest_tool = "python_code"
+                break
+            elif "read_screen" in log:
+                latest_tool = "read_screen"
+                break
+    chips.append(("TOOL", latest_tool, GREEN if latest_tool != "IDLE" else DIM))
+
+    try:
+        from aria.scheduler import sched_list
+        active_sched = len(sched_list())
+        chips.append(("TIMERS", str(active_sched), AMBER if active_sched > 0 else DIM))
+    except Exception:
+        chips.append(("TIMERS", "0", DIM))
+
+    chips.append(("STATE", CURRENT_STATE.upper()[:9], CYAN))
+    chips.append(("INBOX", str(inbox_count_cached()), (240, 160, 60)))
+    return chips
+
+
 def apply_led_scanlines(canvas: np.ndarray, x1: int, y1: int, x2: int, y2: int):
     for y in range(max(0, y1), min(canvas.shape[0], y2), 4):
-        canvas[y, max(0, x1):min(canvas.shape[1], x2)] =             canvas[y, max(0, x1):min(canvas.shape[1], x2)] // 2
+        canvas[y, max(0, x1):min(canvas.shape[1], x2)] = \
+            canvas[y, max(0, x1):min(canvas.shape[1], x2)] // 2
 
 
 def _update_idle_face(now: float):
-    """Advance idle-face animation state. Pure timing/state -- no drawing."""
+    """Advance idle-face animation state for classic visor."""
     f = _FACE
-    if f["next_glance"] == 0.0:  # first call: stagger the timers
+    if f["next_glance"] == 0.0:
         f["next_glance"] = now + 0.5
-        f["next_blink"] = now + random.uniform(2.5, 4.0)
-    # Mood biases idle tempo only — never expression meaning. Sleepy drifts
-    # narrower and blinks slower; bright/playful glances wider, blinks faster.
+        f["next_blink"] = now + 3.0
+
     _mw = (_MOOD_CALLBACK().lower() if _MOOD_CALLBACK else "calm")
-    _gx = 12 if _mw == "sleepy" else 26 if _mw in ("bright", "playful") else 22
-    _br = ((4.5, 9.0) if _mw == "sleepy" else (2.5, 6.0)
-           if _mw in ("bright", "playful") else (3.0, 7.0))
+    if "sleepy" in _mw:
+        glance_min, glance_max = 5.0, 9.0
+        blink_min, blink_max = 6.0, 10.0
+        max_dist = 6.0
+    elif "curious" in _mw or "excited" in _mw:
+        glance_min, glance_max = 1.0, 2.5
+        blink_min, blink_max = 2.0, 4.0
+        max_dist = 16.0
+    else:
+        glance_min, glance_max = 2.0, 4.5
+        blink_min, blink_max = 2.5, 5.0
+        max_dist = 12.0
+
     if now >= f["next_glance"]:
-        f["eye_tdx"] = random.uniform(-_gx, _gx)
-        f["eye_tdy"] = random.uniform(-16, 16)
-        f["next_glance"] = now + random.uniform(2.0, 5.0)
-    f["eye_dx"] += (f["eye_tdx"] - f["eye_dx"]) * 0.18  # ease, ~10 fps
-    f["eye_dy"] += (f["eye_tdy"] - f["eye_dy"]) * 0.18
+        f["target_dx"] = random.uniform(-max_dist, max_dist)
+        f["target_dy"] = random.uniform(-max_dist * 0.5, max_dist * 0.5)
+        f["next_glance"] = now + random.uniform(glance_min, glance_max)
+
+    smooth = 0.15
+    f["eye_dx"] += (f["target_dx"] - f["eye_dx"]) * smooth
+    f["eye_dy"] += (f["target_dy"] - f["eye_dy"]) * smooth
+
     if now >= f["next_blink"]:
         f["blink_until"] = now + 0.18
-        f["next_blink"] = now + random.uniform(*_br)
+        f["next_blink"] = now + random.uniform(blink_min, blink_max)
 
 
 def _blink_squash(now: float) -> float:
-    """Vertical eye scale: 1.0 normally, dips toward 0.08 mid-blink."""
-    if now < _FACE["blink_until"]:
-        t = 1.0 - (_FACE["blink_until"] - now) / 0.18
-        return max(0.08, abs(math.cos(t * math.pi)))
+    f = _FACE
+    if now < f["blink_until"]:
+        phase = (f["blink_until"] - now) / 0.18
+        return max(0.08, float(abs(math.sin(phase * math.pi))))
     return 1.0
 
 
 def _draw_lashes(canvas: np.ndarray, ex: int, cy: int, ew: int, eh: int, side: int):
-    """Three lash flicks fanning from the upper-outer quadrant of an eye."""
-    angs = (200, 220, 240) if side < 0 else (340, 320, 300)
-    for a in angs:
-        r = math.radians(a)
-        x0 = int(ex + ew * math.cos(r))
-        y0 = int(cy + eh * math.sin(r))
-        x1 = int(ex + (ew + 16) * math.cos(r))
-        y1 = int(cy + (eh + 16) * math.sin(r))
-        cv2.line(canvas, (x0, y0), (x1, y1), PINK, 2)
+    outer_x = ex + side * int(ew * 0.82)
+    top_y = cy - int(eh * 0.72)
+    lash_tip1 = (outer_x + side * 18, top_y - 14)
+    cv2.line(canvas, (outer_x, top_y), lash_tip1, LINER, 3, cv2.LINE_AA)
+    mid_outer_x = ex + side * int(ew * 0.60)
+    mid_top_y = cy - int(eh * 0.90)
+    lash_tip2 = (mid_outer_x + side * 10, mid_top_y - 12)
+    cv2.line(canvas, (mid_outer_x, mid_top_y), lash_tip2, LINER, 2, cv2.LINE_AA)
 
 
 def _draw_waveform_mouth(canvas: np.ndarray, color: Tuple[int, int, int], t: float,
-                         cx: int = 640, my: int = 388, bars: int = 19, spacing: int = 14,
-                         amp: int = 10, thick: int = 2):
-    """Soft idle-style waveform ripple: calm amplitude so it reads as a resting
-    mouth, not speech. Animated with time t."""
-    for i in range(-(bars // 2), bars // 2 + 1):
-        bar_x = cx + (i * spacing)
-        bar_h = int(abs(np.sin(t * 2.0 + i * 0.5)) * amp) + 2
-        cv2.line(canvas, (bar_x, my - bar_h), (bar_x, my + bar_h), color, thick)
+                         y_center: int = 370, num_bars: int = 33,
+                         spacing: int = 12, max_amplitude: int = 34):
+    for i in range(-num_bars // 2 + 1, num_bars // 2 + 1):
+        bar_x = 640 + (i * spacing)
+        bar_h = int(abs(np.sin(t + i * 0.45)) * max_amplitude) + 4
+        cv2.line(canvas, (bar_x, y_center - bar_h), (bar_x, y_center + bar_h), color, 2)
 
 
-def _build_commands_pages():
-    rows = []
-    last_cat = None
-    for cat, tool, ex in COMMAND_GUIDE:
-        if cat != last_cat:
-            rows.append(("cat", cat, ""))
-            last_cat = cat
-        rows.append(("cmd", tool, ex))
-    ROWS_PER_COL = 24
-    pages = []
-    for i in range(0, len(rows), ROWS_PER_COL * 2):
-        chunk = rows[i:i + ROWS_PER_COL * 2]
-        pages.append((chunk[:ROWS_PER_COL], chunk[ROWS_PER_COL:]))
-    return pages
+def _build_commands_pages() -> List[List[Tuple[str, List[Tuple[str, str]]]]]:
+    cols_per_page = 3
+    items_per_col = 14
+    capacity = cols_per_page * items_per_col
+    all_items: List[Tuple[str, str, str]] = []
+    for cat, items in COMMAND_GUIDE.items():
+        for act, phr in items:
+            all_items.append((cat, act, phr))
+
+    pages: List[List[Tuple[str, List[Tuple[str, str]]]]] = []
+    for p_start in range(0, len(all_items), capacity):
+        page_items = all_items[p_start:p_start + capacity]
+        page_cols: List[Tuple[str, List[Tuple[str, str]]]] = []
+        for c_idx in range(cols_per_page):
+            c_start = c_idx * items_per_col
+            c_items = page_items[c_start:c_start + items_per_col]
+            if not c_items:
+                break
+            col_cat = c_items[0][0]
+            col_list = [(act, phr) for (_, act, phr) in c_items]
+            page_cols.append((col_cat, col_list))
+        pages.append(page_cols)
+    return pages or [[("COMMANDS", [("Help", "No commands registered")])]]
 
 
 def _draw_commands_overlay(canvas: np.ndarray):
     global COMMANDS_PAGES, COMMANDS_PAGE
     if not COMMANDS_PAGES:
         COMMANDS_PAGES = _build_commands_pages()
-    dim = canvas.copy()
-    cv2.rectangle(dim, (0, 0), (1280, 720), (8, 10, 14), -1)
-    cv2.addWeighted(dim, 0.88, canvas, 0.12, 0, canvas)
-    cv2.rectangle(canvas, (36, 52), (1244, 700), (15, 17, 22), -1)
-    cv2.rectangle(canvas, (36, 52), (1244, 700), (45, 50, 60), 1)
-
-    # Top-right close [X]
-    xx, xy, xw, xh = _COMMANDS_X_BTN
-    cv2.rectangle(canvas, (xx, xy), (xx + xw, xy + xh), (25, 28, 36), -1)
-    cv2.rectangle(canvas, (xx, xy), (xx + xw, xy + xh), BORDER, 1)
-    cv2.putText(canvas, "X", (xx + 8, xy + 17), cv2.FONT_HERSHEY_SIMPLEX, 0.45, DIM, 1, cv2.LINE_AA)
-
-    cv2.putText(canvas, "COMMANDS - say what you see", (60, 88),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, CYAN, 2, cv2.LINE_AA)
 
     total_pages = max(1, len(COMMANDS_PAGES))
     cur_page_idx = COMMANDS_PAGE % total_pages
     page = COMMANDS_PAGES[cur_page_idx]
-    for col, rows in enumerate(page):
-        x = 70 + col * 590
-        y = 126
-        for kind, a, b in rows:
-            if kind == "cat":
-                y += 6
-                cv2.putText(canvas, a.upper(), (x, y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, PINK, 1, cv2.LINE_AA)
-                y += 22
-            else:
-                cv2.putText(canvas, a, (x, y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, CYAN, 1, cv2.LINE_AA)
-                tw = cv2.getTextSize(a + " ", cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)[0][0]
-                cv2.putText(canvas, '- "' + b[:48] + '"', (x + tw, y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, WHITE_TEXT, 1, cv2.LINE_AA)
-                y += 21
 
-    # Bottom navigation bar
+    overlay = canvas.copy()
+    cv2.rectangle(overlay, (36, 52), (1244, 700), (8, 10, 16), -1)
+    cv2.addWeighted(overlay, 0.94, canvas, 0.06, 0, canvas)
+    cv2.rectangle(canvas, (36, 52), (1244, 700), CYAN, 2)
+    cv2.line(canvas, (36, 92), (1244, 92), CYAN, 1)
+
+    cv2.putText(canvas, "A.R.I.A. COMMAND GUIDE  //  VERBAL & ACTION MATRIX",
+                (56, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, CYAN, 2, cv2.LINE_AA)
+
+    xx, xy, xw, xh = _COMMANDS_X_BTN
+    cv2.rectangle(canvas, (xx, xy), (xx + xw, xy + xh), (35, 22, 30), -1)
+    cv2.rectangle(canvas, (xx, xy), (xx + xw, xy + xh), PINK, 1)
+    cv2.putText(canvas, "X", (xx + 8, xy + 17), cv2.FONT_HERSHEY_SIMPLEX, 0.5, PINK, 2, cv2.LINE_AA)
+
+    col_xs = [60, 450, 840]
+    for c_idx, (cat_name, items) in enumerate(page):
+        if c_idx >= len(col_xs):
+            break
+        x = col_xs[c_idx]
+        y = 120
+        cv2.putText(canvas, f"// {cat_name.upper()}", (x, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.46, ACC, 1, cv2.LINE_AA)
+        cv2.line(canvas, (x, y + 4), (x + 360, y + 4), BORDER, 1)
+        y += 24
+        for a, b in items:
+            tw = cv2.getTextSize(a + ": ", cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)[0][0]
+            cv2.putText(canvas, a + ": ", (x, y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, CYAN, 1, cv2.LINE_AA)
+            cv2.putText(canvas, '- "' + b[:48] + '"', (x + tw, y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, WHITE_TEXT, 1, cv2.LINE_AA)
+            y += 21
+
     cv2.putText(canvas, "LEFT/RIGHT arrows or click buttons to flip  |  Press H or ESC to close",
                 (60, 675), cv2.FONT_HERSHEY_SIMPLEX, 0.38, DIM, 1, cv2.LINE_AA)
 
-    # Prev button [< PREV]
     px, py, pw, ph = _COMMANDS_PREV_BTN
     cv2.rectangle(canvas, (px, py), (px + pw, py + ph), (28, 32, 42), -1)
     cv2.rectangle(canvas, (px, py), (px + pw, py + ph), CYAN, 1)
     cv2.putText(canvas, "< PREV", (px + 22, py + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.45, CYAN, 1, cv2.LINE_AA)
 
-    # Page indicator
     page_text = f"PAGE {cur_page_idx + 1} / {total_pages}"
     tw = cv2.getTextSize(page_text, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)[0][0]
     mid_x = (px + pw) + (810 - (px + pw) - tw) // 2
     cv2.putText(canvas, page_text, (mid_x, 675), cv2.FONT_HERSHEY_SIMPLEX, 0.42, WHITE_TEXT, 1, cv2.LINE_AA)
 
-    # Next button [NEXT >]
     nx, ny, nw, nh = _COMMANDS_NEXT_BTN
     cv2.rectangle(canvas, (nx, ny), (nx + nw, ny + nh), (28, 32, 42), -1)
     cv2.rectangle(canvas, (nx, ny), (nx + nw, ny + nh), CYAN, 1)
     cv2.putText(canvas, "NEXT >", (nx + 24, ny + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.45, CYAN, 1, cv2.LINE_AA)
 
-    # Close button [CLOSE [H]]
     cx, cy, cw, ch = _COMMANDS_CLOSE_BTN
     cv2.rectangle(canvas, (cx, cy), (cx + cw, cy + ch), (35, 22, 30), -1)
     cv2.rectangle(canvas, (cx, cy), (cx + cw, cy + ch), PINK, 1)
@@ -385,8 +628,7 @@ def commands_next_page() -> int:
     global COMMANDS_PAGES, COMMANDS_PAGE
     if not COMMANDS_PAGES:
         COMMANDS_PAGES = _build_commands_pages()
-    if COMMANDS_PAGES:
-        COMMANDS_PAGE = (COMMANDS_PAGE + 1) % len(COMMANDS_PAGES)
+    COMMANDS_PAGE = (COMMANDS_PAGE + 1) % len(COMMANDS_PAGES)
     return COMMANDS_PAGE
 
 
@@ -394,35 +636,294 @@ def commands_prev_page() -> int:
     global COMMANDS_PAGES, COMMANDS_PAGE
     if not COMMANDS_PAGES:
         COMMANDS_PAGES = _build_commands_pages()
-    if COMMANDS_PAGES:
-        COMMANDS_PAGE = (COMMANDS_PAGE - 1) % len(COMMANDS_PAGES)
+    COMMANDS_PAGE = (COMMANDS_PAGE - 1) % len(COMMANDS_PAGES)
     return COMMANDS_PAGE
 
 
 def tool_show_commands() -> str:
-    global SHOW_COMMANDS, COMMANDS_PAGE
+    global SHOW_COMMANDS
     SHOW_COMMANDS = True
-    COMMANDS_PAGE = 0
-    return "Commands panel shown (press H or say 'hide commands' to close)."
+    return "Commands overlay is now OPEN on the HUD. Say 'hide commands' or press H to dismiss."
 
 
 def tool_hide_commands() -> str:
     global SHOW_COMMANDS
     SHOW_COMMANDS = False
-    return "Commands panel hidden."
+    return "Commands overlay CLOSED."
+
+
+def _draw_context_tiles(canvas: np.ndarray, ACC: Tuple[int, int, int], ACC2: Tuple[int, int, int],
+                        t: float, state: str):
+    """Render interactive context tiles: live waveforms, task chips, Spotify telemetry."""
+    # 1. Header Tab Bar (y: 486..508)
+    tabs = [
+        (_TAB_DASHBOARD, "[1] DASHBOARD", "dashboard"),
+        (_TAB_SUBTITLES, "[2] SUBTITLES", "subtitles"),
+        (_TAB_AUDIO,     "[3] AUDIO OSC",  "audio"),
+        (_TAB_TASKS,     "[4] TASK FLEET", "tasks"),
+        (_TAB_SPOTIFY,   "[5] SPOTIFY",    "spotify"),
+    ]
+    for (tx, ty, tw, th), label, mode in tabs:
+        is_active = (not TILE_COLLAPSED) and (TILE_MODE == mode)
+        bg_col = (30, 42, 54) if is_active else (18, 22, 28)
+        border_col = CYAN if is_active else BORDER
+        text_col = CYAN if is_active else DIM
+        cv2.rectangle(canvas, (tx, ty), (tx + tw, ty + th), bg_col, -1)
+        cv2.rectangle(canvas, (tx, ty), (tx + tw, ty + th), border_col, 1)
+        cv2.putText(canvas, label, (tx + 8, ty + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.35, text_col, 1, cv2.LINE_AA)
+
+    # Collapse toggle button
+    bx, by, bw, bh = _TAB_MINIMIZE
+    cv2.rectangle(canvas, (bx, by), (bx + bw, by + bh), (26, 30, 38), -1)
+    cv2.rectangle(canvas, (bx, by), (bx + bw, by + bh), BORDER, 1)
+    min_label = "[+] EXPAND" if TILE_COLLAPSED else "[-] COLLAPSE"
+    cv2.putText(canvas, min_label, (bx + 8, by + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.33, (170, 185, 200), 1, cv2.LINE_AA)
+
+    # 2. Collapsed View
+    if TILE_COLLAPSED:
+        cv2.rectangle(canvas, (35, 514), (1245, 538), (14, 16, 22), -1)
+        cv2.rectangle(canvas, (35, 514), (1245, 538), BORDER, 1)
+        spot = _get_spotify_telemetry()
+        s_title = spot["title"][:30]
+        ticker = f"SYNTHESIS: {SUBTITLE_TEXT[:60]}...  |  AUDIO: ARMED  |  SPOTIFY: {s_title}"
+        cv2.putText(canvas, ticker, (45, 530), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (170, 190, 205), 1, cv2.LINE_AA)
+        return
+
+    # 3. View: DASHBOARD (Split 3-Tile Context Mode)
+    if TILE_MODE == "dashboard":
+        # --- Card 1: Subtitles Stream (x: 35..425, y: 512..638) ---
+        cv2.rectangle(canvas, (35, 512), (425, 638), (16, 18, 24), -1)
+        cv2.rectangle(canvas, (35, 512), (425, 638), BORDER, 1)
+        cv2.putText(canvas, "[ SUBTITLES // SYNTHESIS ]", (45, 528),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, ACC, 1, cv2.LINE_AA)
+        dot_col = GREEN if state in ("speaking", "thinking") else (70, 90, 110)
+        cv2.circle(canvas, (412, 524), 4, dot_col, -1)
+        cv2.line(canvas, (35, 534), (425, 534), BORDER, 1)
+
+        sub_lines = textwrap.wrap(SUBTITLE_TEXT, width=42)[:4]
+        sy = 552
+        for s_line in sub_lines:
+            cv2.putText(canvas, s_line, (45, sy), cv2.FONT_HERSHEY_SIMPLEX, 0.36, WHITE_TEXT, 1, cv2.LINE_AA)
+            sy += 20
+
+        # --- Card 2: Live Audio Dynamics & Oscilloscope (x: 435..825, y: 512..638) ---
+        cv2.rectangle(canvas, (435, 512), (825, 638), (14, 16, 22), -1)
+        cv2.rectangle(canvas, (435, 512), (825, 638), BORDER, 1)
+        cv2.putText(canvas, "[ AUDIO // LIVE OSCILLOSCOPE ]", (445, 528),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, ACC, 1, cv2.LINE_AA)
+        aud_badge = "SYNTHESIS" if state == "speaking" else ("PERCEPTION" if state == "listening" else "VAD ARMED")
+        cv2.putText(canvas, aud_badge, (735, 528), cv2.FONT_HERSHEY_SIMPLEX, 0.33, CYAN, 1, cv2.LINE_AA)
+        cv2.line(canvas, (435, 534), (825, 534), BORDER, 1)
+
+        # 28-Band FFT Spectrum Bars (y: 538..582)
+        for i in range(28):
+            bx = 445 + i * 13
+            if state == "speaking":
+                bh = int(abs(np.sin(t * 14 + i * 0.45) * np.cos(t * 8 + i * 0.2)) * 36) + 4
+            elif state == "listening":
+                bh = int(abs(np.sin(t * 6 + i * 0.6)) * 24) + 3
+            elif state == "thinking":
+                bh = int(abs(np.sin(t * 9 + i * 0.8)) * 18) + 3
+            else:
+                bh = int(abs(np.sin(t * 2.2 + i * 0.35)) * 12) + 2
+            
+            bh = min(bh, 42)
+            cv2.line(canvas, (bx, 582), (bx, 582 - bh), CYAN if i % 2 == 0 else ACC, 2)
+            cv2.circle(canvas, (bx, max(540, 582 - bh - 2)), 1, (255, 255, 255), -1)
+
+        # Oscilloscope Waveform Trace (y: 590..634, baseline at y: 612)
+        cv2.line(canvas, (445, 612), (815, 612), (25, 30, 40), 1)
+        pts = []
+        amp = 18 if state == "speaking" else (12 if state in ("listening", "thinking") else 6)
+        for px in range(445, 816, 4):
+            ph = (px - 445) / 370.0
+            wy = 612 + int(np.sin(ph * 16.0 + t * 9.0) * np.cos(ph * 6.0 + t * 4.0) * amp)
+            pts.append((px, wy))
+        if len(pts) > 1:
+            for k in range(len(pts) - 1):
+                cv2.line(canvas, pts[k], pts[k + 1], GREEN, 1, cv2.LINE_AA)
+
+        # --- Card 3: Active Task Fleet & Spotify (x: 835..1250, y: 512..638) ---
+        cv2.rectangle(canvas, (835, 512), (1250, 638), (16, 18, 24), -1)
+        cv2.rectangle(canvas, (835, 512), (1250, 638), BORDER, 1)
+        cv2.putText(canvas, "[ TASK FLEET & SPOTIFY ]", (845, 528),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, ACC, 1, cv2.LINE_AA)
+        cv2.line(canvas, (835, 534), (1250, 534), BORDER, 1)
+
+        # Section A: Active Task Chips (y: 540..568)
+        chips = _get_active_task_chips()
+        cx = 845
+        for lbl, val, col in chips:
+            chip_str = f"{lbl}:{val}"
+            (cw, _), _ = cv2.getTextSize(chip_str, cv2.FONT_HERSHEY_SIMPLEX, 0.33, 1)
+            cv2.rectangle(canvas, (cx, 542), (cx + cw + 14, 562), (22, 28, 36), -1)
+            cv2.rectangle(canvas, (cx, 542), (cx + cw + 14, 562), col, 1)
+            cv2.putText(canvas, chip_str, (cx + 7, 556), cv2.FONT_HERSHEY_SIMPLEX, 0.33, col, 1, cv2.LINE_AA)
+            cx += cw + 20
+
+        cv2.line(canvas, (845, 570), (1240, 570), (28, 34, 44), 1)
+
+        # Section B: Spotify Telemetry & Controls (y: 574..634)
+        spot = _get_spotify_telemetry()
+        sp_stat_col = GREEN if spot["playing"] else (AMBER if spot["running"] else DIM)
+        sp_stat_lbl = "PLAYING" if spot["playing"] else ("PAUSED" if spot["running"] else "STANDBY")
+
+        cv2.rectangle(canvas, (845, 578), (915, 598), (22, 28, 36), -1)
+        cv2.rectangle(canvas, (845, 578), (915, 598), sp_stat_col, 1)
+        cv2.putText(canvas, sp_stat_lbl, (852, 592), cv2.FONT_HERSHEY_SIMPLEX, 0.33, sp_stat_col, 1, cv2.LINE_AA)
+
+        spot_disp = spot["title"][:38] if spot["title"] else "Spotify Offline"
+        cv2.putText(canvas, spot_disp, (925, 592), cv2.FONT_HERSHEY_SIMPLEX, 0.36, WHITE_TEXT, 1, cv2.LINE_AA)
+
+        # Transport Buttons: Prev, Play/Pause, Next, DJ, APP
+        s_btns = [
+            (_DASH_SPOTIFY_PREV,  "|<", DIM),
+            (_DASH_SPOTIFY_PLAY,  "> / ||", CYAN if spot["playing"] else GREEN),
+            (_DASH_SPOTIFY_NEXT,  ">|", DIM),
+            (_DASH_SPOTIFY_DJ,    "DJ", (200, 140, 255)),
+            (_DASH_SPOTIFY_FOCUS, "APP", (160, 180, 200)),
+        ]
+        for (bx, by, bw, bh), blabel, bcol in s_btns:
+            cv2.rectangle(canvas, (bx, by), (bx + bw, by + bh), (24, 28, 36), -1)
+            cv2.rectangle(canvas, (bx, by), (bx + bw, by + bh), bcol, 1)
+            cv2.putText(canvas, blabel, (bx + 6, by + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.34, bcol, 1, cv2.LINE_AA)
+
+    # 4. View: SUBTITLES (Expanded Stream)
+    elif TILE_MODE == "subtitles":
+        cv2.rectangle(canvas, (35, 512), (1250, 638), (16, 18, 24), -1)
+        cv2.rectangle(canvas, (35, 512), (1250, 638), BORDER, 1)
+        cv2.putText(canvas, "[ DIRECTIVE & SYNTHESIS STREAM // FULL TRANSCRIPT VIEW ]", (45, 528),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, ACC, 1, cv2.LINE_AA)
+        cv2.line(canvas, (35, 534), (1250, 534), BORDER, 1)
+        lines = textwrap.wrap(SUBTITLE_TEXT, width=105)[:5]
+        sy = 554
+        for l in lines:
+            cv2.putText(canvas, l, (45, sy), cv2.FONT_HERSHEY_SIMPLEX, 0.40, WHITE_TEXT, 1, cv2.LINE_AA)
+            sy += 20
+
+    # 5. View: AUDIO (Expanded High-Res Audio Studio)
+    elif TILE_MODE == "audio":
+        cv2.rectangle(canvas, (35, 512), (1250, 638), (14, 16, 22), -1)
+        cv2.rectangle(canvas, (35, 512), (1250, 638), BORDER, 1)
+        cv2.putText(canvas, "[ AUDIO STUDIO // 80-BAND SPECTRUM & MULTI-TRACE OSCILLOSCOPE ]", (45, 528),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, ACC, 1, cv2.LINE_AA)
+        cv2.putText(canvas, "SAMPLE RATE: 48000Hz | FASTER-WHISPER VAD: ARMED | TTS: NEURAL EDGE",
+                    (750, 528), cv2.FONT_HERSHEY_SIMPLEX, 0.34, CYAN, 1, cv2.LINE_AA)
+        cv2.line(canvas, (35, 534), (1250, 534), BORDER, 1)
+
+        # 80 FFT Bars
+        for i in range(80):
+            bx = 45 + i * 15
+            bh = int(abs(np.sin(t * 12 + i * 0.25) * np.cos(t * 5 + i * 0.1)) * 38) + 4
+            cv2.line(canvas, (bx, 580), (bx, 580 - bh), CYAN if i % 2 == 0 else ACC, 2)
+            cv2.circle(canvas, (bx, max(540, 580 - bh - 2)), 1, (255, 255, 255), -1)
+
+        # Dual trace oscilloscope
+        cv2.line(canvas, (45, 614), (1240, 614), (25, 30, 40), 1)
+        pts_a, pts_b = [], []
+        for px in range(45, 1241, 6):
+            ph = (px - 45) / 1195.0
+            wy1 = 614 + int(np.sin(ph * 24.0 + t * 10.0) * 16)
+            wy2 = 614 + int(np.cos(ph * 18.0 - t * 8.0) * 12)
+            pts_a.append((px, wy1))
+            pts_b.append((px, wy2))
+        for k in range(len(pts_a) - 1):
+            cv2.line(canvas, pts_a[k], pts_a[k + 1], GREEN, 1, cv2.LINE_AA)
+            cv2.line(canvas, pts_b[k], pts_b[k + 1], PINK, 1, cv2.LINE_AA)
+
+    # 6. View: TASKS (Expanded Task Fleet & Scheduler)
+    elif TILE_MODE == "tasks":
+        cv2.rectangle(canvas, (35, 512), (1250, 638), (16, 18, 24), -1)
+        cv2.rectangle(canvas, (35, 512), (1250, 638), BORDER, 1)
+        cv2.putText(canvas, "[ TASK FLEET // SCHEDULER & ACTIONS MATRIX ]", (45, 528),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, ACC, 1, cv2.LINE_AA)
+        cv2.line(canvas, (35, 534), (1250, 534), BORDER, 1)
+
+        # Col 1: Recent logs
+        cv2.putText(canvas, "// RECENT ACTIONS", (45, 550), cv2.FONT_HERSHEY_SIMPLEX, 0.34, CYAN, 1, cv2.LINE_AA)
+        ly = 568
+        for log in LOG_STREAM[-3:]:
+            cv2.putText(canvas, log[:50], (45, ly), cv2.FONT_HERSHEY_SIMPLEX, 0.34, WHITE_TEXT, 1, cv2.LINE_AA)
+            ly += 18
+
+        # Col 2: Timers
+        cv2.line(canvas, (430, 534), (430, 638), BORDER, 1)
+        cv2.putText(canvas, "// SCHEDULER TIMERS", (445, 550), cv2.FONT_HERSHEY_SIMPLEX, 0.34, CYAN, 1, cv2.LINE_AA)
+        try:
+            from aria.scheduler import sched_list
+            items = sched_list()
+            if items:
+                ty = 568
+                for it in items[:3]:
+                    cv2.putText(canvas, f"- {str(it)[:46]}", (445, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.34, WHITE_TEXT, 1, cv2.LINE_AA)
+                    ty += 18
+            else:
+                cv2.putText(canvas, "No pending reminders or timers.", (445, 574), cv2.FONT_HERSHEY_SIMPLEX, 0.34, DIM, 1, cv2.LINE_AA)
+        except Exception:
+            cv2.putText(canvas, "Scheduler online.", (445, 574), cv2.FONT_HERSHEY_SIMPLEX, 0.34, DIM, 1, cv2.LINE_AA)
+
+        # Col 3: Subsystems
+        cv2.line(canvas, (840, 534), (840, 638), BORDER, 1)
+        cv2.putText(canvas, "// SUBSYSTEM MATRIX", (855, 550), cv2.FONT_HERSHEY_SIMPLEX, 0.34, CYAN, 1, cv2.LINE_AA)
+        chips = _get_active_task_chips()
+        cy = 568
+        for lbl, val, col in chips:
+            cv2.putText(canvas, f"{lbl}: {val}", (855, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.34, col, 1, cv2.LINE_AA)
+            cy += 18
+
+    # 7. View: SPOTIFY (Expanded Music Deck)
+    elif TILE_MODE == "spotify":
+        cv2.rectangle(canvas, (35, 512), (1250, 638), (16, 18, 24), -1)
+        cv2.rectangle(canvas, (35, 512), (1250, 638), BORDER, 1)
+        cv2.putText(canvas, "[ SPOTIFY MUSIC DECK // TRANSPORT & PLAYLISTS ]", (45, 528),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, ACC, 1, cv2.LINE_AA)
+        cv2.line(canvas, (35, 534), (1250, 534), BORDER, 1)
+
+        spot = _get_spotify_telemetry()
+        sp_stat_col = GREEN if spot["playing"] else (AMBER if spot["running"] else DIM)
+        sp_stat_lbl = "PLAYING" if spot["playing"] else ("PAUSED" if spot["running"] else "STANDBY")
+
+        cv2.rectangle(canvas, (45, 545), (125, 570), (22, 28, 36), -1)
+        cv2.rectangle(canvas, (45, 545), (125, 570), sp_stat_col, 1)
+        cv2.putText(canvas, sp_stat_lbl, (52, 562), cv2.FONT_HERSHEY_SIMPLEX, 0.38, sp_stat_col, 1, cv2.LINE_AA)
+
+        track_info = f"NOW PLAYING: {spot['title']}" if spot["title"] else "NOW PLAYING: Spotify Offline"
+        cv2.putText(canvas, track_info, (140, 562), cv2.FONT_HERSHEY_SIMPLEX, 0.44, WHITE_TEXT, 1, cv2.LINE_AA)
+
+        # Equalizer line
+        for i in range(40):
+            bx = 820 + i * 10
+            bh = int(abs(np.sin(t * 10 + i * 0.4)) * 18) + 2 if spot["playing"] else 3
+            cv2.line(canvas, (bx, 570), (bx, 570 - bh), GREEN if spot["playing"] else DIM, 2)
+
+        # Control buttons
+        exp_btns = [
+            (_EXP_SPOTIFY_PREV,   "|< PREV", DIM),
+            (_EXP_SPOTIFY_PLAY,   "> / || PLAY/PAUSE", CYAN if spot["playing"] else GREEN),
+            (_EXP_SPOTIFY_NEXT,   "NEXT >|", DIM),
+            (_EXP_SPOTIFY_DJ,     "DJ: LIKED", (200, 140, 255)),
+            (_EXP_SPOTIFY_FOCUS,  "OPEN APP", (160, 180, 200)),
+            (_EXP_SPOTIFY_CHILL,  "CHILL", (100, 200, 240)),
+            (_EXP_SPOTIFY_FOCUSM, "FOCUS", (140, 240, 180)),
+            (_EXP_SPOTIFY_ENERGY, "ENERGY", (240, 160, 80)),
+        ]
+        for (bx, by, bw, bh), blabel, bcol in exp_btns:
+            cv2.rectangle(canvas, (bx, by), (bx + bw, by + bh), (24, 28, 36), -1)
+            cv2.rectangle(canvas, (bx, by), (bx + bw, by + bh), bcol, 1)
+            cv2.putText(canvas, blabel, (bx + 8, by + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.34, bcol, 1, cv2.LINE_AA)
 
 
 def draw_hud() -> np.ndarray:
     """Render full 1280x720 HUD frame and publish face frame for phone bridge."""
-    global CURRENT_STATE, HUD_MODE, CHAT_SCROLL
-    w, h = 1280, 720
+    ACC, ACC2 = theme_colors()
+    h, w = 720, 1280
     canvas = np.zeros((h, w, 3), dtype=np.uint8)
-    ACC, ACC2 = theme_colors()  # HUD chrome follows the avatar color theme
+    canvas[:] = BG
 
     # Grid background
-    for x in range(0, w, 80):
+    for x in range(0, w, 40):
         cv2.line(canvas, (x, 0), (x, h), (18, 20, 24), 1)
-    for y in range(0, h, 80):
+    for y in range(0, h, 40):
         cv2.line(canvas, (0, y), (w, y), (18, 20, 24), 1)
 
     # Panels
@@ -433,47 +934,49 @@ def draw_hud() -> np.ndarray:
     cv2.rectangle(canvas, (20, 480), (1260, 705), PANEL_BG, -1)
     cv2.rectangle(canvas, (20, 480), (1260, 705), BORDER, 1)
 
-    now_str = datetime.now().strftime("%Y-%m-%d  %H:%M:%S")
-    cpu_usage, mem_usage, bat_str, modules = get_cached_telemetry()
+    # Header
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cpu_usage, mem_usage, bat_str, cached_subs = get_cached_telemetry()
+    inbox_cnt = inbox_count_cached()
 
     cv2.putText(canvas, "A.R.I.A. // Adaptive Robotic Intelligence Agent", (30, 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, ACC, 2, cv2.LINE_AA)
+
     sys_stats = f"TIME: {now_str}  |  CPU: {cpu_usage}%  |  MEM: {mem_usage}%  |  PWR: {bat_str}"
     cv2.putText(canvas, sys_stats, (650, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 170, 180), 1, cv2.LINE_AA)
-    cv2.putText(canvas, f"PHONE BRIDGE: https://{lan_ip()}:{PHONE_BRIDGE_PORT}  (LAN only)   |   INBOX: {inbox_count_cached()}",
-                (30, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (120, 170, 200), 1, cv2.LINE_AA)
+    cv2.putText(canvas, f"PHONE BRIDGE: https://{lan_ip()}:{PHONE_BRIDGE_PORT}  (LAN only)   |   INBOX: {inbox_cnt}",
+                (30, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (120, 150, 170), 1, cv2.LINE_AA)
 
-    # Whisper Toggle
+    # Whisper Mode Button
     bx, by, bw, bh = _WHISPER_BTN
-    _wcol = GREEN if WHISPER_MODE else (110, 120, 135)
+    _wcol = (200, 120, 255) if WHISPER_MODE else (70, 80, 95)
     cv2.rectangle(canvas, (bx, by), (bx + bw, by + bh), PANEL_BG, -1)
     cv2.rectangle(canvas, (bx, by), (bx + bw, by + bh), _wcol, 1)
     cv2.putText(canvas, "WHISPER " + ("ON" if WHISPER_MODE else "OFF"),
-                (bx + 9, by + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.42, _wcol, 1, cv2.LINE_AA)
+                (bx + 10, by + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.34, _wcol, 1, cv2.LINE_AA)
 
     # Mood String
+    _mw = (_MOOD_CALLBACK().lower() if _MOOD_CALLBACK else "calm")
     mood_str = "MOOD: " + (_MOOD_CALLBACK().upper() if _MOOD_CALLBACK else "CALM")
     (mw, _), _ = cv2.getTextSize(mood_str, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
     cv2.putText(canvas, mood_str, (bx - 20 - mw, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (170, 190, 200), 1, cv2.LINE_AA)
+
     cv2.line(canvas, (20, 72), (1260, 72), ACC, 1)
 
-    # Subsystems
+    # Left Panel: Subsystems
     cv2.putText(canvas, "[ SUBSYSTEMS ]", (35, 102), cv2.FONT_HERSHEY_SIMPLEX, 0.5, ACC, 1, cv2.LINE_AA)
-    n_mods = max(1, len(modules))
-    # Dynamic step ensures all items fit cleanly above Optic PIP (pip_y = 340)
-    sub_step = min(25, int(185 / (n_mods - 1))) if n_mods > 1 else 25
-    sub_start_y = 125
-    for i, (mod, stat, ok) in enumerate(modules):
-        item_y = sub_start_y + i * sub_step
-        dot = GREEN if ok else (160, 160, 160)
+    subsystems = cached_subs
+    for i, (mod, stat, ok) in enumerate(subsystems[:8]):
+        item_y = 135 + (i * 22)
+        dot = GREEN if ok else (40, 60, 240)
         cv2.circle(canvas, (43, item_y - 5), 4, dot, -1)
         (tw, _), _ = cv2.getTextSize(stat, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
         stat_x = 275 - tw
         cv2.putText(canvas, stat, (stat_x, item_y), cv2.FONT_HERSHEY_SIMPLEX, 0.38, dot, 1, cv2.LINE_AA)
         cv2.putText(canvas, mod, (55, item_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 1, cv2.LINE_AA)
 
-    # Optic PIP
-    pip_x, pip_y, pip_w, pip_h = 35, 340, 230, 115
+    # Optical PIP
+    pip_x, pip_y, pip_w, pip_h = 35, 315, 230, 130
     cv2.rectangle(canvas, (pip_x, pip_y), (pip_x + pip_w, pip_y + pip_h), (30, 35, 45), -1)
     if LATEST_CAMERA_FRAME is not None:
         try:
@@ -481,55 +984,43 @@ def draw_hud() -> np.ndarray:
             canvas[pip_y:pip_y + pip_h, pip_x:pip_x + pip_w] = thumb
         except Exception:
             pass
-    # Optic PIP crosshairs (80% transparent / 20% opacity)
-    pip_roi = canvas[pip_y:pip_y + pip_h, pip_x:pip_x + pip_w]
-    overlay = pip_roi.copy()
-    cx, cy = pip_w // 2, pip_h // 2
-    cv2.circle(overlay, (cx, cy), 15, CYAN, 1)
-    cv2.line(overlay, (cx - 25, cy), (cx + 25, cy), CYAN, 1)
-    cv2.line(overlay, (cx, cy - 25), (cx, cy + 25), CYAN, 1)
-    canvas[pip_y:pip_y + pip_h, pip_x:pip_x + pip_w] = cv2.addWeighted(overlay, 0.2, pip_roi, 0.8, 0)
-    cv2.putText(canvas, "CAM_01 // OPTIC PIP", (pip_x + 5, pip_y + pip_h - 8),
+    cv2.rectangle(canvas, (pip_x, pip_y), (pip_x + pip_w, pip_y + pip_h), BORDER, 1)
+    cv2.putText(canvas, "CAM.01 // OPTIC PIP", (pip_x + 10, pip_y + 18),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, CYAN, 1, cv2.LINE_AA)
 
-    # Action Stream
+    # Right Panel: Action Stream
     cv2.putText(canvas, "[ ACTION STREAM ]", (1015, 102), cv2.FONT_HERSHEY_SIMPLEX, 0.5, ACC, 1, cv2.LINE_AA)
-    stream_y = 132
+    log_y = 130
     for log in LOG_STREAM[-6:]:
-        for line in textwrap.wrap(hud_ascii(log), width=32)[:2]:
-            if stream_y > 440:
-                break
-            cv2.putText(canvas, line, (1012, stream_y), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (170, 190, 200), 1, cv2.LINE_AA)
-            stream_y += 20
-        stream_y += 6
+        for sub_line in textwrap.wrap(log, width=32)[:2]:
+            cv2.putText(canvas, sub_line, (1015, log_y), cv2.FONT_HERSHEY_SIMPLEX, 0.38, WHITE_TEXT, 1, cv2.LINE_AA)
+            log_y += 18
 
-    # Face or Chat Log
+    # Center Stage: Avatar
     if HUD_MODE == "chat_log":
-        cv2.rectangle(canvas, (300, 76), (980, 460), (12, 14, 18), -1)
-        cv2.rectangle(canvas, (300, 76), (980, 460), ACC, 1)
-        cv2.putText(canvas, "[ TACTICAL CHAT LOG // RECENT TRANSCRIPT ]", (320, 104),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, CYAN, 1, cv2.LINE_AA)
+        log_y = 115
+        from aria import memory
+        display_log = memory.get_display_chat_log()
         rendered_lines = []
-        for ts, sender, text in DISPLAY_CHAT_LOG:
-            header_color = CYAN if sender.lower() == "user" else GREEN
-            header = hud_ascii(f"[{ts}] {sender.upper()}:")
-            msg_lines = textwrap.wrap(hud_ascii(text), width=62)
+        for role, text in display_log:
+            header_color = ACC if role == "A.R.I.A." else CYAN
+            header = f"{role}: "
+            msg_lines = textwrap.wrap(text, width=72)
             if msg_lines:
                 rendered_lines.append([(320, header, header_color), (465, msg_lines[0], WHITE_TEXT)])
                 for sub_line in msg_lines[1:]:
                     rendered_lines.append([(465, sub_line, WHITE_TEXT)])
         start_idx = max(0, min(max(0, len(rendered_lines) - 13), len(rendered_lines) - CHAT_SCROLL - 13))
         view_lines = rendered_lines[start_idx:start_idx + 13]
-        log_y = 132
         for line_segs in view_lines:
             for x, text, col in line_segs:
                 cv2.putText(canvas, text, (x, log_y), cv2.FONT_HERSHEY_SIMPLEX, 0.38, col, 1, cv2.LINE_AA)
             log_y += 22
     else:
-        # Visor mode (v9.33 Cyber-girl Face)
+        # Visor Mode (Pixel Avatar with Fluid Cognitive Reactions)
         lx, rx, cy = 520, 760, 235
         if USE_PIXEL_AVATAR:
-            draw_pixel_aria(canvas, CURRENT_STATE, time.time())
+            draw_pixel_aria(canvas, CURRENT_STATE, time.time(), mood=_mw)
         elif CURRENT_STATE == "idle":
             now = time.time()
             _update_idle_face(now)
@@ -547,57 +1038,36 @@ def draw_hud() -> np.ndarray:
                 cv2.ellipse(canvas, (px, py), (17, ph), 0, 0, 360, (10, 40, 70), -1)
                 cv2.circle(canvas, (px - 6, py - int(12 * squash)), 5, (255, 255, 255), -1)
                 apply_led_scanlines(canvas, ex - 60, cy - 80, ex + 60, cy + 80)
-            wt = now * 2.0  # idle waveform: soft ripple, same voice as speaking
+            wt = now * 2.0
             for i in range(-9, 10):
                 bar_x = 640 + (i * 14)
                 bar_h = int(abs(np.sin(wt + i * 0.5)) * 8) + 2
                 cv2.line(canvas, (bar_x, 388 - bar_h), (bar_x, 388 + bar_h), PINK, 2)
         elif CURRENT_STATE == "listening":
-            # animated - the ring breathes while she listens.
             pulse = int(6 * np.sin(time.time() * 4))
             for ex, side in ((lx, -1), (rx, 1)):
-                cv2.circle(canvas, (ex, cy), 70 + pulse, (255, 80, 255), -1)
-                cv2.circle(canvas, (ex, cy), 70 + pulse, LINER, 2)
-                _draw_lashes(canvas, ex, cy, 70, 70, side)
-                cv2.circle(canvas, (ex, cy), 24, (40, 10, 60), -1)  # pupils lock on you
-                cv2.circle(canvas, (ex - 8, cy - 10), 8, (255, 255, 255), -1)
-                apply_led_scanlines(canvas, ex - 70, cy - 70, ex + 70, cy + 70)
+                cv2.circle(canvas, (ex, cy), 58 + pulse, CYAN, 2)
+                cv2.circle(canvas, (ex, cy), 46 + pulse, PINK, 3)
+                _draw_lashes(canvas, ex, cy, 46 + pulse, 46 + pulse, side)
+                cv2.circle(canvas, (ex, cy), 18, (255, 255, 255), -1)
+                apply_led_scanlines(canvas, ex - 60, cy - 70, ex + 60, cy + 70)
             _draw_waveform_mouth(canvas, MOUTH_YELLOW, time.time())
         elif CURRENT_STATE == "thinking":
-            # animated - pupils dart as she thinks, dots bounce above.
-            t = time.time()
-            dart = int(np.sin(t * 3.1) * 14)
-            for ex, tilt, dy in ((lx, -12, -15), (rx, 8, -5)):
-                cv2.ellipse(canvas, (ex, cy + dy), (48, 68), tilt, 0, 360, (0, 100, 200), -1)
-                cv2.ellipse(canvas, (ex, cy + dy), (42, 60), tilt, 0, 360, AMBER, -1)
-                cv2.circle(canvas, (ex + dart - 12, cy + dy - 20), 7, (255, 255, 255), -1)
-                apply_led_scanlines(canvas, ex - 60, cy + dy - 70, ex + 60, cy + dy + 70)
-            for i in range(3):
-                bounce = int(abs(np.sin(t * 4 + i * 1.1)) * 12)
-                cv2.circle(canvas, (600 + i * 40, 130 - bounce), 8, AMBER, -1)
+            t = time.time() * 8
+            for ex, side in ((lx, -1), (rx, 1)):
+                cv2.ellipse(canvas, (ex, cy), (48, 48), 0, int(t * 10) % 360,
+                            (int(t * 10) + 220) % 360, CYAN, 5)
+                _draw_lashes(canvas, ex, cy, 48, 48, side)
+                cv2.putText(canvas, "?", (ex - 12, cy + 12), cv2.FONT_HERSHEY_SIMPLEX,
+                            1.1, CYAN, 2, cv2.LINE_AA)
+                apply_led_scanlines(canvas, ex - 60, cy - 70, ex + 60, cy + 70)
             _draw_waveform_mouth(canvas, MOUTH_YELLOW, t)
-        elif CURRENT_STATE == "working":
-            # animated - amber radar sweep while a tool runs.
-            t = time.time()
-            sweep = int((t * 240) % 120) - 60
-            for ex in (lx, rx):
-                cv2.ellipse(canvas, (ex, cy), (58, 78), 0, 0, 360, (20, 60, 90), -1)
-                cv2.ellipse(canvas, (ex, cy), (58, 78), 0, 0, 360, AMBER, 2)
-                cv2.line(canvas, (ex - 52, cy + sweep), (ex + 52, cy + sweep), AMBER, 2)
-                px = ex + int(np.sin(t * 5) * 20)
-                cv2.circle(canvas, (px, cy), 16, AMBER, -1)
-                cv2.circle(canvas, (px - 5, cy - 6), 5, (255, 255, 255), -1)
-                apply_led_scanlines(canvas, ex - 60, cy - 80, ex + 60, cy + 80)
-            _draw_waveform_mouth(canvas, MOUTH_YELLOW, t)
-            arc = int((t * 180) % 360)
-            cv2.ellipse(canvas, (640, 425), (70, 20), 0, arc, arc + 120, AMBER, 3)
-        elif CURRENT_STATE == "coding":
-            t = time.time()
-            glow = int(20 + 12 * np.sin(t * 2.0))  # subtle breathing glow — just a bit
-            for ex in (lx, rx):
-                cv2.rectangle(canvas, (ex - 55, cy - 65), (ex + 55, cy + 65), (0, 100, 40), -1)
-                cv2.rectangle(canvas, (ex - 58, cy - 68), (ex + 58, cy + 68), (0, glow, 0), 1)
-                cv2.rectangle(canvas, (ex - 50, cy - 60), (ex + 50, cy + 60), GREEN, 2)
+        elif CURRENT_STATE in ("working", "coding"):
+            t = time.time() * 10
+            for ex, side in ((lx, -1), (rx, 1)):
+                cv2.ellipse(canvas, (ex, cy), (48, 48), 0, int(t * 12) % 360,
+                            (int(t * 12) + 260) % 360, GREEN, 5)
+                _draw_lashes(canvas, ex, cy, 48, 48, side)
                 cv2.putText(canvas, "</>", (ex - 35, cy + 12), cv2.FONT_HERSHEY_SIMPLEX,
                             1.1, GREEN, 2, cv2.LINE_AA)
                 apply_led_scanlines(canvas, ex - 60, cy - 70, ex + 60, cy + 70)
@@ -613,18 +1083,10 @@ def draw_hud() -> np.ndarray:
                 bar_h = int(abs(np.sin(t_speak + i * 0.45)) * 34) + 4
                 cv2.line(canvas, (bar_x, 370 - bar_h), (bar_x, 370 + bar_h), PINK, 2)
 
-        # Publish cropped face frame for Phone Bridge
         publish_face_frame(canvas)
 
-
-    # Subtitles panel
-    cv2.putText(canvas, "[ DIRECTIVE / SYNTHESIS // SUBTITLE STREAM ]", (35, 510),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACC, 1, cv2.LINE_AA)
-    sub_y = 536
-    lines = textwrap.wrap(SUBTITLE_TEXT, width=105)[:4]
-    for line in lines:
-        cv2.putText(canvas, line, (40, sub_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, WHITE_TEXT, 1, cv2.LINE_AA)
-        sub_y += 22
+    # Bottom Area: Collapsible Context Tiles
+    _draw_context_tiles(canvas, ACC, ACC2, time.time(), CURRENT_STATE)
 
     # Interactive Directive / Typing Input Bar
     ix, iy, iw, ih = _INPUT_BAR
@@ -656,14 +1118,12 @@ def draw_hud() -> np.ndarray:
                         (ix + 145, iy + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (110, 120, 130), 1, cv2.LINE_AA)
 
     # Interactive Action Buttons on Directive Bar
-    # PASTE button
     px, py, pw, ph = _INPUT_PASTE_BTN
     cv2.rectangle(canvas, (px, py), (px + pw, py + ph), (28, 42, 54), -1)
     cv2.rectangle(canvas, (px, py), (px + pw, py + ph), CYAN if TYPING_ACTIVE else (100, 140, 160), 1)
     cv2.putText(canvas, "PASTE", (px + 12, py + 16),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, CYAN if TYPING_ACTIVE else (180, 200, 215), 1, cv2.LINE_AA)
 
-    # SEND button
     sx, sy, sw, sh = _INPUT_SEND_BTN
     send_ready = bool(clean_buf.strip())
     send_bg = (20, 52, 28) if send_ready else (16, 24, 18)
@@ -674,14 +1134,12 @@ def draw_hud() -> np.ndarray:
     cv2.putText(canvas, "SEND", (sx + 13, sy + 16),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, send_txt_color, 1, cv2.LINE_AA)
 
-    # CLR button
     cx, cy, cw, ch = _INPUT_CLEAR_BTN
     cv2.rectangle(canvas, (cx, cy), (cx + cw, cy + ch), (26, 28, 32), -1)
     cv2.rectangle(canvas, (cx, cy), (cx + cw, cy + ch), BORDER, 1)
     cv2.putText(canvas, "CLR", (cx + 12, cy + 16),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.36, DIM, 1, cv2.LINE_AA)
 
-    # ESC / Toggle Typing button
     ex, ey, ew, eh = _INPUT_ESC_BTN
     cv2.rectangle(canvas, (ex, ey), (ex + ew, ey + eh), (32, 22, 22) if TYPING_ACTIVE else (24, 26, 30), -1)
     cv2.rectangle(canvas, (ex, ey), (ex + ew, ey + eh), (90, 70, 130) if TYPING_ACTIVE else BORDER, 1)
@@ -690,10 +1148,9 @@ def draw_hud() -> np.ndarray:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.36, DIM, 1, cv2.LINE_AA)
 
     # Bottom status bar
-    status_bar = f"STATUS: {CURRENT_STATE.upper()}  |  [T] TYPE  |  [ENTER] SEND  |  [SPACE] PTT  |  [X] CUT  |  [C] COLORS  |  [V] VISOR  |  [H] COMMANDS"
-    cv2.putText(canvas, status_bar, (35, 700), cv2.FONT_HERSHEY_SIMPLEX, 0.36, DIM, 1, cv2.LINE_AA)
+    status_bar = f"STATUS: {CURRENT_STATE.upper()}  |  [T] TYPE  |  [1-5] TILES  |  [TAB] FLIP  |  [SPACE] PTT  |  [X] CUT  |  [C] COLORS  |  [V] VISOR  |  [H] COMMANDS"
+    cv2.putText(canvas, status_bar, (35, 700), cv2.FONT_HERSHEY_SIMPLEX, 0.35, DIM, 1, cv2.LINE_AA)
 
-    # Optional commands overlay
     if SHOW_COMMANDS:
         _draw_commands_overlay(canvas)
 
