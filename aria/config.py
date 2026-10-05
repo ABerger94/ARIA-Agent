@@ -34,6 +34,9 @@ def _load_keys():
         with open(KEYS_FILE, "w", encoding="utf-8") as _f:
             json.dump({"GEMINI_API_KEY": "INSERT",
                        "GEMINI_API_KEYS": [],
+                       "GROQ_API_KEY": "INSERT",
+                       "OPENROUTER_API_KEY": "INSERT",
+                       "MISTRAL_API_KEY": "INSERT",
                        "GITHUB_TOKEN": "INSERT",
                        "GITHUB_USERNAME": "ABerger94"}, _f, indent=2)
         print(f"[ARIA] Keys: created {KEYS_FILE} - paste your keys there once, then restart.")
@@ -92,6 +95,37 @@ _GEMINI_KEY_INDEX = 0
 _KEY_QUARANTINE_UNTIL = {}
 _KEY_QUARANTINE_CODE = {}
 KEY_QUARANTINE_DURATION_S = 3600
+
+
+def key_is_quarantined(key):
+    """True if the given provider key is currently quarantined (or missing)."""
+    if not key or key == "INSERT":
+        return True
+    return _KEY_QUARANTINE_UNTIL.get(key, 0) > datetime.now().timestamp()
+
+
+# ---- Provider fallback chain (Phase 1: Gemini pool -> Groq) ----
+# Keys: env var first, then aria_keys.json (gitignored) — same pattern as Gemini.
+GROQ_API_KEY, _GROQ_SOURCE = key_get("GROQ_API_KEY")
+OPENROUTER_API_KEY, _OPENROUTER_SOURCE = key_get("OPENROUTER_API_KEY")
+MISTRAL_API_KEY, _MISTRAL_SOURCE = key_get("MISTRAL_API_KEY")
+
+GROQ_MODEL, _ = key_get("GROQ_MODEL", "llama-3.3-70b-versatile")
+OPENROUTER_MODEL, _ = key_get("OPENROUTER_MODEL", "")
+MISTRAL_MODEL, _ = key_get("MISTRAL_MODEL", "mistral-small-latest")
+OLLAMA_HOST, _ = key_get("OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_MODEL, _ = key_get("OLLAMA_MODEL", "qwen2.5:7b")
+
+# Phase 1 chain: gemini -> groq. openrouter/mistral/ollama land in Phase 2/3.
+# Override order via PROVIDER_CHAIN="gemini,groq" env or keys file.
+_PROVIDER_CHAIN_RAW, _ = key_get("PROVIDER_CHAIN", "")
+if _PROVIDER_CHAIN_RAW and _PROVIDER_CHAIN_RAW != "INSERT":
+    PROVIDER_CHAIN = [p.strip().lower() for p in _PROVIDER_CHAIN_RAW.split(",") if p.strip()]
+else:
+    PROVIDER_CHAIN = ["gemini", "groq"]
+
+# Ollama safe mode (Phase 3): local model gets read-only tools only.
+OLLAMA_SAFE_MODE = True
 
 
 def key_mask(key):

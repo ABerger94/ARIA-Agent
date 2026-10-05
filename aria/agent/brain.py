@@ -42,6 +42,7 @@ from aria.tools.dispatch import (
 )
 import aria.speech as speech
 from aria.agent.shortcuts import check_voice_shortcut
+from aria.agent.providers import provider_call, get_active_provider
 import aria.hud as hud
 
 HISTORY_TURNS = 12
@@ -384,15 +385,18 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
 
             speech._SPEECH_STOP.clear()
 
-            # Call Gemini
+            # Call the provider chain (Gemini pool -> fallbacks)
             loaded_tk = get_loaded_toolkits()
             decls = get_toolkit_declarations(loaded_tk)
 
-            data = gemini_call(
+            data = provider_call(
                 system_instruction, contents,
                 tool_decls=decls,
                 on_text_chunk=_stream_chunk_cb if (not silent and reply_sink is None) else None
             )
+
+            if get_active_provider() != "gemini":
+                hud.set_hud_subtitle(f"Running on {get_active_provider()} (fallback)")
 
             if not data or not data.get("candidates"):
                 say("API connection dropped. Standing by.")
