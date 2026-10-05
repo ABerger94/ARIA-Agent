@@ -26,6 +26,7 @@ from typing import Optional, Callable, List, Dict, Any, Tuple
 from aria.config import (
     ARIA_SOUL, MODEL_NAME, GEMINI_API_KEY, GEMINI_KEY_POOL,
     WORKSPACE_DIR, ROOT_DIR, SOUL_PATH, KEY_QUARANTINE_DURATION_S,
+    PROVIDER_CHAIN,
     get_gemini_key, quarantine_key, key_is_quarantined, add_log
 )
 from aria.memory import (
@@ -393,7 +394,8 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                 on_text_chunk=_stream_chunk_cb if (not silent and reply_sink is None) else None
             )
 
-            if get_active_provider() != "gemini":
+            _primary = PROVIDER_CHAIN[0] if PROVIDER_CHAIN else "gemini"
+            if get_active_provider() != _primary:
                 hud.set_hud_subtitle(f"Running on {get_active_provider()} (fallback)")
 
             if not data or not data.get("candidates"):

@@ -285,7 +285,8 @@ def fetch_providers() -> Dict[str, Any]:
     stats = dict(getattr(pv, "PROVIDER_STATS",
                          {"failovers": 0, "calls": {}, "last_failover": None}))
     return {"active": pv.get_active_provider(), "chain": chain_info,
-            "stats": stats}
+            "stats": stats,
+            "primary": cfg.PROVIDER_CHAIN[0] if cfg.PROVIDER_CHAIN else ""}
 
 
 # ------------------------------------------------------------ attention
@@ -312,7 +313,8 @@ def compute_attention(dash: Dict[str, Dict[str, Any]],
         out.append(f"{len(imp)} important unread")
 
     prov = (dash.get("providers") or {}).get("data") or {}
-    if prov.get("active") and prov["active"] != "gemini":
+    _primary = prov.get("primary") or "gemini"
+    if prov.get("active") and prov["active"] != _primary:
         out.append(f"on {prov['active']} (fallback)")
 
     tasks = (dash.get("tasks") or {}).get("data") or {}

@@ -95,9 +95,9 @@ Chain order itself is configurable (`PROVIDER_CHAIN` list in config); any provid
 
 ## 10. Config additions (config.py, following the existing `key_get` pattern)
 
-- `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `MISTRAL_API_KEY` — env first, then settings.json, never the repo. Missing = provider skipped.
-- `OPENROUTER_MODEL`, `MISTRAL_MODEL`, `OLLAMA_MODEL`, `OLLAMA_HOST` — with sane defaults.
-- `PROVIDER_CHAIN` — ordered list, default `["gemini", "groq", "openrouter", "mistral", "ollama"]`.
+- `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, `OLLAMA_API_KEY` — env first, then settings.json, never the repo. Missing = provider skipped.
+- `OPENROUTER_MODEL`, `MISTRAL_MODEL`, `OLLAMA_CLOUD_MODEL`, `OLLAMA_MODEL`, `OLLAMA_HOST` — with sane defaults.
+- `PROVIDER_CHAIN` — ordered list, default `["ollama_cloud", "groq", "openrouter", "mistral"]` (2026-10-05: Gemini dropped from the default chain while its keys are 402; re-add via override).
 - `OLLAMA_SAFE_MODE` — default True.
 - All key values go through the existing `redact()` / `key_mask()` paths in logs and spine. No exceptions.
 
@@ -110,6 +110,18 @@ Chain order itself is configurable (`PROVIDER_CHAIN` list in config); any provid
   MISTRAL_MODEL=`mistral-large-latest`. OpenRouter sends HTTP-Referer/X-Title.
   Keys: OPENROUTER_API_KEY, MISTRAL_API_KEY (aria_keys.json, gitignored).
 - **Phase 3:** Ollama floor + safe-mode tool filtering + HUD failover indicator.
+- **Phase 3b (2026-10-05):** Ollama Cloud as primary. New `ollama_cloud`
+  registry entry: `OpenAICompatProvider("ollama_cloud", "https://ollama.com/v1",
+  OLLAMA_API_KEY, OLLAMA_CLOUD_MODEL)` with default model `gpt-oss:120b`
+  (same brain Groq served; confirmed reachable on Ollama's $0 starter plan).
+  Default chain is now `ollama_cloud -> groq -> openrouter -> mistral`;
+  Gemini sits out until its credits are topped up. "(fallback)" HUD/OPS
+  labels now compare against `PROVIDER_CHAIN[0]` instead of hardcoding
+  `"gemini"`. Laptop setup: sign up at ollama.com, key from
+  ollama.com/settings/keys, add `"OLLAMA_API_KEY"` to `E:\ARIA\aria_keys.json`,
+  `git pull`, restart, `python -m aria.agent.providers --provider-ping`.
+  Caveats: free = starter credits (402 when exhausted, same as Gemini);
+  vision stays Gemini-only by design.
 
 ## 12. Testing (no quota burned)
 

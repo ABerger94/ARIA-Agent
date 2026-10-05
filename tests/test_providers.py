@@ -123,8 +123,18 @@ def test_images_dropped():
 def test_chain_order():
     chain = _build_chain()
     names = [p.name for p in chain]
-    assert names == ["gemini", "groq", "openrouter", "mistral"], names
+    assert names == ["ollama_cloud", "groq", "openrouter", "mistral"], names
     print("ok chain_order", names)
+
+
+def test_ollama_cloud_skips_without_key():
+    chain = _build_chain()
+    oc = [p for p in chain if p.name == "ollama_cloud"][0]
+    assert oc.base_url == "https://ollama.com/v1", oc.base_url
+    assert oc.model == "gpt-oss:120b", oc.model
+    # No OLLAMA_API_KEY in this env -> must report unavailable, never attempt.
+    assert oc.is_available() is False
+    print("ok ollama_cloud_skips_without_key")
 
 
 def test_openrouter_extra_headers():

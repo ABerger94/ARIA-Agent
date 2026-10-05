@@ -24,11 +24,12 @@ from typing import Optional, Callable, List, Dict, Any
 from aria.config import (
     GEMINI_KEY_POOL, GROQ_API_KEY, GROQ_MODEL,
     OPENROUTER_API_KEY, OPENROUTER_MODEL, MISTRAL_API_KEY, MISTRAL_MODEL,
+    OLLAMA_CLOUD_API_KEY, OLLAMA_CLOUD_MODEL,
     PROVIDER_CHAIN, KEY_QUARANTINE_DURATION_S,
     quarantine_key, key_is_quarantined, key_mask, add_log,
 )
 
-ACTIVE_PROVIDER = "gemini"
+ACTIVE_PROVIDER = PROVIDER_CHAIN[0] if PROVIDER_CHAIN else "gemini"
 
 
 # Session stats for the OPS dashboard: failover count, per-provider call
@@ -408,7 +409,9 @@ def _build_chain() -> List[Provider]:
                            "X-Title": "ARIA-Agent"}),
         "mistral": OpenAICompatProvider(
             "mistral", "https://api.mistral.ai/v1", MISTRAL_API_KEY, MISTRAL_MODEL),
-        # Phase 3: "ollama".
+        "ollama_cloud": OpenAICompatProvider(
+            "ollama_cloud", "https://ollama.com/v1",
+            OLLAMA_CLOUD_API_KEY, OLLAMA_CLOUD_MODEL),
     }
     return [registry[n] for n in PROVIDER_CHAIN if n in registry]
 
