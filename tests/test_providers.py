@@ -160,6 +160,24 @@ def test_fail_fast_single_attempt():
         urllib.request.urlopen = real_urlopen
     print("ok fail_fast_single_attempt")
 
+
+
+def test_uppercase_schema_types_lowercased():
+    from aria.agent.providers import gemini_decls_to_oai_tools
+    decls = [{"function_declarations": [{
+        "name": "t", "description": "d",
+        "parameters": {"type": "OBJECT",
+                       "properties": {"x": {"type": "STRING"},
+                                      "items": {"type": "ARRAY",
+                                                "items": {"type": "NUMBER"}}}},
+    }]}]
+    tools = gemini_decls_to_oai_tools(decls)
+    params = tools[0]["function"]["parameters"]
+    assert params["type"] == "object", params
+    assert params["properties"]["x"]["type"] == "string", params
+    assert params["properties"]["items"]["items"]["type"] == "number", params
+    print("ok uppercase_schema_types_lowercased")
+
 if __name__ == "__main__":
     test_system_and_user_text()
     test_model_function_call_roundtrip()
@@ -171,6 +189,7 @@ if __name__ == "__main__":
     test_chain_order()
     test_user_agent_header()
     test_fail_fast_single_attempt()
+    test_uppercase_schema_types_lowercased()
     print("ALL PROVIDER TESTS PASSED")
 
 
@@ -181,3 +200,20 @@ def test_user_agent_header():
     assert "Python-urllib" not in h.get("User-Agent", ""), h
     assert h["User-Agent"], "User-Agent must be set (Cloudflare 403/1010 otherwise)"
     print("ok user_agent_header")
+
+
+def test_uppercase_schema_types_lowercased():
+    from aria.agent.providers import gemini_decls_to_oai_tools
+    decls = [{"function_declarations": [{
+        "name": "t", "description": "d",
+        "parameters": {"type": "OBJECT",
+                       "properties": {"x": {"type": "STRING"},
+                                      "items": {"type": "ARRAY",
+                                                "items": {"type": "NUMBER"}}}},
+    }]}]
+    tools = gemini_decls_to_oai_tools(decls)
+    params = tools[0]["function"]["parameters"]
+    assert params["type"] == "object", params
+    assert params["properties"]["x"]["type"] == "string", params
+    assert params["properties"]["items"]["items"]["type"] == "number", params
+    print("ok uppercase_schema_types_lowercased")

@@ -134,6 +134,23 @@ def gemini_contents_to_oai_messages(
     return messages
 
 
+def _lowercase_schema_types(obj: Any) -> Any:
+    """Recursively lowercase Gemini-style type names for OpenAI schemas.
+
+    ARIA's declarations use Gemini conventions ("STRING", "OBJECT"); the
+    OpenAI-compatible endpoints 400 on anything but lowercase. Normalizing
+    here (not in schemas.py) keeps the Gemini path untouched and covers
+    dynamic/MCP declarations too.
+    """
+    if isinstance(obj, dict):
+        return {k: (v.lower() if k == "type" and isinstance(v, str)
+                    else _lowercase_schema_types(v))
+                for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_lowercase_schema_types(v) for v in obj]
+    return obj
+
+
 def gemini_decls_to_oai_tools(
     tool_decls: Optional[List[Dict[str, Any]]],
 ) -> List[Dict[str, Any]]:
@@ -146,8 +163,9 @@ def gemini_decls_to_oai_tools(
                 "function": {
                     "name": fd.get("name", ""),
                     "description": fd.get("description", ""),
-                    "parameters": fd.get("parameters")
-                    or {"type": "object", "properties": {}},
+                    "parameters": _lowercase_schema_types(
+                        fd.get("parameters")
+                        or {"type": "object", "properties": {}}),
                 },
             })
     return tools
@@ -347,8 +365,13 @@ class OpenAICompatProvider(Provider):
                 add_log(f"{self.name}: rate-limited (429), key quarantined 60s")
                 return None
             if e.code in (400, 401, 402, 403, 404):
-                quarantine_key(self.api_key, KEY_QUARANTINE_DURATION_S, e.code)
-                add_log(f"{self.name}: HTTP {e.code} ({key_mask(self.api_key)}), key quarantined")
+                # 400 is a malformed request (payload), not a bad key:
+                # brief cooldown only. 401/403 (bad key) and 402/404 keep
+                # the long quarantine.
+                q = 60 if e.code == 400 else KEY_QUARANTINE_DURATION_S
+                quarantine_key(self.api_key, q, e.code)
+                add_log(f"{self.name}: HTTP {e.code} ({key_mask(self.api_key)}): "
+                        f"{detail[:120]}")
                 return None
             if e.code in (500, 502, 503, 504):
                 # Transient: move on now, retried next turn (no quarantine).
