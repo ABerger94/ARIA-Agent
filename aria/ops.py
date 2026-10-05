@@ -151,7 +151,7 @@ def fetch_inbox() -> Dict[str, Any]:
 
     raw = builtins.tool_read_email(unread_only=True, limit=10) or ""
     if "No Gmail credentials" in raw or "No messages match" in raw:
-        return {"connected": "No Gmail credentials" in raw,
+        return {"connected": "No Gmail credentials" not in raw,
                 "items": [], "unread": 0}
     items = _parse_mail_lines(raw)
     # Mark Gmail-important via a second cheap query; intersect on uid.

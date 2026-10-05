@@ -1277,7 +1277,7 @@ def _draw_ops_body(canvas, ACC, ACC2):
     sysd = (sys_e["data"] or {})
 
     # ---- left column: day timeline + schedule
-    px, rx, ry = _ops_panel(canvas, 20, 128, 430, 200, "DAY", ACC)
+    px, ry = _ops_panel(canvas, 20, 128, 430, 200, "DAY", ACC)
     events = sched.get("events", []) if sched.get("connected") else []
     if events:
         blocks = _ops.compute_timeline(events, now)
