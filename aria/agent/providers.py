@@ -362,7 +362,8 @@ class OpenAICompatProvider(Provider):
             self.last_error = f"HTTP {e.code}: {detail}".strip()
             if e.code == 429:
                 quarantine_key(self.api_key, 60, 429)
-                add_log(f"{self.name}: rate-limited (429), key quarantined 60s")
+                add_log(f"{self.name}: rate-limited (429), key quarantined 60s: "
+                        f"{detail[:120]}")
                 return None
             if e.code in (400, 401, 402, 403, 404):
                 # 400 is a malformed request (payload), not a bad key:
