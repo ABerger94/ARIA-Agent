@@ -346,11 +346,28 @@ def _fire_brief(tid: int, interval_s: int, is_busy_fn: Optional[Callable[[], boo
         speech._SPEECH_QUEUE.put(text)
 
 
+# OPS Controls tab: pause/resume the background scheduler without restarting.
+PAUSED = False
+
+
+def set_paused(v: bool) -> bool:
+    global PAUSED
+    PAUSED = bool(v)
+    return PAUSED
+
+
+def is_paused() -> bool:
+    return PAUSED
+
+
 def scheduler_loop(is_busy_fn: Optional[Callable[[], bool]] = None,
                    run_agent_fn: Optional[Callable[[str], None]] = None):
     """Background scheduler worker thread."""
     time.sleep(5)
     while True:
+        if PAUSED:
+            time.sleep(5)
+            continue
         try:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             due = []

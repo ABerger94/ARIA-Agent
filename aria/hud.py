@@ -28,6 +28,7 @@ from aria.config import PHONE_BRIDGE_PORT, GITHUB_USERNAME, GITHUB_TOKEN
 from aria.vision import publish_face_frame
 import aria.vision as _vision  # module ref: read LATEST_CAMERA_FRAME live (see Optical PIP)
 import aria.ops as _ops  # OPS command-center data (no cv2 dep)
+import aria.ops_screen as _ops_screen  # tabbed OPS overlay renderer
 from aria.tools.schemas import COMMAND_GUIDE
 
 _HUD_SUBS = {
@@ -1479,11 +1480,8 @@ def draw_hud() -> np.ndarray:
     cv2.line(canvas, (20, 72), (1260, 72), ACC, 1)
 
     if HUD_MODE == "ops":
-        _draw_ops_body(canvas, ACC, ACC2)
-        status_bar = ("STATUS: OPS COMMAND CENTER  |  [O] FACE  |  [1-8] SELECT MAIL"
-                      "  |  [E] READ ALOUD  |  [R] REFRESH  |  [T] DIRECTIVE")
-        cv2.putText(canvas, status_bar, (35, 700), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.35, DIM, 1, cv2.LINE_AA)
+        _ops_screen.draw(canvas, ACC, ACC2,
+                         lambda c, a1, a2: _draw_ops_body(c, a1, a2))
         if SHOW_COMMANDS:
             _draw_commands_overlay(canvas)
         return canvas

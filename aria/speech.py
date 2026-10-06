@@ -590,12 +590,17 @@ _SPEECH_QUEUE = _DEFAULT_SPEECH_MANAGER.speech_queue
 _AUDIO_PLAY_QUEUE = _DEFAULT_SPEECH_MANAGER.audio_play_queue
 _SPEECH_STOP = _DEFAULT_SPEECH_MANAGER.speech_stop
 
+# OPS Controls tab: master voice on/off (output + wake-word input).
+VOICE_ENABLED = True
+
 def voice_ready() -> bool:
     """True once the Edge voice probe has succeeded (greeting uses her real voice)."""
     return _DEFAULT_SPEECH_MANAGER.edge_ready
 
 
 def speak(text: str, whisper_mode: bool = False):
+    if not VOICE_ENABLED:
+        return None
     return _DEFAULT_SPEECH_MANAGER.speak(text, whisper_mode)
 
 def interrupt_speech() -> int:

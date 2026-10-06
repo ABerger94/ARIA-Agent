@@ -33,6 +33,7 @@ import aria.scheduler as scheduler
 import aria.spotify as spotify
 import aria.hud as hud
 import aria.ops as _ops
+import aria.ops_screen as _ops_screen
 import aria.pixel_avatar as pixel_avatar
 import aria.bridge as bridge
 import aria.agent as agent
@@ -42,6 +43,13 @@ from aria.tools.dispatch import (
 
 # Global runtime flags
 RUNNING: bool = True
+
+
+def request_shutdown():
+    """OPS Controls tab: stop the main loop cleanly."""
+    global RUNNING
+    RUNNING = False
+    add_log("Shutdown requested.")
 EXCITED_UNTIL: float = 0.0   # wake-up burst expiry timestamp
 EXCITED_REVERT: str = "idle"  # state to return to after the burst
 WHISPER_MODE: bool = bool(get_setting("whisper_mode", False))
@@ -304,6 +312,9 @@ def _on_hud_mouse(event, x, y, flags, param):
             else:
                 hud.commands_next_page()
             return
+        elif hud.HUD_MODE == "ops":
+            _ops_screen.handle_wheel(flags > 0)
+            return
         elif hud.HUD_MODE == "chat_log":
             if flags > 0:
                 hud.CHAT_SCROLL = hud.CHAT_SCROLL + 1
@@ -335,6 +346,10 @@ def _on_hud_mouse(event, x, y, flags, param):
             return
 
     if event == cv2.EVENT_LBUTTONDOWN:
+        # OPS overlay: tabs, task rows, HUB events, control buttons
+        if hud.HUD_MODE == "ops":
+            if _ops_screen.handle_click(x, y):
+                return
         # If commands overlay is visible, intercept clicks on overlay buttons
         if hud.SHOW_COMMANDS:
             # Prev page button
@@ -507,6 +522,10 @@ def continuous_voice_listener():
     wake_rec.dynamic_energy_ratio = 1.5
 
     while RUNNING:
+        if not speech.VOICE_ENABLED:
+            VOICE_LISTENER_ONLINE = False
+            time.sleep(1.0)
+            continue
         try:
             with sr.Microphone() as source:
                 VOICE_LISTENER_ONLINE = True
@@ -780,9 +799,11 @@ def main():
                 # Check modifier keys via Windows API
                 is_ctrl = False
                 is_shift = False
+                is_alt = False
                 try:
                     is_ctrl = bool(ctypes.windll.user32.GetAsyncKeyState(0x11) & 0x8000)
                     is_shift = bool(ctypes.windll.user32.GetAsyncKeyState(0x10) & 0x8000)
+                    is_alt = bool(ctypes.windll.user32.GetAsyncKeyState(0x12) & 0x8000)
                 except Exception:
                     pass
 
@@ -819,7 +840,20 @@ def main():
                     elif key in (ord('h'), ord('H'), 27):  # H or ESC closes commands
                         hud.SHOW_COMMANDS = False
                 elif hud.TYPING_ACTIVE:
-                    if key in (13, 10):  # Enter: submit directive
+                    if hud.HUD_MODE == "ops" and _ops_screen.ACTIVE_TAB == "notes":
+                        # Notes tab: typing edits the notes buffer (autosaves).
+                        if key in (13, 10):  # Enter: newline
+                            _ops_screen.notes_newline()
+                        elif key == 27:  # ESC: stop editing
+                            hud.TYPING_ACTIVE = False
+                            _ops_screen.save_notes()
+                            add_log("Notes saved.")
+                        elif key in (8, 127):  # Backspace
+                            _ops_screen.notes_backspace()
+                        elif 32 <= key_raw <= 126 and not is_ctrl:  # Printable
+                            _ops_screen.notes_type(chr(key_raw))
+                            agent.LAST_ACTIVITY = time.time()
+                    elif key in (13, 10):  # Enter: submit directive
                         prompt = hud.TYPING_BUFFER.strip()
                         hud.TYPING_ACTIVE = False
                         hud.TYPING_BUFFER = ""
@@ -840,21 +874,31 @@ def main():
                 else:
                     if hud.HUD_MODE == "ops" and key in (ord('o'), ord('O'), 27):
                         hud.HUD_MODE = "visor"  # O or ESC: back to face
+                        _ops_screen.save_state()
                         add_log("OPS closed.")
                         agent.LAST_ACTIVITY = time.time()
                     elif hud.HUD_MODE == "ops" and key in (ord('q'), ord('Q')):
                         hud.HUD_MODE = "visor"  # Q exits OPS; shutdown from visor only
+                        _ops_screen.save_state()
                         add_log("OPS closed.")
                         agent.LAST_ACTIVITY = time.time()
-                    elif hud.HUD_MODE == "ops" and key in tuple(ord(str(d)) for d in range(1, 9)):
-                        idx = int(chr(key)) - 1
-                        items = ((_ops.get_dashboard().get("inbox") or {}).get("data") or {}).get("items", [])
-                        if idx < len(items):
-                            _ops.SELECTED_MAIL = idx
-                            it = items[idx]
-                            add_log(f"Mail {idx + 1}: {it['sender']} | {it['subject'][:40]}")
-                        else:
-                            add_log(f"No mail #{idx + 1}.")
+                    elif hud.HUD_MODE == "ops" and key in tuple(ord(str(d)) for d in range(1, 8)):
+                        _ops_screen.set_tab(int(chr(key)) - 1)  # 1-7: switch OPS tab
+                        agent.LAST_ACTIVITY = time.time()
+                    elif hud.HUD_MODE == "ops" and is_ctrl and is_alt and key in (ord('l'), ord('L')):
+                        _ops_screen.set_tab(0)  # Ctrl+Alt+L: focus Log pane
+                        agent.LAST_ACTIVITY = time.time()
+                    elif hud.HUD_MODE == "ops" and is_ctrl and is_alt and key in (ord('t'), ord('T')):
+                        _ops_screen.set_tab(1)  # Ctrl+Alt+T: focus Tasks pane
+                        agent.LAST_ACTIVITY = time.time()
+                    elif hud.HUD_MODE == "ops" and is_ctrl and is_alt and key in (ord('s'), ord('S')):
+                        _ops_screen.set_tab(2)  # Ctrl+Alt+S: focus Sensors pane
+                        agent.LAST_ACTIVITY = time.time()
+                    elif hud.HUD_MODE == "ops" and (key in (ord('j'), ord('J')) or is_down):
+                        _ops_screen.scroll_active(-3)
+                        agent.LAST_ACTIVITY = time.time()
+                    elif hud.HUD_MODE == "ops" and (key in (ord('k'), ord('K')) or is_up):
+                        _ops_screen.scroll_active(3)
                         agent.LAST_ACTIVITY = time.time()
                     elif hud.HUD_MODE == "ops" and key in (ord('e'), ord('E')):
                         threading.Thread(target=_ops_read_selected_aloud, daemon=True).start()
@@ -886,6 +930,7 @@ def main():
                         hud.HUD_MODE = "chat_log" if hud.HUD_MODE == "visor" else "visor"
                     elif key in (ord('o'), ord('O')):
                         hud.HUD_MODE = "ops"
+                        _ops_screen.open_panel()  # land on the HUB tab
                         _ops.refresh_all()
                         add_log("OPS command center.")
                         agent.LAST_ACTIVITY = time.time()
