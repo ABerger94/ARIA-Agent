@@ -1,21 +1,21 @@
-"""OPS screen — tab-driven mission-control overlay, rendered with OpenCV.
+"""OPS screen v2 — 4-tab mission control, new visual language.
 
-Tabs: [1] Log  [2] Tasks  [3] Sensors  [4] Controls  [5] Notes  [6] HUB  [7] Day
+Tabs: [1] DASH  [2] LOG  [3] SYSTEM  [4] DAY
 
-- Tabs 1-3 share the three-column layout (Log 30% | Tasks 40% | Sensors 30%)
-  with the selected pane focused (accent border).
-- Controls / Notes / HUB / Day replace the three-column layout.
-- HUB is the default landing tab (O opens the panel here): the 20 most
-  recent events in one scrollable list, click one to jump to the full Log.
-- Day reuses the existing command-center dashboard via a draw callback.
+- DASH: 3-second health glance — status pills (provider / model / scheduler /
+  voice / loop guard / keys), recent events, active tasks.
+- LOG: full-width event log with level filters + text search, click any row
+  for the inspector pane (full message, JSON syntax tint, per-call stats).
+- SYSTEM: provider-chain strip (order, active leg, quarantines + countdowns,
+  last error), sensor gauges + camera, control buttons.
+- DAY: the existing command-center dashboard via a draw callback, with the
+  notes file folded in on the right (T edits notes, autosaves).
 
-Typography: Roboto Mono (bundled in aria/assets/) rendered through PIL —
-Hershey fonts are what made the old version look cheap. If the bundled
-font is missing we fall back to Consolas / DejaVu Sans Mono.
+Typography: Roboto Mono (bundled in aria/assets/) rendered through PIL.
 
-Keys (handled by main.py): 1-7 switch tabs, J/K or arrows scroll,
-Ctrl+Alt+L/T/S focus Log/Tasks/Sensors, O or ESC closes.
-Mouse: click tabs, task rows, HUB events, and control buttons.
+Keys (handled by main.py): 1-4 switch tabs, J/K or arrows scroll, / searches
+the log, T edits notes on DAY, O or ESC closes.
+Mouse: click tabs, filter chips, log rows, task rows, control buttons.
 """
 
 import json
@@ -41,37 +41,42 @@ from aria.agent import workers as _workers
 from aria.agent import sentinel as _sentinel
 
 # ---------------------------------------------------------------- palette (BGR)
-ACCENT = (255, 132, 10)      # #0a84ff
-BG = (23, 17, 13)            # #0d1117
-PANEL = (17, 17, 17)         # #111
-PANEL2 = (34, 27, 22)        # #161b22 — raised surfaces (buttons)
-BORDER = (34, 34, 34)        # #222
-BORDER_SOFT = (40, 33, 28)   # #1c2128 — hairlines
-TEXT = (235, 235, 235)
-DIM = (178, 170, 160)        # #a0aab2-ish, softened
-FAINT = (132, 120, 107)      # #6b7684-ish
-ERR = (85, 85, 255)          # #ff5555
-WARN = (0, 204, 255)         # #ffcc00
-INFO = (208, 192, 136)       # #88c0d0
-OK = (120, 200, 120)
+ACCENT = (247, 129, 47)      # #2f81f7 — electric blue
+BG = (20, 14, 10)            # #0a0e14 — deep navy-black
+PANEL = (31, 22, 17)         # #11161f — cards
+PANEL2 = (41, 30, 24)        # #181e29 — raised surfaces (buttons)
+BORDER = (61, 47, 38)        # #262f3d — card borders
+BORDER_SOFT = (45, 36, 29)   # hairlines
+TEXT = (243, 237, 230)       # #e6edf3
+DIM = (158, 148, 139)        # #8b949e
+FAINT = (115, 103, 92)       # #5c6773
+ERR = (73, 81, 248)          # #f85149
+WARN = (34, 153, 210)        # #d29922
+INFO = (255, 166, 88)        # #58a6ff
+OK = (80, 185, 63)           # #3fb950
 GREEN_DOT = (110, 200, 110)
 
 W, H = 1280, 720
-TAB_H = 56
-CONTENT_Y = 68
+TAB_H = 64
+CONTENT_Y = 76
 CONTENT_BOT = 684
 STATUS_Y = 700
 
-TABS = ["log", "tasks", "sensors", "controls", "notes", "hub", "day"]
-TAB_LABELS = ["[1] Log", "[2] Tasks", "[3] Sensors", "[4] Controls",
-              "[5] Notes", "[6] HUB", "[7] Day"]
-COL_TABS = ("log", "tasks", "sensors")
+TABS = ["dash", "log", "system", "day"]
+TAB_LABELS = ["[1] DASH", "[2] LOG", "[3] SYSTEM", "[4] DAY"]
 
 # ---------------------------------------------------------------- state
-ACTIVE_TAB = "hub"
+ACTIVE_TAB = "dash"
 SCROLL: Dict[str, int] = {t: 0 for t in TABS}
 SELECTED_TASK: Optional[str] = None
 SHOW_SCRIPTS = False
+
+# LOG tab: level filter ("all"/"info"/"warn"/"error") + text search.
+LOG_FILTER = "all"
+LOG_SEARCH = ""
+SEARCH_FOCUS = False
+# DAY tab: notes editing focus.
+NOTES_FOCUS = False
 
 STATE_PATH = os.path.join(_config.WORKSPACE_DIR, "ops_state.json")
 NOTES_PATH = os.path.join(_config.WORKSPACE_DIR, "notes", "ops.md")
@@ -82,7 +87,7 @@ _CLICKS: List[Tuple[int, int, int, int, str, Any]] = []  # rebuilt every draw
 
 def _sanitize(s: str) -> str:
     # Roboto Mono covers these; everything else becomes "?" so PIL/cv2 never chokes.
-    return re.sub(r"[^\x20-\x7e·—–]", "?", str(s))
+    return re.sub(r"[^\x20-\x7e·—–●→✓]", "?", str(s))
 
 
 def _trunc(s: str, n: int) -> str:
@@ -127,6 +132,16 @@ def _rgba(color, alpha: int = 255) -> Tuple[int, int, int, int]:
     if color is None:
         return (0, 0, 0, 0)
     return (color[2], color[1], color[0], alpha)
+
+
+def _blend_bgr(fg: Tuple[int, int, int], bg: Tuple[int, int, int],
+               alpha: int) -> Tuple[int, int, int]:
+    """Pre-blended BGR for cv2 drawing (cv2 has no alpha; _rgba is PIL-only)."""
+    a = max(0.0, min(1.0, alpha / 255.0))
+    return tuple(int(fg[i] * a + bg[i] * (1.0 - a)) for i in range(3))
+
+
+ACCENT_DIM = _blend_bgr(ACCENT, BG, 70)  # subtle selection tint
 
 
 # Text glyph cache: (text, px, color, bold) -> RGBA numpy array
@@ -216,6 +231,34 @@ def _arc(canvas, cx, cy, r: int, frac: float,
         dr.arc(box, start=135, end=135 + 270 * frac, fill=_rgba(color), width=width)
     _paste(canvas, np.asarray(img), int(cx - d // 2), int(cy - d // 2))
 
+
+def _pill(canvas, x: int, y: int, label: str,
+          color: Tuple[int, int, int]) -> int:
+    """Filled status pill. Returns the pill width."""
+    w = _tw(label, 11, True) + 22
+    _rrect(canvas, x, y, x + w, y + 24, 12, fill=color)
+    _txt(canvas, label, x + 11, y + 5, 11, BG, True)
+    return w
+
+
+def _pill_outline(canvas, x: int, y: int, label: str,
+                  color: Tuple[int, int, int]) -> int:
+    """Outline pill for inactive states. Returns the pill width."""
+    w = _tw(label, 11, True) + 22
+    _rrect(canvas, x, y, x + w, y + 24, 12, outline=color, width=1)
+    _txt(canvas, label, x + 11, y + 5, 11, color, True)
+    return w
+
+
+def _card(canvas, x0, y0, x1, y1, title: Optional[str] = None) -> int:
+    """Card with optional small-caps title + hairline. Returns content top."""
+    _rrect(canvas, x0, y0, x1, y1, 12, fill=PANEL, outline=BORDER)
+    if title:
+        _txt(canvas, title, x0 + 18, y0 + 12, 11, FAINT, True)
+        cv2.line(canvas, (x0 + 18, y0 + 34), (x1 - 18, y0 + 34), BORDER_SOFT, 1)
+        return y0 + 46
+    return y0 + 14
+
 # ---------------------------------------------------------------- log feed
 # The canonical event ring lives in aria.config (bounded at 1000 entries;
 # each entry is (hh:mm:ss, level, msg, meta)). This module only reads it.
@@ -233,9 +276,20 @@ def _level_color(level: str):
     return {"error": ERR, "warn": WARN}.get(level, INFO)
 
 
+def _filtered_events():
+    """LOG tab: apply level filter + text search to the event ring."""
+    lines = recent_events(500)
+    if LOG_FILTER != "all":
+        lines = [e for e in lines if e[1] == LOG_FILTER]
+    q = LOG_SEARCH.strip().lower()
+    if q:
+        lines = [e for e in lines if q in e[2].lower()]
+    return lines
+
+
 # ---------------------------------------------------------------- persistence
 def load_state() -> None:
-    global ACTIVE_TAB, SELECTED_TASK
+    global ACTIVE_TAB, SELECTED_TASK, LOG_FILTER
     try:
         with open(STATE_PATH, "r", encoding="utf-8") as f:
             st = json.load(f)
@@ -245,6 +299,8 @@ def load_state() -> None:
         for t in TABS:
             SCROLL[t] = max(0, int(sc.get(t, 0)))
         SELECTED_TASK = st.get("selected_task")
+        if st.get("log_filter") in ("all", "info", "warn", "error"):
+            LOG_FILTER = st["log_filter"]
     except Exception:
         pass
 
@@ -254,7 +310,8 @@ def save_state() -> None:
     try:
         with open(STATE_PATH, "w", encoding="utf-8") as f:
             json.dump({"active_tab": ACTIVE_TAB, "scroll": SCROLL,
-                       "selected_task": SELECTED_TASK}, f)
+                       "selected_task": SELECTED_TASK,
+                       "log_filter": LOG_FILTER}, f)
     except Exception:
         pass
 
@@ -293,9 +350,9 @@ load_notes()
 
 # ---------------------------------------------------------------- panel API
 def open_panel() -> None:
-    """O key: open OPS on the HUB tab."""
+    """O key: open OPS on the DASH tab."""
     global ACTIVE_TAB
-    ACTIVE_TAB = "hub"
+    ACTIVE_TAB = "dash"
     load_notes()
 
 
@@ -314,6 +371,49 @@ def scroll_active(delta: int) -> None:
 
 def handle_wheel(up: bool) -> None:
     scroll_active(3 if up else -3)
+
+
+# ---------------------------------------------------------------- search / notes focus
+def focus_search() -> None:
+    global SEARCH_FOCUS, NOTES_FOCUS
+    SEARCH_FOCUS = True
+    NOTES_FOCUS = False
+
+
+def unfocus_search() -> None:
+    global SEARCH_FOCUS
+    SEARCH_FOCUS = False
+
+
+def search_editing() -> bool:
+    return SEARCH_FOCUS and ACTIVE_TAB == "log"
+
+
+def search_type(ch: str) -> None:
+    global LOG_SEARCH
+    if len(LOG_SEARCH) < 60:
+        LOG_SEARCH += ch
+
+
+def search_backspace() -> None:
+    global LOG_SEARCH
+    LOG_SEARCH = LOG_SEARCH[:-1]
+
+
+def focus_notes() -> None:
+    global NOTES_FOCUS, SEARCH_FOCUS
+    NOTES_FOCUS = True
+    SEARCH_FOCUS = False
+
+
+def unfocus_notes() -> None:
+    global NOTES_FOCUS
+    save_notes()
+    NOTES_FOCUS = False
+
+
+def notes_editing() -> bool:
+    return NOTES_FOCUS and ACTIVE_TAB == "day"
 
 
 # ---------------------------------------------------------------- notes editing
@@ -351,7 +451,6 @@ def notes_newline() -> None:
     NOTES_BUF += "\n"
     save_notes()  # autosave (immediate on newline)
 
-
 # ---------------------------------------------------------------- task rows
 def _task_rows() -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
@@ -378,18 +477,26 @@ def _task_rows() -> List[Dict[str, Any]]:
     return rows
 
 
-_PILL_STYLE = {
-    "running": ((58, 42, 10), WARN, "RUNNING"),
-    "sched": ((40, 44, 52), DIM, "SCHED"),
-    "done": ((28, 58, 34), OK, "DONE"),
-    "completed": ((28, 58, 34), OK, "DONE"),
-    "failed": ((66, 28, 30), ERR, "FAILED"),
-    "error": ((66, 28, 30), ERR, "FAILED"),
+_TASK_PILL = {
+    "running": (WARN, "RUNNING"),
+    "sched": (INFO, "SCHED"),
+    "done": (OK, "DONE"),
+    "completed": (OK, "DONE"),
+    "failed": (ERR, "FAILED"),
+    "error": (ERR, "FAILED"),
 }
 
 
-def _pill_style(status: str):
-    return _PILL_STYLE.get(status, ((40, 44, 52), DIM, "?"))
+def _task_pill(status: str):
+    return _TASK_PILL.get(status, (DIM, "?"))
+
+
+def _cancel_job(job_id: Any) -> None:
+    try:
+        ok = _workers.cancel_background_job(int(job_id))
+        _config.add_log(f"Job #{job_id} {'cancelled' if ok else 'not cancellable'}.")
+    except Exception as e:
+        _config.add_log(f"Cancel job #{job_id} failed: {e}")
 
 
 def _spinner() -> str:
@@ -518,44 +625,138 @@ def _provider_name() -> str:
     except Exception:
         return "?"
 
-# ---------------------------------------------------------------- chrome
+
+# ---------------------------------------------------------------- provider chain
+def _chain_legs() -> List[Dict[str, Any]]:
+    """Legs for the SYSTEM provider strip: name, model, state, detail."""
+    try:
+        d = _ops.fetch_providers()
+        active = d.get("active") or ""
+        legs = []
+        for leg in d.get("chain") or []:
+            name = str(leg.get("name") or "?")
+            state = str(leg.get("state") or "standby")
+            legs.append({
+                "name": name,
+                "model": str(leg.get("model") or ""),
+                "state": "serving" if name == active and state == "live" else state,
+                "detail": str(leg.get("detail") or ""),
+            })
+        return legs
+    except Exception:
+        return []
+
+
+def _chain_pill(state: str):
+    if state == "serving":
+        return (OK, "SERVING")
+    if state == "quarantined":
+        return (WARN, "QUAR")
+    return (DIM, "READY")
+
+
+def _model_name() -> str:
+    try:
+        from aria.agent import providers as _pv
+        chain = _pv._build_chain()
+        active = _pv.get_active_provider()
+        for p in chain:
+            if getattr(p, "name", "") == active:
+                return str(getattr(p, "model", "") or "")
+    except Exception:
+        pass
+    return ""
+
+
+# ---------------------------------------------------------------- routines (AST-extracted by tests — keep verbatim shape)
+def _routine_rows():
+    """Read-only: saved routines from ~/ARIA/routines/*.json.
+
+    Uses stdlib json directly and deliberately does NOT import aria.routines
+    (keeps the lazy-import discipline / cycle-safe). Each row is
+    {"name", "steps", "trusted"}. Missing dir -> empty list.
+    """
+    rows = []
+    try:
+        rdir = os.path.expanduser(os.path.join("~", "ARIA", "routines"))
+        if not os.path.isdir(rdir):
+            return rows
+        for fname in sorted(os.listdir(rdir)):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(rdir, fname), encoding="utf-8") as _f:
+                    data = json.load(_f)
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            steps = data.get("steps")
+            rows.append({
+                "name": str(data.get("name") or fname[:-5]),
+                "steps": len(steps) if isinstance(steps, list) else 0,
+                "trusted": bool(data.get("trusted", False)),
+            })
+    except Exception:
+        return []
+    return rows
+
+
+def _draw_routines_section(canvas, x0, x1, y1, rows_bottom) -> None:
+    """Read-only Routines listing below the task rows."""
+    div = rows_bottom + 10
+    if div > y1 - 90:  # not enough room — skip rather than overlap the detail strip
+        return
+    cv2.line(canvas, (x0 + 16, div), (x1 - 16, div), BORDER_SOFT, 1)
+    _txt(canvas, "ROUTINES", x0 + 16, div + 10, 11, FAINT, True)
+    top_r = div + 34
+    routines = _routine_rows()
+    if not routines:
+        _txt(canvas, "no routines yet", x0 + 16, top_r, 12, FAINT)
+        return
+    # reserve the bottom strip (expanded-task detail is drawn at y1 - 56)
+    max_r = max(0, (y1 - 70 - top_r) // 20)
+    for i, r in enumerate(routines[:max_r]):
+        yy = top_r + i * 20
+        _txt(canvas, _trunc(r["name"], 28), x0 + 16, yy, 12, TEXT, True)
+        _txt(canvas, f"{r['steps']} steps", x0 + 240, yy, 12, DIM)
+        _txt(canvas, "trusted" if r["trusted"] else "untrusted",
+             x0 + 330, yy, 12, OK if r["trusted"] else FAINT)
+
+# ---------------------------------------------------------------- tab bar + status
 def _draw_tab_bar(canvas) -> None:
-    cv2.rectangle(canvas, (0, 0), (W, TAB_H), PANEL, -1)
-    n = len(TABS)
-    tw = W / n
+    cv2.rectangle(canvas, (0, 0), (W, TAB_H), (26, 18, 13), -1)  # #0d121a
+    cv2.line(canvas, (0, TAB_H), (W, TAB_H), BORDER, 1)
+    x = 28
     for i, (key, label) in enumerate(zip(TABS, TAB_LABELS)):
-        x0 = int(i * tw)
-        x1 = int((i + 1) * tw) if i < n - 1 else W
-        sel = (key == ACTIVE_TAB)
-        if sel:
-            cv2.rectangle(canvas, (x0, 0), (x1, TAB_H), ACCENT, -1)
-            _txt(canvas, label, x0 + (x1 - x0 - _tw(label, 14, True)) // 2,
-                 20, 14, (255, 255, 255), True)
-            cv2.rectangle(canvas, (x0, 0), (x1, 3), (255, 255, 255), -1)
-        else:
-            _txt(canvas, label, x0 + (x1 - x0 - _tw(label, 14)) // 2,
-                 20, 14, DIM, False)
-            if i:
-                cv2.line(canvas, (x0, 10), (x0, TAB_H - 10), BORDER, 1)
-        _CLICKS.append((x0, 0, x1, TAB_H, "tab", key))
-    cv2.rectangle(canvas, (0, 0), (W - 1, H - 1), BORDER, 4)
+        lbl = f"{i + 1}  {label.split('] ')[1]}"
+        w = _tw(lbl, 14, True) + 36
+        is_act = key == ACTIVE_TAB
+        if is_act:
+            _rrect(canvas, x, 10, x + w, TAB_H - 6, 10, fill=PANEL2)
+            cv2.rectangle(canvas, (x + 14, TAB_H - 8), (x + w - 14, TAB_H - 4),
+                          ACCENT, -1)
+        _txt(canvas, lbl, x + 18, 24, 14, TEXT if is_act else DIM, True)
+        _CLICKS.append((x, 0, x + w, TAB_H, "tab", key))
+        x += w + 8
+    # provider chip + clock, right side
+    now = datetime.now().strftime("%H:%M:%S")
+    cw = _tw(now, 13)
+    _txt(canvas, now, W - 28 - cw, 26, 13, FAINT)
+    _pill(canvas, W - 28 - cw - 160, 20, "● " + _provider_name(), OK)
 
 
 def _draw_status(canvas) -> None:
+    cv2.rectangle(canvas, (0, CONTENT_BOT + 16), (W, H), (26, 18, 13), -1)
+    cv2.line(canvas, (0, CONTENT_BOT + 16), (W, CONTENT_BOT + 16), BORDER, 1)
+    hint = "[1-4] tabs    [J/K] scroll    [/] search    [T] notes    [O]/[ESC] close"
+    _txt(canvas, hint, 28, STATUS_Y - 2, 12, FAINT)
     now = datetime.now().strftime("%H:%M:%S")
-    prov = _provider_name()
-    cv2.circle(canvas, (30, STATUS_Y + 4), 4, GREEN_DOT, -1)
-    _txt(canvas, prov, 42, STATUS_Y - 2, 12, INFO, True)
-    hint = "[1-7] tabs    [J/K] scroll    [O]/[ESC] close    [E] read mail    [R] refresh"
-    _txt(canvas, hint, 300, STATUS_Y - 2, 12, FAINT)
     cw = _tw(now, 12)
     _txt(canvas, now, W - 28 - cw, STATUS_Y - 2, 12, FAINT)
 
 
-def _panel_title(canvas, text, x, y) -> None:
-    _txt(canvas, text, x, y, 11, FAINT, True)
-
-
+# ---------------------------------------------------------------- text helpers
 def _wrap_lines(s: str, width: int):
     words = str(s).split()
     lines, cur = [], ""
@@ -595,12 +796,13 @@ def _txt_json_line(canvas, line: str, x: int, y: int) -> None:
 
 
 def _draw_inspector(canvas, x0: int, y0: int, x1: int, y1: int, entry) -> None:
-    """Inline detail panel for a selected log row: full message + meta stats."""
+    """Right-side inspector for a selected log row: full message + meta."""
     ts, level, msg, meta = entry
     meta = meta or {}
-    _rrect(canvas, x0, y0, x1, y1, 8, fill=PANEL2, outline=BORDER)
-    _txt(canvas, ts, x0 + 12, y0 + 10, 12, FAINT)
-    _txt(canvas, level.upper(), x0 + 92, y0 + 10, 12, _level_color(level), True)
+    _card(canvas, x0, y0, x1, y1, "INSPECTOR")
+    _txt(canvas, ts, x0 + 18, y0 + 46, 12, FAINT)
+    _txt(canvas, level.upper(), x0 + 100, y0 + 46, 12, _level_color(level), True)
+    _txt(canvas, _trunc(msg, 48), x0 + 18, y0 + 70, 13, TEXT, True)
     bits = []
     if meta.get("duration_ms") is not None:
         bits.append(f"{meta['duration_ms']}ms")
@@ -611,193 +813,210 @@ def _draw_inspector(canvas, x0: int, y0: int, x1: int, y1: int, entry) -> None:
     if meta.get("provider"):
         bits.append(f"via {meta['provider']}")
     if bits:
-        _txt(canvas, "  ·  ".join(bits), x0 + 170, y0 + 10, 12, INFO)
-    width = max(20, int((x1 - x0 - 24) / 7.8))
-    body = msg if len(msg) <= 600 else msg[:600] + "…"
+        _txt(canvas, "  ·  ".join(bits), x0 + 18, y0 + 94, 12, INFO)
+    yy = y0 + 122
+    width = max(20, int((x1 - x0 - 36) / 7.8))
+    body = msg if len(msg) <= 900 else msg[:900] + "…"
     is_json = body.strip()[:1] in "{["
-    yy = y0 + 34
-    for line in _wrap_lines(body, width)[:4]:
+    for line in _wrap_lines(body, width)[:24]:
+        if yy > y1 - 24:
+            break
         if is_json:
-            _txt_json_line(canvas, line, x0 + 12, yy)
+            _txt_json_line(canvas, line, x0 + 18, yy)
         else:
-            _txt(canvas, line, x0 + 12, yy, 13, TEXT)
-        yy += 19
+            _txt(canvas, line, x0 + 18, yy, 13, TEXT)
+        yy += 20
+    if not is_json and len(body) > 200:
+        _txt(canvas, "(full text — scroll the log row)", x0 + 18, y1 - 28, 11, FAINT)
 
 
-# ---------------------------------------------------------------- panes
-def _pane_log(canvas, x0, y0, x1, y1, focused) -> None:
+# ---------------------------------------------------------------- DASH tab
+def _dash_pills(canvas) -> None:
+    """Status strip: provider / model / scheduler / voice / loop guard / keys."""
+    y = CONTENT_Y + 4
+    items = []
+    items.append(("PROVIDER", _provider_name(), OK))
+    model = _model_name()
+    items.append(("MODEL", model.split("/")[-1] if model else "?", OK))
+    sched_paused = _sched.is_paused()
+    items.append(("SCHEDULER", "PAUSED" if sched_paused else "RUNNING",
+                  WARN if sched_paused else OK))
+    voice_on = bool(getattr(_speech, "VOICE_ENABLED", True))
+    items.append(("VOICE", "ON" if voice_on else "OFF", OK if voice_on else WARN))
+    try:
+        st = _sentinel.status()
+        lg = "OFF" if not st["enabled"] else ("TRIPPED" if st["tripped"] else "ARMED")
+        lg_col = ERR if st["tripped"] else (WARN if not st["enabled"] else OK)
+    except Exception:
+        lg, lg_col = "?", DIM
+    items.append(("LOOP GUARD", lg, lg_col))
+    try:
+        legs = _chain_legs()
+        quar = sum(1 for l in legs if l["state"] == "quarantined")
+        keys_lbl = f"{len(legs) - quar}/{len(legs)} OK" if legs else "?"
+        items.append(("KEYS", keys_lbl, OK if quar == 0 else WARN))
+    except Exception:
+        items.append(("KEYS", "?", DIM))
+    x = 28
+    for label, value, col in items:
+        _txt(canvas, label, x, y, 11, FAINT, True)
+        _pill(canvas, x, y + 18, value, col)
+        x += max(_tw(value, 11, True) + 22, _tw(label, 11, True)) + 26
+
+
+def _draw_dash(canvas) -> None:
+    _dash_pills(canvas)
+    y0 = CONTENT_Y + 74
+    # recent events — left 60%
+    ey = _card(canvas, 28, y0, 760, CONTENT_BOT, "RECENT EVENTS")
+    events = list(reversed(recent_events(14)))
+    yy = ey
+    for ts, level, msg, _meta in events:
+        _txt(canvas, ts, 46, yy, 12, FAINT)
+        _txt(canvas, _trunc(msg, 72), 130, yy, 13,
+             _level_color(level) if level != "info" else TEXT)
+        yy += 30
+        if yy > CONTENT_BOT - 40:
+            break
+    if not events:
+        _txt(canvas, "No events yet.", 46, ey, 13, FAINT)
+    # active tasks — right 40%
+    ty = _card(canvas, 776, y0, W - 28, CONTENT_BOT, "ACTIVE TASKS")
+    rows = _task_rows()[:10]
+    yy = ty
+    for r in rows:
+        _txt(canvas, _trunc(r["desc"], 30), 794, yy, 13, TEXT, True)
+        col, lbl = _task_pill(r["status"])
+        pw = _pill(canvas, 1050, yy - 3, lbl, col)
+        _CLICKS.append((776, yy - 6, W - 28, yy + 26, "task", r["id"]))
+        if r["kind"] == "job" and r["status"] == "running" and r.get("job_id") is not None:
+            cw = _pill_outline(canvas, 1050 + pw + 8, yy - 3, "CANCEL", ERR)
+            _CLICKS.append((1050 + pw + 8, yy - 3, 1050 + pw + 8 + cw, yy + 21,
+                            "jobcancel", r["job_id"]))
+        yy += 36
+        if yy > CONTENT_BOT - 40:
+            break
+    if not rows:
+        _txt(canvas, "No tasks.", 794, ty, 13, FAINT)
+    _draw_routines_section(canvas, 776, W - 28, CONTENT_BOT, yy + 6)
+
+
+# ---------------------------------------------------------------- LOG tab
+_FILTERS = [("all", "ALL"), ("info", "INFO"), ("warn", "WARN"), ("error", "ERROR")]
+
+
+def _draw_log(canvas) -> None:
     global SELECTED_EVENT
-    _rrect(canvas, x0, y0, x1, y1, 10, fill=PANEL, outline=ACCENT if focused else BORDER)
-    _panel_title(canvas, "LOG", x0 + 16, y0 + 14)
-    lines = recent_events(500)
-    row_h, top = 21, y0 + 40
-    # Reserve room at the bottom for the inspector when a row is selected.
-    insp_h = 118 if SELECTED_EVENT and SELECTED_EVENT[0] == "log" else 0
-    vis = (y1 - top - 8 - insp_h) // row_h
+    # filter chips + search
+    y = CONTENT_Y + 4
+    x = 28
+    for key, label in _FILTERS:
+        if LOG_FILTER == key:
+            w = _pill(canvas, x, y, label, ACCENT)
+        else:
+            w = _pill_outline(canvas, x, y, label, DIM)
+        _CLICKS.append((x, y, x + w, y + 24, "filter", key))
+        x += w + 10
+    # search box
+    sx0 = x + 10
+    _rrect(canvas, sx0, y, W - 28, y + 26, 8,
+           outline=ACCENT if SEARCH_FOCUS else BORDER, width=2 if SEARCH_FOCUS else 1)
+    placeholder = LOG_SEARCH if LOG_SEARCH else "/  search log..."
+    _txt(canvas, placeholder, sx0 + 14, y + 5, 12,
+         TEXT if LOG_SEARCH else FAINT)
+    if SEARCH_FOCUS and int(time.time() * 2) % 2 == 0:
+        cx = sx0 + 14 + _tw(placeholder, 12)
+        cv2.line(canvas, (cx, y + 4), (cx, y + 20), TEXT, 1)
+    _CLICKS.append((sx0, y, W - 28, y + 26, "searchbox", None))
+    # log list + inspector
+    y0 = CONTENT_Y + 46
+    lines = _filtered_events()
+    insp_w = 400
+    lx1 = W - 28 - insp_w - 16
+    ly = _card(canvas, 28, y0, lx1, CONTENT_BOT,
+               f"EVENT LOG  ·  {len(lines)} entries"
+               + (f"  ·  filter: {LOG_FILTER}" if LOG_FILTER != "all" else "")
+               + (f'  ·  "{LOG_SEARCH}"' if LOG_SEARCH else ""))
+    row_h, top = 26, ly
+    vis = (CONTENT_BOT - top - 8) // row_h
     max_scroll = max(0, len(lines) - vis)
     if SCROLL["log"] > max_scroll:
         SCROLL["log"] = max_scroll
     start = max(0, len(lines) - vis - SCROLL["log"])
-    max_chars = min(80, max(20, int((x1 - x0 - 112) / 7.8)))
+    max_chars = min(90, max(20, int((lx1 - 28 - 152) / 7.8)))
     for i, (ts, level, msg, meta) in enumerate(lines[start:start + vis]):
         yy = top + i * row_h
+        if level == "error":
+            cv2.rectangle(canvas, (28, yy - 4), (lx1, yy + 20), (40, 18, 20), -1)
         if SELECTED_EVENT == ("log", start + i):
-            cv2.rectangle(canvas, (x0 + 6, yy - 3), (x1 - 6, yy + 17), _rgba(ACCENT, 40), -1)
-        _txt(canvas, ts, x0 + 16, yy, 12, FAINT)
-        _txt(canvas, _trunc(msg, max_chars), x0 + 92, yy, 13, _level_color(level))
-        _CLICKS.append((x0 + 6, yy - 4, x1 - 6, yy + 18, "logrow", start + i))
+            cv2.rectangle(canvas, (28, yy - 4), (lx1, yy + 20),
+                          ACCENT_DIM, -1)
+        _txt(canvas, ts, 46, yy, 12, FAINT)
+        _txt(canvas, level.upper()[:4], 130, yy, 11, _level_color(level), True)
+        _txt(canvas, _trunc(msg, max_chars), 180, yy, 13, TEXT)
+        _CLICKS.append((28, yy - 4, lx1, yy + 20, "logrow", start + i))
+    if not lines:
+        _txt(canvas, "No matching events.", 46, top, 13, FAINT)
+    # inspector pane
+    ix0 = lx1 + 16
     if SELECTED_EVENT and SELECTED_EVENT[0] == "log":
         idx = SELECTED_EVENT[1]
         if 0 <= idx < len(lines):
-            _draw_inspector(canvas, x0 + 10, y1 - insp_h - 4, x1 - 10,
-                            y1 - 8, lines[idx])
+            _draw_inspector(canvas, ix0, y0, W - 28, CONTENT_BOT, lines[idx])
         else:
             SELECTED_EVENT = None
-    if not lines:
-        _txt(canvas, "No events yet.", x0 + 16, top, 13, FAINT)
+    else:
+        iy = _card(canvas, ix0, y0, W - 28, CONTENT_BOT, "INSPECTOR")
+        _txt(canvas, "click a row", ix0 + 18, iy, 13, FAINT)
 
 
-def _routine_rows():
-    """Read-only: saved routines from ~/ARIA/routines/*.json.
-
-    Uses stdlib json directly and deliberately does NOT import aria.routines
-    (keeps the lazy-import discipline / cycle-safe). Each row is
-    {"name", "steps", "trusted"}. Missing dir -> empty list.
-    """
-    rows = []
-    try:
-        rdir = os.path.expanduser(os.path.join("~", "ARIA", "routines"))
-        if not os.path.isdir(rdir):
-            return rows
-        for fname in sorted(os.listdir(rdir)):
-            if not fname.endswith(".json"):
-                continue
-            try:
-                with open(os.path.join(rdir, fname), encoding="utf-8") as _f:
-                    data = json.load(_f)
-            except Exception:
-                continue
-            if not isinstance(data, dict):
-                continue
-            steps = data.get("steps")
-            rows.append({
-                "name": str(data.get("name") or fname[:-5]),
-                "steps": len(steps) if isinstance(steps, list) else 0,
-                "trusted": bool(data.get("trusted", False)),
-            })
-    except Exception:
-        return []
-    return rows
-
-
-def _draw_routines_section(canvas, x0, x1, y1, rows_bottom) -> None:
-    """Read-only Routines listing below the task rows in the Tasks pane."""
-    div = rows_bottom + 10
-    if div > y1 - 90:  # not enough room — skip rather than overlap the detail strip
-        return
-    cv2.line(canvas, (x0 + 16, div), (x1 - 16, div), BORDER_SOFT, 1)
-    _panel_title(canvas, "ROUTINES", x0 + 16, div + 10)
-    top_r = div + 34
-    routines = _routine_rows()
-    if not routines:
-        _txt(canvas, "no routines yet", x0 + 16, top_r, 12, FAINT)
-        return
-    # reserve the bottom strip (expanded-task detail is drawn at y1 - 56)
-    max_r = max(0, (y1 - 70 - top_r) // 20)
-    for i, r in enumerate(routines[:max_r]):
-        yy = top_r + i * 20
-        _txt(canvas, _trunc(r["name"], 28), x0 + 16, yy, 12, TEXT, True)
-        _txt(canvas, f"{r['steps']} steps", x0 + 240, yy, 12, DIM)
-        _txt(canvas, "trusted" if r["trusted"] else "untrusted",
-             x0 + 330, yy, 12, OK if r["trusted"] else FAINT)
-
-
-def _pane_tasks(canvas, x0, y0, x1, y1, focused) -> None:
-    _rrect(canvas, x0, y0, x1, y1, 10, fill=PANEL, outline=ACCENT if focused else BORDER)
-    _panel_title(canvas, "TASKS", x0 + 16, y0 + 14)
-    rows = _task_rows()
-    # header
-    hx = x0 + 16
-    _txt(canvas, "ID", hx, y0 + 38, 11, FAINT, True)
-    _txt(canvas, "STATUS", hx + 64, y0 + 38, 11, FAINT, True)
-    _txt(canvas, "ETA", hx + 160, y0 + 38, 11, FAINT, True)
-    _txt(canvas, "DESCRIPTION", hx + 300, y0 + 38, 11, FAINT, True)
-    cv2.line(canvas, (x0 + 16, y0 + 58), (x1 - 16, y0 + 58), BORDER_SOFT, 1)
-    row_h, top = 26, y0 + 66
-    vis = (y1 - top - 64) // row_h
-    max_scroll = max(0, len(rows) - vis)
-    if SCROLL["tasks"] > max_scroll:
-        SCROLL["tasks"] = max_scroll
-    start = SCROLL["tasks"]
-    for i, r in enumerate(rows[start:start + vis]):
-        yy = top + i * row_h
-        if r["id"] == SELECTED_TASK:
-            _rrect(canvas, x0 + 8, yy - 5, x1 - 8, yy + 19, 6, fill=PANEL2)
-        _txt(canvas, r["id"], hx, yy, 13, TEXT, True)
-        bg, fg, label = _pill_style(r["status"])
-        pill_txt = _spinner() + " " + label if r["status"] == "running" else label
-        pw = _tw(pill_txt, 11, True) + 18
-        _rrect(canvas, hx + 64, yy - 3, hx + 64 + pw, yy + 17, 10,
-               fill=bg)
-        _txt(canvas, pill_txt, hx + 64 + 9, yy, 11, fg, True)
-        _txt(canvas, _trunc(r["eta"], 16), hx + 160, yy, 12, DIM)
-        _txt(canvas, _trunc(r["desc"], 36), hx + 300, yy, 13, TEXT)
-        _CLICKS.append((x0 + 8, yy - 5, x1 - 8, yy + 19, "task", r["id"]))
-    if not rows:
-        _txt(canvas, "No scheduled tasks or jobs.", hx, top, 13, FAINT)
-    # ---- Routines section (read-only; Module 11) ----
-    try:
-        _draw_routines_section(canvas, x0, x1, y1,
-                               top + max(1, len(rows[start:start + vis])) * row_h)
-    except Exception:
-        pass
-    # expanded detail
-    if SELECTED_TASK:
-        sel = next((r for r in rows if r["id"] == SELECTED_TASK), None)
-        if sel:
-            dy = y1 - 56
-            cv2.line(canvas, (x0 + 16, dy - 16), (x1 - 16, dy - 16), BORDER_SOFT, 1)
-            _txt(canvas, _trunc(f"> {sel['id']}  {sel['detail']}", 76),
-                 x0 + 16, dy + 2, 12, INFO)
-            if sel["kind"] == "job" and sel.get("job_id") is not None:
-                try:
-                    tail = _workers.get_background_job_log(sel["job_id"], 2)
-                    last = tail.strip().splitlines()[-1] if tail.strip() else "(empty)"
-                    _txt(canvas, _trunc("  " + last, 76), x0 + 16, dy + 22, 12, DIM)
-                except Exception:
-                    pass
-
-
-def _pane_sensors(canvas, x0, y0, x1, y1, focused) -> None:
-    _rrect(canvas, x0, y0, x1, y1, 10, fill=PANEL, outline=ACCENT if focused else BORDER)
-    _panel_title(canvas, "SENSORS", x0 + 16, y0 + 14)
+# ---------------------------------------------------------------- SYSTEM tab
+def _draw_system(canvas) -> None:
+    # provider chain strip — full width
+    py = _card(canvas, 28, CONTENT_Y, W - 28, CONTENT_Y + 150, "PROVIDER CHAIN")
+    legs = _chain_legs()
+    if not legs:
+        _txt(canvas, "chain unavailable", 46, py, 13, FAINT)
+    else:
+        x = 46
+        slot = (W - 92) / max(1, len(legs))
+        for i, leg in enumerate(legs):
+            col, lbl = _chain_pill(leg["state"])
+            detail = leg.get("detail") or ""
+            _txt(canvas, leg["name"].upper(), x, py, 12, TEXT, True)
+            pw = _pill(canvas, x, py + 22, lbl + (f" {detail}" if detail and leg["state"] == "quarantined" else ""), col)
+            _txt(canvas, _trunc(leg["model"], 28), x, py + 54, 11, FAINT)
+            if i < len(legs) - 1:
+                ax = x + slot
+                _txt(canvas, "→", int(ax) - 12, py + 26, 16, FAINT)
+            x += slot
+    # bottom: sensors | controls
+    by = CONTENT_Y + 166
+    sy = _card(canvas, 28, by, 620, CONTENT_BOT, "SENSORS")
     stats = _sys_stats()
     if stats is None:
-        _txt(canvas, "psutil not installed", x0 + 16, y0 + 60, 13, WARN, True)
-        _txt(canvas, "Run:  pip install psutil", x0 + 16, y0 + 84, 13, DIM)
-        _txt(canvas, "then restart ARIA.", x0 + 16, y0 + 106, 13, DIM)
-        return
-    gauges = [("CPU", stats["cpu"] / 100.0, f"{stats['cpu']:.0f}%"),
-              ("RAM", stats["mem"] / 100.0, f"{stats['mem']:.0f}%"),
-              ("DISK", stats["disk"] / 100.0, f"{stats['disk']:.0f}%")]
-    gpu = _gpu_pct()
-    if gpu is not None:  # only show a gauge for hardware that exists
-        gauges.append(("GPU", gpu / 100.0, f"{gpu:.0f}%"))
-    n = len(gauges)
-    gw = (x1 - x0 - 32) // n
-    gy = y0 + 108
-    for i, (label, frac, val) in enumerate(gauges):
-        gx = x0 + 16 + gw * i + gw // 2
-        _arc(canvas, gx, gy, 40, frac)
-        vw = _tw(val, 22, True)
-        _txt(canvas, val, gx - vw // 2, gy - 13, 22, TEXT, True)
-        lw = _tw(label, 12, True)
-        _txt(canvas, label, gx - lw // 2, gy + 56, 12, FAINT, True)
-    # webcam preview
+        _txt(canvas, "psutil not installed — pip install psutil", 46, sy, 12, FAINT)
+    else:
+        gauges = [("CPU", stats["cpu"]), ("RAM", stats["mem"]), ("DISK", stats["disk"])]
+        gp = _gpu_pct()
+        if gp is not None:
+            gauges.append(("GPU", gp))
+        gx = 130
+        for label, val in gauges:
+            frac = max(0.0, min(1.0, val / 100.0))
+            col = ERR if val >= 90 else (WARN if val >= 70 else OK)
+            _arc(canvas, gx, sy + 40, 44, frac, color=col)
+            v = f"{val:.0f}%"
+            _txt(canvas, v, gx - _tw(v, 20, True) // 2, sy + 28, 20, TEXT, True)
+            _txt(canvas, label, gx - _tw(label, 11, True) // 2, sy + 96, 11, FAINT, True)
+            gx += 130
+    # camera
+    cam_y = sy + 130
+    _txt(canvas, "CAMERA", 46, cam_y, 11, FAINT, True)
+    _txt(canvas, "● live" if getattr(_vision, "LATEST_CAMERA_FRAME", None) is not None else "off",
+         130, cam_y, 11, OK if getattr(_vision, "LATEST_CAMERA_FRAME", None) is not None else FAINT, True)
     frame = getattr(_vision, "LATEST_CAMERA_FRAME", None)
-    py = gy + 92
-    _panel_title(canvas, "CAMERA", x0 + 16, py)
-    if frame is not None and py + 170 < y1:
+    if frame is not None and cam_y + 190 < CONTENT_BOT:
         try:
             thumb = cv2.resize(frame, (200, 150))
             img = Image.fromarray(cv2.cvtColor(thumb, cv2.COLOR_BGR2RGB))
@@ -805,98 +1024,120 @@ def _pane_sensors(canvas, x0, y0, x1, y1, focused) -> None:
             ImageDraw.Draw(mask).rounded_rectangle([0, 0, 199, 149], radius=8, fill=255)
             rgba = np.asarray(img.convert("RGBA"))
             rgba[..., 3] = np.asarray(mask)
-            _paste(canvas, rgba, x0 + 16, py + 22)
+            _paste(canvas, rgba, 46, cam_y + 24)
         except Exception:
-            _txt(canvas, "camera unavailable", x0 + 16, py + 24, 12, FAINT)
-    else:
-        _txt(canvas, "camera off", x0 + 16, py + 24, 12, FAINT)
-
-
-def _draw_columns(canvas) -> None:
-    focus = ACTIVE_TAB if ACTIVE_TAB in COL_TABS else None
-    _pane_log(canvas, 20, CONTENT_Y, 392, CONTENT_BOT, focus == "log")
-    _pane_tasks(canvas, 400, CONTENT_Y, 896, CONTENT_BOT, focus == "tasks")
-    _pane_sensors(canvas, 904, CONTENT_Y, 1260, CONTENT_BOT, focus == "sensors")
-
-
-# ---------------------------------------------------------------- controls tab
-def _draw_controls(canvas) -> None:
-    _panel_title(canvas, "CONTROLS", 36, CONTENT_Y + 6)
-    n = len(_CONTROLS)
-    bs, gap = 96, 28
-    total = n * bs + (n - 1) * gap
-    x0 = (W - total) // 2
-    y0 = CONTENT_Y + 44
-    for i, (name, label) in enumerate(_CONTROLS):
-        bx = x0 + i * (bs + gap)
-        by = y0
+            _txt(canvas, "camera unavailable", 46, cam_y + 24, 12, FAINT)
+    # controls
+    cy = _card(canvas, 636, by, W - 28, CONTENT_BOT, "CONTROLS")
+    bw, bh, gap = 180, 64, 16
+    xx, yy = 654, cy
+    for name, label in _CONTROLS:
+        if xx + bw > W - 28:
+            xx = 654
+            yy += bh + gap
+        if yy + bh > CONTENT_BOT - 8:
+            break
         active = _ctl_active(name)
-        _rrect(canvas, bx, by, bx + bs, by + bs, 16, fill=PANEL2,
-               outline=ACCENT if active else BORDER_SOFT, width=2 if active else 1)
-        lw = _tw(label, 12, True)
-        _txt(canvas, label, bx + (bs - lw) // 2, by + 38, 12, TEXT, True)
+        _rrect(canvas, xx, yy, xx + bw, yy + bh, 10, fill=PANEL2,
+               outline=ACCENT if active else BORDER, width=2 if active else 1)
+        _txt(canvas, label, xx + 16, yy + 12, 12, TEXT, True)
         sub = _ctl_sub(name)
         if sub:
-            sw = _tw(sub, 11, True)
-            _txt(canvas, sub, bx + (bs - sw) // 2, by + 60, 11,
-                 OK if active else WARN, True)
-        _CLICKS.append((bx, by, bx + bs, by + bs, "ctl", name))
+            scol = OK if active else (ERR if sub in ("TRIPPED", "PAUSED", "OFF") else WARN)
+            _pill(canvas, xx + 16, yy + 32, sub, scol)
+        _CLICKS.append((xx, yy, xx + bw, yy + bh, "ctl", name))
+        xx += bw + gap
     if SHOW_SCRIPTS:
-        sy = y0 + bs + 32
+        sy2 = yy + bh + 20
         _txt(canvas, "Pick a script to run  (output goes to Tasks / Log):",
-             x0, sy, 12, DIM, True)
+             654, sy2, 12, DIM, True)
         try:
             files = sorted(f for f in os.listdir(_scripts_dir()) if f.endswith(".py"))
         except Exception:
             files = []
         if not files:
             _txt(canvas, f"No .py files yet — drop scripts in {_scripts_dir()}",
-                 x0, sy + 26, 12, FAINT)
-        for i, f in enumerate(files[:10]):
-            yy = sy + 28 + i * 24
-            _txt(canvas, "> " + f, x0, yy, 13, INFO)
-            _CLICKS.append((x0, yy - 4, x0 + 420, yy + 18, "script", f))
+                 654, sy2 + 26, 12, FAINT)
+        for i, f in enumerate(files[:8]):
+            fyy = sy2 + 28 + i * 24
+            _txt(canvas, "> " + f, 654, fyy, 13, INFO)
+            _CLICKS.append((654, fyy - 4, 1074, fyy + 18, "script", f))
 
 
-# ---------------------------------------------------------------- notes tab
-def _draw_notes(canvas) -> None:
-    _txt(canvas, "NOTES", 36, CONTENT_Y + 6, 11, FAINT, True)
-    _txt(canvas, "~/ARIA/notes/ops.md   ·   [T] type   ·   autosaves",
-         110, CONTENT_Y + 6, 11, FAINT)
-    _rrect(canvas, 20, CONTENT_Y + 30, 1260, CONTENT_BOT, 10,
-           fill=PANEL, outline=BORDER)
+# ---------------------------------------------------------------- DAY tab
+def _draw_day(canvas) -> None:
+    # dashboard left (2/3), notes right (1/3)
+    dash_x1 = 830
+    dy = _card(canvas, 28, CONTENT_Y, dash_x1, CONTENT_BOT,
+               "TODAY  ·  " + datetime.now().strftime("%A %b %-d"))
+    try:
+        dash = _ops.get_dashboard()
+        attn = _ops.compute_attention(dash, datetime.now())
+        if attn:
+            _txt(canvas, "ATTENTION", 46, dy, 11, WARN, True)
+            for j, a in enumerate(attn[:3]):
+                _txt(canvas, "· " + _trunc(a, 70), 46, dy + 22 + j * 20, 12, TEXT)
+            ay = dy + 22 + min(3, len(attn)) * 20 + 10
+        else:
+            _txt(canvas, "All clear.", 46, dy, 12, OK, True)
+            ay = dy + 30
+        cv2.line(canvas, (46, ay), (dash_x1 - 18, ay), BORDER_SOFT, 1)
+        ay += 14
+        # schedule timeline
+        sched = ((dash.get("schedule") or {}).get("data") or {})
+        events = sched.get("events", []) if sched.get("connected") else []
+        _txt(canvas, "SCHEDULE", 46, ay, 11, FAINT, True)
+        ay += 24
+        shown = 0
+        for e in events[:8]:
+            st = str(e.get("start", ""))[:16].replace("T", " ")
+            _txt(canvas, "●", 46, ay, 12, INFO)
+            _txt(canvas, st, 62, ay, 12, TEXT, True)
+            _txt(canvas, _trunc(e.get("summary", ""), 52), 190, ay, 12, DIM)
+            ay += 26
+            shown += 1
+            if ay > CONTENT_BOT - 60:
+                break
+        if not shown:
+            _txt(canvas, "nothing scheduled" if sched.get("connected") else "calendar not connected",
+                 46, ay, 12, FAINT)
+            ay += 26
+        # tasks
+        if ay < CONTENT_BOT - 80:
+            cv2.line(canvas, (46, ay), (dash_x1 - 18, ay), BORDER_SOFT, 1)
+            ay += 14
+            _txt(canvas, "TASKS", 46, ay, 11, FAINT, True)
+            ay += 24
+            for r in _task_rows()[:6]:
+                col, lbl = _task_pill(r["status"])
+                _pill(canvas, 46, ay - 3, lbl, col)
+                _txt(canvas, _trunc(r["desc"], 48), 140, ay, 12, TEXT)
+                ay += 28
+                if ay > CONTENT_BOT - 40:
+                    break
+    except Exception:
+        _txt(canvas, "dashboard unavailable", 46, dy, 13, FAINT)
+    # notes card
+    nx0 = dash_x1 + 16
+    ny = _card(canvas, nx0, CONTENT_Y, W - 28, CONTENT_BOT,
+               "NOTES  ·  ops.md" + ("  ·  EDITING" if NOTES_FOCUS else ""))
+    _txt(canvas, "[T] type   ·   autosaves", nx0 + 18, CONTENT_BOT - 30, 11, FAINT)
     lines = NOTES_BUF.splitlines() or ["(empty — press T to type)"]
-    row_h, top = 21, CONTENT_Y + 48
-    vis = (CONTENT_BOT - top - 8) // row_h
+    row_h, top = 21, ny
+    vis = (CONTENT_BOT - 44 - top) // row_h
     max_scroll = max(0, len(lines) - vis)
-    if SCROLL["notes"] > max_scroll:
-        SCROLL["notes"] = max_scroll
-    for i, ln in enumerate(lines[SCROLL["notes"]:SCROLL["notes"] + vis]):
-        _txt(canvas, _trunc(ln, 150), 36, top + i * row_h, 13, TEXT)
-
-
-# ---------------------------------------------------------------- HUB tab
-def _draw_hub(canvas) -> None:
-    _txt(canvas, "HUB", 36, CONTENT_Y + 6, 11, FAINT, True)
-    _txt(canvas, "latest events   ·   click one for the full Log view",
-         110, CONTENT_Y + 6, 11, FAINT)
-    _rrect(canvas, 20, CONTENT_Y + 30, 1260, CONTENT_BOT, 10,
-           fill=PANEL, outline=BORDER)
-    events = list(reversed(recent_events(20)))
-    row_h, top = 26, CONTENT_Y + 48
-    vis = (CONTENT_BOT - top - 8) // row_h
-    max_scroll = max(0, len(events) - vis)
-    if SCROLL["hub"] > max_scroll:
-        SCROLL["hub"] = max_scroll
-    for i, (ts, level, msg, _meta) in enumerate(events[SCROLL["hub"]:SCROLL["hub"] + vis]):
-        yy = top + i * row_h
-        _txt(canvas, ts, 36, yy, 12, FAINT)
-        _txt(canvas, _trunc(msg, 110), 120, yy, 13, _level_color(level))
-        if i < vis - 1:
-            cv2.line(canvas, (36, yy + 20), (1244, yy + 20), BORDER_SOFT, 1)
-        _CLICKS.append((28, yy - 4, 1252, yy + 20, "hub", i))
-    if not events:
-        _txt(canvas, "No events yet.", 36, top, 13, FAINT)
+    if SCROLL["day"] > max_scroll:
+        SCROLL["day"] = max_scroll
+    start = SCROLL["day"]
+    for i, ln in enumerate(lines[start:start + vis]):
+        _txt(canvas, _trunc(ln, 52), nx0 + 18, top + i * row_h, 13, TEXT)
+    if NOTES_FOCUS and int(time.time() * 2) % 2 == 0:
+        # caret at end of last visible line
+        vis_lines = lines[start:start + vis]
+        last = vis_lines[-1] if vis_lines else ""
+        cx = nx0 + 18 + _tw(_trunc(last, 52), 13)
+        cyy = top + (len(vis_lines) - 1) * row_h
+        cv2.line(canvas, (cx, cyy), (cx, cyy + 16), TEXT, 1)
 
 
 # ---------------------------------------------------------------- main draw
@@ -905,34 +1146,40 @@ def draw(canvas, ACC, ACC2, day_draw_fn: Callable) -> None:
     existing Day dashboard (callback avoids a hud<->ops_screen import cycle)."""
     _CLICKS.clear()
     canvas[:, :] = BG
-    if ACTIVE_TAB in COL_TABS:
-        _draw_columns(canvas)
-    elif ACTIVE_TAB == "controls":
-        _draw_controls(canvas)
-    elif ACTIVE_TAB == "notes":
-        _draw_notes(canvas)
-    elif ACTIVE_TAB == "hub":
-        _draw_hub(canvas)
+    if ACTIVE_TAB == "dash":
+        _draw_dash(canvas)
+    elif ACTIVE_TAB == "log":
+        _draw_log(canvas)
+    elif ACTIVE_TAB == "system":
+        _draw_system(canvas)
     elif ACTIVE_TAB == "day":
-        day_draw_fn(canvas, ACC, ACC2)
+        _draw_day(canvas)
     _draw_tab_bar(canvas)
     _draw_status(canvas)
 
 
 # ---------------------------------------------------------------- input
 def handle_click(x: int, y: int) -> bool:
+    global SELECTED_EVENT, SELECTED_TASK
     for (x0, y0, x1, y1, kind, arg) in _CLICKS:
         if x0 <= x <= x1 and y0 <= y <= y1:
             if kind == "tab":
                 set_tab(TABS.index(arg))
-            elif kind == "task":
-                global SELECTED_TASK
-                SELECTED_TASK = arg if SELECTED_TASK != arg else None
-            elif kind == "hub":
-                set_tab(TABS.index("log"))
+            elif kind == "filter":
+                global LOG_FILTER
+                LOG_FILTER = arg
+                SCROLL["log"] = 0
+                save_state()
+            elif kind == "searchbox":
+                focus_search()
+                from aria import hud as _hud
+                _hud.TYPING_ACTIVE = True
             elif kind == "logrow":
-                global SELECTED_EVENT
                 SELECTED_EVENT = None if SELECTED_EVENT == ("log", arg) else ("log", arg)
+            elif kind == "task":
+                SELECTED_TASK = arg if SELECTED_TASK != arg else None
+            elif kind == "jobcancel":
+                _cancel_job(arg)
             elif kind == "ctl":
                 _ctl_action(arg)
             elif kind == "script":

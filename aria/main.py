@@ -920,13 +920,25 @@ def main():
                     elif key in (ord('h'), ord('H'), 27):  # H or ESC closes commands
                         hud.SHOW_COMMANDS = False
                 elif hud.TYPING_ACTIVE:
-                    if hud.HUD_MODE == "ops" and _ops_screen.ACTIVE_TAB == "notes":
-                        # Notes tab: typing edits the notes buffer (autosaves).
+                    if hud.HUD_MODE == "ops" and _ops_screen.search_editing():
+                        # LOG tab: typing filters the event log.
+                        if key in (13, 10, 27):  # Enter/ESC: done searching
+                            hud.TYPING_ACTIVE = False
+                            _ops_screen.unfocus_search()
+                        elif key in (8, 127):  # Backspace
+                            _ops_screen.search_backspace()
+                        elif key == 21:  # Ctrl+U: clear search
+                            _ops_screen.LOG_SEARCH = ""
+                        elif 32 <= key_raw <= 126 and not is_ctrl:  # Printable
+                            _ops_screen.search_type(chr(key_raw))
+                            agent.LAST_ACTIVITY = time.time()
+                    elif hud.HUD_MODE == "ops" and _ops_screen.notes_editing():
+                        # DAY tab notes: typing edits the notes buffer (autosaves).
                         if key in (13, 10):  # Enter: newline
                             _ops_screen.notes_newline()
                         elif key == 27:  # ESC: stop editing
                             hud.TYPING_ACTIVE = False
-                            _ops_screen.save_notes()
+                            _ops_screen.unfocus_notes()
                             add_log("Notes saved.")
                         elif key in (8, 127):  # Backspace
                             _ops_screen.notes_backspace()
@@ -962,17 +974,19 @@ def main():
                         _ops_screen.save_state()
                         add_log("OPS closed.")
                         agent.LAST_ACTIVITY = time.time()
-                    elif hud.HUD_MODE == "ops" and key in tuple(ord(str(d)) for d in range(1, 8)):
-                        _ops_screen.set_tab(int(chr(key)) - 1)  # 1-7: switch OPS tab
+                    elif hud.HUD_MODE == "ops" and key in tuple(ord(str(d)) for d in range(1, 5)):
+                        _ops_screen.set_tab(int(chr(key)) - 1)  # 1-4: switch OPS tab
                         agent.LAST_ACTIVITY = time.time()
                     elif hud.HUD_MODE == "ops" and is_ctrl and is_alt and key in (ord('l'), ord('L')):
-                        _ops_screen.set_tab(0)  # Ctrl+Alt+L: focus Log pane
+                        _ops_screen.set_tab(1)  # Ctrl+Alt+L: LOG tab
                         agent.LAST_ACTIVITY = time.time()
-                    elif hud.HUD_MODE == "ops" and is_ctrl and is_alt and key in (ord('t'), ord('T')):
-                        _ops_screen.set_tab(1)  # Ctrl+Alt+T: focus Tasks pane
+                    elif hud.HUD_MODE == "ops" and _ops_screen.ACTIVE_TAB == "log" and key == ord('/'):
+                        _ops_screen.focus_search()  # / : search the log
+                        hud.TYPING_ACTIVE = True
                         agent.LAST_ACTIVITY = time.time()
-                    elif hud.HUD_MODE == "ops" and is_ctrl and is_alt and key in (ord('s'), ord('S')):
-                        _ops_screen.set_tab(2)  # Ctrl+Alt+S: focus Sensors pane
+                    elif hud.HUD_MODE == "ops" and _ops_screen.ACTIVE_TAB == "day" and key in (ord('t'), ord('T')):
+                        _ops_screen.focus_notes()  # T: edit notes
+                        hud.TYPING_ACTIVE = True
                         agent.LAST_ACTIVITY = time.time()
                     elif hud.HUD_MODE == "ops" and (key in (ord('j'), ord('J')) or is_down):
                         _ops_screen.scroll_active(-3)
