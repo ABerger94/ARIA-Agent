@@ -151,3 +151,16 @@ Chain order itself is configurable (`PROVIDER_CHAIN` list in config); any provid
   `ollama_cloud -> groq -> openrouter -> mistral -> gemini`; `GEMINI_MODEL`
   defaults to `gemini-3.8-flash` (v1's original model). Reorder any time via
   `PROVIDER_CHAIN`. First-run wizard prompts for `GEMINI_API_KEY`.
+
+## Phase 3d (2026-10-06, Milk): HTTP 400 self-diagnosis + null-content guard
+- On any provider HTTP 400, the log now records a payload fingerprint
+  (`_payload_fingerprint` in `providers.py`): model, per-message
+  role/content-shape/tool-call summary, tool count. Structure only — never
+  message text, never the API key. A 400 names its own offending message
+  shape; no manual OPS-log capture needed to diagnose the next one.
+- Assistant messages built from textless model blocks no longer use
+  `"content": null` (several OpenAI-compatible servers 400 on it) — now
+  empty string. Hardening only; not claimed as the fix for any specific
+  past 400.
+- 400s never quarantine the key (malformed request is our payload, not a
+  bad key) — unchanged behavior, now with the fingerprint attached.
