@@ -454,8 +454,9 @@ def _draw_chassis_avatar(canvas, state: str, t: float, mood: Optional[str] = Non
     render_aperture_eye(rx, ey, 1)
 
     # 8. Status LED Telemetry Rail (Power, Neural Bus, Memory, Audio, Exec)
+    # On the forehead, above the ARIA // APERTURE line (moved from between eyes per user)
     led_x_start = cx - 36
-    led_y = cy - vh_t + 44
+    led_y = cy - 80
     for i in range(5):
         lx_pos = led_x_start + i * 18
         is_lit = True
