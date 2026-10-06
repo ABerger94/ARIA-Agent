@@ -93,6 +93,29 @@ def main():
     )
     show("4. long output", data)
 
+    # 5. FAITHFUL loop replica: all 95 real tool declarations + streaming,
+    #    like the brain loop does on a redesign request.
+    try:
+        from aria.tools import schemas as _schemas
+        real_decls = _schemas.ALL_FUNCTION_DECLARATIONS
+        print(f"real decls: {len(real_decls)} tools")
+    except Exception as e:
+        real_decls = None
+        print(f"could not load real decls: {e}")
+    if real_decls:
+        chunks = []
+        data = P.provider_call(
+            "You are A.R.I.A., a desktop AI agent. Answer briefly.",
+            [{"role": "user", "parts": [
+                {"text": "Briefly describe how you would redesign a tabbed "
+                         "desktop command center UI. Keep it under 150 words."},
+            ]}],
+            tool_decls=real_decls,
+            on_text_chunk=lambda c: chunks.append(c) if c else None,
+        )
+        print(f"streamed chunks: {len(chunks)}, chars: {sum(len(c) for c in chunks)}")
+        show("5. real decls + streaming", data)
+
 
 if __name__ == "__main__":
     main()
