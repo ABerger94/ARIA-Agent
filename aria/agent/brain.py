@@ -93,9 +93,29 @@ def _file_sha256(path: Optional[str]) -> Optional[str]:
         return None
 
 
+def _repo_dir() -> str:
+    """Repo root for git operations and import smoke tests.
+
+    Preferred: `git rev-parse --show-toplevel` (robust no matter where the
+    caller lives). Fallback: three dirnames up from aria/agent/brain.py.
+    Never raises.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            capture_output=True, timeout=15, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))))
+
+
 def _watched_source_files() -> List[str]:
     """Every Python source file that makes up ARIA: the package + the stub."""
-    pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    pkg_dir = _repo_dir()
     files: List[str] = []
     for root, _dirs, names in os.walk(pkg_dir):
         for n in names:
@@ -143,7 +163,7 @@ def _restore_last_committed(path: str, repo_dir: Optional[str] = None) -> Option
     """
     try:
         if repo_dir is None:
-            repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            repo_dir = _repo_dir()
         backup = f"{path}.broken-{int(time.time())}"
         shutil.copy2(path, backup)
         r = subprocess.run(
@@ -156,6 +176,36 @@ def _restore_last_committed(path: str, repo_dir: Optional[str] = None) -> Option
     except Exception as e:
         add_log(f"Self-restart auto-restore failed for {os.path.basename(path)}: {e}")
         return None
+
+
+def _smoke_import_changed(changed) -> list:
+    """Import-smoke-test changed .py files in a subprocess.
+
+    py_compile passing is NOT enough: a file can parse yet fail at import
+    (e.g. `from aria.core.optimport import ...` in a repo that has no
+    aria/core package). Each changed module is imported in a fresh
+    interpreter with cwd=repo root — the same import the restart would do.
+    Returns [(path, stderr_tail)] for failures. Never raises.
+    """
+    repo_dir = _repo_dir()
+    failed = []
+    for p in changed:
+        if not (p.endswith(".py") and os.path.isfile(p)):
+            continue
+        rel = os.path.relpath(p, repo_dir)
+        if rel.startswith(".."):
+            continue
+        mod = rel[:-3].replace(os.sep, ".")
+        try:
+            r = subprocess.run(
+                [sys.executable, "-c", f"import {mod}"],
+                cwd=repo_dir, capture_output=True, timeout=90)
+            if r.returncode != 0:
+                err = r.stderr.decode("utf-8", "replace").strip().splitlines()
+                failed.append((p, err[-1][-300:] if err else "import failed"))
+        except Exception as e:
+            failed.append((p, str(e)[:200]))
+    return failed
 
 
 def _maybe_restart_after_self_edit(say_fn: Callable[[str], None]):
@@ -171,25 +221,30 @@ def _maybe_restart_after_self_edit(say_fn: Callable[[str], None]):
     if not changed and not soul_changed:
         return
 
+    bad = []  # (path, reason) for files that would crash the restart
     for p in changed:
         if p.endswith(".py") and os.path.isfile(p):
             try:
                 py_compile.compile(p, doraise=True)
             except Exception as e:
-                add_log(f"Self-restart blocked: syntax error in {os.path.basename(p)}: {e}")
-                # Auto-restore: the broken edit stays preserved as
-                # <file>.broken-<timestamp>, and the last committed version
-                # is restored via git so the restart can proceed. Without
-                # this, one bad edit bricks every future restart.
-                restored = _restore_last_committed(p)
-                if restored:
-                    say_fn(f"My code changed but the new version had a syntax error — "
-                           f"I restored the last working {os.path.basename(p)} and restarting.")
-                    add_log(f"Self-restart: restored {os.path.basename(p)} from git, "
-                            f"broken copy kept as {restored}")
-                    break  # file is clean now; proceed to restart below
-                say_fn(f"My code changed but the new version has a syntax error: {e}")
-                return
+                bad.append((p, f"syntax error: {e}"))
+    if not bad:
+        # Parses clean but may still fail at import (wrong module, bad
+        # dependency). Catch it here instead of crash-looping the restart.
+        for p, err in _smoke_import_changed(changed):
+            bad.append((p, f"import failed: {err}"))
+    for p, reason in bad:
+        add_log(f"Self-restart blocked: {reason} in {os.path.basename(p)}")
+        restored = _restore_last_committed(p)
+        if not restored:
+            say_fn(f"My code changed but the new version is broken ({reason}).")
+            return
+        add_log(f"Self-restart: restored {os.path.basename(p)} from git, "
+                f"broken copy kept as {restored}")
+    if bad:
+        restored_names = ", ".join(os.path.basename(p) for p, _ in bad)
+        say_fn(f"My code changed but the new version was broken — I restored "
+               f"the last working {restored_names} and restarting.")
 
     say_fn("My code changed — restarting now to load the new version.")
     add_log("Self-restart armed.")

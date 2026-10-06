@@ -690,6 +690,27 @@ def t_restore_last_committed():
     assert open(f2).read() == "def broken(:\n"
 check("self-restart: auto-restore broken file from git", t_restore_last_committed)
 
+# 31. import smoke test: parses-clean but unimportable file is caught
+def t_smoke_import_changed():
+    from aria.agent.brain import _smoke_import_changed
+    import tempfile
+    repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    good = os.path.join(repo_dir, "aria", "pixel_avatar.py")
+    assert _smoke_import_changed([good]) == [], "good file flagged"
+    bad = os.path.join(repo_dir, "aria", "_smoke_bad_tmp.py")
+    try:
+        with open(bad, "w") as fh:
+            fh.write("from aria.core.optimport import optional_module\n")
+        fails = _smoke_import_changed([bad])
+        assert len(fails) == 1 and fails[0][0] == bad, fails
+        assert "aria.core" in fails[0][1], fails[0][1]
+    finally:
+        if os.path.exists(bad):
+            os.unlink(bad)
+    # missing file is skipped, never an error
+    assert _smoke_import_changed([os.path.join(repo_dir, "nope.py")]) == []
+check("self-restart: import smoke test catches bad imports", t_smoke_import_changed)
+
 print(f"\n{sum(1 for _, s, _ in results if s=='PASS')}/{len(results)} passed")
 fails = [r for r in results if r[1] != "PASS"]
 sys.exit(1 if fails else 0)
