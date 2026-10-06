@@ -711,6 +711,22 @@ def t_smoke_import_changed():
     assert _smoke_import_changed([os.path.join(repo_dir, "nope.py")]) == []
 check("self-restart: import smoke test catches bad imports", t_smoke_import_changed)
 
+# 32. restart watcher scope: package + launcher only, never tests/tools/probes
+def t_watched_scope():
+    from aria.agent.brain import _watched_source_files
+    repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    files = _watched_source_files()
+    assert files, "watcher found no files"
+    assert os.path.join(repo_dir, "aria.py") in files, "root launcher must be watched"
+    assert os.path.join(repo_dir, "aria", "agent", "brain.py") in files, "package files must be watched"
+    allowed = {os.path.join(repo_dir, "aria.py"), os.path.abspath(sys.argv[0])}
+    pkg_prefix = os.path.join(repo_dir, "aria") + os.sep
+    for f in files:
+        assert f.startswith(pkg_prefix) or f in allowed, f"unexpected watched file: {f}"
+    assert not any(f.startswith(os.path.join(repo_dir, "tests") + os.sep) and f != os.path.abspath(sys.argv[0]) for f in files), "top-level tests/ must not be watched (except the running script itself)"
+    assert not any(f.startswith(os.path.join(repo_dir, "tools") + os.sep) for f in files), "top-level tools/ must not be watched"
+check("self-restart: watcher scoped to package + launcher", t_watched_scope)
+
 print(f"\n{sum(1 for _, s, _ in results if s=='PASS')}/{len(results)} passed")
 fails = [r for r in results if r[1] != "PASS"]
 sys.exit(1 if fails else 0)

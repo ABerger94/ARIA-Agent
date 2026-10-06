@@ -114,13 +114,25 @@ def _repo_dir() -> str:
 
 
 def _watched_source_files() -> List[str]:
-    """Every Python source file that makes up ARIA: the package + the stub."""
-    pkg_dir = _repo_dir()
+    """Python source files that make up ARIA: the aria/ package + the launcher.
+
+    Scoped to the package and the root launcher only. Test scripts, probes,
+    and other repo tooling must not trigger restart checks or import-smoke
+    tests — a broken test file should never force a self-restore of ARIA's
+    own source. The running script is always included (it may be a different
+    entry point, e.g. the tray launcher).
+    """
+    repo = _repo_dir()
     files: List[str] = []
-    for root, _dirs, names in os.walk(pkg_dir):
-        for n in names:
-            if n.endswith(".py"):
-                files.append(os.path.join(root, n))
+    pkg_dir = os.path.join(repo, "aria")
+    if os.path.isdir(pkg_dir):
+        for root, _dirs, names in os.walk(pkg_dir):
+            for n in names:
+                if n.endswith(".py"):
+                    files.append(os.path.join(root, n))
+    launcher = os.path.join(repo, "aria.py")
+    if os.path.isfile(launcher):
+        files.append(launcher)
     if _RUNNING_SCRIPT and _RUNNING_SCRIPT not in files:
         files.append(_RUNNING_SCRIPT)
     return sorted(files)
