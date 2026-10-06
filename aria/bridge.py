@@ -7,6 +7,7 @@ live MJPEG cyber-face stream, and web dashboard over HTTP / TLS HTTPS.
 from __future__ import annotations
 
 import base64
+import hmac
 import io
 import wave
 import json
@@ -15,7 +16,6 @@ import ssl
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1082,7 +1082,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         return tok
 
     def _authed(self):
-        return bool(BRIDGE_TOKEN) and self._token_from_request() == BRIDGE_TOKEN
+        return bool(BRIDGE_TOKEN) and hmac.compare_digest(
+            self._token_from_request(), BRIDGE_TOKEN)
 
     def _bridge_cookie(self) -> str:
         cookie = ("aria_bridge_token=" + urllib.parse.quote(BRIDGE_TOKEN or "", safe="")
@@ -1398,11 +1399,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
 def start_bridge_server(port: int = PHONE_BRIDGE_PORT) -> ThreadingHTTPServer:
     global _BRIDGE_SERVER
     ensure_bridge_cert()
-    # Configurable bind host ("phone_bridge_host" setting). Defaults to all
-    # interfaces because the phone reaches the bridge over the LAN; set to
-    # 127.0.0.1 to lock it to this machine only. Every route requires the
+    # Configurable bind host ("phone_bridge_host" setting). Defaults to
+    # localhost only; set to "0.0.0.0" to expose the bridge on the LAN
+    # (e.g. so the phone app can reach it). Every route requires the
     # bridge token regardless of bind address.
-    host = get_setting("phone_bridge_host", "0.0.0.0")
+    host = get_setting("phone_bridge_host", "127.0.0.1")
     srv = ThreadingHTTPServer((host, port), BridgeHandler)
     _BRIDGE_SERVER = srv
     if BRIDGE_SCHEME == "https" and BRIDGE_CERT and BRIDGE_KEY:

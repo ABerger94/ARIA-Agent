@@ -12,30 +12,23 @@ import imaplib
 import json
 import os
 import re
-import socket
 import smtplib
 from email.message import EmailMessage
 import sqlite3
-import subprocess
-import sys
 import time
 import urllib.parse
 import urllib.request
 import urllib.error
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Optional, Tuple, Any
 
 from aria.config import (
     WORKSPACE_DIR, MAX_TOOL_OUTPUT, GITHUB_TOKEN, GITHUB_USERNAME,
-    GITHUB_ARMED, KEYS_FILE, BRIDGE_TOKEN,
-    PRICE_WATCH_DB, key_get, save_keys, _KEYS, redact,
-    key_mask
+    GITHUB_ARMED, PRICE_WATCH_DB, key_get, save_keys, _KEYS
 )
 from aria.memory import (
     memory_forget_entries,
-    memory_save, memory_search_semantic, memory_get_all,
-    spine_append, add_log, DB_PATH, DB_LOCK
+    memory_save, spine_append, add_log, DB_PATH, DB_LOCK
 )
-from aria.tools.sandbox import tool_run_python
 
 try:
     from duckduckgo_search import DDGS
@@ -233,10 +226,12 @@ def tool_open_app_or_url(target: str) -> str:
         tl = t.lower()
         if tl in ("video-downloader", "video downloader", "the video downloader"):
             return _open_video_downloader()
+        # os.startfile: no shell, no cmd.exe — model-controlled text cannot
+        # inject shell metacharacters the way os.system('start ...') could.
         if tl.startswith(("http://", "https://")):
-            os.system(f'start "" "{t}"')
+            os.startfile(t)
             return f"Opened URL: {t}"
-        os.system(f'start "" "{t}"')
+        os.startfile(t)
         return f"Launched application: {t}"
     except Exception as e:
         return f"Error opening target: {e}"

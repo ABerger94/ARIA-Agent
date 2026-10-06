@@ -44,11 +44,12 @@ from datetime import datetime, timezone
 from aria import config
 
 MODES = ("auto", "confirm-risky", "confirm-all")
-DEFAULT_MODE = "auto"
+DEFAULT_MODE = "confirm-risky"
 APPROVAL_EXPIRY_S = 600  # pending approvals die after 10 minutes
 
 # Tools that can change the world outside the agent. file_organize is only
 # destructive when dry_run=false (its default is dry_run=true = plan only).
+# manage_background_job is only destructive on action=start (shell=True).
 DESTRUCTIVE_TOOLS = frozenset({
     "run_python_code",
     "write_file",
@@ -60,6 +61,7 @@ DESTRUCTIVE_TOOLS = frozenset({
     "github_create_repo",
     "drive_wheels",
     "file_organize",  # only when dry_run=false; see needs_approval()
+    "manage_background_job",  # only when action=start; see needs_approval()
     "open_app_or_url",
     "move_head_servos",
 })
@@ -86,7 +88,7 @@ def _approval_file() -> str:
 
 
 def get_mode() -> str:
-    """Current approval mode; 'auto' on any error or first run."""
+    """Current approval mode; 'confirm-risky' on any error or first run."""
     try:
         with open(_approval_file(), encoding="utf-8") as f:
             mode = (json.load(f) or {}).get("mode", DEFAULT_MODE)
@@ -152,6 +154,9 @@ def needs_approval(tool: str, args=None) -> bool:
         return False
     if tool == "file_organize":
         return not _as_bool((args or {}).get("dry_run"), default=True)
+    if tool == "manage_background_job":
+        # list/logs/cancel are read-only; only start runs shell commands.
+        return str((args or {}).get("action", "list")).strip().lower() == "start"
     return True
 
 
