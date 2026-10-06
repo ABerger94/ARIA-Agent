@@ -35,8 +35,11 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
   30-minute reasoning budget per request — on timeout she asks "Should I keep
   going?" and "yes"/"continue" resumes the active chain). Ollama Cloud
   (gpt-oss:120b) is the primary brain, failing over through Groq, OpenRouter,
-  and Mistral, with per-key rotation and automatic quarantine on rate limits
-  and errors. The HUD reports which provider is serving and flags fallbacks.
+  Mistral, and Gemini (via Google's OpenAI-compatible endpoint,
+  `gemini-3.8-flash` by default), with per-key rotation and automatic
+  quarantine on rate limits and errors. HTTP 410 (retired model tag) never
+  quarantines a key — the dead model is parked and the chain moves on.
+  The HUD reports which provider is serving and flags fallbacks.
   **Task-based routing:** the conversational loop stays on gpt-oss:120b while
   vision runs on gemma4:31b-cloud and heavy background code on
   qwen3-coder:480b-cloud — routed by role, never hard-coded, so a retired
@@ -116,7 +119,12 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
   restored at boot.
 - **Hot Package Self-Restart** — she can edit her own codebase or `soul.md`;
   the agent fingerprints every `.py` file in the `aria/` package plus
-  `soul.md` at boot and cleanly re-executes on verified modifications.
+  `soul.md` at boot and cleanly re-executes on verified modifications. The
+  watcher is scoped to the package + root launcher, so test/probe edits can't
+  trigger it. Before restarting, changed files are syntax-checked and
+  import-smoke-tested in a fresh interpreter; a broken edit is preserved as
+  `<file>.broken-<epoch>` and the committed copy is auto-restored from git —
+  a bad self-edit can't brick her.
 - **Scheduler** — one-shot and recurring reminders/jobs, morning briefings,
   break reminders.
 - **Phone Bridge (HTTPS)** — secure mobile companion web app (token login +
@@ -150,7 +158,7 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
   them, `aria.py` automatically relaunches under 3.9 when it's installed)
 - An [Ollama Cloud](https://ollama.com/) API key (`OLLAMA_API_KEY` — free
   starter tier) for her primary brain (gpt-oss:120b); Groq / OpenRouter /
-  Mistral keys are optional fallbacks. Screenshot vision runs natively
+  Mistral / Gemini keys are optional fallbacks. Screenshot vision runs natively
   through Ollama Cloud /api/chat (gemma4:31b-cloud), then the provider chain.
 - Microphone + speakers (webcam optional, used for face tracking / vision)
 
@@ -279,6 +287,14 @@ tools/                   Helper scripts (key manager)
 
 ### Latest
 
+- **Self-restart hardening** — the hot-restart watcher now import-smoke-tests
+  changed files in a fresh interpreter (catches bad imports `py_compile`
+  misses, e.g. cross-repo contamination), auto-restores broken edits from git
+  (broken copy kept as `<file>.broken-<epoch>`), and is scoped to the `aria/`
+  package + root launcher so test/probe edits can't trigger it. HTTP 410
+  responses are treated as retired model tags (the key is never quarantined).
+  Gemini rejoined the provider chain as the last fallback leg
+  (`gemini-3.8-flash` via Google's OpenAI-compatible endpoint).
 - **ARIA Ultimate** — the all-encompassing desktop agent build: **routines**
   (record once, replay by name with `{{parameter}}` slots), an **approval
   layer** (`auto` / `confirm-risky` / `confirm-all` with token approve/deny),
