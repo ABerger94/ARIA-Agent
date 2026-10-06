@@ -9,6 +9,10 @@ Tabs: [1] Log  [2] Tasks  [3] Sensors  [4] Controls  [5] Notes  [6] HUB  [7] Day
   recent events in one scrollable list, click one to jump to the full Log.
 - Day reuses the existing command-center dashboard via a draw callback.
 
+Typography: Roboto Mono (bundled in aria/assets/) rendered through PIL —
+Hershey fonts are what made the old version look cheap. If the bundled
+font is missing we fall back to Consolas / DejaVu Sans Mono.
+
 Keys (handled by main.py): 1-7 switch tabs, J/K or arrows scroll,
 Ctrl+Alt+L/T/S focus Log/Tasks/Sensors, O or ESC closes.
 Mouse: click tabs, task rows, HUB events, and control buttons.
@@ -25,6 +29,8 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import cv2
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 from aria import config as _config
 from aria import ops as _ops
@@ -33,23 +39,26 @@ from aria import speech as _speech
 from aria import vision as _vision
 from aria.agent import workers as _workers
 
-# ---------------------------------------------------------------- palette
-# BGR tuples. (Hershey fonts stand in for Roboto Mono — no PIL/TTF dep.)
+# ---------------------------------------------------------------- palette (BGR)
 ACCENT = (255, 132, 10)      # #0a84ff
-BG = (13, 17, 23)            # #0d1117
-PANEL = (17, 17, 17)          # #111
+BG = (23, 17, 13)            # #0d1117
+PANEL = (17, 17, 17)         # #111
+PANEL2 = (34, 27, 22)        # #161b22 — raised surfaces (buttons)
 BORDER = (34, 34, 34)        # #222
+BORDER_SOFT = (40, 33, 28)   # #1c2128 — hairlines
 TEXT = (235, 235, 235)
-DIM = (150, 160, 170)
+DIM = (178, 170, 160)        # #a0aab2-ish, softened
+FAINT = (132, 120, 107)      # #6b7684-ish
 ERR = (85, 85, 255)          # #ff5555
 WARN = (0, 204, 255)         # #ffcc00
 INFO = (208, 192, 136)       # #88c0d0
 OK = (120, 200, 120)
+GREEN_DOT = (110, 200, 110)
 
 W, H = 1280, 720
-TAB_H = 48
-CONTENT_Y = 56
-CONTENT_BOT = 676
+TAB_H = 56
+CONTENT_Y = 68
+CONTENT_BOT = 684
 STATUS_Y = 700
 
 TABS = ["log", "tasks", "sensors", "controls", "notes", "hub", "day"]
@@ -71,13 +80,140 @@ _CLICKS: List[Tuple[int, int, int, int, str, Any]] = []  # rebuilt every draw
 
 
 def _sanitize(s: str) -> str:
-    return re.sub(r"[^\x20-\x7e]", "?", str(s))
+    # Roboto Mono covers these; everything else becomes "?" so PIL/cv2 never chokes.
+    return re.sub(r"[^\x20-\x7e·—–]", "?", str(s))
 
 
 def _trunc(s: str, n: int) -> str:
     s = _sanitize(s)
     return s if len(s) <= n else s[:n - 3] + "..."
 
+
+# ---------------------------------------------------------------- fonts
+_ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+_FONT_FILES = {
+    False: os.path.join(_ASSETS, "RobotoMono-Regular.ttf"),
+    True: os.path.join(_ASSETS, "RobotoMono-Bold.ttf"),
+}
+_FALLBACKS = [
+    "C:\\Windows\\Fonts\\consola.ttf",
+    "C:\\Windows\\Fonts\\CascadiaMono.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+]
+_FONTS: Dict[Tuple[int, bool], Any] = {}
+
+
+def _font(px: int, bold: bool = False):
+    key = (px, bold)
+    f = _FONTS.get(key)
+    if f is None:
+        paths = [_FONT_FILES[bold]] + _FALLBACKS
+        f = None
+        for p in paths:
+            try:
+                if os.path.exists(p):
+                    f = ImageFont.truetype(p, px)
+                    break
+            except Exception:
+                continue
+        if f is None:
+            f = ImageFont.load_default()
+        _FONTS[key] = f
+    return f
+
+
+def _rgba(color, alpha: int = 255) -> Tuple[int, int, int, int]:
+    if color is None:
+        return (0, 0, 0, 0)
+    return (color[2], color[1], color[0], alpha)
+
+
+# Text glyph cache: (text, px, color, bold) -> RGBA numpy array
+_TXT_CACHE: Dict[Tuple[str, int, Tuple[int, int, int], bool], Any] = {}
+_TXT_CACHE_MAX = 3000
+
+
+def _render_text(s: str, px: int, color: Tuple[int, int, int], bold: bool):
+    key = (s, px, color, bold)
+    arr = _TXT_CACHE.get(key)
+    if arr is not None:
+        return arr
+    font = _font(px, bold)
+    s = _sanitize(s)
+    tmp = Image.new("RGBA", (8, 8))
+    d = ImageDraw.Draw(tmp)
+    bbox = d.textbbox((0, 0), s, font=font)
+    w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    if w <= 0 or h <= 0:
+        return None
+    pad = 3
+    img = Image.new("RGBA", (w + pad * 2, h + pad * 2), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.text((pad - bbox[0], pad - bbox[1]), s, font=font,
+           fill=(color[2], color[1], color[0], 255))
+    arr = np.asarray(img)
+    if len(_TXT_CACHE) >= _TXT_CACHE_MAX:
+        _TXT_CACHE.clear()
+    _TXT_CACHE[key] = arr
+    return arr
+
+
+def _paste(canvas, rgba_arr, x0: int, y0: int) -> None:
+    """Alpha-composite an RGBA numpy array onto a BGR canvas."""
+    if rgba_arr is None:
+        return
+    fh, fw = rgba_arr.shape[:2]
+    H, Wc = canvas.shape[:2]
+    cx0, cy0 = max(0, x0), max(0, y0)
+    cx1, cy1 = min(Wc, x0 + fw), min(H, y0 + fh)
+    if cx1 <= cx0 or cy1 <= cy0:
+        return
+    fg = rgba_arr[cy0 - y0:cy1 - y0, cx0 - x0:cx1 - x0].astype(np.float32)
+    bg = canvas[cy0:cy1, cx0:cx1].astype(np.float32)
+    a = fg[..., 3:4] / 255.0
+    rgb = fg[..., :3][..., ::-1]  # RGB -> BGR
+    canvas[cy0:cy1, cx0:cx1] = (rgb * a + bg * (1.0 - a)).astype(np.uint8)
+
+
+def _txt(canvas, s, x, y, px: int = 13,
+         color: Tuple[int, int, int] = TEXT, bold: bool = False) -> None:
+    """Draw text so the glyph bounding box's top-left lands at (x, y)."""
+    arr = _render_text(str(s), px, color, bold)
+    if arr is None:
+        return
+    _paste(canvas, arr, int(x) - 3, int(y) - 3)
+
+
+def _tw(s: str, px: int = 13, bold: bool = False) -> int:
+    arr = _render_text(str(s), px, (255, 255, 255), bold)
+    return int(arr.shape[1]) if arr is not None else 0
+
+
+def _rrect(canvas, x0, y0, x1, y1, r: int,
+           fill=None, outline=None, width: int = 1) -> None:
+    """Rounded rectangle, PIL-composited (this is what kills the clunky)."""
+    w, h = int(x1 - x0), int(y1 - y0)
+    if w <= 2 or h <= 2:
+        return
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([0, 0, w - 1, h - 1], radius=r,
+                        fill=_rgba(fill), outline=_rgba(outline), width=width)
+    _paste(canvas, np.asarray(img), int(x0), int(y0))
+
+
+def _arc(canvas, cx, cy, r: int, frac: float,
+         track=BORDER, color=ACCENT, width: int = 9) -> None:
+    """270-degree gauge arc (135° -> 405°), PIL-rendered."""
+    d = r * 2 + width * 2 + 4
+    img = Image.new("RGBA", (d, d), (0, 0, 0, 0))
+    dr = ImageDraw.Draw(img)
+    box = [width + 2, width + 2, d - width - 3, d - width - 3]
+    dr.arc(box, start=135, end=405, fill=_rgba(track), width=width)
+    frac = max(0.0, min(1.0, frac))
+    if frac > 0.005:
+        dr.arc(box, start=135, end=135 + 270 * frac, fill=_rgba(color), width=width)
+    _paste(canvas, np.asarray(img), int(cx - d // 2), int(cy - d // 2))
 
 # ---------------------------------------------------------------- log feed
 _LOG_LOCK = threading.Lock()
@@ -110,6 +246,10 @@ _config.register_log_listener(_on_log)
 def recent_events(n: int = 20) -> List[Tuple[str, str, str]]:
     with _LOG_LOCK:
         return list(_LOG_BUF[-n:])
+
+
+def _level_color(level: str):
+    return {"error": ERR, "warn": WARN}.get(level, INFO)
 
 
 # ---------------------------------------------------------------- persistence
@@ -204,38 +344,6 @@ def notes_newline() -> None:
     save_notes()  # autosave
 
 
-# ---------------------------------------------------------------- draw helpers
-def _txt(canvas, s, x, y, scale=0.5, color=TEXT, thick=1):
-    cv2.putText(canvas, _sanitize(s), (int(x), int(y)),
-                cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
-
-
-def _panel(canvas, x0, y0, x1, y1, focused=False):
-    cv2.rectangle(canvas, (x0, y0), (x1, y1), PANEL, -1)
-    cv2.rectangle(canvas, (x0, y0), (x1, y1), ACCENT if focused else BORDER, 1)
-
-
-def _gauge(canvas, cx, cy, r, frac, label, val_text, color=ACCENT):
-    frac = max(0.0, min(1.0, frac))
-    cv2.ellipse(canvas, (cx, cy), (r, r), 0, 0, 360, BORDER, 6)
-    if frac > 0.01:
-        cv2.ellipse(canvas, (cx, cy), (r, r), 0, 90, 90 - 360 * frac, color, 6)
-    _txt(canvas, val_text, cx - 28, cy + 6, 0.55, TEXT, 2)
-    _txt(canvas, label, cx - 28, cy + r + 22, 0.45, DIM, 1)
-
-
-def _provider_name() -> str:
-    try:
-        d = (_ops.get_dashboard().get("providers") or {}).get("data") or {}
-        return str(d.get("active") or d.get("primary") or "?")
-    except Exception:
-        return "?"
-
-
-def _level_color(level: str):
-    return {"error": ERR, "warn": WARN}.get(level, INFO)
-
-
 # ---------------------------------------------------------------- task rows
 def _task_rows() -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
@@ -262,71 +370,38 @@ def _task_rows() -> List[Dict[str, Any]]:
     return rows
 
 
-def _status_glyph(status: str) -> Tuple[str, Any]:
-    if status == "running":
-        glyph = ["|", "/", "-", "\\"][int(time.time() * 4) % 4]
-        return glyph, WARN
-    if status in ("done", "completed"):
-        return "OK", OK
-    if status in ("failed", "error"):
-        return "!!", ERR
-    return "?", DIM
+_PILL_STYLE = {
+    "running": ((58, 42, 10), WARN, "RUNNING"),
+    "sched": ((40, 44, 52), DIM, "SCHED"),
+    "done": ((28, 58, 34), OK, "DONE"),
+    "completed": ((28, 58, 34), OK, "DONE"),
+    "failed": ((66, 28, 30), ERR, "FAILED"),
+    "error": ((66, 28, 30), ERR, "FAILED"),
+}
 
 
-# ---------------------------------------------------------------- panes
-def _pane_log(canvas, x0, y0, x1, y1, focused):
-    _panel(canvas, x0, y0, x1, y1, focused)
-    _txt(canvas, "[ LOG ]", x0 + 12, y0 + 22, 0.5, ACCENT if focused else DIM, 1)
-    with _LOG_LOCK:
-        lines = list(_LOG_BUF)
-    row_h, top = 18, y0 + 46
-    vis = (y1 - top) // row_h
-    start = max(0, len(lines) - vis - SCROLL["log"])
-    if SCROLL["log"] > max(0, len(lines) - vis):
-        SCROLL["log"] = max(0, len(lines) - vis)
-    for i, (ts, level, msg) in enumerate(lines[start:start + vis]):
-        _txt(canvas, f"{ts} {_trunc(msg, 80)}", x0 + 12, top + i * row_h,
-             0.42, _level_color(level), 1)
-    if not lines:
-        _txt(canvas, "(no events yet)", x0 + 12, top, 0.42, DIM, 1)
+def _pill_style(status: str):
+    return _PILL_STYLE.get(status, ((40, 44, 52), DIM, "?"))
 
 
-def _pane_tasks(canvas, x0, y0, x1, y1, focused):
-    _panel(canvas, x0, y0, x1, y1, focused)
-    _txt(canvas, "[ TASKS ]", x0 + 12, y0 + 22, 0.5, ACCENT if focused else DIM, 1)
-    rows = _task_rows()
-    _txt(canvas, f"{'ID':<6}{'STATUS':<8}{'ETA':<18}DESCRIPTION",
-         x0 + 12, y0 + 44, 0.4, DIM, 1)
-    row_h, top = 20, y0 + 64
-    vis = (y1 - top - 60) // row_h
-    start = SCROLL["tasks"]
-    if start > max(0, len(rows) - vis):
-        start = SCROLL["tasks"] = max(0, len(rows) - vis)
-    for i, r in enumerate(rows[start:start + vis]):
-        yy = top + i * row_h
-        glyph, gcol = _status_glyph(r["status"])
-        if r["id"] == SELECTED_TASK:
-            cv2.rectangle(canvas, (x0 + 6, yy - 14), (x1 - 6, yy + 5), BORDER, -1)
-        _txt(canvas, f"{r['id']:<6}", x0 + 12, yy, 0.4, TEXT, 1)
-        _txt(canvas, f"{glyph:<8}", x0 + 72, yy, 0.4, gcol, 1)
-        _txt(canvas, f"{_trunc(r['eta'], 16):<18}", x0 + 140, yy, 0.4, DIM, 1)
-        _txt(canvas, _trunc(r["desc"], 34), x0 + 270, yy, 0.4, TEXT, 1)
-        _CLICKS.append((x0 + 6, yy - 14, x1 - 6, yy + 5, "task", r["id"]))
-    # expanded detail
-    if SELECTED_TASK:
-        sel = next((r for r in rows if r["id"] == SELECTED_TASK), None)
-        if sel:
-            dy = y1 - 52
-            cv2.line(canvas, (x0 + 10, dy - 14), (x1 - 10, dy - 14), BORDER, 1)
-            _txt(canvas, _trunc(f"> {sel['id']}: {sel['detail']}", 72),
-                 x0 + 12, dy + 4, 0.4, INFO, 1)
-            if sel["kind"] == "job" and sel.get("job_id") is not None:
-                try:
-                    tail = _workers.get_background_job_log(sel["job_id"], 2)
-                    last = _sanitize(tail.strip().splitlines()[-1]) if tail.strip() else "(empty)"
-                    _txt(canvas, _trunc("  " + last, 72), x0 + 12, dy + 22, 0.4, DIM, 1)
-                except Exception:
-                    pass
+def _spinner() -> str:
+    return ["|", "/", "-", "\\"][int(time.time() * 4) % 4]
+
+
+# ---------------------------------------------------------------- sensors data
+def _sys_stats() -> Optional[Dict[str, float]]:
+    """None when psutil is unavailable — callers show the install hint."""
+    try:
+        import psutil  # noqa: F401 -- probing availability only
+    except ImportError:
+        return None
+    try:
+        d = (_ops.fetch_systems().get("data") or {})
+        return {"cpu": float(d.get("cpu_pct") or 0),
+                "mem": float(d.get("mem_pct") or 0),
+                "disk": float(d.get("disk_pct") or 0)}
+    except Exception:
+        return {"cpu": 0.0, "mem": 0.0, "disk": 0.0}
 
 
 def _gpu_pct() -> Optional[float]:
@@ -340,65 +415,14 @@ def _gpu_pct() -> Optional[float]:
         return None
 
 
-def _pane_sensors(canvas, x0, y0, x1, y1, focused):
-    _panel(canvas, x0, y0, x1, y1, focused)
-    _txt(canvas, "[ SENSORS ]", x0 + 12, y0 + 22, 0.5, ACCENT if focused else DIM, 1)
-    try:
-        sysd = (_ops.fetch_systems().get("data") or {})
-    except Exception:
-        sysd = {}
-    cpu = float(sysd.get("cpu_pct") or 0)
-    mem = float(sysd.get("mem_pct") or 0)
-    disk = float(sysd.get("disk_pct") or 0)
-    gy = y0 + 92
-    r = 44
-    n = 4
-    gw = (x1 - x0 - 40) // n
-    gauges = [("CPU", cpu / 100.0, f"{cpu:.0f}%"),
-              ("RAM", mem / 100.0, f"{mem:.0f}%"),
-              ("DISK", disk / 100.0, f"{disk:.0f}%")]
-    gpu = _gpu_pct()
-    gauges.append(("GPU", (gpu / 100.0) if gpu is not None else 0.0,
-                   f"{gpu:.0f}%" if gpu is not None else "n/a"))
-    for i, (label, frac, val) in enumerate(gauges):
-        gx = x0 + 20 + gw * i + gw // 2
-        _gauge(canvas, gx, gy, r, frac, label, val)
-    # webcam preview (optional)
-    frame = getattr(_vision, "LATEST_CAMERA_FRAME", None)
-    py = gy + r + 44
-    _txt(canvas, "CAM", x0 + 12, py, 0.45, DIM, 1)
-    if frame is not None and py + 150 < y1:
-        try:
-            thumb = cv2.resize(frame, (200, 150))
-            h_, w_ = thumb.shape[:2]
-            canvas[py + 8:py + 8 + h_, x0 + 12:x0 + 12 + w_] = thumb
-            cv2.rectangle(canvas, (x0 + 12, py + 8),
-                          (x0 + 12 + w_, py + 8 + h_), BORDER, 1)
-        except Exception:
-            _txt(canvas, "(cam unavailable)", x0 + 60, py, 0.42, DIM, 1)
-    else:
-        _txt(canvas, "(cam unavailable)", x0 + 60, py, 0.42, DIM, 1)
-    upt = sysd.get("uptime_s")
-    if upt:
-        _txt(canvas, f"UP {_ops.fmt_uptime(upt)}", x0 + 12, y1 - 14, 0.42, DIM, 1)
-
-
-def _draw_columns(canvas, ACC):
-    """Three-column layout shared by Log/Tasks/Sensors tabs."""
-    focus = ACTIVE_TAB if ACTIVE_TAB in COL_TABS else None
-    _pane_log(canvas, 20, CONTENT_Y, 392, CONTENT_BOT, focus == "log")
-    _pane_tasks(canvas, 400, CONTENT_Y, 896, CONTENT_BOT, focus == "tasks")
-    _pane_sensors(canvas, 904, CONTENT_Y, 1260, CONTENT_BOT, focus == "sensors")
-
-
-# ---------------------------------------------------------------- controls tab
+# ---------------------------------------------------------------- controls
 _CONTROLS = [
-    ("sched", "SCHEDULER", "start/stop"),
-    ("shot", "SCREENSHOT", "capture"),
-    ("voice", "VOICE", "on/off"),
-    ("script", "RUN SCRIPT", "pick below"),
-    ("close", "CLOSE OPS", "back to face"),
-    ("quit", "QUIT ARIA", "shutdown"),
+    ("sched", "SCHEDULER"),
+    ("shot", "SCREENSHOT"),
+    ("voice", "VOICE"),
+    ("script", "RUN SCRIPT"),
+    ("close", "CLOSE OPS"),
+    ("quit", "QUIT ARIA"),
 ]
 
 
@@ -422,44 +446,6 @@ def _scripts_dir() -> str:
     d = os.path.join(_config.WORKSPACE_DIR, "scripts")
     os.makedirs(d, exist_ok=True)
     return d
-
-
-def _draw_controls(canvas, ACC):
-    _txt(canvas, "[ CONTROLS ]", 32, CONTENT_Y + 22, 0.5, ACCENT, 1)
-    n = len(_CONTROLS)
-    bs, gap = 96, 28
-    total = n * bs + (n - 1) * gap
-    x0 = (W - total) // 2
-    y0 = CONTENT_Y + 60
-    for i, (name, label, _hint) in enumerate(_CONTROLS):
-        bx = x0 + i * (bs + gap)
-        by = y0
-        cv2.rectangle(canvas, (bx, by), (bx + bs, by + bs), PANEL, -1)
-        cv2.rectangle(canvas, (bx, by), (bx + bs, by + bs),
-                      ACCENT if _ctl_active(name) else BORDER, 2 if _ctl_active(name) else 1)
-        sub = _ctl_sub(name)
-        _txt(canvas, label, bx + 8, by + 44, 0.38, TEXT, 1)
-        if sub:
-            _txt(canvas, sub, bx + 8, by + 66, 0.38,
-                 OK if _ctl_active(name) else WARN, 1)
-        _CLICKS.append((bx, by, bx + bs, by + bs, "ctl", name))
-    # script picker
-    if SHOW_SCRIPTS:
-        sy = y0 + bs + 36
-        _txt(canvas, "Pick a script to run (output -> Tasks / Log):",
-             x0, sy, 0.45, DIM, 1)
-        try:
-            files = sorted(f for f in os.listdir(_scripts_dir())
-                           if f.endswith(".py"))
-        except Exception:
-            files = []
-        if not files:
-            _txt(canvas, f"(none yet — drop .py files in {_scripts_dir()})",
-                 x0, sy + 26, 0.42, DIM, 1)
-        for i, f in enumerate(files[:10]):
-            yy = sy + 26 + i * 24
-            _txt(canvas, f"> {f}", x0, yy, 0.45, INFO, 1)
-            _CLICKS.append((x0, yy - 16, x0 + 400, yy + 6, "script", f))
 
 
 def _ctl_action(name: str) -> None:
@@ -501,67 +487,251 @@ def _run_script_file(fname: str) -> None:
         _config.add_log(f"Script '{fname}' failed to start: {e}")
 
 
-# ---------------------------------------------------------------- notes tab
-def _draw_notes(canvas, ACC):
-    _txt(canvas, "[ NOTES ]  ~/ARIA/notes/ops.md   [T] type, autosaves",
-         32, CONTENT_Y + 22, 0.5, ACCENT, 1)
-    _panel(canvas, 20, CONTENT_Y + 36, 1260, CONTENT_BOT, False)
-    lines = NOTES_BUF.splitlines() or ["(empty — press T to type)"]
-    row_h, top = 20, CONTENT_Y + 62
-    vis = (CONTENT_BOT - top) // row_h
-    start = SCROLL["notes"]
-    if start > max(0, len(lines) - vis):
-        start = SCROLL["notes"] = max(0, len(lines) - vis)
-    for i, ln in enumerate(lines[start:start + vis]):
-        _txt(canvas, _trunc(ln, 150), 36, top + i * row_h, 0.45, TEXT, 1)
-
-
-# ---------------------------------------------------------------- HUB tab
-def _draw_hub(canvas, ACC):
-    _txt(canvas, "[ HUB ]  latest events — click one for the full Log view",
-         32, CONTENT_Y + 22, 0.5, ACCENT, 1)
-    _panel(canvas, 20, CONTENT_Y + 36, 1260, CONTENT_BOT, False)
-    events = list(reversed(recent_events(20)))
-    row_h, top = 24, CONTENT_Y + 66
-    vis = (CONTENT_BOT - top) // row_h
-    start = SCROLL["hub"]
-    if start > max(0, len(events) - vis):
-        start = SCROLL["hub"] = max(0, len(events) - vis)
-    for i, (ts, level, msg) in enumerate(events[start:start + vis]):
-        yy = top + i * row_h
-        _txt(canvas, ts, 36, yy, 0.45, DIM, 1)
-        _txt(canvas, _trunc(msg, 110), 130, yy, 0.45, _level_color(level), 1)
-        _CLICKS.append((28, yy - 17, 1252, yy + 6, "hub", i))
-    if not events:
-        _txt(canvas, "(no events yet)", 36, top, 0.45, DIM, 1)
-
+def _provider_name() -> str:
+    try:
+        d = (_ops.get_dashboard().get("providers") or {}).get("data") or {}
+        return str(d.get("active") or d.get("primary") or "?")
+    except Exception:
+        return "?"
 
 # ---------------------------------------------------------------- chrome
-def _draw_tab_bar(canvas):
+def _draw_tab_bar(canvas) -> None:
     cv2.rectangle(canvas, (0, 0), (W, TAB_H), PANEL, -1)
     n = len(TABS)
-    tw = W // n
+    tw = W / n
     for i, (key, label) in enumerate(zip(TABS, TAB_LABELS)):
-        x0 = i * tw
-        x1 = (i + 1) * tw if i < n - 1 else W
+        x0 = int(i * tw)
+        x1 = int((i + 1) * tw) if i < n - 1 else W
         sel = (key == ACTIVE_TAB)
         if sel:
             cv2.rectangle(canvas, (x0, 0), (x1, TAB_H), ACCENT, -1)
-            _txt(canvas, label, x0 + 14, 31, 0.55, (255, 255, 255), 2)
-            cv2.line(canvas, (x0, 0), (x1, 0), (255, 255, 255), 3)
+            _txt(canvas, label, x0 + (x1 - x0 - _tw(label, 14, True)) // 2,
+                 20, 14, (255, 255, 255), True)
+            cv2.rectangle(canvas, (x0, 0), (x1, 3), (255, 255, 255), -1)
         else:
-            _txt(canvas, label, x0 + 14, 31, 0.55, TEXT, 1)
+            _txt(canvas, label, x0 + (x1 - x0 - _tw(label, 14)) // 2,
+                 20, 14, DIM, False)
+            if i:
+                cv2.line(canvas, (x0, 10), (x0, TAB_H - 10), BORDER, 1)
         _CLICKS.append((x0, 0, x1, TAB_H, "tab", key))
     cv2.rectangle(canvas, (0, 0), (W - 1, H - 1), BORDER, 4)
 
 
-def _draw_status(canvas):
+def _draw_status(canvas) -> None:
     now = datetime.now().strftime("%H:%M:%S")
     prov = _provider_name()
-    _txt(canvas, f"PROVIDER: {prov}", 28, STATUS_Y, 0.45, INFO, 1)
-    hint = "[1-7] tabs   [J/K] scroll   [O]/[ESC] close   [E] read mail   [R] refresh"
-    _txt(canvas, hint, 340, STATUS_Y, 0.42, DIM, 1)
-    _txt(canvas, now, 1200, STATUS_Y, 0.45, DIM, 1)
+    cv2.circle(canvas, (30, STATUS_Y + 4), 4, GREEN_DOT, -1)
+    _txt(canvas, prov, 42, STATUS_Y - 2, 12, INFO, True)
+    hint = "[1-7] tabs    [J/K] scroll    [O]/[ESC] close    [E] read mail    [R] refresh"
+    _txt(canvas, hint, 300, STATUS_Y - 2, 12, FAINT)
+    cw = _tw(now, 12)
+    _txt(canvas, now, W - 28 - cw, STATUS_Y - 2, 12, FAINT)
+
+
+def _panel_title(canvas, text, x, y) -> None:
+    _txt(canvas, text, x, y, 11, FAINT, True)
+
+
+# ---------------------------------------------------------------- panes
+def _pane_log(canvas, x0, y0, x1, y1, focused) -> None:
+    _rrect(canvas, x0, y0, x1, y1, 10, fill=PANEL, outline=ACCENT if focused else BORDER)
+    _panel_title(canvas, "LOG", x0 + 16, y0 + 14)
+    with _LOG_LOCK:
+        lines = list(_LOG_BUF)
+    row_h, top = 21, y0 + 40
+    vis = (y1 - top - 8) // row_h
+    max_scroll = max(0, len(lines) - vis)
+    if SCROLL["log"] > max_scroll:
+        SCROLL["log"] = max_scroll
+    start = max(0, len(lines) - vis - SCROLL["log"])
+    max_chars = min(80, max(20, int((x1 - x0 - 112) / 7.8)))
+    for i, (ts, level, msg) in enumerate(lines[start:start + vis]):
+        yy = top + i * row_h
+        _txt(canvas, ts, x0 + 16, yy, 12, FAINT)
+        _txt(canvas, _trunc(msg, max_chars), x0 + 92, yy, 13, _level_color(level))
+    if not lines:
+        _txt(canvas, "No events yet.", x0 + 16, top, 13, FAINT)
+
+
+def _pane_tasks(canvas, x0, y0, x1, y1, focused) -> None:
+    _rrect(canvas, x0, y0, x1, y1, 10, fill=PANEL, outline=ACCENT if focused else BORDER)
+    _panel_title(canvas, "TASKS", x0 + 16, y0 + 14)
+    rows = _task_rows()
+    # header
+    hx = x0 + 16
+    _txt(canvas, "ID", hx, y0 + 38, 11, FAINT, True)
+    _txt(canvas, "STATUS", hx + 64, y0 + 38, 11, FAINT, True)
+    _txt(canvas, "ETA", hx + 160, y0 + 38, 11, FAINT, True)
+    _txt(canvas, "DESCRIPTION", hx + 300, y0 + 38, 11, FAINT, True)
+    cv2.line(canvas, (x0 + 16, y0 + 58), (x1 - 16, y0 + 58), BORDER_SOFT, 1)
+    row_h, top = 26, y0 + 66
+    vis = (y1 - top - 64) // row_h
+    max_scroll = max(0, len(rows) - vis)
+    if SCROLL["tasks"] > max_scroll:
+        SCROLL["tasks"] = max_scroll
+    start = SCROLL["tasks"]
+    for i, r in enumerate(rows[start:start + vis]):
+        yy = top + i * row_h
+        if r["id"] == SELECTED_TASK:
+            _rrect(canvas, x0 + 8, yy - 5, x1 - 8, yy + 19, 6, fill=PANEL2)
+        _txt(canvas, r["id"], hx, yy, 13, TEXT, True)
+        bg, fg, label = _pill_style(r["status"])
+        pill_txt = _spinner() + " " + label if r["status"] == "running" else label
+        pw = _tw(pill_txt, 11, True) + 18
+        _rrect(canvas, hx + 64, yy - 3, hx + 64 + pw, yy + 17, 10,
+               fill=bg)
+        _txt(canvas, pill_txt, hx + 64 + 9, yy, 11, fg, True)
+        _txt(canvas, _trunc(r["eta"], 16), hx + 160, yy, 12, DIM)
+        _txt(canvas, _trunc(r["desc"], 36), hx + 300, yy, 13, TEXT)
+        _CLICKS.append((x0 + 8, yy - 5, x1 - 8, yy + 19, "task", r["id"]))
+    if not rows:
+        _txt(canvas, "No scheduled tasks or jobs.", hx, top, 13, FAINT)
+    # expanded detail
+    if SELECTED_TASK:
+        sel = next((r for r in rows if r["id"] == SELECTED_TASK), None)
+        if sel:
+            dy = y1 - 56
+            cv2.line(canvas, (x0 + 16, dy - 16), (x1 - 16, dy - 16), BORDER_SOFT, 1)
+            _txt(canvas, _trunc(f"> {sel['id']}  {sel['detail']}", 76),
+                 x0 + 16, dy + 2, 12, INFO)
+            if sel["kind"] == "job" and sel.get("job_id") is not None:
+                try:
+                    tail = _workers.get_background_job_log(sel["job_id"], 2)
+                    last = tail.strip().splitlines()[-1] if tail.strip() else "(empty)"
+                    _txt(canvas, _trunc("  " + last, 76), x0 + 16, dy + 22, 12, DIM)
+                except Exception:
+                    pass
+
+
+def _pane_sensors(canvas, x0, y0, x1, y1, focused) -> None:
+    _rrect(canvas, x0, y0, x1, y1, 10, fill=PANEL, outline=ACCENT if focused else BORDER)
+    _panel_title(canvas, "SENSORS", x0 + 16, y0 + 14)
+    stats = _sys_stats()
+    if stats is None:
+        _txt(canvas, "psutil not installed", x0 + 16, y0 + 60, 13, WARN, True)
+        _txt(canvas, "Run:  pip install psutil", x0 + 16, y0 + 84, 13, DIM)
+        _txt(canvas, "then restart ARIA.", x0 + 16, y0 + 106, 13, DIM)
+        return
+    gauges = [("CPU", stats["cpu"] / 100.0, f"{stats['cpu']:.0f}%"),
+              ("RAM", stats["mem"] / 100.0, f"{stats['mem']:.0f}%"),
+              ("DISK", stats["disk"] / 100.0, f"{stats['disk']:.0f}%")]
+    gpu = _gpu_pct()
+    if gpu is not None:  # only show a gauge for hardware that exists
+        gauges.append(("GPU", gpu / 100.0, f"{gpu:.0f}%"))
+    n = len(gauges)
+    gw = (x1 - x0 - 32) // n
+    gy = y0 + 108
+    for i, (label, frac, val) in enumerate(gauges):
+        gx = x0 + 16 + gw * i + gw // 2
+        _arc(canvas, gx, gy, 40, frac)
+        vw = _tw(val, 22, True)
+        _txt(canvas, val, gx - vw // 2, gy - 13, 22, TEXT, True)
+        lw = _tw(label, 12, True)
+        _txt(canvas, label, gx - lw // 2, gy + 56, 12, FAINT, True)
+    # webcam preview
+    frame = getattr(_vision, "LATEST_CAMERA_FRAME", None)
+    py = gy + 92
+    _panel_title(canvas, "CAMERA", x0 + 16, py)
+    if frame is not None and py + 170 < y1:
+        try:
+            thumb = cv2.resize(frame, (200, 150))
+            img = Image.fromarray(cv2.cvtColor(thumb, cv2.COLOR_BGR2RGB))
+            mask = Image.new("L", (200, 150), 0)
+            ImageDraw.Draw(mask).rounded_rectangle([0, 0, 199, 149], radius=8, fill=255)
+            rgba = np.asarray(img.convert("RGBA"))
+            rgba[..., 3] = np.asarray(mask)
+            _paste(canvas, rgba, x0 + 16, py + 22)
+        except Exception:
+            _txt(canvas, "camera unavailable", x0 + 16, py + 24, 12, FAINT)
+    else:
+        _txt(canvas, "camera off", x0 + 16, py + 24, 12, FAINT)
+
+
+def _draw_columns(canvas) -> None:
+    focus = ACTIVE_TAB if ACTIVE_TAB in COL_TABS else None
+    _pane_log(canvas, 20, CONTENT_Y, 392, CONTENT_BOT, focus == "log")
+    _pane_tasks(canvas, 400, CONTENT_Y, 896, CONTENT_BOT, focus == "tasks")
+    _pane_sensors(canvas, 904, CONTENT_Y, 1260, CONTENT_BOT, focus == "sensors")
+
+
+# ---------------------------------------------------------------- controls tab
+def _draw_controls(canvas) -> None:
+    _panel_title(canvas, "CONTROLS", 36, CONTENT_Y + 6)
+    n = len(_CONTROLS)
+    bs, gap = 96, 28
+    total = n * bs + (n - 1) * gap
+    x0 = (W - total) // 2
+    y0 = CONTENT_Y + 44
+    for i, (name, label) in enumerate(_CONTROLS):
+        bx = x0 + i * (bs + gap)
+        by = y0
+        active = _ctl_active(name)
+        _rrect(canvas, bx, by, bx + bs, by + bs, 16, fill=PANEL2,
+               outline=ACCENT if active else BORDER_SOFT, width=2 if active else 1)
+        lw = _tw(label, 12, True)
+        _txt(canvas, label, bx + (bs - lw) // 2, by + 38, 12, TEXT, True)
+        sub = _ctl_sub(name)
+        if sub:
+            sw = _tw(sub, 11, True)
+            _txt(canvas, sub, bx + (bs - sw) // 2, by + 60, 11,
+                 OK if active else WARN, True)
+        _CLICKS.append((bx, by, bx + bs, by + bs, "ctl", name))
+    if SHOW_SCRIPTS:
+        sy = y0 + bs + 32
+        _txt(canvas, "Pick a script to run  (output goes to Tasks / Log):",
+             x0, sy, 12, DIM, True)
+        try:
+            files = sorted(f for f in os.listdir(_scripts_dir()) if f.endswith(".py"))
+        except Exception:
+            files = []
+        if not files:
+            _txt(canvas, f"No .py files yet — drop scripts in {_scripts_dir()}",
+                 x0, sy + 26, 12, FAINT)
+        for i, f in enumerate(files[:10]):
+            yy = sy + 28 + i * 24
+            _txt(canvas, "> " + f, x0, yy, 13, INFO)
+            _CLICKS.append((x0, yy - 4, x0 + 420, yy + 18, "script", f))
+
+
+# ---------------------------------------------------------------- notes tab
+def _draw_notes(canvas) -> None:
+    _txt(canvas, "NOTES", 36, CONTENT_Y + 6, 11, FAINT, True)
+    _txt(canvas, "~/ARIA/notes/ops.md   ·   [T] type   ·   autosaves",
+         110, CONTENT_Y + 6, 11, FAINT)
+    _rrect(canvas, 20, CONTENT_Y + 30, 1260, CONTENT_BOT, 10,
+           fill=PANEL, outline=BORDER)
+    lines = NOTES_BUF.splitlines() or ["(empty — press T to type)"]
+    row_h, top = 21, CONTENT_Y + 48
+    vis = (CONTENT_BOT - top - 8) // row_h
+    max_scroll = max(0, len(lines) - vis)
+    if SCROLL["notes"] > max_scroll:
+        SCROLL["notes"] = max_scroll
+    for i, ln in enumerate(lines[SCROLL["notes"]:SCROLL["notes"] + vis]):
+        _txt(canvas, _trunc(ln, 150), 36, top + i * row_h, 13, TEXT)
+
+
+# ---------------------------------------------------------------- HUB tab
+def _draw_hub(canvas) -> None:
+    _txt(canvas, "HUB", 36, CONTENT_Y + 6, 11, FAINT, True)
+    _txt(canvas, "latest events   ·   click one for the full Log view",
+         110, CONTENT_Y + 6, 11, FAINT)
+    _rrect(canvas, 20, CONTENT_Y + 30, 1260, CONTENT_BOT, 10,
+           fill=PANEL, outline=BORDER)
+    events = list(reversed(recent_events(20)))
+    row_h, top = 26, CONTENT_Y + 48
+    vis = (CONTENT_BOT - top - 8) // row_h
+    max_scroll = max(0, len(events) - vis)
+    if SCROLL["hub"] > max_scroll:
+        SCROLL["hub"] = max_scroll
+    for i, (ts, level, msg) in enumerate(events[SCROLL["hub"]:SCROLL["hub"] + vis]):
+        yy = top + i * row_h
+        _txt(canvas, ts, 36, yy, 12, FAINT)
+        _txt(canvas, _trunc(msg, 110), 120, yy, 13, _level_color(level))
+        if i < vis - 1:
+            cv2.line(canvas, (36, yy + 20), (1244, yy + 20), BORDER_SOFT, 1)
+        _CLICKS.append((28, yy - 4, 1252, yy + 20, "hub", i))
+    if not events:
+        _txt(canvas, "No events yet.", 36, top, 13, FAINT)
 
 
 # ---------------------------------------------------------------- main draw
@@ -571,13 +741,13 @@ def draw(canvas, ACC, ACC2, day_draw_fn: Callable) -> None:
     _CLICKS.clear()
     canvas[:, :] = BG
     if ACTIVE_TAB in COL_TABS:
-        _draw_columns(canvas, ACC)
+        _draw_columns(canvas)
     elif ACTIVE_TAB == "controls":
-        _draw_controls(canvas, ACC)
+        _draw_controls(canvas)
     elif ACTIVE_TAB == "notes":
-        _draw_notes(canvas, ACC)
+        _draw_notes(canvas)
     elif ACTIVE_TAB == "hub":
-        _draw_hub(canvas, ACC)
+        _draw_hub(canvas)
     elif ACTIVE_TAB == "day":
         day_draw_fn(canvas, ACC, ACC2)
     _draw_tab_bar(canvas)
