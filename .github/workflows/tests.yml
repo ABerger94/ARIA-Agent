@@ -15,16 +15,10 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install lint deps
-        run: pip install ruff
+        run: pip install ruff pytest
       - name: Ruff — no unused imports
         run: python -m ruff check aria/ --select F401 --exclude '__init__.py'
-      - name: Test suites
+      - name: Test suites (pytest)
         run: |
-          python tests/test_ops.py
-          python tests/test_headless.py
-          python tests/test_providers.py
-          python tests/test_ultimate_a.py
-          python tests/test_ultimate_b.py
-          python tests/test_ultimate_c.py
-          python tests/test_ultimate_d.py
-          python tests/test_ultimate_e.py
+          python -m pytest tests/test_ops.py tests/test_headless.py tests/test_providers.py -q
+          python -m pytest tests/test_ultimate_a.py tests/test_ultimate_b.py tests/test_ultimate_c.py tests/test_ultimate_d.py tests/test_ultimate_e.py -q

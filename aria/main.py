@@ -39,6 +39,7 @@ from aria.agent.providers import provider_text
 from aria.tools.dispatch import (
     set_log_hook, set_hud_hook, set_history_hook, set_spine_hook,
 )
+from aria import config as _config_silent
 
 # Global runtime flags
 RUNNING: bool = True
@@ -228,8 +229,8 @@ def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silen
             _ops_screen.open_panel()
             try:
                 _ops.refresh_all()
-            except Exception:
-                pass
+            except Exception as _e_silent:
+                _config_silent.log_silent("handle_action", _e_silent)
             time.sleep(0.4)
         except Exception as e:
             add_log(f"OPS auto-open failed: {e}")
@@ -591,8 +592,8 @@ def continuous_voice_listener():
                     wake_rec.adjust_for_ambient_noise(source, duration=0.8)
                     if wake_rec.energy_threshold < 250:
                         wake_rec.energy_threshold = 250
-                except Exception:
-                    pass
+                except Exception as _e_silent:
+                    _config_silent.log_silent("continuous_voice_listener", _e_silent)
                 add_log("Wake-word listener armed ('Aria' / 'Hey Aria').")
                 
                 while RUNNING:
@@ -619,8 +620,8 @@ def continuous_voice_listener():
                         import audioop
                         if audioop.rms(raw_data, audio.sample_width) < 150:
                             continue
-                    except Exception:
-                        pass
+                    except Exception as _e_silent:
+                        _config_silent.log_silent("continuous_voice_listener", _e_silent)
 
                     # Transcribe
                     try:
@@ -815,12 +816,9 @@ def start_all():
     threading.Thread(target=_greet_when_ready, daemon=True).start()
 
 
-def main():
-    """Main application loop with OpenCV HUD window."""
-    global RUNNING
-
-    # ARIA ULTIMATE (Module 10): first-run wizard — checks the environment and
-    # API keys before subsystems boot. Fully skippable, never blocks startup.
+def _maybe_run_first_run_wizard() -> None:
+    """First-run wizard: checks environment and API keys before boot.
+    Fully skippable, never blocks startup."""
     try:
         import os as _os
         if not _os.path.exists(_os.path.expanduser("~/ARIA/.first_run_done")):
@@ -832,6 +830,34 @@ def main():
         except Exception:
             pass
 
+
+def _render_hud_frame():
+    """Render one HUD frame, with fault fallback to a black error frame."""
+    try:
+        return hud.draw_hud()
+    except Exception as e:
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        cv2.putText(frame, f"HUD RENDER FAULT: {e}", (50, 360),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1, cv2.LINE_AA)
+        # Full traceback goes to the log so a screenshot is never the
+        # only evidence: without this the next fault is undiagnosable.
+        try:
+            import traceback as _tb
+            add_log("HUD RENDER FAULT:\n" + "".join(
+                _tb.format_exception(type(e), e, e.__traceback__))[:2000])
+        except Exception:
+            pass
+        return frame
+
+
+def main():
+    """Main application loop with OpenCV HUD window."""
+    global RUNNING
+
+    # ARIA ULTIMATE (Module 10): first-run wizard — checks the environment and
+    # API keys before subsystems boot. Fully skippable, never blocks startup.
+    _maybe_run_first_run_wizard()
+
     start_all()
 
     win_name = "A.R.I.A. // OS"
@@ -840,20 +866,7 @@ def main():
 
     try:
         while RUNNING:
-            try:
-                frame = hud.draw_hud()
-            except Exception as e:
-                frame = np.zeros((720, 1280, 3), dtype=np.uint8)
-                cv2.putText(frame, f"HUD RENDER FAULT: {e}", (50, 360),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1, cv2.LINE_AA)
-                # Full traceback goes to the log so a screenshot is never the
-                # only evidence: without this the next fault is undiagnosable.
-                try:
-                    import traceback as _tb
-                    add_log("HUD RENDER FAULT:\n" + "".join(
-                        _tb.format_exception(type(e), e, e.__traceback__))[:2000])
-                except Exception:
-                    pass
+            frame = _render_hud_frame()
             cv2.imshow(win_name, frame)
 
             # wake-up burst expiry: settle back once her excited moment passes
@@ -863,8 +876,8 @@ def main():
             # Debounced notes autosave (atomic write; cheap no-op when clean)
             try:
                 _ops_screen.notes_flush_if_due()
-            except Exception:
-                pass
+            except Exception as _e_silent:
+                _config_silent.log_silent("main", _e_silent)
 
             key_raw = cv2.waitKeyEx(30)
             if key_raw != -1:
@@ -882,8 +895,8 @@ def main():
                     is_ctrl = bool(ctypes.windll.user32.GetAsyncKeyState(0x11) & 0x8000)
                     is_shift = bool(ctypes.windll.user32.GetAsyncKeyState(0x10) & 0x8000)
                     is_alt = bool(ctypes.windll.user32.GetAsyncKeyState(0x12) & 0x8000)
-                except Exception:
-                    pass
+                except Exception as _e_silent:
+                    _config_silent.log_silent("main", _e_silent)
 
                 # Universal paste shortcut: Ctrl+V or Shift+Insert
                 is_paste = (key == 22) or (key in (ord('v'), ord('V')) and is_ctrl) or (key_raw in (45, 0x2D0000) and is_shift)

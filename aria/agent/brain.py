@@ -43,6 +43,7 @@ from aria.agent.providers import provider_call, get_active_provider, get_last_ca
 from aria.agent.providers import resolve_role_model, chain_all_quarantined
 from aria.agent import sentinel
 import aria.hud as hud
+from aria import config as _config_silent
 
 HISTORY_TURNS = 12
 CONVERSATION_HISTORY: List[Dict[str, Any]] = []
@@ -102,8 +103,8 @@ def _repo_dir() -> str:
             capture_output=True, timeout=15, text=True)
         if r.returncode == 0 and r.stdout.strip():
             return r.stdout.strip()
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_silent.log_silent("_repo_dir", _e_silent)
     return os.path.dirname(os.path.dirname(
         os.path.dirname(os.path.abspath(__file__))))
 
@@ -429,6 +430,22 @@ def classify_task_role(user_prompt: str) -> str:
         return "default"
 
 
+def _run_agent_fast_path(user_prompt: str, say) -> Optional[str]:
+    """Fast-path voice shortcut check. Returns spoken_ack if handled, else None."""
+    global BUSY_PROCESSING
+    shortcut_res = check_voice_shortcut(user_prompt)
+    if not shortcut_res:
+        return None
+    tool_out, spoken_ack = shortcut_res
+    log_conversation("User", user_prompt)
+    log_conversation("A.R.I.A.", spoken_ack)
+    say(spoken_ack)
+    BUSY_PROCESSING = False
+    hud.set_hud_state("idle")
+    hud.draw_hud()
+    return spoken_ack
+
+
 def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: bool = False,
               reply_sink: Optional[List[str]] = None, preauthorized: bool = False,
               silent: bool = False) -> str:
@@ -460,16 +477,9 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
     say = ((lambda t: reply_sink.append(t)) if (silent and reply_sink is not None) else speech.speak)
 
     # 1. Fast-path shortcut check
-    shortcut_res = check_voice_shortcut(user_prompt)
-    if shortcut_res:
-        tool_out, spoken_ack = shortcut_res
-        log_conversation("User", user_prompt)
-        log_conversation("A.R.I.A.", spoken_ack)
-        say(spoken_ack)
-        BUSY_PROCESSING = False
-        hud.set_hud_state("idle")
-        hud.draw_hud()
-        return spoken_ack
+    _fast = _run_agent_fast_path(user_prompt, say)
+    if _fast is not None:
+        return _fast
 
     # 1b. Vision pre-pass. No provider on the OpenAI-compatible /v1 chain
     # accepts image input (ollama_cloud /v1, groq, openrouter all reject
@@ -612,8 +622,8 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                         f"{trip['window_s']:.0f}s — paused")
                     try:
                         hud.draw_hud()
-                    except Exception:
-                        pass
+                    except Exception as _e_silent:
+                        _config_silent.log_silent("_check_sentinel", _e_silent)
                     add_log(f"Loop guard tripped: {fname} x{trip['count']} in "
                             f"{trip['window_s']:.0f}s — turn paused.",
                             level="warn")
@@ -652,8 +662,8 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                 hud.set_hud_state("idle")
                 try:
                     hud.draw_hud()
-                except Exception:
-                    pass
+                except Exception as _e_silent:
+                    _config_silent.log_silent("run_agent", _e_silent)
                 return f"Loop guard tripped on {tripped['tool']}."
 
             contents.append({"role": "user", "parts": response_parts})

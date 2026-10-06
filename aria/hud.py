@@ -31,6 +31,7 @@ import aria.ops as _ops  # OPS command-center data (no cv2 dep)
 # top-level import here closes a circular loop:
 #   spotify -> tools.dispatch -> hud -> ops_screen -> aria.agent -> shortcuts -> spotify
 from aria.tools.schemas import COMMAND_GUIDE
+from aria import config as _config_silent
 
 _HUD_SUBS = {
     "\u2022": "-", "\u2014": "-", "\u2013": "-", "\u00b0": "deg",
@@ -85,14 +86,14 @@ def get_cached_telemetry() -> Tuple[float, float, str, List[Tuple[str, str, bool
             _CACHED_TELEMETRY["mem"] = psutil.virtual_memory().percent
             bat = psutil.sensors_battery()
             _CACHED_TELEMETRY["battery"] = f"{int(bat.percent)}%" if bat else "PWR"
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("get_cached_telemetry", _e_silent)
 
         if _SUBSYSTEMS_CALLBACK:
             try:
                 _CACHED_TELEMETRY["subsystems"] = _SUBSYSTEMS_CALLBACK() or []
-            except Exception:
-                pass
+            except Exception as _e_silent:
+                _config_silent.log_silent("get_cached_telemetry", _e_silent)
 
     return (
         _CACHED_TELEMETRY["cpu"],
@@ -174,8 +175,8 @@ def _get_spotify_telemetry() -> Dict[str, Any]:
 
         WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
         ctypes.windll.user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_silent.log_silent("_get_spotify_telemetry", _e_silent)
 
     _SPOTIFY_CACHE = info
     return info
@@ -199,8 +200,8 @@ class VolumeManager:
         try:
             import pythoncom
             pythoncom.CoInitialize()
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("_worker", _e_silent)
         try:
             from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
             from comtypes import CLSCTX_ALL
@@ -239,12 +240,12 @@ class VolumeManager:
 
             try:
                 self.device_vol = _query_dev()
-            except Exception:
-                pass
+            except Exception as _e_silent:
+                _config_silent.log_silent("_worker", _e_silent)
             try:
                 self.spotify_vol = _query_spot()
-            except Exception:
-                pass
+            except Exception as _e_silent:
+                _config_silent.log_silent("_worker", _e_silent)
 
             last_poll = time.time()
             while self._running:
@@ -261,35 +262,35 @@ class VolumeManager:
                     try:
                         _apply_dev(s_dev)
                         self.device_vol = s_dev
-                    except Exception:
-                        pass
+                    except Exception as _e_silent:
+                        _config_silent.log_silent("_worker", _e_silent)
 
                 if s_spot is not None:
                     try:
                         _apply_spot(s_spot)
                         self.spotify_vol = s_spot
-                    except Exception:
-                        pass
+                    except Exception as _e_silent:
+                        _config_silent.log_silent("_worker", _e_silent)
 
                 now = time.time()
                 if now - last_poll > 1.5 and s_dev is None and s_spot is None:
                     try:
                         self.device_vol = _query_dev()
-                    except Exception:
-                        pass
+                    except Exception as _e_silent:
+                        _config_silent.log_silent("_worker", _e_silent)
                     try:
                         self.spotify_vol = _query_spot()
-                    except Exception:
-                        pass
+                    except Exception as _e_silent:
+                        _config_silent.log_silent("_worker", _e_silent)
                     last_poll = now
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("_worker", _e_silent)
         finally:
             try:
                 import pythoncom
                 pythoncom.CoUninitialize()
-            except Exception:
-                pass
+            except Exception as _e_silent:
+                _config_silent.log_silent("_worker", _e_silent)
 
     def get_level(self) -> float:
         return self.device_vol if self.target == "device" else self.spotify_vol
@@ -401,8 +402,8 @@ def get_clipboard_text() -> str:
                     win32clipboard.CloseClipboard()
             except Exception:
                 time.sleep(0.02)
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_silent.log_silent("get_clipboard_text", _e_silent)
     try:
         import tkinter as tk
         r = tk.Tk()
@@ -413,8 +414,8 @@ def get_clipboard_text() -> str:
             return ""
         finally:
             r.destroy()
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_silent.log_silent("get_clipboard_text", _e_silent)
     return ""
 
 
@@ -1430,20 +1431,16 @@ def _draw_ops_body(canvas, ACC, ACC2):
              DIM, 0.36, 120)
 
 
-def draw_hud() -> np.ndarray:
-    """Render full 1280x720 HUD frame and publish face frame for phone bridge."""
-    ACC, ACC2 = theme_colors()
-    h, w = 720, 1280
-    canvas = np.zeros((h, w, 3), dtype=np.uint8)
-    canvas[:] = BG
-
-    # Grid background
+def _draw_hud_grid(canvas, w: int, h: int) -> None:
+    """Grid background for the HUD."""
     for x in range(0, w, 40):
         cv2.line(canvas, (x, 0), (x, h), (18, 20, 24), 1)
     for y in range(0, h, 40):
         cv2.line(canvas, (0, y), (w, y), (18, 20, 24), 1)
 
-    # Panels
+
+def _draw_hud_panels(canvas) -> None:
+    """Panel rectangles (left, right, bottom)."""
     cv2.rectangle(canvas, (20, 70), (280, 460), PANEL_BG, -1)
     cv2.rectangle(canvas, (20, 70), (280, 460), BORDER, 1)
     cv2.rectangle(canvas, (1000, 70), (1260, 460), PANEL_BG, -1)
@@ -1451,20 +1448,34 @@ def draw_hud() -> np.ndarray:
     cv2.rectangle(canvas, (20, 480), (1260, 705), PANEL_BG, -1)
     cv2.rectangle(canvas, (20, 480), (1260, 705), BORDER, 1)
 
-    # Header
+
+def _draw_hud_status_bar(canvas) -> None:
+    """Bottom status bar with key hints."""
+    status_bar = f"STATUS: {CURRENT_STATE.upper()}  |  [T] TYPE  |  [1-5] TILES  |  [TAB] FLIP  |  [SPACE] PTT  |  [X] CUT  |  [C] COLORS  |  [V] VISOR  |  [O] OPS  |  [H] COMMANDS"
+    cv2.putText(canvas, status_bar, (35, 700), cv2.FONT_HERSHEY_SIMPLEX, 0.35, DIM, 1, cv2.LINE_AA)
+    if SHOW_COMMANDS:
+        _draw_commands_overlay(canvas)
+
+
+def _draw_hud_header(canvas, acc):
+    """Top header: title, time/CPU/MEM/PWR, phone bridge + inbox.
+    Returns cached_subs for the left panel."""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cpu_usage, mem_usage, bat_str, cached_subs = get_cached_telemetry()
     inbox_cnt = inbox_count_cached()
 
     cv2.putText(canvas, "A.R.I.A. // Adaptive Robotic Intelligence Agent", (30, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.65, ACC, 2, cv2.LINE_AA)
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65, acc, 2, cv2.LINE_AA)
 
     sys_stats = f"TIME: {now_str}  |  CPU: {cpu_usage}%  |  MEM: {mem_usage}%  |  PWR: {bat_str}"
     cv2.putText(canvas, sys_stats, (650, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 170, 180), 1, cv2.LINE_AA)
     cv2.putText(canvas, f"PHONE BRIDGE: https://{lan_ip()}:{PHONE_BRIDGE_PORT}   |   INBOX: {inbox_cnt}",
                 (30, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (120, 150, 170), 1, cv2.LINE_AA)
+    return cached_subs
 
-    # Whisper Mode Button
+
+def _draw_hud_whisper_mood(canvas, acc) -> None:
+    """Whisper mode button + mood string + header divider."""
     bx, by, bw, bh = _WHISPER_BTN
     _wcol = (200, 120, 255) if WHISPER_MODE else (70, 80, 95)
     cv2.rectangle(canvas, (bx, by), (bx + bw, by + bh), PANEL_BG, -1)
@@ -1472,24 +1483,17 @@ def draw_hud() -> np.ndarray:
     cv2.putText(canvas, "WHISPER " + ("ON" if WHISPER_MODE else "OFF"),
                 (bx + 10, by + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.34, _wcol, 1, cv2.LINE_AA)
 
-    # Mood String
     _mw = (_MOOD_CALLBACK().lower() if _MOOD_CALLBACK else "calm")
     mood_str = "MOOD: " + (_MOOD_CALLBACK().upper() if _MOOD_CALLBACK else "CALM")
     (mw, _), _ = cv2.getTextSize(mood_str, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
     cv2.putText(canvas, mood_str, (bx - 20 - mw, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (170, 190, 200), 1, cv2.LINE_AA)
 
-    cv2.line(canvas, (20, 72), (1260, 72), ACC, 1)
+    cv2.line(canvas, (20, 72), (1260, 72), acc, 1)
 
-    if HUD_MODE == "ops":
-        import aria.ops_screen as _ops_screen  # lazy: avoids circular import
-        _ops_screen.draw(canvas, ACC, ACC2,
-                         lambda c, a1, a2: _draw_ops_body(c, a1, a2))
-        if SHOW_COMMANDS:
-            _draw_commands_overlay(canvas)
-        return canvas
 
-    # Left Panel: Subsystems
-    cv2.putText(canvas, "[ SUBSYSTEMS ]", (35, 102), cv2.FONT_HERSHEY_SIMPLEX, 0.5, ACC, 1, cv2.LINE_AA)
+def _draw_hud_left_panel(canvas, acc, cached_subs) -> None:
+    """Left panel: subsystem status list + optical camera PIP."""
+    cv2.putText(canvas, "[ SUBSYSTEMS ]", (35, 102), cv2.FONT_HERSHEY_SIMPLEX, 0.5, acc, 1, cv2.LINE_AA)
     subsystems = cached_subs
     for i, (mod, stat, ok) in enumerate(subsystems[:8]):
         item_y = 135 + (i * 22)
@@ -1500,164 +1504,200 @@ def draw_hud() -> np.ndarray:
         cv2.putText(canvas, stat, (stat_x, item_y), cv2.FONT_HERSHEY_SIMPLEX, 0.38, dot, 1, cv2.LINE_AA)
         cv2.putText(canvas, mod, (55, item_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 1, cv2.LINE_AA)
 
-    # Optical PIP
+    # Optical PIP — read the frame live off the vision module every draw.
     pip_x, pip_y, pip_w, pip_h = 35, 315, 230, 130
     cv2.rectangle(canvas, (pip_x, pip_y), (pip_x + pip_w, pip_y + pip_h), (30, 35, 45), -1)
-    # NOTE: read the frame live off the vision module every draw. A
-    # `from aria.vision import LATEST_CAMERA_FRAME` here would bind the
-    # import-time value (None) forever, since vision.py *rebinds* the name
-    # on each capture — the PIP would never render. (Fixed 2026-10-05.)
     _cam_frame = _vision.LATEST_CAMERA_FRAME
     if _cam_frame is not None:
         try:
             thumb = cv2.resize(_cam_frame, (pip_w, pip_h))
             canvas[pip_y:pip_y + pip_h, pip_x:pip_x + pip_w] = thumb
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("draw_hud", _e_silent)
     cv2.rectangle(canvas, (pip_x, pip_y), (pip_x + pip_w, pip_y + pip_h), BORDER, 1)
     cv2.putText(canvas, "CAM.01 // OPTIC PIP", (pip_x + 10, pip_y + 18),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, CYAN, 1, cv2.LINE_AA)
 
-    # Right Panel: Action Stream
-    cv2.putText(canvas, "[ ACTION STREAM ]", (1015, 102), cv2.FONT_HERSHEY_SIMPLEX, 0.5, ACC, 1, cv2.LINE_AA)
+
+def _draw_hud_right_panel(canvas, acc) -> None:
+    """Right panel: action stream log."""
+    cv2.putText(canvas, "[ ACTION STREAM ]", (1015, 102), cv2.FONT_HERSHEY_SIMPLEX, 0.5, acc, 1, cv2.LINE_AA)
     log_y = 130
     for log in LOG_STREAM[-6:]:
         for sub_line in textwrap.wrap(log, width=32)[:2]:
             cv2.putText(canvas, sub_line, (1015, log_y), cv2.FONT_HERSHEY_SIMPLEX, 0.38, WHITE_TEXT, 1, cv2.LINE_AA)
             log_y += 18
 
+
+def _draw_hud_chat_log(canvas, acc) -> None:
+    """Center stage: tactical chat log mode."""
+    cv2.rectangle(canvas, (300, 76), (980, 460), (12, 14, 18), -1)
+    cv2.rectangle(canvas, (300, 76), (980, 460), ACC, 1)
+
+    # Header bar with clean separation and zero text overlap
+    title_text = "[ TACTICAL CHAT LOG ]"
+    cv2.putText(canvas, title_text, (315, 101),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.44, CYAN, 1, cv2.LINE_AA)
+
+    ctrl_text = "[V] VISOR  |  [UP/DN / WHEEL] SCROLL"
+    (cw, _), _ = cv2.getTextSize(ctrl_text, cv2.FONT_HERSHEY_SIMPLEX, 0.34, 1)
+    cv2.putText(canvas, ctrl_text, (965 - cw, 101),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.34, DIM, 1, cv2.LINE_AA)
+
+    # Divider line between header and chat log lines
+    cv2.line(canvas, (300, 114), (980, 114), BORDER, 1)
+
+    try:
+        from aria import memory
+        raw_log = list(DISPLAY_CHAT_LOG) if DISPLAY_CHAT_LOG else list(memory.get_display_chat_log())
+        rendered_lines = []
+        for entry in raw_log:
+            if not entry:
+                continue
+            if isinstance(entry, (tuple, list)):
+                if len(entry) >= 3:
+                    ts, role, text = entry[0], entry[1], entry[2]
+                    ts_str = str(ts).strip()
+                    if len(ts_str) > 8 and " " in ts_str:
+                        ts_str = ts_str.split()[-1]
+                    header = hud_ascii(f"[{ts_str}] {role}: ")
+                elif len(entry) == 2:
+                    role, text = entry[0], entry[1]
+                    header = hud_ascii(f"{role}: ")
+                else:
+                    role, text = "MSG", str(entry[0])
+                    header = "MSG: "
+            else:
+                role, text = "MSG", str(entry)
+                header = "MSG: "
+
+            header_color = ACC if str(role).upper() in ("A.R.I.A.", "ARIA") else CYAN
+            (hw, _), _ = cv2.getTextSize(header, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+            content_x = max(465, 315 + hw + 8)
+            msg_lines = textwrap.wrap(hud_ascii(text), width=58)
+            if msg_lines:
+                rendered_lines.append([(315, header, header_color), (content_x, msg_lines[0], WHITE_TEXT)])
+                for sub_line in msg_lines[1:]:
+                    rendered_lines.append([(content_x, sub_line, WHITE_TEXT)])
+
+        max_visible = 14
+        max_scroll = max(0, len(rendered_lines) - max_visible)
+        effective_scroll = max(0, min(CHAT_SCROLL, max_scroll))
+        start_idx = max(0, len(rendered_lines) - max_visible - effective_scroll)
+        view_lines = rendered_lines[start_idx:start_idx + max_visible]
+        log_y = 134
+        for line_segs in view_lines:
+            for x, text, col in line_segs:
+                cv2.putText(canvas, text, (x, log_y), cv2.FONT_HERSHEY_SIMPLEX, 0.38, col, 1, cv2.LINE_AA)
+            log_y += 22
+    except Exception as e:
+        cv2.putText(canvas, f"Chat log render error: {hud_ascii(e)}", (320, 140),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1, cv2.LINE_AA)
+
+
+def _draw_hud_avatar(canvas, acc, acc2) -> None:
+    """Center stage: visor/pixel avatar mode."""
+    lx, rx, cy = 520, 760, 235
+    if USE_PIXEL_AVATAR:
+        draw_pixel_aria(canvas, CURRENT_STATE, time.time(), mood=_mw)
+    elif CURRENT_STATE == "idle":
+        now = time.time()
+        _update_idle_face(now)
+        squash = _blink_squash(now)
+        f = _FACE
+        for ex, side in ((lx, -1), (rx, 1)):
+            cv2.ellipse(canvas, (ex, cy), (58, 82), 0, 0, 360, PINK_DEEP, -1)
+            eh = max(4, int(74 * squash))
+            cv2.ellipse(canvas, (ex, cy), (52, eh), 0, 0, 360, CYAN, -1)
+            cv2.ellipse(canvas, (ex, cy), (52, eh), 0, 0, 360, LINER, 2)
+            _draw_lashes(canvas, ex, cy, 52, eh, side)
+            px, py = int(ex + f["eye_dx"]), int(cy + f["eye_dy"])
+            ph = max(3, int(26 * squash))
+            cv2.ellipse(canvas, (px, py), (23, ph + 6), 0, 0, 360, PINK, 2)
+            cv2.ellipse(canvas, (px, py), (17, ph), 0, 0, 360, (10, 40, 70), -1)
+            cv2.circle(canvas, (px - 6, py - int(12 * squash)), 5, (255, 255, 255), -1)
+            apply_led_scanlines(canvas, ex - 60, cy - 80, ex + 60, cy + 80)
+        wt = now * 2.0
+        for i in range(-9, 10):
+            bar_x = 640 + (i * 14)
+            bar_h = int(abs(np.sin(wt + i * 0.5)) * 8) + 2
+            cv2.line(canvas, (bar_x, 388 - bar_h), (bar_x, 388 + bar_h), PINK, 2)
+    elif CURRENT_STATE == "listening":
+        pulse = int(6 * np.sin(time.time() * 4))
+        for ex, side in ((lx, -1), (rx, 1)):
+            cv2.circle(canvas, (ex, cy), 58 + pulse, CYAN, 2)
+            cv2.circle(canvas, (ex, cy), 46 + pulse, PINK, 3)
+            _draw_lashes(canvas, ex, cy, 46 + pulse, 46 + pulse, side)
+            cv2.circle(canvas, (ex, cy), 18, (255, 255, 255), -1)
+            apply_led_scanlines(canvas, ex - 60, cy - 70, ex + 60, cy + 70)
+        _draw_waveform_mouth(canvas, MOUTH_YELLOW, time.time())
+    elif CURRENT_STATE == "thinking":
+        t = time.time() * 8
+        for ex, side in ((lx, -1), (rx, 1)):
+            cv2.ellipse(canvas, (ex, cy), (48, 48), 0, int(t * 10) % 360,
+                        (int(t * 10) + 220) % 360, CYAN, 5)
+            _draw_lashes(canvas, ex, cy, 48, 48, side)
+            cv2.putText(canvas, "?", (ex - 12, cy + 12), cv2.FONT_HERSHEY_SIMPLEX,
+                        1.1, CYAN, 2, cv2.LINE_AA)
+            apply_led_scanlines(canvas, ex - 60, cy - 70, ex + 60, cy + 70)
+        _draw_waveform_mouth(canvas, MOUTH_YELLOW, t)
+    elif CURRENT_STATE in ("working", "coding"):
+        t = time.time() * 10
+        for ex, side in ((lx, -1), (rx, 1)):
+            cv2.ellipse(canvas, (ex, cy), (48, 48), 0, int(t * 12) % 360,
+                        (int(t * 12) + 260) % 360, GREEN, 5)
+            _draw_lashes(canvas, ex, cy, 48, 48, side)
+            cv2.putText(canvas, "</>", (ex - 35, cy + 12), cv2.FONT_HERSHEY_SIMPLEX,
+                        1.1, GREEN, 2, cv2.LINE_AA)
+            apply_led_scanlines(canvas, ex - 60, cy - 70, ex + 60, cy + 70)
+        _draw_waveform_mouth(canvas, (40, 240, 120), t)
+    elif CURRENT_STATE == "speaking":
+        for ex, side in ((lx, -1), (rx, 1)):
+            cv2.ellipse(canvas, (ex, cy - 10), (52, 45), 0, 190, 350, PINK, 10)
+            _draw_lashes(canvas, ex, cy - 10, 52, 45, side)
+            apply_led_scanlines(canvas, ex - 60, cy - 60, ex + 60, cy + 40)
+        t_speak = time.time() * 12
+        for i in range(-16, 17):
+            bar_x = 640 + (i * 12)
+            bar_h = int(abs(np.sin(t_speak + i * 0.45)) * 34) + 4
+            cv2.line(canvas, (bar_x, 370 - bar_h), (bar_x, 370 + bar_h), PINK, 2)
+
+    publish_face_frame(canvas)
+
+
+def draw_hud() -> np.ndarray:
+    """Render full 1280x720 HUD frame and publish face frame for phone bridge."""
+    ACC, ACC2 = theme_colors()
+    h, w = 720, 1280
+    canvas = np.zeros((h, w, 3), dtype=np.uint8)
+    canvas[:] = BG
+
+    _draw_hud_grid(canvas, w, h)
+
+    _draw_hud_panels(canvas)
+
+    cached_subs = _draw_hud_header(canvas, ACC)
+
+    _draw_hud_whisper_mood(canvas, ACC)
+
+    if HUD_MODE == "ops":
+        import aria.ops_screen as _ops_screen  # lazy: avoids circular import
+        _ops_screen.draw(canvas, ACC, ACC2,
+                         lambda c, a1, a2: _draw_ops_body(c, a1, a2))
+        if SHOW_COMMANDS:
+            _draw_commands_overlay(canvas)
+        return canvas
+
+    _draw_hud_left_panel(canvas, ACC, cached_subs)
+
+    _draw_hud_right_panel(canvas, ACC)
+
+    # Center Stage: Avatar or Chat Log
     # Center Stage: Avatar or Chat Log
     if HUD_MODE == "chat_log":
-        cv2.rectangle(canvas, (300, 76), (980, 460), (12, 14, 18), -1)
-        cv2.rectangle(canvas, (300, 76), (980, 460), ACC, 1)
-
-        # Header bar with clean separation and zero text overlap
-        title_text = "[ TACTICAL CHAT LOG ]"
-        cv2.putText(canvas, title_text, (315, 101),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.44, CYAN, 1, cv2.LINE_AA)
-
-        ctrl_text = "[V] VISOR  |  [UP/DN / WHEEL] SCROLL"
-        (cw, _), _ = cv2.getTextSize(ctrl_text, cv2.FONT_HERSHEY_SIMPLEX, 0.34, 1)
-        cv2.putText(canvas, ctrl_text, (965 - cw, 101),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.34, DIM, 1, cv2.LINE_AA)
-
-        # Divider line between header and chat log lines
-        cv2.line(canvas, (300, 114), (980, 114), BORDER, 1)
-
-        try:
-            from aria import memory
-            raw_log = list(DISPLAY_CHAT_LOG) if DISPLAY_CHAT_LOG else list(memory.get_display_chat_log())
-            rendered_lines = []
-            for entry in raw_log:
-                if not entry:
-                    continue
-                if isinstance(entry, (tuple, list)):
-                    if len(entry) >= 3:
-                        ts, role, text = entry[0], entry[1], entry[2]
-                        ts_str = str(ts).strip()
-                        if len(ts_str) > 8 and " " in ts_str:
-                            ts_str = ts_str.split()[-1]
-                        header = hud_ascii(f"[{ts_str}] {role}: ")
-                    elif len(entry) == 2:
-                        role, text = entry[0], entry[1]
-                        header = hud_ascii(f"{role}: ")
-                    else:
-                        role, text = "MSG", str(entry[0])
-                        header = "MSG: "
-                else:
-                    role, text = "MSG", str(entry)
-                    header = "MSG: "
-
-                header_color = ACC if str(role).upper() in ("A.R.I.A.", "ARIA") else CYAN
-                (hw, _), _ = cv2.getTextSize(header, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
-                content_x = max(465, 315 + hw + 8)
-                msg_lines = textwrap.wrap(hud_ascii(text), width=58)
-                if msg_lines:
-                    rendered_lines.append([(315, header, header_color), (content_x, msg_lines[0], WHITE_TEXT)])
-                    for sub_line in msg_lines[1:]:
-                        rendered_lines.append([(content_x, sub_line, WHITE_TEXT)])
-
-            max_visible = 14
-            max_scroll = max(0, len(rendered_lines) - max_visible)
-            effective_scroll = max(0, min(CHAT_SCROLL, max_scroll))
-            start_idx = max(0, len(rendered_lines) - max_visible - effective_scroll)
-            view_lines = rendered_lines[start_idx:start_idx + max_visible]
-            log_y = 134
-            for line_segs in view_lines:
-                for x, text, col in line_segs:
-                    cv2.putText(canvas, text, (x, log_y), cv2.FONT_HERSHEY_SIMPLEX, 0.38, col, 1, cv2.LINE_AA)
-                log_y += 22
-        except Exception as e:
-            cv2.putText(canvas, f"Chat log render error: {hud_ascii(e)}", (320, 140),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1, cv2.LINE_AA)
+        _draw_hud_chat_log(canvas, ACC)
     else:
-        # Visor Mode (Pixel Avatar with Fluid Cognitive Reactions)
-        lx, rx, cy = 520, 760, 235
-        if USE_PIXEL_AVATAR:
-            draw_pixel_aria(canvas, CURRENT_STATE, time.time(), mood=_mw)
-        elif CURRENT_STATE == "idle":
-            now = time.time()
-            _update_idle_face(now)
-            squash = _blink_squash(now)
-            f = _FACE
-            for ex, side in ((lx, -1), (rx, 1)):
-                cv2.ellipse(canvas, (ex, cy), (58, 82), 0, 0, 360, PINK_DEEP, -1)
-                eh = max(4, int(74 * squash))
-                cv2.ellipse(canvas, (ex, cy), (52, eh), 0, 0, 360, CYAN, -1)
-                cv2.ellipse(canvas, (ex, cy), (52, eh), 0, 0, 360, LINER, 2)
-                _draw_lashes(canvas, ex, cy, 52, eh, side)
-                px, py = int(ex + f["eye_dx"]), int(cy + f["eye_dy"])
-                ph = max(3, int(26 * squash))
-                cv2.ellipse(canvas, (px, py), (23, ph + 6), 0, 0, 360, PINK, 2)
-                cv2.ellipse(canvas, (px, py), (17, ph), 0, 0, 360, (10, 40, 70), -1)
-                cv2.circle(canvas, (px - 6, py - int(12 * squash)), 5, (255, 255, 255), -1)
-                apply_led_scanlines(canvas, ex - 60, cy - 80, ex + 60, cy + 80)
-            wt = now * 2.0
-            for i in range(-9, 10):
-                bar_x = 640 + (i * 14)
-                bar_h = int(abs(np.sin(wt + i * 0.5)) * 8) + 2
-                cv2.line(canvas, (bar_x, 388 - bar_h), (bar_x, 388 + bar_h), PINK, 2)
-        elif CURRENT_STATE == "listening":
-            pulse = int(6 * np.sin(time.time() * 4))
-            for ex, side in ((lx, -1), (rx, 1)):
-                cv2.circle(canvas, (ex, cy), 58 + pulse, CYAN, 2)
-                cv2.circle(canvas, (ex, cy), 46 + pulse, PINK, 3)
-                _draw_lashes(canvas, ex, cy, 46 + pulse, 46 + pulse, side)
-                cv2.circle(canvas, (ex, cy), 18, (255, 255, 255), -1)
-                apply_led_scanlines(canvas, ex - 60, cy - 70, ex + 60, cy + 70)
-            _draw_waveform_mouth(canvas, MOUTH_YELLOW, time.time())
-        elif CURRENT_STATE == "thinking":
-            t = time.time() * 8
-            for ex, side in ((lx, -1), (rx, 1)):
-                cv2.ellipse(canvas, (ex, cy), (48, 48), 0, int(t * 10) % 360,
-                            (int(t * 10) + 220) % 360, CYAN, 5)
-                _draw_lashes(canvas, ex, cy, 48, 48, side)
-                cv2.putText(canvas, "?", (ex - 12, cy + 12), cv2.FONT_HERSHEY_SIMPLEX,
-                            1.1, CYAN, 2, cv2.LINE_AA)
-                apply_led_scanlines(canvas, ex - 60, cy - 70, ex + 60, cy + 70)
-            _draw_waveform_mouth(canvas, MOUTH_YELLOW, t)
-        elif CURRENT_STATE in ("working", "coding"):
-            t = time.time() * 10
-            for ex, side in ((lx, -1), (rx, 1)):
-                cv2.ellipse(canvas, (ex, cy), (48, 48), 0, int(t * 12) % 360,
-                            (int(t * 12) + 260) % 360, GREEN, 5)
-                _draw_lashes(canvas, ex, cy, 48, 48, side)
-                cv2.putText(canvas, "</>", (ex - 35, cy + 12), cv2.FONT_HERSHEY_SIMPLEX,
-                            1.1, GREEN, 2, cv2.LINE_AA)
-                apply_led_scanlines(canvas, ex - 60, cy - 70, ex + 60, cy + 70)
-            _draw_waveform_mouth(canvas, (40, 240, 120), t)
-        elif CURRENT_STATE == "speaking":
-            for ex, side in ((lx, -1), (rx, 1)):
-                cv2.ellipse(canvas, (ex, cy - 10), (52, 45), 0, 190, 350, PINK, 10)
-                _draw_lashes(canvas, ex, cy - 10, 52, 45, side)
-                apply_led_scanlines(canvas, ex - 60, cy - 60, ex + 60, cy + 40)
-            t_speak = time.time() * 12
-            for i in range(-16, 17):
-                bar_x = 640 + (i * 12)
-                bar_h = int(abs(np.sin(t_speak + i * 0.45)) * 34) + 4
-                cv2.line(canvas, (bar_x, 370 - bar_h), (bar_x, 370 + bar_h), PINK, 2)
-
-        publish_face_frame(canvas)
+        _draw_hud_avatar(canvas, ACC, ACC2)
 
     # Bottom Area: Collapsible Context Tiles
     _draw_context_tiles(canvas, ACC, ACC2, time.time(), CURRENT_STATE)
@@ -1721,11 +1761,6 @@ def draw_hud() -> np.ndarray:
     cv2.putText(canvas, esc_label, (ex + 18, ey + 16),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.36, DIM, 1, cv2.LINE_AA)
 
-    # Bottom status bar
-    status_bar = f"STATUS: {CURRENT_STATE.upper()}  |  [T] TYPE  |  [1-5] TILES  |  [TAB] FLIP  |  [SPACE] PTT  |  [X] CUT  |  [C] COLORS  |  [V] VISOR  |  [O] OPS  |  [H] COMMANDS"
-    cv2.putText(canvas, status_bar, (35, 700), cv2.FONT_HERSHEY_SIMPLEX, 0.35, DIM, 1, cv2.LINE_AA)
-
-    if SHOW_COMMANDS:
-        _draw_commands_overlay(canvas)
+    _draw_hud_status_bar(canvas)
 
     return canvas
