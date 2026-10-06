@@ -223,7 +223,9 @@ def build_system_instruction(user_prompt: str) -> str:
         f"{get_toolkits_prompt_block()}\n"
         f"{_persona_block}"
         "You can call multiple independent tools in one turn — do it. "
-        "Keep vocal responses concise, refined, and intelligent (1-2 sentences)."
+        "Keep vocal responses concise, refined, and intelligent (1-2 sentences). "
+        "Every turn you MUST either call a tool or reply with text — "
+        "never return an empty response with no tool call and no words."
     )
 
 
@@ -281,6 +283,7 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
     system_instruction = build_system_instruction(user_prompt)
 
     try:
+        _empty_retries = 0
         while True:
             stream_buf = [""]
             stream_sents = []
@@ -326,7 +329,19 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
 
             if not function_calls:
                 text_parts = [p["text"] for p in model_parts if "text" in p and not p.get("thought", False)]
-                final_text = "".join(text_parts).strip() if text_parts else "Directive executed."
+                final_text = "".join(text_parts).strip()
+                if not final_text and stream_sents:
+                    final_text = " ".join(stream_sents).strip()
+                if not final_text:
+                    # Empty response: no tool calls, no text. That is a model
+                    # failure — never claim success. Retry once, then admit it.
+                    add_log("Empty model response "
+                            f"(parts={[sorted(p.keys()) for p in model_parts]}); "
+                            f"retry {_empty_retries + 1}/1")
+                    _empty_retries += 1
+                    if _empty_retries <= 1:
+                        continue
+                    final_text = "I didn't catch that — nothing was done."
                 CONVERSATION_HISTORY.append({"role": "model", "parts": [{"text": final_text}]})
                 _compact_conversation_history()
 

@@ -537,6 +537,27 @@ def t_describe_camera_schema_and_dispatch():
     assert "tool_describe_camera" in src
 
 
+def t_no_directive_executed_lie():
+    with open(os.path.join(PKG, "agent", "brain.py"), encoding="utf-8") as f:
+        src = f.read()
+    assert "Directive executed" not in src, \
+        "brain.py still claims success on empty model responses"
+
+
+def t_empty_response_retries_then_admits():
+    with open(os.path.join(PKG, "agent", "brain.py"), encoding="utf-8") as f:
+        src = f.read()
+    assert "I didn't catch that" in src, "missing honest empty-response fallback"
+    assert "_empty_retries" in src, "missing empty-response retry guard"
+
+
+def t_system_prompt_forbids_empty_response():
+    with open(os.path.join(PKG, "agent", "brain.py"), encoding="utf-8") as f:
+        src = f.read()
+    assert "never return an empty response" in src.lower(), \
+        "system prompt must forbid empty model responses"
+
+
 for name, fn in sorted([(k, v) for k, v in list(globals().items()) if k.startswith("t_")]):
     check(name, fn)
 
