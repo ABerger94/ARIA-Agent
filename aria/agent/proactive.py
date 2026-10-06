@@ -13,7 +13,7 @@ import sqlite3
 import threading
 import time
 from datetime import datetime
-from typing import Optional, Callable, Dict, Any, Tuple
+from typing import Optional, Callable, Dict, Any, Tuple, List
 
 import psutil
 

@@ -348,7 +348,7 @@ def system_health_audit() -> str:
             lines.append(f"  * #{j['id']} '{j['name']}': status={j['status']}, PID={j.get('pid')}")
 
     # 4. Watchers
-    lines.append(f"- Persistent Watchers: Downloads Watcher (Active), Resource Anomaly Watcher (Active)")
+    lines.append("- Persistent Watchers: Downloads Watcher (Active), Resource Anomaly Watcher (Active)")
     return "\n".join(lines)
 
 

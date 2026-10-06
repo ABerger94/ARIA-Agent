@@ -755,6 +755,14 @@ def main():
                 frame = np.zeros((720, 1280, 3), dtype=np.uint8)
                 cv2.putText(frame, f"HUD RENDER FAULT: {e}", (50, 360),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1, cv2.LINE_AA)
+                # Full traceback goes to the log so a screenshot is never the
+                # only evidence: without this the next fault is undiagnosable.
+                try:
+                    import traceback as _tb
+                    add_log("HUD RENDER FAULT:\n" + "".join(
+                        _tb.format_exception(type(e), e, e.__traceback__))[:2000])
+                except Exception:
+                    pass
             cv2.imshow(win_name, frame)
 
             # wake-up burst expiry: settle back once her excited moment passes
