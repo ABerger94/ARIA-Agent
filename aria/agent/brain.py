@@ -178,6 +178,24 @@ def _restore_last_committed(path: str, repo_dir: Optional[str] = None) -> Option
         return None
 
 
+def _missing_third_party_dep(stderr_tail: str) -> bool:
+    """True when the import failed ONLY because an EXTERNAL (non-aria)
+    third-party module is missing — e.g. `cv2` on a box without OpenCV, or
+    `speech_recognition` where it isn't installed.
+
+    That's an environment gap, not a broken edit: the module parses clean
+    and would import fine where its dependencies exist. The smoke test must
+    not flag the file (otherwise a dep-poor dev box would auto-restore good
+    edits from git on every self-restart check). A missing `aria.*` module
+    is OUR code — always a genuine failure.
+    """
+    m = re.search(r"ModuleNotFoundError: No module named '([^']+)'", stderr_tail)
+    if not m:
+        return False
+    missing = m.group(1)
+    return not (missing == "aria" or missing.startswith("aria."))
+
+
 def _smoke_import_changed(changed) -> list:
     """Import-smoke-test changed .py files in a subprocess.
 
@@ -185,9 +203,28 @@ def _smoke_import_changed(changed) -> list:
     (e.g. `from aria.core.optimport import ...` in a repo that has no
     aria/core package). Each changed module is imported in a fresh
     interpreter with cwd=repo root — the same import the restart would do.
+
+    Parent packages are stubbed (empty __init__, real __path__) so the test
+    exercises THE MODULE's own imports rather than the environment's
+    package __init__ side effects (which may pull optional deps like cv2 or
+    speech_recognition that a dev box lacks). A failure caused solely by a
+    missing third-party dependency is skipped (unverifiable in this env,
+    not a broken edit).
     Returns [(path, stderr_tail)] for failures. Never raises.
     """
     repo_dir = _repo_dir()
+    code = (
+        "import sys, types, os, importlib\n"
+        "mod = sys.argv[1]\n"
+        "repo = os.getcwd()\n"
+        "parts = mod.split('.')\n"
+        "for i in range(1, len(parts)):\n"
+        "    name = '.'.join(parts[:i])\n"
+        "    pkg = types.ModuleType(name)\n"
+        "    pkg.__path__ = [os.path.join(repo, *parts[:i])]\n"
+        "    sys.modules[name] = pkg\n"
+        "importlib.import_module(mod)\n"
+    )
     failed = []
     for p in changed:
         if not (p.endswith(".py") and os.path.isfile(p)):
@@ -198,11 +235,14 @@ def _smoke_import_changed(changed) -> list:
         mod = rel[:-3].replace(os.sep, ".")
         try:
             r = subprocess.run(
-                [sys.executable, "-c", f"import {mod}"],
+                [sys.executable, "-c", code, mod],
                 cwd=repo_dir, capture_output=True, timeout=90)
             if r.returncode != 0:
                 err = r.stderr.decode("utf-8", "replace").strip().splitlines()
-                failed.append((p, err[-1][-300:] if err else "import failed"))
+                tail = err[-1][-300:] if err else "import failed"
+                if _missing_third_party_dep(tail):
+                    continue
+                failed.append((p, tail))
         except Exception as e:
             failed.append((p, str(e)[:200]))
     return failed
