@@ -49,18 +49,36 @@ def _bump_sched_count(delta: int):
 
 
 def _load_schedule() -> List[Dict[str, str]]:
+    # Alek quit Dock of the Bay on 2026-10-05 — those shifts are dead. Purge
+    # them from any schedule file that still carries them (self-healing: the
+    # file is rewritten clean, so no manual cleanup is needed).
+    def _purge(entries):
+        kept = [e for e in entries
+                if "dock of the bay" not in e.get("summary", "").lower()]
+        return kept
+
+    def _heal(entries):
+        cleaned = _purge(entries)
+        if len(cleaned) != len(entries):
+            try:
+                with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
+                    json.dump(cleaned, f, indent=2)
+            except Exception:
+                pass
+        return cleaned
+
     if not os.path.exists(SCHEDULE_FILE):
         try:
             entries = [{"date": d, "start": s, "end": e, "summary": sum_}
                        for d, s, e, sum_ in _SCHEDULE_SEED]
             with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
                 json.dump(entries, f, indent=2)
-            return entries
+            return _purge(entries)
         except Exception:
             return []
     try:
         with open(SCHEDULE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            return _heal(json.load(f))
     except Exception:
         return []
 
@@ -119,6 +137,22 @@ def _live_entries(days: int = 2) -> Tuple[List[Dict[str, str]], bool]:
     except Exception as ex:
         add_log(f"Live calendar failed, using saved schedule: {ex}")
         return [], False
+
+
+def today_entries_prefer_live() -> Tuple[List[Dict[str, str]], bool]:
+    """Today's schedule entries, live Google Calendar first, local file fallback.
+
+    Dead entries (Dock of the Bay — Alek quit 2026-10-05) are purged from
+    both sources. Returns (entries, is_live).
+    """
+    live_entries, is_live = _live_entries(2)
+    if is_live:
+        today_s = datetime.now().strftime("%Y-%m-%d")
+        todays = [e for e in live_entries if e.get("date") == today_s]
+        return ([e for e in todays
+                 if "dock of the bay" not in e.get("summary", "").lower()],
+                True)
+    return _today_entries(), False
 
 
 def _weather_full() -> Optional[Dict[str, str]]:

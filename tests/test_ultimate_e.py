@@ -417,6 +417,73 @@ def t_default_vision_call_prefers_native():
     assert chain_touched == [], "native succeeded but chain was still walked"
 
 
+def _load_scheduler_stubbed():
+    """Import aria.scheduler with heavy deps stubbed (memory, speech)."""
+    import types
+    import threading
+    import queue
+    mem_stub = types.ModuleType("aria.memory")
+    mem_stub.DB_LOCK = threading.Lock()
+    mem_stub.DB_PATH = ":memory:"
+    sys.modules["aria.memory"] = mem_stub
+    speech_stub = types.ModuleType("aria.speech")
+    speech_stub.speak = lambda *a, **k: None
+    speech_stub._SPEECH_QUEUE = queue.Queue()
+    sys.modules["aria.speech"] = speech_stub
+    return importlib.import_module("aria.scheduler")
+
+
+def t_schedule_purges_dead_dock_entries():
+    import json as _json
+    import tempfile
+    sched = _load_scheduler_stubbed()
+    with tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False) as f:
+        _json.dump([
+            {"date": "2026-10-06", "start": "16:00", "end": "21:00",
+             "summary": "Dock of the Bay — Wait"},
+            {"date": "2026-11-20", "start": "19:30", "end": "23:00",
+             "summary": "Doja Cat — Tour Ma Vie"},
+        ], f)
+        path = f.name
+    old = sched.SCHEDULE_FILE
+    sched.SCHEDULE_FILE = path
+    try:
+        entries = sched._load_schedule()
+        assert all("dock of the bay" not in e["summary"].lower() for e in entries), entries
+        assert any("Doja Cat" in e["summary"] for e in entries), entries
+        on_disk = _json.load(open(path))
+        assert all("dock of the bay" not in e["summary"].lower() for e in on_disk), on_disk
+    finally:
+        sched.SCHEDULE_FILE = old
+        os.unlink(path)
+
+
+def t_today_entries_prefers_live_then_falls_back():
+    sched = _load_scheduler_stubbed()
+    from datetime import datetime as _dt
+    today_s = _dt.now().strftime("%Y-%m-%d")
+    sentinel = [{"date": "x", "summary": "local"}]
+    old_live = sched._live_entries
+    old_today = sched._today_entries
+    try:
+        # live works -> live entries win
+        sched._live_entries = lambda days=2: ([{"date": today_s, "summary": "Live Event"}], True)
+        entries, is_live = sched.today_entries_prefer_live()
+        assert is_live is True and entries[0]["summary"] == "Live Event", entries
+        # live down -> local fallback
+        sched._live_entries = lambda days=2: ([], False)
+        sched._today_entries = lambda: sentinel
+        entries, is_live = sched.today_entries_prefer_live()
+        assert is_live is False and entries is sentinel, entries
+        # live returns a dead Dock entry -> purged even from live
+        sched._live_entries = lambda days=2: ([{"date": today_s, "summary": "Dock of the Bay — Wait"}], True)
+        entries, is_live = sched.today_entries_prefer_live()
+        assert entries == [], entries
+    finally:
+        sched._live_entries = old_live
+        sched._today_entries = old_today
+
+
 def t_describe_camera_tool_wired():
     # "what do I look like?" needs a camera-describing tool: capture a frame,
     # base64 it, and route it through the vision hook.

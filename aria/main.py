@@ -634,7 +634,7 @@ def _greeting_text():
     h = datetime.now().hour
     part = "Good morning" if h < 12 else "Good afternoon" if h < 18 else "Good evening"
     base = "A.R.I.A. online."
-    entries = scheduler._today_entries()
+    entries, _is_live = scheduler.today_entries_prefer_live()
     if entries:
         return f"{part}. {base} Today: {scheduler._entries_line(entries)}."
     return f"{part}. {base} Nothing on the schedule today."
@@ -648,7 +648,7 @@ def _unique_greeting():
     """
     fallback = _greeting_text()
     try:
-        entries = scheduler._today_entries()
+        entries, _is_live = scheduler.today_entries_prefer_live()
         sched = scheduler._entries_line(entries) if entries else "nothing on the schedule"
         h = datetime.now().hour
         part = "morning" if h < 12 else "afternoon" if h < 18 else "evening"
