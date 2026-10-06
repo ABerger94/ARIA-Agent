@@ -334,7 +334,7 @@ def capture_screen_if_changed() -> Optional[bytes]:
     """Returns fresh bytes only if the screen changed since last check; otherwise None."""
     global _LAST_SCREEN_HASH
     data = capture_screen()
-    h = hashlib.md5(data).hexdigest()
+    h = hashlib.md5(data, usedforsecurity=False).hexdigest()
     if h == _LAST_SCREEN_HASH:
         add_log("Screen unchanged — skipping upload.")
         return None

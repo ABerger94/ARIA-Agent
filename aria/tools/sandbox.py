@@ -1,4 +1,3 @@
-import uuid
 """
 ARIA Execution Sandboxing, Validation, and Safety Guards.
 Provides Python subprocess isolation, stale target detection, duplicate blocking,
@@ -28,7 +27,8 @@ def call_signature(fn_name: str, args: dict) -> str:
         blob = json.dumps(args or {}, sort_keys=True, default=str)
     except Exception:
         blob = str(args)
-    return fn_name + ":" + hashlib.md5(blob.encode("utf-8")).hexdigest()
+    return fn_name + ":" + hashlib.md5(blob.encode("utf-8"),
+                                          usedforsecurity=False).hexdigest()
 
 
 def missing_required_args(fn_name: str, args: dict, decls: Optional[Dict[str, Any]] = None) -> List[str]:

@@ -8,14 +8,16 @@ import sys
 import os
 import subprocess
 
-# Relaunch under Python 3.9 if launched under an environment missing PyAudio/pygame
-_PY39 = r"C:\Users\Allen\AppData\Local\Programs\Python\Python39\python.exe"
-if os.path.exists(_PY39) and os.path.abspath(sys.executable).lower() != os.path.abspath(_PY39).lower():
+# Optional alternate Python used to relaunch when PyAudio/pygame are missing
+# (set ARIA_ALT_PYTHON to a full interpreter path). Defaults to no relaunch:
+# the hardcoded machine-specific path this replaced only worked on one PC.
+_ALT_PY = os.environ.get("ARIA_ALT_PYTHON", "")
+if _ALT_PY and os.path.exists(_ALT_PY) and os.path.abspath(sys.executable).lower() != os.path.abspath(_ALT_PY).lower():
     try:
         import pyaudio
         import pygame
     except ImportError:
-        subprocess.Popen([_PY39] + sys.argv)
+        subprocess.Popen([_ALT_PY] + sys.argv)
         sys.exit(0)
 
 # Ensure package directory is on path
@@ -28,35 +30,19 @@ from aria.main import main, start_all, handle_action
 
 if __name__ == "__main__":
     main()
-# Restored text input bar, typing mode, and console input - 1790568581.162417
 
-# Phone bridge fixed and restored - 1790568946.4906015
 
-# Gemini Live removed & updated - 1790569409.1373053
 
-# HUD update reload - 1790569713.8210106
 
-# Reload to apply git pull updates - 1790570509.8665287
 
-# Reload to apply git pull updates - 1790570595.6300135
 
-# Code updated from github - 1790571743.48976
 
-# Code pulled from github - 1790572397.087658
 
-# Directive paste & send enabled - 1790573064.434058
 
 # Code updated from GitHub (1790573379.6667154)
-# Voice pathway fixed & continuous wake listener restored - 1790576480.3857312
 
-# Theme changed to ocean - 1790577498.402519
-# Phone bridge speech playback fix (dual HTML5/WebAudio + silent wav unlock + direct TTS response) - 1790620634.6790798
-# STT phantom wake-word hallucination fix applied - 1790641499.1844068
 
 # Upgraded HUD: collapsible context tiles (waveforms, task chips, spotify) and cognitive avatar expressions
 
-# Tactical chatlog header and transcript overlap fix applied - 1791173834.8626678
 
-# Added interactive device/spotify volume slider and toggle to Spotify card - 1791176772.8293445
 
-# Fixed Spotify mood buttons (chill, focus, energy) curated playlists and DJ dispatch - 1791177341.1825964

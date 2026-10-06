@@ -13,7 +13,6 @@ import time
 import urllib.parse
 from typing import Optional, Tuple
 
-from aria.config import add_log
 from aria.memory import DB_LOCK, DB_PATH
 from aria.tools.builtins import tool_focus_window
 

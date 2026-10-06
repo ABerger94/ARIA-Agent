@@ -16,7 +16,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from typing import Optional, Callable, List, Tuple, Dict, Any
 
-from aria.config import WORKSPACE_DIR, ROOT_DIR, add_log
+from aria.config import ROOT_DIR, add_log
 from aria.memory import DB_LOCK, DB_PATH
 import aria.speech as speech
 

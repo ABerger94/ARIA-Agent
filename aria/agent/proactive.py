@@ -6,11 +6,9 @@ Manages autonomous ambient awareness, habit tracking, and memory distillation.
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
 import sqlite3
-import threading
 import time
 from datetime import datetime
 from typing import Optional, Callable, Dict, Any, Tuple, List

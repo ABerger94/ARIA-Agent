@@ -90,7 +90,8 @@ def _synth_tool_id(name: str, args: Dict[str, Any]) -> str:
     stable within the process and collision-safe enough for a turn)."""
     try:
         digest = hashlib.md5(
-            (name + json.dumps(args, sort_keys=True)).encode("utf-8")
+            (name + json.dumps(args, sort_keys=True)).encode("utf-8"),
+            usedforsecurity=False
         ).hexdigest()[:12]
     except Exception:
         digest = "000000000000"

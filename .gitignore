@@ -3,7 +3,6 @@ workspace/
 aria_keys.json
 credentials.json
 *.pem
-*.txt
 *.db
 *.sqlite
 *.sqlite3

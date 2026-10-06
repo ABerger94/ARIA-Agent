@@ -8,39 +8,34 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
 import os
 import py_compile
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Optional, Callable, List, Dict, Any, Tuple
+from typing import Optional, Callable, List, Dict, Any
 
 from aria.config import (
     ARIA_SOUL,
-    WORKSPACE_DIR, ROOT_DIR, SOUL_PATH,
+    SOUL_PATH,
     PROVIDER_CHAIN,
     add_log
 )
 from aria.memory import (
-    build_prompt_memories, spine_append, spine_unbroken_thread,
+    build_prompt_memories, spine_unbroken_thread,
     log_conversation
 )
 from aria.tools.schemas import (
-    TOOLS_DECLARATION, get_toolkit_declarations, get_toolkits_prompt_block
+    get_toolkit_declarations, get_toolkits_prompt_block
 )
 from aria.tools.dispatch import (
     execute_tool, reset_turn_state, set_turn_context,
-    get_last_tool_executed, get_loaded_toolkits, set_hud_hook,
-    auto_resolve_toolkits
+    get_loaded_toolkits, auto_resolve_toolkits
 )
 import aria.speech as speech
 from aria.agent.shortcuts import check_voice_shortcut
@@ -154,9 +149,6 @@ def _restart_process():
     add_log("Self-restart: relaunching with updated code...")
     try:
         py_exe = sys.executable
-        py39 = r"C:\Users\Allen\AppData\Local\Programs\Python\Python39\python.exe"
-        if os.path.exists(py39):
-            py_exe = py39
         subprocess.Popen([py_exe, _RUNNING_SCRIPT] + sys.argv[1:])
     except Exception as e:
         add_log(f"Self-restart relaunch failed: {e}")

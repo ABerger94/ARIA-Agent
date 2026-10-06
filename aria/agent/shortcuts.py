@@ -8,9 +8,8 @@ Spotify fast queries, and real-time system status.
 from __future__ import annotations
 
 import re
-import time
 from datetime import datetime
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple
 
 import psutil
 

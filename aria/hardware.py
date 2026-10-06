@@ -5,7 +5,6 @@ Manages physical USB serial connection to robot neck servos and microcontrollers
 
 from __future__ import annotations
 
-import logging
 import os
 import threading
 from typing import Optional, Tuple, Dict, Any

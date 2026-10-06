@@ -15,7 +15,7 @@ import subprocess
 import traceback
 from typing import Optional, Dict, Any, Tuple, Callable, List
 
-from aria.config import WORKSPACE_DIR, ROOT_DIR, add_log
+from aria.config import WORKSPACE_DIR, add_log
 from aria.memory import (
     incident_db_log, incident_db_list, spine_append, memory_save
 )

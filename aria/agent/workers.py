@@ -9,17 +9,15 @@ Runs background workers for:
 from __future__ import annotations
 
 import os
-import sys
 import time
-import shutil
 import threading
 import subprocess
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple
 
 import psutil
 
-from aria.config import WORKSPACE_DIR, ROOT_DIR, add_log
+from aria.config import WORKSPACE_DIR, add_log
 from aria.memory import (
     job_db_create, job_db_update, job_db_list, spine_append
 )

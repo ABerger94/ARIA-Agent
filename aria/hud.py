@@ -8,14 +8,13 @@ Live Audio Waveforms, Active Task Chips, and Spotify Telemetry.
 from __future__ import annotations
 
 import math
-import os
 import random
 import socket
 import textwrap
 import threading
 import time
 from datetime import datetime
-from typing import Optional, List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any
 
 import cv2
 import numpy as np
@@ -24,7 +23,7 @@ from aria.pixel_avatar import draw_pixel_aria, theme_colors, load_theme
 
 load_theme()  # restore Alek's saved HUD color theme
 
-from aria.config import PHONE_BRIDGE_PORT, GITHUB_USERNAME, GITHUB_TOKEN
+from aria.config import PHONE_BRIDGE_PORT
 from aria.vision import publish_face_frame
 import aria.vision as _vision  # module ref: read LATEST_CAMERA_FRAME live (see Optical PIP)
 import aria.ops as _ops  # OPS command-center data (no cv2 dep)

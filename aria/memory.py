@@ -11,9 +11,8 @@ import sqlite3
 import threading
 import urllib.request
 import urllib.error
-import atexit
 import numpy as np
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 from aria.config import (

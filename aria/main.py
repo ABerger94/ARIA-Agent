@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 from datetime import datetime
-from typing import Optional, List, Tuple, Callable
+from typing import Optional, List, Tuple
 
 import cv2
 import numpy as np
@@ -21,16 +21,14 @@ import speech_recognition as sr
 
 # Core package imports
 from aria.config import (
-    ROOT_DIR, WORKSPACE_DIR, SOUL_PATH,
-    PHONE_BRIDGE_PORT, BRIDGE_TOKEN, GITHUB_USERNAME, GITHUB_TOKEN,
-    ARIA_SOUL, get_setting, set_setting, add_log, register_log_listener
+    ROOT_DIR, GITHUB_USERNAME, GITHUB_TOKEN,
+    get_setting, set_setting, add_log, register_log_listener
 )
 import aria.memory as memory
 import aria.speech as speech
 import aria.hardware as hardware
 import aria.vision as vision
 import aria.scheduler as scheduler
-import aria.spotify as spotify
 import aria.hud as hud
 import aria.ops as _ops
 import aria.ops_screen as _ops_screen
@@ -39,7 +37,7 @@ import aria.bridge as bridge
 import aria.agent as agent
 from aria.agent.providers import provider_text
 from aria.tools.dispatch import (
-    execute_tool, set_log_hook, set_hud_hook, set_history_hook, set_spine_hook,
+    set_log_hook, set_hud_hook, set_history_hook, set_spine_hook,
 )
 
 # Global runtime flags

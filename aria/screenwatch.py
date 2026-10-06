@@ -39,9 +39,9 @@ import json
 import os
 import re
 import time
-from typing import Dict, Optional
+from typing import Dict
 
-from aria.config import add_log, redact
+from aria.config import add_log
 
 WATCHES_PATH = os.path.expanduser(os.path.join("~", "ARIA", "screen_watches.json"))
 MIN_INTERVAL_S = 60

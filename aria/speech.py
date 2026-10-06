@@ -6,7 +6,6 @@ faster-whisper and Google cloud STT, and speech interrupt control.
 
 from __future__ import annotations
 
-import asyncio
 import io
 import os
 import queue
@@ -269,7 +268,7 @@ class SpeechManager:
 
     def _init_edge_voice(self):
         try:
-            import edge_tts
+            pass
         except Exception as e:
             self.log("Voice: system fallback (edge-tts import broken)")
             return
