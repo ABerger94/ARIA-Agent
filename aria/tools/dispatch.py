@@ -314,6 +314,8 @@ from aria import routines as routines_mod
 from aria import screenwatch as screenwatch_mod
 from aria import persona as persona_mod
 from aria import pricecheck as pricecheck_mod
+from aria import inbox as inbox_mod
+from aria import memory as memory_mod
 from aria.tools import fileops as fileops_mod
 from aria.tools import winctl as winctl_mod
 from aria.tools import triage as triage_mod
@@ -326,10 +328,10 @@ def _init_default_registry():
         a.get("code", ""), log_callback=_LOG_HOOK
     )
     _REGISTRY["save_memory"] = lambda a: (
-        builtins.memory_save(a.get("category", "general"), a.get("key", ""), a.get("value", "")),
+        memory_mod.memory_save(a.get("category", "general"), a.get("key", ""), a.get("value", "")),
         f"Memory saved: {a.get('key')}"
     )[1]
-    _REGISTRY["search_memory"] = lambda a: builtins.memory_search_semantic(a.get("query", ""))
+    _REGISTRY["search_memory"] = lambda a: memory_mod.memory_search_semantic(a.get("query", ""))
     _REGISTRY["forget_memory"] = lambda a: builtins.memory_forget(a.get("query", ""))
     _REGISTRY["journal_write"] = lambda a: builtins.journal_write(a.get("entry", ""))
     _REGISTRY["gui_click"] = lambda a: builtins.tool_gui_click(int(a.get("x", 0)), int(a.get("y", 0)))
@@ -366,8 +368,12 @@ def _init_default_registry():
     _REGISTRY["bridge_token"] = lambda a: f"Your bridge token is: {BRIDGE_TOKEN}. Enter it on the phone bridge login page."
 
     # Inbox tools (phone bridge uploads)
-    _REGISTRY["inbox_list"] = lambda a: builtins.tool_inbox_list()
-    _REGISTRY["inbox_describe"] = lambda a: builtins.tool_inbox_describe(a.get("name", ""))
+    _REGISTRY["inbox_list"] = lambda a: (
+        "\n".join(f"- {f['name']} ({f['size_h']}, {f['when']})"
+                  for f in inbox_mod.list_inbox())
+        or "Inbox is empty."
+    )
+    _REGISTRY["inbox_describe"] = lambda a: inbox_mod.describe_inbox_image(a.get("name", ""))
     _REGISTRY["inbox_read"] = lambda a: builtins.tool_inbox_read(a.get("name", ""))
     _REGISTRY["manage_autonomous_goal"] = lambda a: builtins.tool_manage_autonomous_goal(
         action=a.get("action", "list"), title=a.get("title", ""), description=a.get("description", ""),

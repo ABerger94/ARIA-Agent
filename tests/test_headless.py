@@ -165,6 +165,7 @@ check("unknown tool returns error string", t_unknown)
 
 # 12. toolkit loading
 def t_toolkit():
+    dispatch.reset_toolkits()  # isolate from earlier tests that load toolkits
     r = dispatch.tool_load_toolkit("comms")
     assert "loaded" in r.lower() and "gmail" in r.lower(), r
     r2 = dispatch.tool_load_toolkit("nope")
