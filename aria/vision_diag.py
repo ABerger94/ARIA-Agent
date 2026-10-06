@@ -69,6 +69,66 @@ def load_config():
     return mod
 
 
+def check_main_loop(key):
+    """Reproduce the main agent loop's exact request path (text + tools,
+    then streaming) against Ollama Cloud. Prints which variant fails."""
+    import types
+    import importlib
+
+    # Stub the heavy aria/__init__; load only what the request path needs.
+    aria_stub = types.ModuleType("aria")
+    aria_stub.__path__ = [os.path.join(ROOT, "aria")]
+    sys.modules["aria"] = aria_stub
+    sys.modules["aria.config"] = load_config()
+    agent_stub = types.ModuleType("aria.agent")
+    agent_stub.__path__ = [os.path.join(ROOT, "aria", "agent")]
+    sys.modules["aria.agent"] = agent_stub
+    tools_stub = types.ModuleType("aria.tools")
+    tools_stub.__path__ = [os.path.join(ROOT, "aria", "tools")]
+    sys.modules["aria.tools"] = tools_stub
+
+    providers = importlib.import_module("aria.agent.providers")
+    spec = importlib.util.spec_from_file_location(
+        "schemas_main", os.path.join(ROOT, "aria", "tools", "schemas.py"))
+    schemas = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(schemas)
+
+    decls = [{"function_declarations":
+              [d for d in schemas.ALL_FUNCTION_DECLARATIONS
+               if d["name"] in ("describe_camera", "read_screen", "take_photo")]}]
+    contents = [{"role": "user", "parts": [{"text": "Reply with the word ok."}]}]
+    p = providers.OpenAICompatProvider(
+        "ollama_cloud", "https://ollama.com/v1", key, "gpt-oss:120b")
+
+    results = []
+    # [3a] plain text + tools, non-streaming
+    try:
+        data = p.call("You are a test.", contents, tool_decls=decls)
+        ok = bool(data and data.get("candidates"))
+        results.append(("text+tools", ok, p.last_error))
+    except Exception as e:
+        results.append(("text+tools", False, f"raised: {e}"))
+    # [3b] streaming (what the main loop actually uses)
+    try:
+        chunks = []
+        data = p.call("You are a test.", contents, tool_decls=decls,
+                       on_text_chunk=lambda c: chunks.append(c))
+        ok = bool(data and data.get("candidates"))
+        results.append(("text+tools+stream", ok, p.last_error))
+    except Exception as e:
+        results.append(("text+tools+stream", False, f"raised: {e}"))
+    for name, ok, err in results:
+        print(f"[3] main-loop probe ({name}): {'PASS' if ok else 'FAIL: ' + str(err)}")
+    return all(ok for _, ok, _ in results)
+    """Load aria/config.py directly (bypasses the heavy aria/__init__)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "aria_config_diag", os.path.join(HERE, "config.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def call(path, payload, key, timeout=60):
     req = urllib.request.Request(
         CLOUD + path,
@@ -139,13 +199,20 @@ def main():
     }, key, timeout=120)
     reply = (data.get("message") or {}).get("content", "") if data else ""
     print(f"[2] native image probe: {'PASS' if ok else 'FAIL: ' + str(err)}")
-    if ok:
-        print(f"    model replied: {reply[:80]!r}")
-        print("VERDICT: vision path is healthy — the failure is in ARIA's "
-              "wiring, not the API. Send this output to Milk.")
+    if not ok:
+        print("VERDICT: Ollama Cloud rejects the image payload for this model. "
+              "Send this output to Milk.")
+        return 1
+    print(f"    model replied: {reply[:80]!r}")
+
+    # 3. main-loop probes: exact request path the agent uses (text + tools,
+    # then streaming). A failure here = the conversational turn itself is
+    # broken, independent of vision.
+    if check_main_loop(key):
+        print("VERDICT: all probes healthy — API and wiring are fine. "
+              "If ARIA still fails, restart her and send Milk the new log lines.")
         return 0
-    print("VERDICT: Ollama Cloud rejects the image payload for this model. "
-          "Send this output to Milk.")
+    print("VERDICT: the main-loop request is rejected — send this output to Milk.")
     return 1
 
 
