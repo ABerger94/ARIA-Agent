@@ -806,6 +806,12 @@ def main():
             if hud.CURRENT_STATE == "excited" and time.time() >= EXCITED_UNTIL:
                 hud.set_hud_state(EXCITED_REVERT)
 
+            # Debounced notes autosave (atomic write; cheap no-op when clean)
+            try:
+                _ops_screen.notes_flush_if_due()
+            except Exception:
+                pass
+
             key_raw = cv2.waitKeyEx(30)
             if key_raw != -1:
                 key = key_raw & 0xFF

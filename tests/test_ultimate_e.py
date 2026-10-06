@@ -558,6 +558,92 @@ def t_system_prompt_forbids_empty_response():
         "system prompt must forbid empty model responses"
 
 
+def t_sentinel_trips_on_runaway_loop():
+    from aria.agent import sentinel
+    sentinel.set_enabled(True)
+    sentinel.reset()
+    t0 = 1000.0
+    trip = None
+    for i in range(6):
+        trip = sentinel.record("read_file", {"filename": "x.py"}, now=t0 + i)
+    assert trip is not None, "6 identical calls in 10s must trip"
+    assert trip["tool"] == "read_file" and trip["count"] == 6, trip
+
+
+def t_sentinel_allows_five_and_varied_calls():
+    from aria.agent import sentinel
+    sentinel.set_enabled(True)
+    sentinel.reset()
+    t0 = 2000.0
+    for i in range(5):
+        assert sentinel.record("read_file", {"filename": "x.py"}, now=t0 + i) is None
+    sentinel.reset()
+    for i in range(6):
+        assert sentinel.record("tool_%d" % i, {}, now=t0 + i) is None, \
+            "varied tools must not trip"
+    sentinel.reset()
+    for i in range(6):
+        assert sentinel.record("read_file", {"filename": f"{i}.py"}, now=t0 + i) is None, \
+            "varied args must not trip"
+
+
+def t_sentinel_window_expiry_and_cooldown():
+    from aria.agent import sentinel
+    sentinel.set_enabled(True)
+    sentinel.reset()
+    t0 = 3000.0
+    for i in range(5):
+        sentinel.record("read_file", {"a": 1}, now=t0 + i)
+    # 11s later the window has slid past: no trip
+    assert sentinel.record("read_file", {"a": 1}, now=t0 + 11) is None
+    sentinel.reset()
+    trip = None
+    for i in range(6):
+        trip = sentinel.record("read_file", {"a": 1}, now=t0 + i)
+    assert trip is not None
+    # cooldown: further identical calls do not re-trip
+    assert sentinel.record("read_file", {"a": 1}, now=t0 + 6) is None
+    st = sentinel.status()
+    assert st["tripped"] is True, st
+    assert sentinel._cooldown_until > t0 + 6, "cooldown must be armed"
+    sentinel.reset()
+    assert sentinel.trip_info() is None
+    # disabled: never trips
+    sentinel.set_enabled(False)
+    for i in range(10):
+        assert sentinel.record("read_file", {"a": 1}, now=t0 + i) is None
+    sentinel.set_enabled(True)
+
+
+def t_event_ring_bounded_and_meta():
+    import aria.config as cfg
+    cfg._EVENT_RING.clear()
+    for i in range(1100):
+        cfg.add_log(f"event {i}", meta={"duration_ms": i})
+    assert len(cfg._EVENT_RING) == 1000, len(cfg._EVENT_RING)
+    evts = cfg.recent_events(5)
+    assert len(evts) == 5 and evts[0][2] == "event 1095", evts[0]
+    assert evts[-1][3] == {"duration_ms": 1099}, evts[-1][3]
+    # level inference still works
+    cfg.add_log("something failed badly")
+    assert cfg.recent_events(1)[0][1] == "error"
+    cfg.add_log("all good", level="warn")
+    assert cfg.recent_events(1)[0][1] == "warn"
+    cfg._EVENT_RING.clear()
+
+
+def t_provider_stats_recorded():
+    import aria.agent.providers as prov
+    prov._record_call_stats("groq", 412, {"prompt_tokens": 340, "completion_tokens": 112})
+    st = prov.get_last_call_stats()
+    assert st == {"provider": "groq", "latency_ms": 412,
+                  "prompt_tokens": 340, "completion_tokens": 112}, st
+    # missing usage -> None tokens, not a crash
+    prov._record_call_stats("ollama_cloud", 100, None)
+    st = prov.get_last_call_stats()
+    assert st["prompt_tokens"] is None and st["completion_tokens"] is None, st
+
+
 for name, fn in sorted([(k, v) for k, v in list(globals().items()) if k.startswith("t_")]):
     check(name, fn)
 

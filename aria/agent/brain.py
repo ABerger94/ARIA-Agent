@@ -43,7 +43,8 @@ from aria.tools.dispatch import (
 )
 import aria.speech as speech
 from aria.agent.shortcuts import check_voice_shortcut
-from aria.agent.providers import provider_call, get_active_provider
+from aria.agent.providers import provider_call, get_active_provider, get_last_call_stats
+from aria.agent import sentinel
 import aria.hud as hud
 
 HISTORY_TURNS = 12
@@ -264,6 +265,7 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
 
     # 2. Append to history & memory logs
     prompt_label = "User (Screen View): " if is_screen else "User: "
+    sentinel.reset()  # new user turn: fresh runaway-loop window
     CONVERSATION_HISTORY.append({"role": "user", "parts": [{"text": f"{prompt_label}{user_prompt}"}]})
     _compact_conversation_history()
 
@@ -366,27 +368,72 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
             hud.draw_hud()
 
             response_parts = []
+            call_stats = get_last_call_stats()
+            tripped = None
+
+            def _timed_execute(fname, fargs, tag):
+                t0 = time.time()
+                res, _ = execute_tool(fname, fargs, preauthorized=preauthorized)
+                ms = int((time.time() - t0) * 1000)
+                meta = {"duration_ms": ms, "provider": call_stats.get("provider")}
+                if call_stats.get("prompt_tokens") is not None:
+                    meta["prompt_tokens"] = call_stats["prompt_tokens"]
+                if call_stats.get("completion_tokens") is not None:
+                    meta["completion_tokens"] = call_stats["completion_tokens"]
+                add_log(f"Tool{tag}: {fname}", meta=meta)
+                return res
+
+            def _check_sentinel(fname, fargs):
+                trip = sentinel.record(fname, fargs)
+                if trip:
+                    hud.set_hud_subtitle(
+                        f"LOOP GUARD: {fname} x{trip['count']} in "
+                        f"{trip['window_s']:.0f}s — paused")
+                    try:
+                        hud.draw_hud()
+                    except Exception:
+                        pass
+                    add_log(f"Loop guard tripped: {fname} x{trip['count']} in "
+                            f"{trip['window_s']:.0f}s — turn paused.",
+                            level="warn")
+                return trip
+
             all_parallel_safe = len(function_calls) > 1 and all(fc.get("name") in PARALLEL_SAFE_TOOLS for fc in function_calls)
 
             if all_parallel_safe:
-                def _run_one(fc):
-                    fname = fc["name"]
-                    fargs = fc.get("args", {})
-                    add_log(f"Tool (parallel): {fname}")
-                    res, _ = execute_tool(fname, fargs, preauthorized=preauthorized)
-                    return fname, res
+                # Sentinel is checked serially before parallel dispatch.
+                for fc in function_calls:
+                    tripped = _check_sentinel(fc["name"], fc.get("args", {})) or tripped
+                if not tripped:
+                    def _run_one(fc):
+                        fname = fc["name"]
+                        fargs = fc.get("args", {})
+                        res = _timed_execute(fname, fargs, " (parallel)")
+                        return fname, res
 
-                with ThreadPoolExecutor(max_workers=min(len(function_calls), 4)) as ex:
-                    outs = list(ex.map(_run_one, function_calls))
-                for fname, res in outs:
-                    response_parts.append({"functionResponse": {"name": fname, "response": {"output": res}}})
+                    with ThreadPoolExecutor(max_workers=min(len(function_calls), 4)) as ex:
+                        outs = list(ex.map(_run_one, function_calls))
+                    for fname, res in outs:
+                        response_parts.append({"functionResponse": {"name": fname, "response": {"output": res}}})
             else:
                 for fc in function_calls:
                     fname = fc["name"]
                     fargs = fc.get("args", {})
-                    add_log(f"Tool: {fname}")
-                    res, _ = execute_tool(fname, fargs, preauthorized=preauthorized)
+                    tripped = _check_sentinel(fname, fargs)
+                    if tripped:
+                        break
+                    res = _timed_execute(fname, fargs, "")
                     response_parts.append({"functionResponse": {"name": fname, "response": {"output": res}}})
+
+            if tripped:
+                say(f"I'm looping on {tripped['tool']} — paused. "
+                    f"Say continue to resume, or stop.")
+                hud.set_hud_state("idle")
+                try:
+                    hud.draw_hud()
+                except Exception:
+                    pass
+                return f"Loop guard tripped on {tripped['tool']}."
 
             contents.append({"role": "user", "parts": response_parts})
             hud.set_hud_state("thinking")

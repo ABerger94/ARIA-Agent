@@ -38,6 +38,7 @@ from aria import scheduler as _sched
 from aria import speech as _speech
 from aria import vision as _vision
 from aria.agent import workers as _workers
+from aria.agent import sentinel as _sentinel
 
 # ---------------------------------------------------------------- palette (BGR)
 ACCENT = (255, 132, 10)      # #0a84ff
@@ -216,36 +217,16 @@ def _arc(canvas, cx, cy, r: int, frac: float,
     _paste(canvas, np.asarray(img), int(cx - d // 2), int(cy - d // 2))
 
 # ---------------------------------------------------------------- log feed
+# The canonical event ring lives in aria.config (bounded at 1000 entries;
+# each entry is (hh:mm:ss, level, msg, meta)). This module only reads it.
 _LOG_LOCK = threading.Lock()
-_LOG_BUF: List[Tuple[str, str, str]] = []  # (hh:mm:ss, level, msg)
-_LOG_MAX = 500
 
-_ERR_RE = re.compile(r"error|fail|exception|traceback|fault", re.I)
-_WARN_RE = re.compile(r"\bwarn", re.I)
+# Row inspector: selected event, as (tab_name, view_index) or None.
+SELECTED_EVENT = None
 
 
-def _level_of(msg: str) -> str:
-    if _ERR_RE.search(msg):
-        return "error"
-    if _WARN_RE.search(msg):
-        return "warn"
-    return "info"
-
-
-def _on_log(msg: str) -> None:
-    ts = datetime.now().strftime("%H:%M:%S")
-    with _LOG_LOCK:
-        _LOG_BUF.append((ts, _level_of(msg), msg[:400]))
-        if len(_LOG_BUF) > _LOG_MAX:
-            del _LOG_BUF[:len(_LOG_BUF) - _LOG_MAX]
-
-
-_config.register_log_listener(_on_log)
-
-
-def recent_events(n: int = 20) -> List[Tuple[str, str, str]]:
-    with _LOG_LOCK:
-        return list(_LOG_BUF[-n:])
+def recent_events(n: int = 20):
+    return _config.recent_events(n)
 
 
 def _level_color(level: str):
@@ -290,10 +271,18 @@ def load_notes() -> None:
 
 
 def save_notes() -> None:
+    """Atomic write via temp file + os.replace: a crash mid-write can never
+    leave a half-written notes file."""
+    global _NOTES_DIRTY_AT
     try:
         os.makedirs(os.path.dirname(NOTES_PATH), exist_ok=True)
-        with open(NOTES_PATH, "w", encoding="utf-8") as f:
+        tmp = NOTES_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             f.write(NOTES_BUF)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, NOTES_PATH)
+        _NOTES_DIRTY_AT = 0.0
     except Exception:
         pass
 
@@ -328,20 +317,39 @@ def handle_wheel(up: bool) -> None:
 
 
 # ---------------------------------------------------------------- notes editing
+_NOTES_DIRTY_AT: float = 0.0
+_NOTES_DEBOUNCE_S = 0.3
+
+
+def _notes_mark_dirty() -> None:
+    global _NOTES_DIRTY_AT
+    _NOTES_DIRTY_AT = time.time()
+
+
+def notes_flush_if_due() -> None:
+    """Called from the main loop: atomically saves debounced keystrokes."""
+    global _NOTES_DIRTY_AT
+    if _NOTES_DIRTY_AT and time.time() - _NOTES_DIRTY_AT >= _NOTES_DEBOUNCE_S:
+        _NOTES_DIRTY_AT = 0.0
+        save_notes()
+
+
 def notes_type(ch: str) -> None:
     global NOTES_BUF
     NOTES_BUF += ch
+    _notes_mark_dirty()
 
 
 def notes_backspace() -> None:
     global NOTES_BUF
     NOTES_BUF = NOTES_BUF[:-1]
+    _notes_mark_dirty()
 
 
 def notes_newline() -> None:
     global NOTES_BUF
     NOTES_BUF += "\n"
-    save_notes()  # autosave
+    save_notes()  # autosave (immediate on newline)
 
 
 # ---------------------------------------------------------------- task rows
@@ -420,6 +428,7 @@ _CONTROLS = [
     ("sched", "SCHEDULER"),
     ("shot", "SCREENSHOT"),
     ("voice", "VOICE"),
+    ("sentinel", "LOOP GUARD"),
     ("script", "RUN SCRIPT"),
     ("close", "CLOSE OPS"),
     ("quit", "QUIT ARIA"),
@@ -431,6 +440,15 @@ def _ctl_sub(name: str) -> str:
         return "PAUSED" if _sched.is_paused() else "RUNNING"
     if name == "voice":
         return "ON" if getattr(_speech, "VOICE_ENABLED", True) else "OFF"
+    if name == "sentinel":
+        st = _sentinel.status()
+        if not st["enabled"]:
+            return "OFF"
+        if st["tripped"]:
+            return "TRIPPED"
+        if st["cooldown_s"] > 0:
+            return "COOLDOWN"
+        return "ARMED"
     return ""
 
 
@@ -439,6 +457,9 @@ def _ctl_active(name: str) -> bool:
         return not _sched.is_paused()
     if name == "voice":
         return bool(getattr(_speech, "VOICE_ENABLED", True))
+    if name == "sentinel":
+        st = _sentinel.status()
+        return bool(st["enabled"] and not st["tripped"])
     return False
 
 
@@ -462,6 +483,9 @@ def _ctl_action(name: str) -> None:
     elif name == "voice":
         _speech.VOICE_ENABLED = not getattr(_speech, "VOICE_ENABLED", True)
         _config.add_log(f"Voice {'enabled' if _speech.VOICE_ENABLED else 'muted'}.")
+    elif name == "sentinel":
+        on = _sentinel.set_enabled(not _sentinel.is_enabled())
+        _config.add_log(f"Loop guard {'armed' if on else 'disabled'}.")
     elif name == "script":
         SHOW_SCRIPTS = not SHOW_SCRIPTS
     elif name == "close":
@@ -532,23 +556,103 @@ def _panel_title(canvas, text, x, y) -> None:
     _txt(canvas, text, x, y, 11, FAINT, True)
 
 
+def _wrap_lines(s: str, width: int):
+    words = str(s).split()
+    lines, cur = [], ""
+    for w in words:
+        if len(cur) + len(w) + 1 > width:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = (cur + " " + w).strip()
+    if cur:
+        lines.append(cur)
+    return lines or [""]
+
+
+def _txt_json_line(canvas, line: str, x: int, y: int) -> None:
+    """Light JSON highlighting for the inspector: keys INFO, strings TEXT,
+    numbers WARN, punctuation DIM."""
+    cx, pos = x, 0
+    for m in re.finditer(r'"[^"]*"|[-+]?\d+(?:\.\d+)?|\S', line):
+        pre = line[pos:m.start()]
+        if pre:
+            _txt(canvas, pre, cx, y, 13, DIM)
+            cx += _tw(pre, 13)
+        tok = m.group(0)
+        if tok.startswith('"'):
+            col = INFO if line[m.end():m.end() + 1] == ":" else TEXT
+        elif re.fullmatch(r"[-+]?\d+(?:\.\d+)?", tok):
+            col = WARN
+        else:
+            col = DIM
+        _txt(canvas, tok, cx, y, 13, col)
+        cx += _tw(tok, 13)
+        pos = m.end()
+    rest = line[pos:]
+    if rest:
+        _txt(canvas, rest, cx, y, 13, DIM)
+
+
+def _draw_inspector(canvas, x0: int, y0: int, x1: int, y1: int, entry) -> None:
+    """Inline detail panel for a selected log row: full message + meta stats."""
+    ts, level, msg, meta = entry
+    meta = meta or {}
+    _rrect(canvas, x0, y0, x1, y1, 8, fill=PANEL2, outline=BORDER)
+    _txt(canvas, ts, x0 + 12, y0 + 10, 12, FAINT)
+    _txt(canvas, level.upper(), x0 + 92, y0 + 10, 12, _level_color(level), True)
+    bits = []
+    if meta.get("duration_ms") is not None:
+        bits.append(f"{meta['duration_ms']}ms")
+    pt, ct = meta.get("prompt_tokens"), meta.get("completion_tokens")
+    if pt is not None or ct is not None:
+        bits.append(f"in {pt if pt is not None else '?'} / out "
+                    f"{ct if ct is not None else '?'} tok")
+    if meta.get("provider"):
+        bits.append(f"via {meta['provider']}")
+    if bits:
+        _txt(canvas, "  ·  ".join(bits), x0 + 170, y0 + 10, 12, INFO)
+    width = max(20, int((x1 - x0 - 24) / 7.8))
+    body = msg if len(msg) <= 600 else msg[:600] + "…"
+    is_json = body.strip()[:1] in "{["
+    yy = y0 + 34
+    for line in _wrap_lines(body, width)[:4]:
+        if is_json:
+            _txt_json_line(canvas, line, x0 + 12, yy)
+        else:
+            _txt(canvas, line, x0 + 12, yy, 13, TEXT)
+        yy += 19
+
+
 # ---------------------------------------------------------------- panes
 def _pane_log(canvas, x0, y0, x1, y1, focused) -> None:
+    global SELECTED_EVENT
     _rrect(canvas, x0, y0, x1, y1, 10, fill=PANEL, outline=ACCENT if focused else BORDER)
     _panel_title(canvas, "LOG", x0 + 16, y0 + 14)
-    with _LOG_LOCK:
-        lines = list(_LOG_BUF)
+    lines = recent_events(500)
     row_h, top = 21, y0 + 40
-    vis = (y1 - top - 8) // row_h
+    # Reserve room at the bottom for the inspector when a row is selected.
+    insp_h = 118 if SELECTED_EVENT and SELECTED_EVENT[0] == "log" else 0
+    vis = (y1 - top - 8 - insp_h) // row_h
     max_scroll = max(0, len(lines) - vis)
     if SCROLL["log"] > max_scroll:
         SCROLL["log"] = max_scroll
     start = max(0, len(lines) - vis - SCROLL["log"])
     max_chars = min(80, max(20, int((x1 - x0 - 112) / 7.8)))
-    for i, (ts, level, msg) in enumerate(lines[start:start + vis]):
+    for i, (ts, level, msg, meta) in enumerate(lines[start:start + vis]):
         yy = top + i * row_h
+        if SELECTED_EVENT == ("log", start + i):
+            cv2.rectangle(canvas, (x0 + 6, yy - 3), (x1 - 6, yy + 17), _rgba(ACCENT, 40), -1)
         _txt(canvas, ts, x0 + 16, yy, 12, FAINT)
         _txt(canvas, _trunc(msg, max_chars), x0 + 92, yy, 13, _level_color(level))
+        _CLICKS.append((x0 + 6, yy - 4, x1 - 6, yy + 18, "logrow", start + i))
+    if SELECTED_EVENT and SELECTED_EVENT[0] == "log":
+        idx = SELECTED_EVENT[1]
+        if 0 <= idx < len(lines):
+            _draw_inspector(canvas, x0 + 10, y1 - insp_h - 4, x1 - 10,
+                            y1 - 8, lines[idx])
+        else:
+            SELECTED_EVENT = None
     if not lines:
         _txt(canvas, "No events yet.", x0 + 16, top, 13, FAINT)
 
@@ -784,7 +888,7 @@ def _draw_hub(canvas) -> None:
     max_scroll = max(0, len(events) - vis)
     if SCROLL["hub"] > max_scroll:
         SCROLL["hub"] = max_scroll
-    for i, (ts, level, msg) in enumerate(events[SCROLL["hub"]:SCROLL["hub"] + vis]):
+    for i, (ts, level, msg, _meta) in enumerate(events[SCROLL["hub"]:SCROLL["hub"] + vis]):
         yy = top + i * row_h
         _txt(canvas, ts, 36, yy, 12, FAINT)
         _txt(canvas, _trunc(msg, 110), 120, yy, 13, _level_color(level))
@@ -826,6 +930,9 @@ def handle_click(x: int, y: int) -> bool:
                 SELECTED_TASK = arg if SELECTED_TASK != arg else None
             elif kind == "hub":
                 set_tab(TABS.index("log"))
+            elif kind == "logrow":
+                global SELECTED_EVENT
+                SELECTED_EVENT = None if SELECTED_EVENT == ("log", arg) else ("log", arg)
             elif kind == "ctl":
                 _ctl_action(arg)
             elif kind == "script":

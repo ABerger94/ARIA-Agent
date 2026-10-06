@@ -56,6 +56,30 @@ def get_active_provider() -> str:
     return ACTIVE_PROVIDER
 
 
+# Per-call stats for the OPS inspector: latency + token usage of the most
+# recent successful model call. Usage comes from the provider's `usage`
+# block when present (OpenAI-compatible); absent means "not reported".
+LAST_CALL_STATS: Dict[str, Any] = {}
+
+
+def get_last_call_stats() -> Dict[str, Any]:
+    return dict(LAST_CALL_STATS)
+
+
+def _record_call_stats(provider_name: str, latency_ms: int, usage: Any) -> None:
+    try:
+        u = usage if isinstance(usage, dict) else {}
+        LAST_CALL_STATS.clear()
+        LAST_CALL_STATS.update({
+            "provider": provider_name,
+            "latency_ms": latency_ms,
+            "prompt_tokens": u.get("prompt_tokens"),
+            "completion_tokens": u.get("completion_tokens"),
+        })
+    except Exception:
+        pass
+
+
 # --------------------------------------------------------------------------
 # Translation: Gemini-native <-> OpenAI-compatible
 # --------------------------------------------------------------------------
@@ -276,9 +300,12 @@ class OpenAICompatProvider(Provider):
 
     def _parse_sse_stream(self, resp, on_text_chunk) -> List[Dict[str, Any]]:
         """Accumulate OpenAI SSE deltas -> parts. Feeds on_text_chunk per
-        chunk; a final on_text_chunk(None) signals stream completion."""
+        chunk; a final on_text_chunk(None) signals stream completion.
+        Captures the `usage` block when the provider sends one (usually in
+        the final chunk) into self._stream_usage."""
         text_buf = ""
         tc_accum: Dict[int, Dict[str, Any]] = {}
+        self._stream_usage = None
         try:
             for raw_line in resp:
                 line = raw_line.decode("utf-8", errors="replace").strip()
@@ -291,6 +318,8 @@ class OpenAICompatProvider(Provider):
                     chunk = json.loads(data_str)
                 except Exception:
                     continue
+                if isinstance(chunk.get("usage"), dict):
+                    self._stream_usage = chunk["usage"]
                 delta = ((chunk.get("choices") or [{}])[0]).get("delta", {}) or {}
                 c = delta.get("content")
                 if isinstance(c, str) and c:
@@ -351,6 +380,7 @@ class OpenAICompatProvider(Provider):
         url = self.base_url + "/chat/completions"
         body = json.dumps(payload).encode("utf-8")
 
+        t0 = time.time()
         try:
             if on_text_chunk:
                 payload["stream"] = True
@@ -358,10 +388,14 @@ class OpenAICompatProvider(Provider):
                 req = urllib.request.Request(url, data=sbody, headers=self._headers())
                 with urllib.request.urlopen(req, timeout=90) as resp:
                     parts = self._parse_sse_stream(resp, on_text_chunk)
+                _record_call_stats(self.name, int((time.time() - t0) * 1000),
+                                   getattr(self, "_stream_usage", None))
                 return {"candidates": [{"content": {"parts": parts}}]}
             req = urllib.request.Request(url, data=body, headers=self._headers())
             with urllib.request.urlopen(req, timeout=90) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
+            _record_call_stats(self.name, int((time.time() - t0) * 1000),
+                               data.get("usage"))
             return {"candidates": [{"content": {"parts": oai_response_to_parts(data)}}]}
         except urllib.error.HTTPError as e:
             try:

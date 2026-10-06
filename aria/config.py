@@ -5,7 +5,9 @@ Centralized paths, keys, pool rotation, secret redaction, and global parameters.
 
 import os
 import json
+import re
 import secrets
+from collections import deque
 from datetime import datetime
 
 # Root paths
@@ -225,20 +227,48 @@ SETTINGS_FILE = os.path.join(WORKSPACE_DIR, "settings.json")
 MOOD_FILE = os.path.join(WORKSPACE_DIR, "mood.json")
 
 
-# Global logging distribution
+# Global logging distribution -------------------------------------------------
+# Central bounded event ring: the single source of truth for the OPS HUB/Log
+# tabs. Entries are (timestamp, level, message, meta) where meta carries
+# optional per-event details (tool duration_ms, token counts, provider).
+_EVENT_RING: deque = deque(maxlen=1000)
+
+_ERR_RE = re.compile(r"error|fail|exception|traceback|fault", re.I)
+_WARN_RE = re.compile(r"\bwarn", re.I)
+
+
+def _level_of(msg: str) -> str:
+    if _ERR_RE.search(msg):
+        return "error"
+    if _WARN_RE.search(msg):
+        return "warn"
+    return "info"
+
+
 _LOG_LISTENERS = []
 
 def register_log_listener(fn):
     if fn not in _LOG_LISTENERS:
         _LOG_LISTENERS.append(fn)
 
-def add_log(msg: str):
+def add_log(msg: str, level: str = None, meta: dict = None):
     redacted = redact(str(msg))
+    ts = datetime.now().strftime("%H:%M:%S")
+    lvl = level or _level_of(redacted)
+    try:
+        _EVENT_RING.append((ts, lvl, redacted[:400], dict(meta or {})))
+    except Exception:
+        pass
     for listener in _LOG_LISTENERS:
         try:
             listener(redacted)
         except Exception:
             pass
+
+
+def recent_events(n: int = 20):
+    """Newest-first? No — oldest-first slice of the last n events."""
+    return list(_EVENT_RING)[-n:]
 
 
 DEFAULT_SOUL = """# Soul — A.R.I.A.
