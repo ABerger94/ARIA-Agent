@@ -459,6 +459,31 @@ def provider_call(
     return None
 
 
+def provider_text(system_instruction: str, user_text: str) -> str:
+    """One-shot plain-text call through the provider chain (no tools).
+
+    Used by tools that need a quick classification/read, e.g. triage.
+    Returns the concatenated response text, or a bracketed error string.
+    """
+    try:
+        contents = [{"role": "user", "parts": [{"text": str(user_text)}]}]
+        data = provider_call(system_instruction, contents, tool_decls=None)
+    except Exception as e:
+        add_log(f"provider_text: chain error: {e}")
+        return f"[provider_text error: {e}]"
+    if not data or not data.get("candidates"):
+        return "[No provider responded.]"
+    try:
+        parts = data["candidates"][0]["content"]["parts"]
+    except (KeyError, IndexError, TypeError) as e:
+        add_log(f"provider_text: unparseable response: {e}")
+        return "[Unparseable provider response.]"
+    text = "".join(
+        p.get("text", "") for p in parts if isinstance(p, dict)
+    ).strip()
+    return text or "[No text in provider response.]"
+
+
 def provider_ping() -> Dict[str, Dict[str, Any]]:
     """Dry-run: one 'pong' turn per configured provider. For --provider-ping."""
     results: Dict[str, Dict[str, Any]] = {}

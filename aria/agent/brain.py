@@ -277,6 +277,14 @@ def build_system_instruction(user_prompt: str) -> str:
     known_memories = build_prompt_memories(user_prompt or "")
     unbroken_thread = spine_unbroken_thread()
 
+    # ARIA ULTIMATE (Module 9) — persona overlay, appended when one is set.
+    try:
+        from aria import persona as _persona_mod
+        _persona_overlay = _persona_mod.persona_overlay()
+    except Exception:
+        _persona_overlay = None
+    _persona_block = f"\n## Persona overlay\n{_persona_overlay}\n" if _persona_overlay else ""
+
     return (
         f"Your soul - who you are. Embody it fully:\n{ARIA_SOUL}\n"
         "You are also an embodied autonomous desktop AI Agent OS running on the user's laptop. "
@@ -305,7 +313,21 @@ def build_system_instruction(user_prompt: str) -> str:
         "GitHub pushes, emails, window closing) execute immediately when you call "
         "them - use judgment, and every execution is recorded in the action log. "
         "open_app_or_url: resolve links from earlier in chat automatically. "
+        "Routines: named multi-step automations. routine_record_start(name) begins capturing your subsequent tool calls "
+        "as replayable steps ('watch me do this, save it as X'); routine_record_stop() saves it. run_routine(name, params_json) "
+        "replays with {{param}} substitution. Only suggest trust_routine when the user explicitly wants unattended replays. "
+        "Approval flow: under confirm-risky/confirm-all modes, destructive calls return [AWAITING_APPROVAL token=...] instead of "
+        "executing. Summarize the pending action in plain words, ask the user once, then call approve(token) or deny(token). "
+        "Never approve your own pending actions without the user saying yes. "
+        "File commander: file_organize(directory) sorts a folder into Images/Documents/Videos/Audio/Archives/Code/Other — "
+        "dry_run=true (default) only shows the plan; nothing moves until dry_run=false. file_find_advanced filters recursively; "
+        "file_duplicates reports content duplicates (never deletes); disk_usage shows the largest files. "
+        "Screen watcher: watch_screen(name, question, interval_s) re-asks a vision question on a schedule and alerts when the "
+        "answer meaningfully changes — use for builds, downloads, queues, anything being waited on. "
+        "Inbox triage: triage_email(limit) classifies recent Gmail into IMPORTANT / FYI / NOISE (needs gmail_setup first). "
+        "Personas: set_persona(concise|coach|none) switches a style overlay — the soul stays the soul, overlays only change tone. "
         f"{get_toolkits_prompt_block()}\n"
+        f"{_persona_block}"
         "You can call multiple independent tools in one turn — do it. "
         "Keep vocal responses concise, refined, and intelligent (1-2 sentences)."
     )

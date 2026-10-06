@@ -553,6 +553,61 @@ def _pane_log(canvas, x0, y0, x1, y1, focused) -> None:
         _txt(canvas, "No events yet.", x0 + 16, top, 13, FAINT)
 
 
+def _routine_rows():
+    """Read-only: saved routines from ~/ARIA/routines/*.json.
+
+    Uses stdlib json directly and deliberately does NOT import aria.routines
+    (keeps the lazy-import discipline / cycle-safe). Each row is
+    {"name", "steps", "trusted"}. Missing dir -> empty list.
+    """
+    rows = []
+    try:
+        rdir = os.path.expanduser(os.path.join("~", "ARIA", "routines"))
+        if not os.path.isdir(rdir):
+            return rows
+        for fname in sorted(os.listdir(rdir)):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(rdir, fname), encoding="utf-8") as _f:
+                    data = json.load(_f)
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            steps = data.get("steps")
+            rows.append({
+                "name": str(data.get("name") or fname[:-5]),
+                "steps": len(steps) if isinstance(steps, list) else 0,
+                "trusted": bool(data.get("trusted", False)),
+            })
+    except Exception:
+        return []
+    return rows
+
+
+def _draw_routines_section(canvas, x0, x1, y1, rows_bottom) -> None:
+    """Read-only Routines listing below the task rows in the Tasks pane."""
+    div = rows_bottom + 10
+    if div > y1 - 90:  # not enough room — skip rather than overlap the detail strip
+        return
+    cv2.line(canvas, (x0 + 16, div), (x1 - 16, div), BORDER_SOFT, 1)
+    _panel_title(canvas, "ROUTINES", x0 + 16, div + 10)
+    top_r = div + 34
+    routines = _routine_rows()
+    if not routines:
+        _txt(canvas, "no routines yet", x0 + 16, top_r, 12, FAINT)
+        return
+    # reserve the bottom strip (expanded-task detail is drawn at y1 - 56)
+    max_r = max(0, (y1 - 70 - top_r) // 20)
+    for i, r in enumerate(routines[:max_r]):
+        yy = top_r + i * 20
+        _txt(canvas, _trunc(r["name"], 28), x0 + 16, yy, 12, TEXT, True)
+        _txt(canvas, f"{r['steps']} steps", x0 + 240, yy, 12, DIM)
+        _txt(canvas, "trusted" if r["trusted"] else "untrusted",
+             x0 + 330, yy, 12, OK if r["trusted"] else FAINT)
+
+
 def _pane_tasks(canvas, x0, y0, x1, y1, focused) -> None:
     _rrect(canvas, x0, y0, x1, y1, 10, fill=PANEL, outline=ACCENT if focused else BORDER)
     _panel_title(canvas, "TASKS", x0 + 16, y0 + 14)
@@ -586,6 +641,12 @@ def _pane_tasks(canvas, x0, y0, x1, y1, focused) -> None:
         _CLICKS.append((x0 + 8, yy - 5, x1 - 8, yy + 19, "task", r["id"]))
     if not rows:
         _txt(canvas, "No scheduled tasks or jobs.", hx, top, 13, FAINT)
+    # ---- Routines section (read-only; Module 11) ----
+    try:
+        _draw_routines_section(canvas, x0, x1, y1,
+                               top + max(1, len(rows[start:start + vis])) * row_h)
+    except Exception:
+        pass
     # expanded detail
     if SELECTED_TASK:
         sel = next((r for r in rows if r["id"] == SELECTED_TASK), None)

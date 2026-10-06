@@ -760,6 +760,20 @@ def start_all():
 def main():
     """Main application loop with OpenCV HUD window."""
     global RUNNING
+
+    # ARIA ULTIMATE (Module 10): first-run wizard — checks the environment and
+    # API keys before subsystems boot. Fully skippable, never blocks startup.
+    try:
+        import os as _os
+        if not _os.path.exists(_os.path.expanduser("~/ARIA/.first_run_done")):
+            from aria import first_run
+            first_run.run_first_run_wizard()
+    except Exception as _fr_e:
+        try:
+            add_log(f"First-run wizard skipped: {_fr_e}")
+        except Exception:
+            pass
+
     start_all()
 
     win_name = "A.R.I.A. // OS"

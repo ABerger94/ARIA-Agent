@@ -104,6 +104,10 @@ KEYWORD_TOOLKIT_MAP: Dict[str, List[str]] = {
     "admin": [r"\bvolume\b", r"\bmute\b", r"\bunmute\b", r"\bbridge\b", r"\btokens?\b", r"\bkeys?\b"],
     "github": [r"\bgithub\b", r"\bgit\b", r"\brepos?(?:itory)?\b", r"\bcommit\b", r"\bpush\b"],
     "autonomy": [r"\bgoals?\b", r"\bautonom\w*", r"\bbackground\s*(?:task|job)?\b", r"\bworkers?\b", r"\bself[- ]heal\w*", r"\bdaemon\b", r"\bheartbeat\b", r"\bincidents?\b", r"\bhealth\s*(?:audit|check)?\b"],
+    "routines": [r"\broutine\b", r"\bautomate\b", r"\bevery time i\b"],
+    "files": [r"\bduplicates?\b", r"\bdisk\s*(?:usage|space)\b", r"\borganiz\w+\s+(?:my\s+)?(?:downl|docum|pict|phot|file|fold)"],
+    "monitor": [r"\bscreen\s*watch\b", r"\bwatch\b.{0,20}\bscreen\b"],
+    "user": [r"\bcustom\s*tools?\b"],
 }
 
 TOOL_TO_TOOLKIT: Dict[str, str] = {
@@ -205,6 +209,15 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
             False
         )
 
+    # 3b. ARIA ULTIMATE (Module 4) — approval gating. Destructive tools pause
+    # for user approval unless preauthorized (approve-token replay, trusted
+    # routine replay) or the mode is auto. Lazy import: no import cycle.
+    if not preauthorized:
+        from aria import approval as _approval_mod
+        _approval_mod.purge_expired()
+        if _approval_mod.needs_approval(fn_name, args or {}):
+            return _approval_mod.request_approval(fn_name, args or {}), False
+
     # 4. Risky tools safety & audit
     if fn_name in RISKY_TOOLS:
         nudge, _TURN_NUDGED = stale_target_check(
@@ -272,6 +285,16 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
     # 7. Truncation and caching
     r = truncate_output(str(r), MAX_TOOL_OUTPUT)
     _TURN_CALLS[sig] = r
+
+    # 7b. ARIA ULTIMATE (Module 1) — routine capture. Records the call into the
+    # open routine unless preauthorized (replays/approvals don't re-record).
+    # Never let capture break dispatch.
+    if not preauthorized:
+        try:
+            from aria import routines as _routines_mod
+            _routines_mod.maybe_capture(fn_name, args or {})
+        except Exception:
+            pass
     return r, False
 
 
@@ -283,6 +306,18 @@ from aria import vision
 from aria import hardware
 from aria import spotify
 from aria import hud
+
+# ARIA ULTIMATE modules — top-level imports are stdlib + aria.config only,
+# so these are cycle-safe here (same position as the scheduler/vision imports).
+from aria import approval as approval_mod
+from aria import routines as routines_mod
+from aria import screenwatch as screenwatch_mod
+from aria import persona as persona_mod
+from aria import pricecheck as pricecheck_mod
+from aria.tools import fileops as fileops_mod
+from aria.tools import winctl as winctl_mod
+from aria.tools import triage as triage_mod
+from aria.tools import usertools as usertools_mod
 
 
 def _init_default_registry():
@@ -396,6 +431,70 @@ def _init_default_registry():
     # HUD commands tools
     _REGISTRY["show_commands"] = lambda a: hud.tool_show_commands()
     _REGISTRY["hide_commands"] = lambda a: hud.tool_hide_commands()
+
+    # ---- ARIA ULTIMATE (Module 4): approval / safety layer ----
+    _REGISTRY["approve"] = lambda a: approval_mod.tool_approve(a.get("token", ""))
+    _REGISTRY["deny"] = lambda a: approval_mod.tool_deny(a.get("token", ""))
+    _REGISTRY["list_pending_approvals"] = lambda a: approval_mod.tool_list_pending_approvals()
+    _REGISTRY["set_approval_mode"] = lambda a: approval_mod.tool_set_approval_mode(a.get("mode", ""))
+    _REGISTRY["get_approval_mode"] = lambda a: approval_mod.tool_get_approval_mode()
+
+    # ---- ARIA ULTIMATE (Module 1): routines ----
+    _REGISTRY["routine_record_start"] = lambda a: routines_mod.tool_routine_record_start(a.get("name", ""))
+    _REGISTRY["routine_record_stop"] = lambda a: routines_mod.tool_routine_record_stop()
+    _REGISTRY["run_routine"] = lambda a: routines_mod.tool_run_routine(a.get("name", ""), a.get("params_json", "{}"))
+    _REGISTRY["list_routines"] = lambda a: routines_mod.tool_list_routines()
+    _REGISTRY["delete_routine"] = lambda a: routines_mod.tool_delete_routine(a.get("name", ""))
+    _REGISTRY["describe_routine"] = lambda a: routines_mod.tool_describe_routine(a.get("name", ""))
+    _REGISTRY["trust_routine"] = lambda a: routines_mod.tool_trust_routine(a.get("name", ""))
+    _REGISTRY["untrust_routine"] = lambda a: routines_mod.tool_untrust_routine(a.get("name", ""))
+
+    # ---- ARIA ULTIMATE (Module 2): file commander ----
+    _REGISTRY["file_organize"] = lambda a: fileops_mod.tool_file_organize(
+        a.get("directory", ""), bool(a.get("dry_run", True)))
+    _REGISTRY["file_find_advanced"] = lambda a: fileops_mod.tool_file_find_advanced(
+        a.get("directory", ""), a.get("pattern", ""), float(a.get("min_size_mb", 0) or 0),
+        float(a.get("max_age_days", 0) or 0), a.get("content_contains", ""))
+    _REGISTRY["file_duplicates"] = lambda a: fileops_mod.tool_file_duplicates(a.get("directory", ""))
+    _REGISTRY["disk_usage"] = lambda a: fileops_mod.tool_disk_usage(
+        a.get("directory", ""), int(a.get("top_n", 20) or 20))
+
+    # ---- ARIA ULTIMATE (Module 3): window/app control expansion ----
+    _REGISTRY["window_snap"] = lambda a: winctl_mod.tool_window_snap(a.get("title", ""), a.get("position", ""))
+    _REGISTRY["launch_app"] = lambda a: winctl_mod.tool_launch_app(a.get("name", ""))
+
+    # ---- ARIA ULTIMATE (Module 6): inbox triage ----
+    _REGISTRY["triage_email"] = lambda a: triage_mod.tool_triage_email(int(a.get("limit", 20) or 20))
+
+    # ---- ARIA ULTIMATE (Module 7): screen watcher ----
+    _REGISTRY["watch_screen"] = lambda a: screenwatch_mod.tool_watch_screen(
+        a.get("name", ""), a.get("question", ""), int(a.get("interval_s", 300) or 300))
+    _REGISTRY["unwatch_screen"] = lambda a: screenwatch_mod.tool_unwatch_screen(a.get("name", ""))
+    _REGISTRY["list_screen_watches"] = lambda a: screenwatch_mod.tool_list_screen_watches()
+
+    # ---- ARIA ULTIMATE (Module 9): persona engine ----
+    _REGISTRY["set_persona"] = lambda a: persona_mod.tool_set_persona(a.get("name", ""))
+    _REGISTRY["list_personas"] = lambda a: persona_mod.tool_list_personas()
+    _REGISTRY["get_persona"] = lambda a: persona_mod.tool_get_persona()
+
+    # ---- ARIA ULTIMATE (Module 8): user tool SDK ----
+    _REGISTRY["reload_user_tools"] = lambda a: usertools_mod.tool_reload_user_tools()
+
+    # ---- ARIA ULTIMATE: price-drop checker (Module 5 producer gap) ----
+    _REGISTRY["check_price_watches"] = lambda a: pricecheck_mod.tool_check_price_watches()
+
+    # ---- ARIA ULTIMATE: boot-time wiring (never break boot on failure) ----
+    try:
+        from aria.tools.schemas import register_dynamic_tool_declaration
+        usertools_mod.load_user_tools_into_registry()
+        for _uname, _uhandler, _udecl in usertools_mod.get_user_tools():
+            register_dynamic_tool_declaration(_uname, _udecl, toolkit="user")
+    except Exception:
+        pass
+    try:
+        pricecheck_mod.ensure_pricecheck_task()
+    except Exception:
+        pass
 
 
 _init_default_registry()

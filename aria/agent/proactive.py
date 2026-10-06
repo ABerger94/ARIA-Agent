@@ -91,6 +91,64 @@ def proactive_say(nudge_type: str, text: str, speak_fn: Callable[[str], None],
     return False
 
 
+# --- Module 5 consumer: event-queue processing ---
+def _event_nudge_text(event_type: str, payload: Dict[str, Any]) -> Optional[str]:
+    """Human-readable one-liner per event type. None = swallow silently."""
+    p = payload or {}
+    if event_type == "reminder_fired":
+        return str(p.get("prompt", "Your reminder."))
+    if event_type == "task_fired":
+        prompt = str(p.get("prompt", "")).strip()
+        return f"Scheduled task is running: {prompt}." if prompt else "A scheduled task just ran."
+    if event_type == "inbox_new_file":
+        return f"New file arrived in your inbox: {p.get('filename', 'a file')}."
+    if event_type == "price_drop":
+        label = str(p.get("label", "an item"))
+        new = p.get("new_price", "?")
+        return f"Price drop: {label} is now {new}."
+    if event_type == "calendar_soon":
+        return str(p.get("summary", "Something on your calendar is coming up."))
+    if event_type == "screen_watch_triggered":
+        name = str(p.get("name", "a screen watch"))
+        return f"Screen watch '{name}' detected a change."
+    if event_type == "approval_requested":
+        return "An action needs your approval. Check the approval prompt."
+    return None
+
+
+def process_event_queue(speak_fn: Callable[[str], None],
+                        is_busy_fn: Callable[[], bool]) -> int:
+    """Drain the Module 5 event bus and route each event through the EXISTING
+    ``proactive_say`` decline-learning/suppression logic. NEVER bypasses
+    ``proactive_say``. Returns the number of events spoken."""
+    try:
+        from aria.events import drain
+    except Exception as e:
+        add_log(f"Heartbeat: event bus import failed: {e}")
+        return 0
+    spoken = 0
+    try:
+        events = drain()
+    except Exception as e:
+        add_log(f"Heartbeat: event drain failed: {e}")
+        return 0
+    for ev in events:
+        try:
+            event_type = ev.get("type", "")
+            text = _event_nudge_text(event_type, ev.get("payload", {}))
+            if not text:
+                continue
+            # Route through the existing decline-learning/suppression gate.
+            if proactive_say(f"event_{event_type}", text, speak_fn,
+                             is_busy_fn, lambda: False):
+                spoken += 1
+        except Exception as e:
+            add_log(f"Heartbeat: event processing failed: {e}")
+    if spoken:
+        add_log(f"Heartbeat: spoke {spoken} event-bus notification(s)")
+    return spoken
+
+
 def _get_user_name() -> str:
     try:
         with DB_LOCK:
@@ -246,6 +304,10 @@ def proactive_heartbeat_loop(speak_fn: Callable[[str], None],
             for notice in job_notices:
                 proactive_say("job_complete", notice,
                               speak_fn, is_busy_fn, is_whisper_fn)
+
+            # 5b. Module 5 Event Bus: drain and route through proactive_say
+            # (decline-learning/suppression applies; never bypassed).
+            process_event_queue(speak_fn, is_busy_fn)
 
             # 6. Autonomous Goal Engine (evaluates when user is idle > 45s)
             idle_seconds = now - get_last_activity_fn()

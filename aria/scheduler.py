@@ -387,6 +387,11 @@ def scheduler_loop(is_busy_fn: Optional[Callable[[], bool]] = None,
                         conn.close()
                     _bump_sched_count(-1)
                     add_log(f"Reminder #{tid} firing")
+                    try:  # Module 5 event bus: never break scheduling
+                        from aria.events import emit_reminder_fired
+                        emit_reminder_fired(tid, prompt)
+                    except Exception:
+                        pass
                     busy = is_busy_fn() if is_busy_fn else False
                     if not busy:
                         speech.speak(prompt)
@@ -394,6 +399,32 @@ def scheduler_loop(is_busy_fn: Optional[Callable[[], bool]] = None,
                         speech._SPEECH_QUEUE.put(prompt)
                 elif kind == "brief" or _BRIEF_PROMPT_RE.search(prompt or ""):
                     _fire_brief(tid, interval_s, is_busy_fn)
+                elif kind == "screenwatch":
+                    # ARIA ULTIMATE (Module 7): reschedule, then run the check.
+                    nxt = datetime.now() + timedelta(seconds=interval_s or 300)
+                    with DB_LOCK:
+                        conn = sqlite3.connect(DB_PATH)
+                        conn.execute("UPDATE scheduled_tasks SET next_run = ? WHERE id = ?",
+                                     (nxt.strftime("%Y-%m-%d %H:%M:%S"), tid))
+                        conn.commit(); conn.close()
+                    try:
+                        from aria.screenwatch import check_watch
+                        check_watch(prompt or "")
+                    except Exception as _sw_err:
+                        add_log(f"Screenwatch check failed: {_sw_err}")
+                elif kind == "pricecheck":
+                    # ARIA ULTIMATE: hourly price-watch check pass.
+                    nxt = datetime.now() + timedelta(seconds=interval_s or 3600)
+                    with DB_LOCK:
+                        conn = sqlite3.connect(DB_PATH)
+                        conn.execute("UPDATE scheduled_tasks SET next_run = ? WHERE id = ?",
+                                     (nxt.strftime("%Y-%m-%d %H:%M:%S"), tid))
+                        conn.commit(); conn.close()
+                    try:
+                        from aria import pricecheck as _pricecheck_mod
+                        add_log(_pricecheck_mod.check_price_watches())
+                    except Exception as _pc_err:
+                        add_log(f"Pricecheck failed: {_pc_err}")
                 else:
                     nxt = datetime.now() + timedelta(seconds=interval_s or 3600)
                     with DB_LOCK:
@@ -403,10 +434,23 @@ def scheduler_loop(is_busy_fn: Optional[Callable[[], bool]] = None,
                         conn.commit()
                         conn.close()
                     add_log(f"Recurring task #{tid} firing")
+                    try:  # Module 5 event bus: never break scheduling
+                        from aria.events import emit_task_fired
+                        emit_task_fired(tid, "interval", prompt, interval_s)
+                    except Exception:
+                        pass
                     if run_agent_fn:
                         threading.Thread(target=run_agent_fn,
                                          args=(f"[Scheduled task] {prompt}",),
                                          daemon=True).start()
+
+            # ARIA ULTIMATE (Module 5): inbox poller — emits inbox_new_file
+            # events for new inbox arrivals. Never break scheduling.
+            try:
+                from aria.events import poll_inbox
+                poll_inbox()
+            except Exception:
+                pass
         except Exception as e:
             add_log(f"Scheduler err: {e}")
         time.sleep(10)
