@@ -39,6 +39,8 @@ _KEY_PROMPTS = [
     ("OLLAMA_API_KEY", "Ollama Cloud API key (main brain — required, free tier at ollama.com)"),
     ("GROQ_API_KEY", "Groq API key (fallback provider, optional)"),
     ("OPENROUTER_API_KEY", "OpenRouter API key (fallback provider, optional)"),
+    ("MISTRAL_API_KEY", "Mistral API key (fallback provider, optional)"),
+    ("GEMINI_API_KEY", "Gemini API key (Google AI Studio — v1's original provider; optional)"),
     ("GITHUB_TOKEN", "GitHub token (code pushes, optional)"),
 ]
 

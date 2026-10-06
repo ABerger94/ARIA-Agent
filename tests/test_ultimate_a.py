@@ -26,8 +26,10 @@ import traceback
 _TMPHOME = tempfile.mkdtemp(prefix="aria_ultimate_a_")
 os.environ["HOME"] = _TMPHOME
 
-# ---- stub pattern from tests/test_headless.py (aria-ultimate path) ----
-PKG = "/home/hatch/workspace/aria-ultimate/aria"
+# ---- stub pattern from tests/test_headless.py (repo-relative path) ----
+# Resolve the aria package from this test file's location so the suite
+# works no matter where the repo is checked out.
+PKG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "aria")
 pkg = types.ModuleType("aria")
 pkg.__path__ = [PKG]
 sys.modules["aria"] = pkg
@@ -309,7 +311,7 @@ check("approval: trusted routine bypasses, untrusted does not",
 
 
 def t_hook_snippets_documented():
-    src_dir = "/home/hatch/workspace/aria-ultimate/aria"
+    src_dir = PKG  # repo-relative (see top of file)
     with open(os.path.join(src_dir, "approval.py"), encoding="utf-8") as f:
         a_src = f.read()
     with open(os.path.join(src_dir, "routines.py"), encoding="utf-8") as f:

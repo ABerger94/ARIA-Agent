@@ -1,6 +1,6 @@
 """
 ARIA provider fallback chain (default order: ollama_cloud -> groq -> openrouter
--> mistral, configurable via PROVIDER_CHAIN).
+-> mistral -> gemini, configurable via PROVIDER_CHAIN).
 
 Every provider normalizes to the internal parts-dict shape:
     {"candidates": [{"content": {"parts": [...]}}]}
@@ -28,6 +28,7 @@ from aria.config import (
     GROQ_API_KEY, GROQ_MODEL,
     OPENROUTER_API_KEY, OPENROUTER_MODEL, MISTRAL_API_KEY, MISTRAL_MODEL,
     OLLAMA_CLOUD_API_KEY, OLLAMA_CLOUD_MODEL,
+    GEMINI_API_KEY, GEMINI_MODEL,
     OLLAMA_VISION_MODEL, OLLAMA_CODE_MODEL,
     PROVIDER_CHAIN, KEY_QUARANTINE_DURATION_S,
     quarantine_key, key_is_quarantined, key_mask, add_log,
@@ -453,6 +454,9 @@ def _build_chain() -> List[Provider]:
         "ollama_cloud": OpenAICompatProvider(
             "ollama_cloud", "https://ollama.com/v1",
             OLLAMA_CLOUD_API_KEY, OLLAMA_CLOUD_MODEL),
+        "gemini": OpenAICompatProvider(
+            "gemini", "https://generativelanguage.googleapis.com/v1beta/openai",
+            GEMINI_API_KEY, GEMINI_MODEL),
     }
     return [registry[n] for n in PROVIDER_CHAIN if n in registry]
 

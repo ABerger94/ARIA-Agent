@@ -143,3 +143,11 @@ Chain order itself is configurable (`PROVIDER_CHAIN` list in config); any provid
 4. **Recovery:** auto re-probe to Gemini every 15 min (spec default), or sticky fallback until restart?
 5. **Keys:** env vars, `workspace/settings.json`, or both (spec default: env first, settings.json fallback, matching existing pattern)?
 6. Does this spec go into the repo as `docs/PROVIDER_FALLBACK_SPEC.md`, or stay out until Phase 1 ships?
+
+## Phase 3c (2026-10-06, Boo): Gemini rejoins the chain
+- Gemini is back as a 5th chain leg via Google's OpenAI-compatible endpoint
+  (`https://generativelanguage.googleapis.com/v1beta/openai`), so the
+  pre-existing `GEMINI_API_KEY` setups work again. Default chain is now
+  `ollama_cloud -> groq -> openrouter -> mistral -> gemini`; `GEMINI_MODEL`
+  defaults to `gemini-3.8-flash` (v1's original model). Reorder any time via
+  `PROVIDER_CHAIN`. First-run wizard prompts for `GEMINI_API_KEY`.

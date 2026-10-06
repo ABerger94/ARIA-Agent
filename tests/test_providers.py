@@ -128,7 +128,7 @@ def test_images_dropped():
 def test_chain_order():
     chain = _build_chain()
     names = [p.name for p in chain]
-    assert names == ["ollama_cloud", "groq", "openrouter", "mistral"], names
+    assert names == ["ollama_cloud", "groq", "openrouter", "mistral", "gemini"], names
     print("ok chain_order", names)
 
 
