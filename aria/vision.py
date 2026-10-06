@@ -431,6 +431,31 @@ def tool_read_screen(question: str = "") -> str:
         return f"[Screen reading unavailable: {e}]"
 
 
+def tool_describe_camera(question: str = "") -> str:
+    """Look through the webcam right now and describe what it sees."""
+    try:
+        data = capture_webcam()
+    except Exception as e:
+        return f"[Camera capture failed: {e}]"
+    if not data:
+        return "[Camera not available right now.]"
+    q = question or "Describe what you see in detail."
+    b64 = base64.b64encode(data).decode("utf-8")
+    contents = [{"role": "user", "parts": [
+        {"text": q},
+        {"inline_data": {"mime_type": "image/jpeg", "data": b64}}
+    ]}]
+    sys_prompt = ("You are ARIA, a robot describing what your own camera eyes see. "
+                  "Be concise and concrete.")
+    if _VISION_TEXT_CALL:
+        return _VISION_TEXT_CALL(sys_prompt, contents)
+    try:
+        from aria.agent.brain import gemini_text
+        return gemini_text(sys_prompt, contents)
+    except Exception as e:
+        return f"[Camera description unavailable: {e}]"
+
+
 def tool_face_tracking(on: Any) -> str:
     """Toggle continuous camera face tracking to control physical neck servos."""
     global FACE_TRACKING

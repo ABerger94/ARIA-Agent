@@ -162,6 +162,10 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
     {   'description': 'Saves a webcam photo to the workspace photos folder and returns its path.',
         'name': 'take_photo',
         'parameters': {'properties': {'name': {'type': 'STRING'}}, 'type': 'OBJECT'}},
+    {   'description': 'Looks through the webcam right now and describes what it sees — faces, objects, the room. '
+                       'Use for "what do I look like?" and anything about the camera view.',
+        'name': 'describe_camera',
+        'parameters': {'properties': {'question': {'type': 'STRING'}}, 'type': 'OBJECT'}},
     {   'description': 'Searches Desktop, Documents, Downloads (and the E: drive) for a file by name fragment, with an '
                        'optional extension filter.',
         'name': 'find_file',
@@ -434,8 +438,8 @@ TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persiste
                                   'calendar_setup',
                                   'check_calendar']},
     'spotify': {'summary': 'music: Spotify control, DJ mode, media keys', 'tools': ['spotify', 'dj', 'media_key']},
-    'vision': {   'summary': 'webcam photos, face tracking, neck servos',
-                  'tools': ['take_photo', 'face_tracking', 'move_head_servos', 'drive_wheels', 'body_stop']},
+    'vision': {   'summary': 'webcam photos, camera descriptions, face tracking, neck servos',
+                  'tools': ['take_photo', 'describe_camera', 'face_tracking', 'move_head_servos', 'drive_wheels', 'body_stop']},
     'windows': {   'summary': 'list, focus, minimize, close, snap windows; launch apps',
                    'tools': ['list_windows', 'focus_window', 'minimize_window', 'close_window', 'window_snap', 'launch_app']}}
 
@@ -465,6 +469,7 @@ COMMAND_GUIDE = [   ('Memory', 'save_memory', 'remember my Doja playlist is spot
     ('Seeing', 'take_screenshot', 'take a screenshot'),
     ('Seeing', 'read_screen', 'what does this error say?'),
     ('Seeing', 'take_photo', 'take a photo'),
+    ('Seeing', 'describe_camera', 'what do I look like?'),
     ('Time', 'set_timer', 'set a 20 minute timer'),
     ('Time', 'set_reminder', 'remind me at 6pm to take the trash out'),
     ('Time', 'set_recurring_task', 'remind me every weekday at 8am to check tips'),

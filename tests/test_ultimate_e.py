@@ -417,6 +417,59 @@ def t_default_vision_call_prefers_native():
     assert chain_touched == [], "native succeeded but chain was still walked"
 
 
+def t_describe_camera_tool_wired():
+    # "what do I look like?" needs a camera-describing tool: capture a frame,
+    # base64 it, and route it through the vision hook.
+    try:
+        vision_mod = importlib.import_module("aria.vision")
+    except Exception as e:
+        print(f"SKIP t_describe_camera_tool_wired: {e}")
+        return
+    old_cap = vision_mod.capture_webcam
+    old_hook = vision_mod._VISION_TEXT_CALL
+    seen = {}
+    vision_mod.capture_webcam = lambda: b"\xff\xd8fakejpeg"
+
+    def fake_call(sys_prompt, contents):
+        seen["sys"] = sys_prompt
+        seen["contents"] = contents
+        return "a person wearing a red shirt"
+
+    vision_mod._VISION_TEXT_CALL = fake_call
+    try:
+        out = vision_mod.tool_describe_camera("what do I look like?")
+    finally:
+        vision_mod.capture_webcam = old_cap
+        vision_mod._VISION_TEXT_CALL = old_hook
+    assert out == "a person wearing a red shirt", out
+    parts = seen["contents"][0]["parts"]
+    assert parts[0]["text"] == "what do I look like?", parts[0]
+    assert parts[1]["inline_data"]["mime_type"] == "image/jpeg"
+    import base64 as _b64
+    assert _b64.b64decode(parts[1]["inline_data"]["data"]) == b"\xff\xd8fakejpeg"
+    assert "camera eyes" in seen["sys"]
+
+
+def t_describe_camera_schema_and_dispatch():
+    # schemas.py is dependency-free: load it directly. dispatch.py needs the
+    # full runtime, so verify its registration by source inspection.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "schemas_diag",
+        os.path.join(PKG, "tools", "schemas.py"))
+    schemas = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(schemas)
+    names = [d["name"] for d in schemas.ALL_FUNCTION_DECLARATIONS]
+    assert "describe_camera" in names, "schema missing describe_camera"
+    decl = next(d for d in schemas.ALL_FUNCTION_DECLARATIONS if d["name"] == "describe_camera")
+    assert "webcam" in decl["description"].lower(), decl["description"]
+    assert "describe_camera" in schemas.TOOLKITS["vision"]["tools"], "vision toolkit missing it"
+    with open(os.path.join(PKG, "tools", "dispatch.py"), encoding="utf-8") as f:
+        src = f.read()
+    assert '_REGISTRY["describe_camera"]' in src, "dispatch missing describe_camera"
+    assert "tool_describe_camera" in src
+
+
 for name, fn in sorted([(k, v) for k, v in list(globals().items()) if k.startswith("t_")]):
     check(name, fn)
 

@@ -51,7 +51,7 @@ CONVERSATION_HISTORY: List[Dict[str, Any]] = []
 
 PARALLEL_SAFE_TOOLS = {
     "fetch_url", "web_search", "read_file", "find_file",
-    "search_memory", "read_screen", "list_workspace", "list_windows",
+    "search_memory", "read_screen", "describe_camera", "list_workspace", "list_windows",
     "mtg_card", "list_price_watches", "read_notes", "clipboard_read"
 }
 

@@ -415,6 +415,7 @@ def _init_default_registry():
 
     # Vision tools
     _REGISTRY["take_photo"] = lambda a: vision.tool_take_photo(a.get("name", ""))
+    _REGISTRY["describe_camera"] = lambda a: vision.tool_describe_camera(a.get("question", ""))
     _REGISTRY["read_screen"] = lambda a: vision.tool_read_screen(a.get("question", ""))
     _REGISTRY["take_screenshot"] = lambda a: vision.tool_screenshot(a.get("name", ""))
     _REGISTRY["face_tracking"] = lambda a: vision.tool_face_tracking(a.get("on", True))
