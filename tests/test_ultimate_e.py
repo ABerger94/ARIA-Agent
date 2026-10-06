@@ -140,10 +140,13 @@ def t_override_used_and_restored():
 
 def t_override_fails_falls_back_no_raise():
     p = StubProvider("ollama_cloud", "gpt-oss:120b", fail_on={"gemma4:31b-cloud"})
-    data, fb = providers._attempt_provider_call(p, "s", [], None, None, "gemma4:31b-cloud")
-    assert fb is True
-    assert p.seen == ["gemma4:31b-cloud", "gpt-oss:120b"], p.seen
-    assert p.model == "gpt-oss:120b", "model not restored after fallback"
+    try:
+        data, fb = providers._attempt_provider_call(p, "s", [], None, None, "gemma4:31b-cloud")
+        assert fb is True
+        assert p.seen == ["gemma4:31b-cloud", "gpt-oss:120b"], p.seen
+        assert p.model == "gpt-oss:120b", "model not restored after fallback"
+    finally:
+        providers.clear_role_model_cooldown()  # don't leak the parked tag
 
 
 def t_override_none_result_falls_back():
@@ -159,20 +162,26 @@ def t_override_none_result_falls_back():
 
     p = NoneThenOk("ollama_cloud", "gpt-oss:120b")
     p.last_error = None
-    data, fb = providers._attempt_provider_call(p, "s", [], None, None, "gemma4:31b-cloud")
-    assert fb is True
-    assert p.seen == ["gemma4:31b-cloud", "gpt-oss:120b"], p.seen
-    assert data["candidates"][0]["content"]["parts"][0]["text"] == "ok"
-    assert p.model == "gpt-oss:120b"
+    try:
+        data, fb = providers._attempt_provider_call(p, "s", [], None, None, "gemma4:31b-cloud")
+        assert fb is True
+        assert p.seen == ["gemma4:31b-cloud", "gpt-oss:120b"], p.seen
+        assert data["candidates"][0]["content"]["parts"][0]["text"] == "ok"
+        assert p.model == "gpt-oss:120b"
+    finally:
+        providers.clear_role_model_cooldown()  # don't leak the parked tag
 
 
 def t_both_fail_returns_none_and_restores():
     # Both role and default fail -> (None, True), no raise; model restored.
     p = StubProvider("ollama_cloud", "gpt-oss:120b",
                      fail_on={"gemma4:31b-cloud", "gpt-oss:120b"})
-    data, fb = providers._attempt_provider_call(p, "s", [], None, None, "gemma4:31b-cloud")
-    assert data is None
-    assert fb is True
+    try:
+        data, fb = providers._attempt_provider_call(p, "s", [], None, None, "gemma4:31b-cloud")
+        assert data is None
+        assert fb is True
+    finally:
+        providers.clear_role_model_cooldown()  # don't leak the parked tag
     assert p.model == "gpt-oss:120b", "model not restored after double failure"
 
 
@@ -677,7 +686,9 @@ def _load_brain_stubbed():
     _mod("aria.speech", speak=lambda *a, **k: None)
     _mod("aria.agent.shortcuts", check_voice_shortcut=lambda *a, **k: None)
     _mod("aria.agent.providers", provider_call=lambda *a, **k: None,
-         get_active_provider=lambda: "none", get_last_call_stats=lambda: {})
+         get_active_provider=lambda: "none", get_last_call_stats=lambda: {},
+         resolve_role_model=lambda role: None,
+         chain_all_quarantined=lambda: False)
     _mod("aria.hud", set_hud_state=lambda *a: None, draw_hud=lambda: None,
          set_hud_subtitle=lambda *a: None)
     import importlib
@@ -880,6 +891,69 @@ def t_selfrepair_preflight():
     assert fn(steps, {"get_time", "read_file", "bogus_tool"}) == []
     assert fn([], {"get_time"}) == []
     assert fn(None, None) == []  # never raises
+
+
+def t_dynamic_routing_classifier():
+    fn = _extract_fn("agent/brain.py", "classify_task_role", {
+        "_CODE_VERBS": ("edit", "write", "fix", "debug", "refactor",
+                        "rewrite", "implement", "patch"),
+        "_CODE_NOUNS": ("code", "script", "function", "bug", "traceback",
+                        ".py", "ops_screen", "hud.py"),
+    })
+    assert fn("edit her code") == "code"
+    assert fn("review the ops screen") == "code"
+    assert fn("write a python script to sort files") == "code"
+    assert fn("fix the bug in hud.py") == "code"
+    assert fn("what time is it") == "default"
+    assert fn("remember that my favorite color is blue") == "default"
+    assert fn("what do I look like") == "default"
+    assert fn("write a shopping list") == "default"  # write, but not code
+    assert fn("") == "default"
+    assert fn(None) == "default"
+
+
+def t_dynamic_routing_role_cooldown():
+    from typing import Optional
+    import time as _time
+    logged = []
+    cooldown = {}
+    ns = {"_ROLE_MODEL_COOLDOWN": cooldown,
+          "OLLAMA_VISION_MODEL": "gemma4:31b-cloud",
+          "OLLAMA_CODE_MODEL": "qwen3-coder:480b-cloud",
+          "time": _time, "Optional": Optional,
+          "add_log": lambda m: logged.append(m)}
+    fn = _extract_fn("agent/providers.py", "resolve_role_model", ns)
+    assert fn("code") == "qwen3-coder:480b-cloud"
+    assert fn("vision") == "gemma4:31b-cloud"
+    assert fn("default") is None
+    assert fn("bogus") is None
+    # park the code tag: resolver falls back silently
+    cooldown["qwen3-coder:480b-cloud"] = _time.time() + 900
+    assert fn("code") is None
+    assert fn("vision") == "gemma4:31b-cloud"  # vision unaffected
+    # expired cooldown: tag served again
+    cooldown["qwen3-coder:480b-cloud"] = _time.time() - 1
+    assert fn("code") == "qwen3-coder:480b-cloud"
+
+
+def t_dynamic_routing_all_quarantined():
+    true_fn = _extract_fn("agent/providers.py", "chain_all_quarantined", {
+        "_build_chain": lambda: [types.SimpleNamespace(api_key="k1"),
+                                 types.SimpleNamespace(api_key="k2")],
+        "key_is_quarantined": lambda k: True,
+    })
+    assert true_fn() is True
+    false_fn = _extract_fn("agent/providers.py", "chain_all_quarantined", {
+        "_build_chain": lambda: [types.SimpleNamespace(api_key="k1"),
+                                 types.SimpleNamespace(api_key="k2")],
+        "key_is_quarantined": lambda k: k == "k1",
+    })
+    assert false_fn() is False
+    empty_fn = _extract_fn("agent/providers.py", "chain_all_quarantined", {
+        "_build_chain": lambda: [],
+        "key_is_quarantined": lambda k: True,
+    })
+    assert empty_fn() is False
 
 
 for name, fn in sorted([(k, v) for k, v in list(globals().items()) if k.startswith("t_")]):

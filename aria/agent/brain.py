@@ -44,6 +44,7 @@ from aria.tools.dispatch import (
 import aria.speech as speech
 from aria.agent.shortcuts import check_voice_shortcut
 from aria.agent.providers import provider_call, get_active_provider, get_last_call_stats
+from aria.agent.providers import resolve_role_model, chain_all_quarantined
 from aria.agent import sentinel
 import aria.hud as hud
 
@@ -266,6 +267,31 @@ def build_system_instruction(user_prompt: str) -> str:
     )
 
 
+_CODE_VERBS = ("edit", "write", "fix", "debug", "refactor", "rewrite",
+               "implement", "patch")
+_CODE_NOUNS = ("code", "script", "function", "bug", "traceback", ".py",
+               "ops_screen", "hud.py")
+
+
+def classify_task_role(user_prompt: str) -> str:
+    """Per-turn task classifier for dynamic model routing. Zero API cost —
+    local keyword/structure heuristics only. Returns 'code' for code work,
+    else 'default'. (Vision is handled by the native pre-pass + dedicated
+    vision tools, not the conversational loop.) Never raises."""
+    try:
+        low = (user_prompt or "").lower()
+        if any(k in low for k in ("her code", "your code", "ops_screen.py",
+                                  "aria/ops_screen", "the ops code")):
+            return "code"
+        if "ops" in low and any(k in low for k in ("review", "redesign", "rebuild")):
+            return "code"
+        if any(v in low for v in _CODE_VERBS) and any(n in low for n in _CODE_NOUNS):
+            return "code"
+        return "default"
+    except Exception:
+        return "default"
+
+
 def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: bool = False,
               reply_sink: Optional[List[str]] = None, preauthorized: bool = False,
               silent: bool = False) -> str:
@@ -281,6 +307,15 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
     reset_turn_state()
     auto_resolve_toolkits(LAST_USER_MESSAGE)
     set_turn_context(LAST_USER_MESSAGE)
+
+    # Dynamic model routing: classify the task once per turn, resolve the
+    # role's model tag (None = default conversational model). The override
+    # only applies to the ollama_cloud leg; a failing role model falls back
+    # to default automatically (see providers._attempt_provider_call).
+    _task_role = classify_task_role(user_prompt)
+    _turn_model_override = resolve_role_model(_task_role)
+    if _task_role != "default":
+        add_log(f"task role '{_task_role}' -> model '{_turn_model_override or '(default)'}'")
 
     hud.set_hud_state("thinking")
     hud.draw_hud()
@@ -357,7 +392,8 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
             data = provider_call(
                 system_instruction, contents,
                 tool_decls=decls,
-                on_text_chunk=_stream_chunk_cb if (not silent and reply_sink is None) else None
+                on_text_chunk=_stream_chunk_cb if (not silent and reply_sink is None) else None,
+                model_override=_turn_model_override,
             )
 
             _primary = PROVIDER_CHAIN[0] if PROVIDER_CHAIN else "ollama_cloud"
@@ -365,6 +401,9 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                 hud.set_hud_subtitle(f"Running on {get_active_provider()} (fallback)")
 
             if not data or not data.get("candidates"):
+                if chain_all_quarantined():
+                    say("All four providers are rate-limited right now. I'll be back when the limits reset.")
+                    return "All providers rate-limited (429 quarantines)."
                 say("API connection dropped. Standing by.")
                 return "API rate limit or connection drop."
 

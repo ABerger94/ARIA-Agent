@@ -471,14 +471,60 @@ def resolve_role_model(role: str) -> Optional[str]:
     """Map a task role to an Ollama Cloud model tag.
 
     Returns None for the default/unknown roles (provider's configured model)
-    and when the role's override is empty/disabled.
+    and when the role's override is empty/disabled — or when the tag is in
+    failure cooldown (a broken role model falls back silently instead of
+    being hammered every turn).
     """
     r = (role or "default").strip().lower()
+    tag: Optional[str] = None
     if r == "vision":
-        return OLLAMA_VISION_MODEL or None
-    if r == "code":
-        return OLLAMA_CODE_MODEL or None
-    return None
+        tag = OLLAMA_VISION_MODEL or None
+    elif r == "code":
+        tag = OLLAMA_CODE_MODEL or None
+    if tag and _ROLE_MODEL_COOLDOWN.get(tag, 0) > time.time():
+        add_log(f"role '{r}': model '{tag}' in failure cooldown, using default")
+        return None
+    return tag
+
+
+# --- Dynamic routing: failure-adaptive role models ---
+# When a role model fails (exception or empty result), _attempt_provider_call
+# falls back to the default model AND parks the broken tag here so later
+# turns don't keep trying it. Cooldown is 15 minutes — long enough to stop
+# the hammering, short enough to recover if the tag comes back.
+_ROLE_MODEL_COOLDOWN: Dict[str, float] = {}
+ROLE_MODEL_COOLDOWN_S = 900
+
+
+def _note_role_model_failed(tag: Optional[str]) -> None:
+    try:
+        if tag:
+            _ROLE_MODEL_COOLDOWN[tag] = time.time() + ROLE_MODEL_COOLDOWN_S
+            add_log(f"role model '{tag}' parked for {ROLE_MODEL_COOLDOWN_S // 60} min after failure")
+    except Exception:
+        pass
+
+
+def clear_role_model_cooldown() -> None:
+    """Reset failure-adaptive role parking (used by tests; also handy if
+    Alek swaps a model tag and wants the new one tried immediately)."""
+    try:
+        _ROLE_MODEL_COOLDOWN.clear()
+    except Exception:
+        pass
+
+
+def chain_all_quarantined() -> bool:
+    """True when every configured provider's key is currently quarantined
+    (e.g. all 429'd) — the chain has no road, not just a flat tire."""
+    try:
+        chain = _build_chain()
+        keyed = [p for p in chain if p.api_key]
+        if not keyed:
+            return False
+        return all(key_is_quarantined(p.api_key) for p in keyed)
+    except Exception:
+        return False
 
 
 def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
@@ -510,6 +556,7 @@ def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
             return data, False
         add_log(f"provider {provider.name}: role model '{model_override}' failed "
                 f"({provider.last_error}); retrying default model (key NOT quarantined)")
+        _note_role_model_failed(model_override)
         provider.model = saved
         try:
             data = provider.call(
