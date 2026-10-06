@@ -172,6 +172,24 @@ def _ops_read_selected_aloud() -> None:
         add_log(f"Read-aloud failed: {e}")
 
 
+def _classify_ops_intent(low: str) -> Optional[str]:
+    """'OPS screen' intent: 'visual' (look at the O overlay), 'code'
+    (review/redesign its source), or None. Code verbs win when both match
+    ('review the ops screen' is a code request). Never raises."""
+    try:
+        if "ops" not in low:
+            return None
+        if any(k in low for k in ["review", "redesign", "code", "redraw",
+                                  "rebuild", "fix", "improve"]):
+            return "code"
+        if any(k in low for k in ["look", "see", "show", "screen", "display",
+                                  "open", "overlay"]):
+            return "visual"
+        return None
+    except Exception:
+        return None
+
+
 def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silent: bool = False) -> str:
     """Central action pipeline invoked from voice, PTT, HUD typed commands, or Phone Bridge."""
     agent.proactive.mood_note_interaction()
@@ -201,7 +219,45 @@ def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silen
     # 5. Multimodal context attachment
     image_bytes = None
     is_screen = False
-    if mode == "screen" or any(k in low for k in ["screen", "display", "desktop", "my window"]):
+    _ops_intent = _classify_ops_intent(low)
+    ops_visual = _ops_intent == "visual" and mode != "camera"
+    ops_code = _ops_intent == "code"
+    if ops_visual:
+        # "Look at the OPS screen" means the O overlay, not the main HUD.
+        # Open it first, let the render loop draw a few frames, then capture.
+        try:
+            hud.HUD_MODE = "ops"
+            _ops_screen.open_panel()
+            try:
+                _ops.refresh_all()
+            except Exception:
+                pass
+            time.sleep(0.4)
+        except Exception as e:
+            add_log(f"OPS auto-open failed: {e}")
+        image_bytes = vision.capture_screen_if_changed()
+        is_screen = True
+        if image_bytes is None:
+            user_text = "[Screen unchanged since my last view] " + user_text
+        user_text = ("[You are viewing the OPS command-center overlay "
+                     "(the O screen: Log/Tasks/Sensors/Controls/Notes/HUB/Day), "
+                     "not the main HUD] " + user_text)
+    elif ops_code:
+        # "Review/redesign the OPS screen" means its code: read it in.
+        try:
+            _ops_path = os.path.join(ROOT_DIR, "aria", "ops_screen.py")
+            with open(_ops_path, "r", encoding="utf-8") as _f:
+                _ops_code = _f.read()
+            user_text = ("[The OPS command-center overlay is rendered by "
+                         "aria/ops_screen.py (OpenCV + PIL, 7 tabs). "
+                         "Full source follows — review/redesign THIS file, not the main HUD.]\n"
+                         "```python\n" + _ops_code[:60000] + "\n```\n"
+                         f"User request: {user_text}")
+            add_log(f"OPS code ({len(_ops_code)} chars) attached for review.")
+        except Exception as e:
+            add_log(f"OPS code attach failed: {e}")
+            user_text = "[Could not read aria/ops_screen.py] " + user_text
+    elif mode == "screen" or any(k in low for k in ["screen", "display", "desktop", "my window"]):
         image_bytes = vision.capture_screen_if_changed()
         is_screen = True
         if image_bytes is None:

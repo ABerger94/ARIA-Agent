@@ -745,6 +745,44 @@ def t_vision_prepass_never_raises():
         _unload_brain_stubbed()
 
 
+def _load_classify_ops_intent():
+    """Extract _classify_ops_intent from main.py via AST (main.py itself is
+    too heavy to import: cv2/pygame/speech)."""
+    import ast
+    src = open(os.path.join(PKG, "main.py"), encoding="utf-8").read()
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_classify_ops_intent":
+            from typing import Optional
+            ns = {"Optional": Optional}
+            exec(compile(ast.Module(body=[node], type_ignores=[]),
+                         "main.py", "exec"), ns)
+            return ns["_classify_ops_intent"]
+    raise AssertionError("_classify_ops_intent not found in main.py")
+
+
+def t_ops_intent_visual():
+    fn = _load_classify_ops_intent()
+    assert fn("look at the ops screen") == "visual"
+    assert fn("show me the ops overlay") == "visual"
+    assert fn("open ops") == "visual"
+    assert fn("what do you see on the ops display") == "visual"
+
+
+def t_ops_intent_code():
+    fn = _load_classify_ops_intent()
+    assert fn("review the ops screen") == "code"
+    assert fn("redesign the ops screen") == "code"
+    assert fn("fix the ops code") == "code"
+
+
+def t_ops_intent_none():
+    fn = _load_classify_ops_intent()
+    assert fn("what time is it") is None
+    assert fn("look at my screen") is None  # plain screen, not ops
+    assert fn("ops") is None  # bare mention, no intent verb
+
+
 for name, fn in sorted([(k, v) for k, v in list(globals().items()) if k.startswith("t_")]):
     check(name, fn)
 

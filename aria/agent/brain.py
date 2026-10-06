@@ -252,6 +252,10 @@ def build_system_instruction(user_prompt: str) -> str:
         f"{_persona_block}"
         "You can call multiple independent tools in one turn — do it. "
         "Keep vocal responses concise, refined, and intelligent (1-2 sentences). "
+        "The OPS command center is the tabbed overlay opened with the O key "
+        "(Log/Tasks/Sensors/Controls/Notes/HUB/Day), rendered by aria/ops_screen.py. "
+        "When the user says 'OPS screen' they mean that overlay or its code — "
+        "never the main HUD. "
         "Every turn you MUST either call a tool or reply with text — "
         "never return an empty response with no tool call and no words."
     )
