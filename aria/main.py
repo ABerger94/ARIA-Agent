@@ -78,8 +78,11 @@ def _init_wiring():
     # 2. Chat history listener
     memory.register_chat_listener(hud.add_display_chat)
 
-    # 3. Vision callers
-    vision.set_vision_text_caller(agent.gemini_text)
+    # 3. Vision callers — use the native Ollama vision path
+    # (_default_vision_call: native /api/chat images array first, then the
+    # provider chain). agent.gemini_text was the legacy hook but Gemini keys
+    # are 402-dead, so wiring it here silently bypassed the working path.
+    vision.set_vision_text_caller(vision._default_vision_call)
 
     # 4. Bridge processor & chat log
     bridge.set_bridge_processor(lambda text, silent: handle_action("voice", typed_prompt=text, silent=silent))

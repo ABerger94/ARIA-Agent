@@ -366,6 +366,57 @@ def t_native_probe_distinguishes_model_vs_format():
         vision_mod.urllib.request.urlopen = old_urlopen
 
 
+def t_default_vision_call_prefers_native():
+    # Production wiring: _default_vision_call must try the native Ollama
+    # path FIRST and never reach the provider chain when native succeeds.
+    # (Regression: main.py once overrode the hook with the dead gemini_text.)
+    import json as _json
+
+    try:
+        vision_mod = importlib.import_module("aria.vision")
+    except Exception as e:
+        print(f"SKIP t_default_vision_call_prefers_native: {e}")
+        return
+
+    assert vision_mod._VISION_TEXT_CALL is vision_mod._default_vision_call
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return _json.dumps({"message": {"role": "assistant",
+                                            "content": "a red bicycle"}}).encode()
+
+    chain_touched = []
+
+    def fake_urlopen(req, timeout=None):
+        return FakeResp()
+
+    old_key = getattr(providers, "OLLAMA_CLOUD_API_KEY", "")
+    old_urlopen = vision_mod.urllib.request.urlopen
+    old_chain = providers.provider_call
+    providers.OLLAMA_CLOUD_API_KEY = "test-key-xyz"
+    vision_mod.urllib.request.urlopen = fake_urlopen
+    providers.provider_call = lambda *a, **k: chain_touched.append(1) or None
+    # NOTE: _default_vision_call imports provider_call lazily from the
+    # providers module, so patch the module attribute, then restore.
+    try:
+        out = vision_mod._default_vision_call(
+            "sys", [{"role": "user", "parts": [
+                {"text": "what"},
+                {"inline_data": {"mime_type": "image/jpeg", "data": "QUJD"}}]}])
+    finally:
+        providers.OLLAMA_CLOUD_API_KEY = old_key
+        vision_mod.urllib.request.urlopen = old_urlopen
+        providers.provider_call = old_chain
+    assert out == "a red bicycle", out
+    assert chain_touched == [], "native succeeded but chain was still walked"
+
+
 for name, fn in sorted([(k, v) for k, v in list(globals().items()) if k.startswith("t_")]):
     check(name, fn)
 
