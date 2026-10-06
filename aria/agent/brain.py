@@ -167,6 +167,33 @@ def _maybe_restart_after_self_edit(say_fn: Callable[[str], None]):
     _RESTART_TIMER.start()
 
 
+def _vision_prepass(user_prompt: str, image_bytes: bytes, is_screen: bool) -> str:
+    """Describe image bytes via native Ollama /api/chat and fold the
+    description into the prompt text. Returns the augmented prompt.
+    Never raises; on any failure returns the prompt with a notice."""
+    try:
+        from aria import vision as _vision_mod
+        _b64 = base64.b64encode(image_bytes).decode("utf-8")
+        _desc = _vision_mod._ollama_native_vision_call(
+            "You are a precise visual observer.",
+            [{"role": "user", "parts": [
+                {"text": "Describe exactly what you see in this image, in detail. "
+                         "This description goes to an AI agent that cannot see the image itself."},
+                {"inline_data": {"mime_type": "image/jpeg", "data": _b64}},
+            ]}])
+        _kind = "screen" if is_screen else "camera"
+        if _desc:
+            return (f"[Image from {_kind}, described by vision model]: {_desc}\n"
+                    f"User request: {user_prompt}")
+        add_log("Vision pre-pass returned nothing; continuing text-only.",
+                level="warn")
+        return (f"[The {_kind} image could not be processed] "
+                f"User request: {user_prompt}")
+    except Exception as _ve:
+        add_log(f"Vision pre-pass error: {_ve}", level="warn")
+        return user_prompt
+
+
 def build_system_instruction(user_prompt: str) -> str:
     now_time = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
     known_memories = build_prompt_memories(user_prompt or "")
@@ -262,6 +289,15 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
         hud.set_hud_state("idle")
         hud.draw_hud()
         return spoken_ack
+
+    # 1b. Vision pre-pass. No provider on the OpenAI-compatible /v1 chain
+    # accepts image input (ollama_cloud /v1, groq, openrouter all reject
+    # image_url; mistral tier lacks the model), so image bytes must NEVER
+    # reach provider_call. Describe the image once via the native Ollama
+    # /api/chat endpoint and feed the description as text instead.
+    if image_bytes:
+        user_prompt = _vision_prepass(user_prompt, image_bytes, is_screen)
+        image_bytes = None
 
     # 2. Append to history & memory logs
     prompt_label = "User (Screen View): " if is_screen else "User: "

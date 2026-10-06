@@ -644,6 +644,107 @@ def t_provider_stats_recorded():
     assert st["prompt_tokens"] is None and st["completion_tokens"] is None, st
 
 
+_BRAIN_SYS_SNAPSHOT = None
+_BRAIN_PARENT_VISION = None
+_BRAIN_PARENT_HAD_VISION = False
+
+
+def _load_brain_stubbed():
+    """Import the REAL aria.agent.brain with heavy deps stubbed; returns module.
+    Snapshots sys.modules and must be paired with _unload_brain_stubbed()."""
+    global _BRAIN_SYS_SNAPSHOT, _BRAIN_PARENT_VISION, _BRAIN_PARENT_HAD_VISION
+    import types
+    _BRAIN_SYS_SNAPSHOT = dict(sys.modules)
+    _parent = sys.modules.get("aria")
+    _BRAIN_PARENT_HAD_VISION = hasattr(_parent, "vision")
+    _BRAIN_PARENT_VISION = getattr(_parent, "vision", None)
+    # The file header stubs aria.agent.brain as an empty module; drop it so
+    # the real module imports.
+    sys.modules.pop("aria.agent.brain", None)
+    def _mod(name, **attrs):
+        m = types.ModuleType(name)
+        for k, v in attrs.items():
+            setattr(m, k, v)
+        sys.modules[name] = m
+        return m
+    _mod("aria.memory", build_prompt_memories=lambda *a, **k: "",
+         spine_append=lambda *a, **k: None, spine_unbroken_thread=lambda: "",
+         log_conversation=lambda *a, **k: None)
+    _mod("aria.tools.dispatch", execute_tool=lambda *a, **k: ("", None),
+         reset_turn_state=lambda: None, set_turn_context=lambda *a: None,
+         get_last_tool_executed=lambda: None, get_loaded_toolkits=lambda: [],
+         set_hud_hook=lambda *a: None, auto_resolve_toolkits=lambda *a: None)
+    _mod("aria.speech", speak=lambda *a, **k: None)
+    _mod("aria.agent.shortcuts", check_voice_shortcut=lambda *a, **k: None)
+    _mod("aria.agent.providers", provider_call=lambda *a, **k: None,
+         get_active_provider=lambda: "none", get_last_call_stats=lambda: {})
+    _mod("aria.hud", set_hud_state=lambda *a: None, draw_hud=lambda: None,
+         set_hud_subtitle=lambda *a: None)
+    import importlib
+    return importlib.import_module("aria.agent.brain")
+
+
+def _unload_brain_stubbed():
+    """Restore sys.modules to the pre-brain-import snapshot."""
+    global _BRAIN_SYS_SNAPSHOT, _BRAIN_PARENT_VISION
+    if _BRAIN_SYS_SNAPSHOT is not None:
+        sys.modules.clear()
+        sys.modules.update(_BRAIN_SYS_SNAPSHOT)
+        _parent = sys.modules.get("aria")
+        if _parent is not None:
+            if _BRAIN_PARENT_HAD_VISION:
+                _parent.vision = _BRAIN_PARENT_VISION
+            else:
+                try:
+                    delattr(_parent, "vision")
+                except AttributeError:
+                    pass
+        _BRAIN_SYS_SNAPSHOT = None
+        _BRAIN_PARENT_VISION = None
+
+
+def _install_vision_stub(fn):
+    """Install a fake aria.vision (both sys.modules and the parent attr,
+    since `from aria import vision` prefers the parent attribute)."""
+    import types
+    vision_stub = types.ModuleType("aria.vision")
+    vision_stub._ollama_native_vision_call = fn
+    sys.modules["aria.vision"] = vision_stub
+    sys.modules["aria"].vision = vision_stub
+
+
+def t_vision_prepass_describes_and_folds_into_prompt():
+    brain = _load_brain_stubbed()
+    try:
+        seen = {}
+        def fake_native(sys_prompt, contents):
+            seen["sys"] = sys_prompt
+            parts = contents[0]["parts"]
+            seen["has_image"] = any("inline_data" in p for p in parts)
+            return "a red square on a table"
+        _install_vision_stub(fake_native)
+        out = brain._vision_prepass("what do you see?", b"fakejpeg", False)
+        assert seen["has_image"] is True, "pre-pass must send the image to native vision"
+        assert "a red square on a table" in out, out
+        assert "camera" in out and "what do you see?" in out, out
+        out2 = brain._vision_prepass("read this", b"x", True)
+        assert "screen" in out2, out2
+    finally:
+        _unload_brain_stubbed()
+
+
+def t_vision_prepass_never_raises():
+    brain = _load_brain_stubbed()
+    try:
+        def boom(*a, **k):
+            raise RuntimeError("vision down")
+        _install_vision_stub(boom)
+        out = brain._vision_prepass("hello", b"x", False)
+        assert out == "hello", out
+    finally:
+        _unload_brain_stubbed()
+
+
 for name, fn in sorted([(k, v) for k, v in list(globals().items()) if k.startswith("t_")]):
     check(name, fn)
 
