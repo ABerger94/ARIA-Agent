@@ -92,7 +92,7 @@ OLLAMA_CLOUD_API_KEY, _OLLAMA_CLOUD_SOURCE = key_get("OLLAMA_API_KEY")
 
 GROQ_MODEL, _ = key_get("GROQ_MODEL", "openai/gpt-oss-120b")
 OPENROUTER_MODEL, _ = key_get("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free")
-MISTRAL_MODEL, _ = key_get("MISTRAL_MODEL", "mistral-large-latest")
+MISTRAL_MODEL, _ = key_get("MISTRAL_MODEL", "mistral-small-latest")
 OLLAMA_CLOUD_MODEL, _ = key_get("OLLAMA_CLOUD_MODEL", "gpt-oss:120b")
 # Role-based model routing (Ollama Cloud tags). Empty string disables the
 # role (falls back to OLLAMA_CLOUD_MODEL) — retirement-proof overrides.
