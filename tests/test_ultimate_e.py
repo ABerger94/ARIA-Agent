@@ -324,6 +324,48 @@ def t_native_vision_payload_format():
     assert sent["body"]["messages"][-1]["content"] == "what"
 
 
+def t_native_probe_distinguishes_model_vs_format():
+    import io
+    import json as _json
+    import urllib.error
+
+    try:
+        vision_mod = importlib.import_module("aria.vision")
+    except Exception as e:
+        print(f"SKIP t_native_probe_distinguishes_model_vs_format: {e}")
+        return
+
+    def boom_404(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {},
+                                     io.BytesIO(b'{"error":"not found"}'))
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return _json.dumps({"message": {"role": "assistant",
+                                            "content": "ok"}}).encode()
+
+    old_key = getattr(providers, "OLLAMA_CLOUD_API_KEY", "")
+    old_urlopen = vision_mod.urllib.request.urlopen
+    providers.OLLAMA_CLOUD_API_KEY = "test-key-xyz"
+    try:
+        # probe OK -> returns None
+        vision_mod.urllib.request.urlopen = lambda req, timeout=None: FakeResp()
+        assert vision_mod._probe_model_text("gemma4:31b-cloud", "k") is None
+        # probe HTTPError -> error string
+        vision_mod.urllib.request.urlopen = boom_404
+        err = vision_mod._probe_model_text("gemma4:31b-cloud", "k")
+        assert err is not None and "404" in err, err
+    finally:
+        providers.OLLAMA_CLOUD_API_KEY = old_key
+        vision_mod.urllib.request.urlopen = old_urlopen
+
+
 for name, fn in sorted([(k, v) for k, v in list(globals().items()) if k.startswith("t_")]):
     check(name, fn)
 

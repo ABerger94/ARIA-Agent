@@ -161,6 +161,40 @@ def describe_phone_view(question: str = "") -> str:
     except Exception as e:
         return f"[Vision unavailable: {e}]"
 
+_NATIVE_LAST_ERROR: Optional[str] = None
+
+
+def _probe_model_text(model: str, api_key: str) -> Optional[str]:
+    """Text-only probe of the vision model via native /api/chat.
+
+    Returns None if the model answers (model/tag OK), else the error string.
+    Lets a failed image call distinguish 'bad model tag' from
+    'image format rejected'.
+    """
+    payload = {"model": model, "stream": False,
+               "messages": [{"role": "user", "content": "Reply with the word ok."}]}
+    try:
+        req = urllib.request.Request(
+            "https://ollama.com/api/chat",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}",
+                     "Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if (data.get("message") or {}).get("content", "").strip():
+            return None
+        return "empty reply"
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode("utf-8", errors="replace")[:120]
+        except Exception:
+            detail = ""
+        return f"HTTP {e.code}: {detail}"
+    except Exception as e:
+        return f"{e}"
+
+
 def _ollama_native_vision_call(sys_prompt: str, contents: Any) -> Optional[str]:
     """Vision via Ollama's native /api/chat endpoint (images array).
 
@@ -168,6 +202,8 @@ def _ollama_native_vision_call(sys_prompt: str, contents: Any) -> Optional[str]:
     OpenAI-compatible /v1 endpoint's image_url support on Ollama Cloud is
     unreliable (HTTP 400s). Returns the description text, or None.
     """
+    global _NATIVE_LAST_ERROR
+    _NATIVE_LAST_ERROR = None
     try:
         from aria.agent.providers import (
             OLLAMA_CLOUD_API_KEY, OLLAMA_CLOUD_MODEL, resolve_role_model)
@@ -210,9 +246,19 @@ def _ollama_native_vision_call(sys_prompt: str, contents: Any) -> Optional[str]:
             detail = e.read().decode("utf-8", errors="replace")[:160]
         except Exception:
             detail = ""
-        add_log(f"ollama native vision: HTTP {e.code}: {detail}")
+        _NATIVE_LAST_ERROR = f"HTTP {e.code}: {detail}"
+        add_log(f"ollama native vision: {_NATIVE_LAST_ERROR}")
+        # Self-diagnosis: text-only probe of the same model distinguishes
+        # "bad model tag" from "image format rejected".
+        probe = _probe_model_text(model, OLLAMA_CLOUD_API_KEY)
+        if probe is None:
+            _NATIVE_LAST_ERROR += " | text-only probe OK -> image format rejected"
+        else:
+            _NATIVE_LAST_ERROR += f" | text-only probe also failed ({probe}) -> model/tag issue"
+        add_log(f"ollama native vision diagnosis: {_NATIVE_LAST_ERROR}")
         return None
     except Exception as e:
+        _NATIVE_LAST_ERROR = f"{e}"
         add_log(f"ollama native vision failed: {e}")
         return None
 
@@ -252,7 +298,11 @@ def _default_vision_call(sys_prompt: str, contents: Any) -> str:
         from aria.agent.brain import gemini_text
         return gemini_text(sys_prompt, contents)
     except Exception as e:
-        return f"[Vision unavailable: {e}]"
+        # Surface the real cause in the user-facing message: the OPS log
+        # panel truncates lines, so the diagnosis must travel in chat text.
+        native_err = _NATIVE_LAST_ERROR or "not attempted"
+        return (f"[Vision unavailable: ollama native: {native_err}; "
+                f"gemini fallback: {e}]")
 
 
 _VISION_TEXT_CALL: Optional[Callable[[str, Any], str]] = _default_vision_call
