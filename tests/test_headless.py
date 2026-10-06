@@ -658,6 +658,38 @@ def t_mcp_live_stdio():
                 pass
 check("mcp: live stdio server connect/call/disconnect", t_mcp_live_stdio)
 
+# 30. self-restart auto-restore: syntax-broken file -> backup kept, git copy restored
+def t_restore_last_committed():
+    import subprocess, tempfile, py_compile
+    # brain imports shortcuts -> aria.spotify names; extend the stub
+    sys.modules["aria.spotify"].tool_media_key = lambda *a, **k: "ok"
+    sys.modules["aria.spotify"].tool_spotify = lambda *a, **k: "ok"
+    from aria.agent.brain import _restore_last_committed
+    d = tempfile.mkdtemp()
+    subprocess.run(["git", "init", "-q"], cwd=d, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=d, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=d, check=True)
+    f = os.path.join(d, "mod.py")
+    with open(f, "w") as fh:
+        fh.write("X = 1\n")
+    subprocess.run(["git", "add", "."], cwd=d, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=d, check=True)
+    with open(f, "w") as fh:
+        fh.write("def broken(:\n")
+    bak = _restore_last_committed(f, repo_dir=d)
+    assert bak and os.path.isfile(bak), "backup of broken file missing"
+    assert open(bak).read() == "def broken(:\n", "backup must hold the broken content"
+    assert open(f).read() == "X = 1\n", "file must be restored from git"
+    py_compile.compile(f, doraise=True)
+    # outside a git repo -> None, broken file untouched
+    d2 = tempfile.mkdtemp()
+    f2 = os.path.join(d2, "m.py")
+    with open(f2, "w") as fh:
+        fh.write("def broken(:\n")
+    assert _restore_last_committed(f2, repo_dir=d2) is None
+    assert open(f2).read() == "def broken(:\n"
+check("self-restart: auto-restore broken file from git", t_restore_last_committed)
+
 print(f"\n{sum(1 for _, s, _ in results if s=='PASS')}/{len(results)} passed")
 fails = [r for r in results if r[1] != "PASS"]
 sys.exit(1 if fails else 0)

@@ -426,6 +426,14 @@ class OpenAICompatProvider(Provider):
                 # Transient: move on now, retried next turn (no quarantine).
                 add_log(f"{self.name}: HTTP {e.code}, moving on")
                 return None
+            if e.code == 410:
+                # Gone: the model tag is retired, not a key problem. Never
+                # quarantine the key — the role-model fallback in
+                # _attempt_provider_call parks the dead tag and retries the
+                # default model; on a default model the chain just moves on.
+                add_log(f"{self.name}: HTTP 410 (model/tag retired, key NOT quarantined): "
+                        f"{detail[:120]}")
+                return None
             add_log(f"{self.name}: unhandled HTTP {e.code}")
             return None
         except (urllib.error.URLError, TimeoutError, ConnectionError,

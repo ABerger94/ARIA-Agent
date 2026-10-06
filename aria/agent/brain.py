@@ -12,6 +12,7 @@ import json
 import os
 import py_compile
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -131,6 +132,32 @@ def _restart_process():
     os._exit(0)
 
 
+def _restore_last_committed(path: str, repo_dir: Optional[str] = None) -> Optional[str]:
+    """Restore a syntax-broken source file from git.
+
+    The broken version is preserved as <path>.broken-<epoch> first, then
+    `git checkout -- <path>` restores the last committed copy. Returns the
+    backup path when the restored file compiles cleanly, else None (the
+    broken file is left in place, exactly as before).
+    Never raises.
+    """
+    try:
+        if repo_dir is None:
+            repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        backup = f"{path}.broken-{int(time.time())}"
+        shutil.copy2(path, backup)
+        r = subprocess.run(
+            ["git", "checkout", "--", path],
+            cwd=repo_dir, capture_output=True, timeout=30)
+        if r.returncode != 0:
+            return None
+        py_compile.compile(path, doraise=True)
+        return backup
+    except Exception as e:
+        add_log(f"Self-restart auto-restore failed for {os.path.basename(path)}: {e}")
+        return None
+
+
 def _maybe_restart_after_self_edit(say_fn: Callable[[str], None]):
     global _RESTART_TIMER
     cur = _snapshot_hashes()
@@ -150,6 +177,17 @@ def _maybe_restart_after_self_edit(say_fn: Callable[[str], None]):
                 py_compile.compile(p, doraise=True)
             except Exception as e:
                 add_log(f"Self-restart blocked: syntax error in {os.path.basename(p)}: {e}")
+                # Auto-restore: the broken edit stays preserved as
+                # <file>.broken-<timestamp>, and the last committed version
+                # is restored via git so the restart can proceed. Without
+                # this, one bad edit bricks every future restart.
+                restored = _restore_last_committed(p)
+                if restored:
+                    say_fn(f"My code changed but the new version had a syntax error — "
+                           f"I restored the last working {os.path.basename(p)} and restarting.")
+                    add_log(f"Self-restart: restored {os.path.basename(p)} from git, "
+                            f"broken copy kept as {restored}")
+                    break  # file is clean now; proceed to restart below
                 say_fn(f"My code changed but the new version has a syntax error: {e}")
                 return
 
@@ -402,7 +440,7 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
 
             if not data or not data.get("candidates"):
                 if chain_all_quarantined():
-                    say("All four providers are rate-limited right now. I'll be back when the limits reset.")
+                    say("All providers are rate-limited right now. I'll be back when the limits reset.")
                     return "All providers rate-limited (429 quarantines)."
                 say("API connection dropped. Standing by.")
                 return "API rate limit or connection drop."

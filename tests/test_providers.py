@@ -242,3 +242,40 @@ def test_uppercase_schema_types_lowercased():
     assert params["properties"]["x"]["type"] == "string", params
     assert params["properties"]["items"]["items"]["type"] == "number", params
     print("ok uppercase_schema_types_lowercased")
+
+
+def _http_error(code, body=b'{"error": {"message": "gone"}}'):
+    import io, urllib.error
+    return urllib.error.HTTPError("https://x/chat/completions", code, "err",
+                                 {}, io.BytesIO(body))
+
+
+def test_410_model_retired_no_key_quarantine():
+    # HTTP 410 = model/tag retired: key must NOT be quarantined, call
+    # returns None so the chain/role-fallback moves on.
+    import urllib.request
+    from aria.agent.providers import OpenAICompatProvider
+    from aria import config as cfg_mod
+    real_urlopen = urllib.request.urlopen
+    urllib.request.urlopen = lambda req, timeout=None: (_ for _ in ()).throw(
+        _http_error(410))
+    try:
+        p = OpenAICompatProvider("ollama_cloud", "https://ollama.com/v1",
+                                 "k-gemini-test-key", "dead-tag:999b-cloud")
+        assert p.call("sys", [{"role": "user", "parts": [{"text": "hi"}]}]) is None
+        assert "410" in (p.last_error or ""), p.last_error
+        assert not cfg_mod.key_is_quarantined("k-gemini-test-key"), \
+            "410 must not quarantine the API key"
+    finally:
+        urllib.request.urlopen = real_urlopen
+        cfg_mod._KEY_QUARANTINE_UNTIL.pop("k-gemini-test-key", None)
+    print("ok 410_model_retired_no_key_quarantine")
+
+
+def test_gemini_leg_present():
+    from aria.agent.providers import _build_chain
+    chain = _build_chain()
+    gem = [p for p in chain if p.name == "gemini"]
+    assert len(gem) == 1, [p.name for p in chain]
+    assert gem[0].base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
+    print("ok gemini_leg_present", gem[0].model)
