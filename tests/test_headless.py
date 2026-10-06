@@ -140,15 +140,40 @@ check("tool_run_python exec + timeout", t_runpy)
 
 # 9. risky tools execute immediately and fire the audit hook
 def t_history_hook():
-    seen = []
-    dispatch.set_history_hook(seen.append)
-    # send_email is risky but side-effect-free here (no Gmail creds configured)
-    res, needs_confirm = dispatch.execute_tool(
-        "send_email", {"to": "nobody@example.com", "subject": "t", "body": "b"})
-    assert needs_confirm is False, (res, needs_confirm)
-    assert "confirmation" not in res.lower(), res
-    assert any("send email" in str(e) for e in seen), seen
+    approval = importlib.import_module("aria.approval")
+    prev_get_mode = approval.get_mode
+    approval.get_mode = lambda: "auto"  # hook test is mode-independent; pin auto
+    try:
+        seen = []
+        dispatch.set_history_hook(seen.append)
+        # send_email is risky but side-effect-free here (no Gmail creds configured)
+        res, needs_confirm = dispatch.execute_tool(
+            "send_email", {"to": "nobody@example.com", "subject": "t", "body": "b"})
+        assert needs_confirm is False, (res, needs_confirm)
+        assert "confirmation" not in res.lower(), res
+        assert any("send email" in str(e) for e in seen), seen
+    finally:
+        approval.get_mode = prev_get_mode
 check("risky tool executes immediately + audit entry", t_history_hook)
+
+
+# 9b. fresh installs default to confirm-risky (not auto)
+def t_default_mode():
+    approval = importlib.import_module("aria.approval")
+    assert approval.DEFAULT_MODE == "confirm-risky", approval.DEFAULT_MODE
+    prev = approval.get_mode
+    approval.get_mode = lambda: "confirm-risky"
+    try:
+        assert approval.needs_approval("send_email", {}) is True
+        assert approval.needs_approval(
+            "manage_background_job", {"action": "start"}) is True
+        assert approval.needs_approval(
+            "manage_background_job", {"action": "list"}) is False
+        assert approval.needs_approval(
+            "manage_background_job", {}) is False
+    finally:
+        approval.get_mode = prev
+check("approval defaults to confirm-risky; bg-job start gates", t_default_mode)
 
 # 10. duplicate-call blocking
 def t_dup():
