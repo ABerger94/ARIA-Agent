@@ -1474,8 +1474,9 @@ def _draw_hud_header(canvas, acc):
     return cached_subs
 
 
-def _draw_hud_whisper_mood(canvas, acc) -> None:
-    """Whisper mode button + mood string + header divider."""
+def _draw_hud_whisper_mood(canvas, acc):
+    """Whisper mode button + mood string + header divider.
+    Returns the mood string (lowercase) for the avatar."""
     bx, by, bw, bh = _WHISPER_BTN
     _wcol = (200, 120, 255) if WHISPER_MODE else (70, 80, 95)
     cv2.rectangle(canvas, (bx, by), (bx + bw, by + bh), PANEL_BG, -1)
@@ -1489,6 +1490,7 @@ def _draw_hud_whisper_mood(canvas, acc) -> None:
     cv2.putText(canvas, mood_str, (bx - 20 - mw, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (170, 190, 200), 1, cv2.LINE_AA)
 
     cv2.line(canvas, (20, 72), (1260, 72), acc, 1)
+    return _mw
 
 
 def _draw_hud_left_panel(canvas, acc, cached_subs) -> None:
@@ -1595,11 +1597,11 @@ def _draw_hud_chat_log(canvas, acc) -> None:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1, cv2.LINE_AA)
 
 
-def _draw_hud_avatar(canvas, acc, acc2) -> None:
+def _draw_hud_avatar(canvas, acc, acc2, mood) -> None:
     """Center stage: visor/pixel avatar mode."""
     lx, rx, cy = 520, 760, 235
     if USE_PIXEL_AVATAR:
-        draw_pixel_aria(canvas, CURRENT_STATE, time.time(), mood=_mw)
+        draw_pixel_aria(canvas, CURRENT_STATE, time.time(), mood=mood)
     elif CURRENT_STATE == "idle":
         now = time.time()
         _update_idle_face(now)
@@ -1678,7 +1680,7 @@ def draw_hud() -> np.ndarray:
 
     cached_subs = _draw_hud_header(canvas, ACC)
 
-    _draw_hud_whisper_mood(canvas, ACC)
+    _mood = _draw_hud_whisper_mood(canvas, ACC)
 
     if HUD_MODE == "ops":
         import aria.ops_screen as _ops_screen  # lazy: avoids circular import
@@ -1697,7 +1699,7 @@ def draw_hud() -> np.ndarray:
     if HUD_MODE == "chat_log":
         _draw_hud_chat_log(canvas, ACC)
     else:
-        _draw_hud_avatar(canvas, ACC, ACC2)
+        _draw_hud_avatar(canvas, ACC, ACC2, _mood)
 
     # Bottom Area: Collapsible Context Tiles
     _draw_context_tiles(canvas, ACC, ACC2, time.time(), CURRENT_STATE)
