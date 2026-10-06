@@ -1,6 +1,11 @@
-# ARIA Provider Fallback Chain — SPEC
+# ARIA Provider Fallback Chain — SPEC (SUPERSEDED)
 
-**Status:** spec only, not built. Awaiting Alek's decisions on the open questions at the bottom.
+**Status:** SUPERSEDED — built 2026-10-05/06 (commits `3f79daa`, `31122fb`).
+The shipped chain is **ollama_cloud → groq → openrouter → mistral**
+(Ollama Cloud `gpt-oss:120b` primary, not Gemini-first as originally
+spec'd below) — see `aria/agent/providers.py` and `PROVIDER_CHAIN` in
+`aria/config.py`. Gemini left the default chain while its keys return 402;
+screenshot vision stays Gemini-only. Kept for design history.
 **Date:** 2026-10-05
 **Author:** Milk (from reading `aria/agent/brain.py`, `aria/config.py`, `aria/tools/schemas.py` at remote `6e0a60b3`)
 

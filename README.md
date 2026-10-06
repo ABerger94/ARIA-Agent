@@ -2,11 +2,12 @@
 
 A Python desktop AI companion. She lives on your Windows laptop as an animated
 face in an OpenCV HUD: she talks (natural Edge TTS voice), listens (mic +
-speech recognition), remembers, and acts through a Gemini-powered agent loop
-with 60+ tools across 11 toolkits. Her phone bridge turns any phone into her
+speech recognition), remembers, and acts through a multi-provider agent loop
+(Ollama Cloud → Groq → OpenRouter → Mistral) with 95 tools across 16 toolkits. Her phone bridge turns any phone into her
 face, voice, and eyes; she connects to MCP servers and uses their tools as her
 own; an Arduino robot body gives her a pan/tilt head and differential-drive
-wheels.
+wheels; and a tabbed OPS command center puts her log, tasks, sensors, and
+routines one keypress away.
 
 Built by Alek Berger. Not a framework, not a demo — a finished companion.
 
@@ -30,14 +31,18 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
 - **Whisper Mode & Mood Engine** — toggleable whisper mode (W key, voice, or HUD)
   for softer volume, concise replies, and quieted heartbeats; mood system
   (energy/warmth axes) flavoring idle facial tempo and greetings.
-- **Agent Brain** — Gemini function-calling loop (no arbitrary turn cap;
+- **Agent Brain** — multi-provider function-calling loop (no arbitrary turn cap;
   30-minute reasoning budget per request — on timeout she asks "Should I keep
-  going?" and "yes"/"continue" resumes the active chain). Multi-key rotation
-  with automatic quarantine on rate limits and errors.
+  going?" and "yes"/"continue" resumes the active chain). Ollama Cloud
+  (gpt-oss:120b) is the primary brain, failing over through Groq, OpenRouter,
+  and Mistral, with per-key rotation and automatic quarantine on rate limits
+  and errors. The HUD reports which provider is serving and flags fallbacks.
+  (Screenshot vision still uses Gemini.)
 - **Progressive Tool Loading** — only the core tool schemas go to the model
   per call; specialist toolkits (autonomy, Gmail, Spotify, scheduler, GitHub,
-  vision/hardware, Windows control, MTG, memory/notes, admin, MCP) unlock on
-  demand via `load_toolkit`. 60+ tools total across 11 toolkits, with
+  vision/hardware, Windows control, MTG, memory/notes, admin, MCP, routines,
+  files, monitor, user) unlock on demand via `load_toolkit` or automatically
+  from keywords in your request. 95 tools total across 16 toolkits, with
   duplicate-call blocking, argument repair, and parallel execution of
   independent calls.
 - **MCP Client** — she connects to Model Context Protocol servers and uses
@@ -49,6 +54,49 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
   Configured servers auto-connect in the background at boot. Requires the
   `mcp` Python package; only connect servers you trust, since stdio servers
   run local commands.
+- **OPS Command Center** — press `O` for a tabbed mission-control overlay
+  inside the Python window: Log, Tasks, Sensors, Controls, Notes, HUB, Day.
+  `H` still toggles the commands view; `1–7` switch tabs, `J/K` scroll.
+  Real Roboto Mono typography (bundled, rendered via PIL), rounded panels,
+  and honest sensors — a missing `psutil` shows an install hint instead of
+  fake gauges, and the GPU gauge only appears when `nvidia-smi` reports one.
+  The Tasks tab lists scheduled jobs, background workers, and saved routines.
+- **Routines** — teach her a multi-step workflow once ("save that as
+  *stream setup*"), replay it forever by name. Steps record from real tool
+  calls, support `{{parameter}}` slots, and carry a trusted flag — untrusted
+  routines still ask before destructive steps.
+- **Approval layer** — `set_approval_mode`: `auto` (today's behavior),
+  `confirm-risky`, or `confirm-all`. In confirm modes a destructive action
+  pauses with a token; say the word and she runs `approve`, or `deny` to drop
+  it. Approvals expire after 10 minutes and surface in the OPS Log.
+- **File Commander** — `file_organize` sorts a messy folder by type
+  (dry-run plan first, always — nothing moves until you say so),
+  `file_find_advanced` searches by name/size/age/content, `file_duplicates`
+  finds byte-identical copies (report only), `disk_usage` shows what's eating
+  the drive. System directories are refused outright.
+- **Window control** — beyond list/focus/minimize/close: `window_snap` tiles
+  windows (left/right/maximize/center), `launch_app` opens installed apps by
+  name.
+- **Ambient event bus** — reminders, price drops, new inbox files, and
+  calendar-soon events flow through the heartbeat's existing decline-learning,
+  so she speaks up about what matters and stays quiet about what you've
+  dismissed.
+- **Email triage & screen watcher** — `triage_email` sorts unread mail into
+  act-now / FYI / noise; `watch_screen` takes a standing vision question
+  ("tell me when the build finishes") and alerts on change.
+- **Price watcher, for real** — `watch_price` now actually checks hourly and
+  fires a `price_drop` event instead of just promising to.
+- **Tool SDK** — drop a Python file in `aria/tools/user_tools/` defining
+  `TOOL_NAME`, `TOOL_DESCRIPTION`, `TOOL_PARAMETERS`, and `run(args)`, and
+  she learns a new skill at boot (`reload_user_tools` picks up changes live).
+  Five-minute guide in `docs/USER_TOOL_SDK.md`.
+- **Personas** — switchable prompt overlays (`concise`, `coach`) via
+  `set_persona`; her soul stays her soul.
+- **Installer groundwork & first-run wizard** — `installer/` holds a
+  PyInstaller one-folder build generator (`--dry-run` validated) plus an
+  Inno Setup script for a real Windows installer; on first launch she walks
+  through missing API keys herself (skippable). Build notes in
+  `docs/INSTALLER.md`.
 - **Autonomy: Heartbeat, Workers, Self-Healing** — a proactive heartbeat daemon
   that acts on important events on its own; persistent background workers for
   long jobs, a downloads watcher, and system resource monitoring (with alerts
@@ -94,7 +142,10 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
 - Windows 10/11, Python 3.9+ (**Python 3.9 recommended** — PyAudio and pygame
   install cleanly there; if you launch under a newer Python that's missing
   them, `aria.py` automatically relaunches under 3.9 when it's installed)
-- A free [Google AI Studio](https://aistudio.google.com/) Gemini API key
+- An [Ollama Cloud](https://ollama.com/) API key (`OLLAMA_API_KEY` — free
+  starter tier) for her primary brain (gpt-oss:120b); Groq / OpenRouter /
+  Mistral keys are optional fallbacks. A Gemini key is still used for
+  screenshot vision.
 - Microphone + speakers (webcam optional, used for face tracking / vision)
 
 ## Quick start
@@ -110,8 +161,10 @@ First run creates `aria_keys.json` next to the script. Add your keys with:
 python tools\aria_add_key.py
 ```
 
-(or set `GEMINI_API_KEY` / `GITHUB_TOKEN` as environment variables — env vars
-take precedence over `aria_keys.json`).
+(or set `OLLAMA_API_KEY` / `GEMINI_API_KEY` / `GITHUB_TOKEN` as environment
+variables — env vars take precedence over `aria_keys.json`). On first launch
+she runs a short setup wizard that checks dependencies and walks through any
+missing keys (Ctrl+C skips it).
 
 Gmail sending and reading use an app password, saved via ARIA's `gmail_setup` tool (`send_email` / `read_email`).
 
@@ -152,11 +205,11 @@ with your bridge token, and tap Camera ON in the ⚙ settings panel.
 aria.py                  Root entrypoint / launcher (auto-redirects to
                          Python 3.9 when PyAudio/pygame are missing)
 aria/                    Modular system package
-  agent/                 Gemini agent loop, streaming, prompt engineering,
-                         self-edit auto-restart watcher
+  agent/                 Multi-provider agent loop, streaming, prompt
+                         engineering, self-edit auto-restart watcher
     brain.py             Central orchestrator: prompt building, function-
                          calling loop, sandboxing, supervision
-    proactive.py         Proactive heartbeat daemon
+    proactive.py         Proactive heartbeat daemon (consumes the event bus)
     workers.py           Persistent background jobs, downloads watcher,
                          system resource monitor
     self_healing.py      Incident log, error diagnosis, auto-heal attempts
@@ -174,21 +227,41 @@ aria/                    Modular system package
   memory.py              SQLite semantic vector memory, journal, memory spine
   mcp.py                 MCP client: connect to MCP servers, register their
                          tools as ARIA tools (mcp_<server>__<tool>)
+  routines.py            Record-and-replay multi-step routines
+  approval.py            Approval layer: auto / confirm-risky / confirm-all
+  events.py              In-process event bus (reminder_fired, price_drop, …)
+  screenwatch.py         Standing vision questions with change detection
+  persona.py             Switchable persona overlays (concise, coach)
+  personas/              Persona overlay fragments
+  pricecheck.py          Hourly price-watch checker (emits price_drop)
+  first_run.py           First-launch setup wizard (deps + API keys)
+  ops_screen.py          Tabbed OPS command center (O: Log/Tasks/Sensors/
+                         Controls/Notes/HUB/Day)
   scheduler.py           Autonomous scheduler and reminders
   spotify.py             Desktop Spotify player control & DJ mode
   hardware.py            Arduino serial: servo head, drive wheels, body tools
   vision.py              Camera capture (USB / IP / bridge), face tracking,
                          screen analysis, phone-frame ingest
   tools/                 Core tools & on-demand specialist toolkits
-    schemas.py           Tool declarations + 11 progressive toolkits
+    schemas.py           Tool declarations + 16 progressive toolkits
     dispatch.py          Registry, execution, parallel calls, dedup
     sandbox.py           Risky-tool gating, argument validation
     builtins.py          Tool implementations
     skills.py            Bounded workflow skills
+    fileops.py           File commander: organize/find/duplicates/disk usage
+    winctl.py            Window snap + app launching
+    triage.py            Email triage (IMPORTANT / FYI / NOISE)
+    usertools.py         User tool SDK loader
+    user_tools/          Drop-in custom tools (sample_greeting.py)
 arduino/aria_body/       Nano firmware: P/T head, W wheels, S stop protocol
 sim/robot_sim.py         Virtual robot body (TCP) for hardware-free testing
 docs/ROBOT_BODY.md       No-solder robot body build guide
+docs/ARIA_ULTIMATE_SPEC.md  Ultimate build spec (all 11 modules)
+docs/USER_TOOL_SDK.md    5-minute custom-tool guide
+docs/INSTALLER.md        Building the Windows installer
+installer/               PyInstaller one-folder generator + Inno Setup script
 tests/test_headless.py   Headless test suite (no camera/mic/hardware needed)
+tests/test_ultimate*.py  Ultimate module tests (50 tests)
 workspace/               Runtime data (memory DB, spine, models, mood, chat logs)
 soul.md                  Her persona & standing directives — loaded on boot
 requirements.txt         Python dependencies
@@ -199,6 +272,31 @@ tools/                   Helper scripts (key manager)
 ## Version history
 
 ### Latest
+
+- **ARIA Ultimate** — the all-encompassing desktop agent build: **routines**
+  (record once, replay by name with `{{parameter}}` slots), an **approval
+  layer** (`auto` / `confirm-risky` / `confirm-all` with token approve/deny),
+  a **file commander** (dry-run-first organize, advanced find, duplicate
+  detection, disk usage), **window snap + app launching**, an **ambient event
+  bus** feeding the heartbeat, **email triage** and a **screen watcher**, a
+  working **hourly price checker**, a **tool SDK** (`aria/tools/user_tools/`
+  drop-ins), switchable **personas**, and **installer groundwork**
+  (PyInstaller one-folder generator, Inno Setup script, first-run key
+  wizard). 95 tools across 16 toolkits; 50 new tests green.
+- **OPS command center** — press `O` for a tabbed overlay (Log, Tasks,
+  Sensors, Controls, Notes, HUB, Day) inside the Python window; `H` keeps the
+  commands view. Visual overhaul with real Roboto Mono typography via PIL,
+  rounded panels, and honest sensors (missing `psutil` shows an install hint;
+  GPU gauge only when `nvidia-smi` reports one). Fixed the boot-killing
+  circular import (`spotify → dispatch → hud → ops_screen → agent →
+  shortcuts → spotify`) by lazily importing `ops_screen`.
+- **Ollama Cloud primary** — the default brain chain is now ollama_cloud
+  (gpt-oss:120b) → Groq → OpenRouter → Mistral; Gemini leaves the default
+  chain while its keys return 402 (screenshot vision stays Gemini-only).
+  The HUD reports the serving provider and flags fallbacks.
+- **HUD fault tracebacks** — full exception tracebacks now land in the log
+  instead of a bare fault line; fixed an undefined `List` import in
+  proactive.
 
 - **Optic PIP live-frame fix** — the CAM.01 picture-in-picture box could never
   render video: `hud.py` bound `LATEST_CAMERA_FRAME` by value at import time
