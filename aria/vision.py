@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import threading
 import time
+import urllib.request
 from datetime import datetime
 from typing import Optional, Tuple, Dict, Any, Callable
 
@@ -159,13 +161,76 @@ def describe_phone_view(question: str = "") -> str:
     except Exception as e:
         return f"[Vision unavailable: {e}]"
 
+def _ollama_native_vision_call(sys_prompt: str, contents: Any) -> Optional[str]:
+    """Vision via Ollama's native /api/chat endpoint (images array).
+
+    This is Ollama's documented image format — tried FIRST because the
+    OpenAI-compatible /v1 endpoint's image_url support on Ollama Cloud is
+    unreliable (HTTP 400s). Returns the description text, or None.
+    """
+    try:
+        from aria.agent.providers import (
+            OLLAMA_CLOUD_API_KEY, OLLAMA_CLOUD_MODEL, resolve_role_model)
+    except Exception:
+        return None
+    if not OLLAMA_CLOUD_API_KEY:
+        return None
+    texts: list = []
+    images: list = []
+    for msg in contents or []:
+        for p in (msg.get("parts") or []):
+            if isinstance(p.get("text"), str):
+                texts.append(p["text"])
+            idata = p.get("inline_data")
+            if isinstance(idata, dict) and idata.get("data"):
+                images.append(idata["data"])
+    if not images:
+        return None
+    model = resolve_role_model("vision") or OLLAMA_CLOUD_MODEL
+    messages = []
+    if sys_prompt:
+        messages.append({"role": "system", "content": sys_prompt})
+    messages.append({"role": "user",
+                     "content": "\n".join(texts) or "Describe what you see.",
+                     "images": images})
+    payload = {"model": model, "stream": False, "messages": messages}
+    try:
+        req = urllib.request.Request(
+            "https://ollama.com/api/chat",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {OLLAMA_CLOUD_API_KEY}",
+                     "Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        text = (data.get("message") or {}).get("content", "").strip()
+        return text or None
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode("utf-8", errors="replace")[:160]
+        except Exception:
+            detail = ""
+        add_log(f"ollama native vision: HTTP {e.code}: {detail}")
+        return None
+    except Exception as e:
+        add_log(f"ollama native vision failed: {e}")
+        return None
+
+
 def _default_vision_call(sys_prompt: str, contents: Any) -> str:
     """Vision via the provider chain on the vision-role model.
 
-    Attached as the default _VISION_TEXT_CALL so screen/phone vision no
-    longer depends on Gemini (whose keys are 402-dead). Falls back to the
-    legacy Gemini path only if the whole chain is down.
+    Order: (1) Ollama native /api/chat (documented image format),
+    (2) OpenAI-compatible image_url via the provider chain (ollama_cloud
+    only), (3) legacy Gemini path. Falls back to the legacy Gemini path
+    only if everything above is down.
     """
+    try:
+        text = _ollama_native_vision_call(sys_prompt, contents)
+        if text:
+            return text
+    except Exception as e:
+        add_log(f"native vision call failed: {e}")
     data = None
     try:
         from aria.agent.providers import provider_call, resolve_role_model

@@ -272,6 +272,58 @@ def t_only_provider_restricts_chain():
     assert data["candidates"][0]["content"]["parts"][0]["text"] == "ok"
 
 
+def t_native_vision_payload_format():
+    # Ollama native /api/chat: base64 images array, stream=false,
+    # Bearer auth, model = vision role tag.
+    import io
+    import json as _json
+
+    try:
+        vision_mod = importlib.import_module("aria.vision")
+    except Exception as e:
+        print(f"SKIP t_native_vision_payload_format: {e}")
+        return
+
+    sent = {}
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return _json.dumps({"message": {"role": "assistant",
+                                            "content": "a red bicycle"}}).encode()
+
+    def fake_urlopen(req, timeout=None):
+        sent["url"] = req.full_url
+        sent["auth"] = req.get_header("Authorization", "")
+        sent["body"] = _json.loads(req.data.decode())
+        return FakeResp()
+
+    old_key = getattr(providers, "OLLAMA_CLOUD_API_KEY", "")
+    old_urlopen = vision_mod.urllib.request.urlopen
+    providers.OLLAMA_CLOUD_API_KEY = "test-key-xyz"
+    vision_mod.urllib.request.urlopen = fake_urlopen
+    try:
+        out = vision_mod._ollama_native_vision_call(
+            "sys", [{"role": "user", "parts": [
+                {"text": "what"},
+                {"inline_data": {"mime_type": "image/jpeg", "data": "QUJD"}}]}])
+    finally:
+        providers.OLLAMA_CLOUD_API_KEY = old_key
+        vision_mod.urllib.request.urlopen = old_urlopen
+    assert out == "a red bicycle", out
+    assert sent["url"] == "https://ollama.com/api/chat", sent["url"]
+    assert sent["auth"] == "Bearer test-key-xyz", sent["auth"]
+    assert sent["body"]["model"] == "gemma4:31b-cloud", sent["body"]["model"]
+    assert sent["body"]["stream"] is False
+    assert sent["body"]["messages"][-1]["images"] == ["QUJD"], sent["body"]["messages"]
+    assert sent["body"]["messages"][-1]["content"] == "what"
+
+
 for name, fn in sorted([(k, v) for k, v in list(globals().items()) if k.startswith("t_")]):
     check(name, fn)
 
