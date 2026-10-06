@@ -87,7 +87,7 @@ _CLICKS: List[Tuple[int, int, int, int, str, Any]] = []  # rebuilt every draw
 
 def _sanitize(s: str) -> str:
     # Roboto Mono covers these; everything else becomes "?" so PIL/cv2 never chokes.
-    return re.sub(r"[^\x20-\x7e·—–●→✓]", "?", str(s))
+    return re.sub(r"[^\x20-\x7e·—–●→✓★]", "?", str(s))
 
 
 def _trunc(s: str, n: int) -> str:
@@ -379,7 +379,6 @@ def focus_search() -> None:
     SEARCH_FOCUS = True
     NOTES_FOCUS = False
 
-
 def unfocus_search() -> None:
     global SEARCH_FOCUS
     SEARCH_FOCUS = False
@@ -450,6 +449,90 @@ def notes_newline() -> None:
     global NOTES_BUF
     NOTES_BUF += "\n"
     save_notes()  # autosave (immediate on newline)
+
+
+# ---------------------------------------------------------------- inbox viewer
+# DAY tab: recent important emails. Click a row to open the reader overlay
+# with LISTEN (TTS) and SUMMARIZE (short paragraph via provider chain).
+SELECTED_EMAIL: Optional[str] = None
+_EMAIL_BODIES: Dict[str, str] = {}
+_EMAIL_SUMMARIES: Dict[str, str] = {}
+_EMAIL_SUMMARIZING: set = set()
+
+
+def _inbox_items():
+    try:
+        d = _ops.fetch_inbox()
+        if not d.get("connected"):
+            return [], False
+        return d.get("items") or [], True
+    except Exception:
+        return [], False
+
+
+def _email_body(uid: str) -> str:
+    if uid not in _EMAIL_BODIES:
+        try:
+            _EMAIL_BODIES[uid] = _ops.read_mail_body(uid, max_chars=3000)
+        except Exception as e:
+            _EMAIL_BODIES[uid] = f"Couldn't open that email: {e}"
+    return _EMAIL_BODIES[uid]
+
+
+def _listen_email(uid: str, sender: str, subject: str) -> None:
+    """Speak the email (summary if available, else the body) in a thread."""
+    def _run():
+        try:
+            text = _EMAIL_SUMMARIES.get(uid) or _email_body(uid)
+            _speech.speak(f"Email from {sender}. Subject: {subject}. {text[:1200]}")
+        except Exception as e:
+            _config.add_log(f"Email listen failed: {e}")
+    threading.Thread(target=_run, daemon=True).start()
+    _config.add_log(f"Reading email from {sender} aloud.")
+
+
+def _summarize_email(uid: str, sender: str, subject: str) -> None:
+    """Generate a short paragraph summary via the provider chain (threaded)."""
+    if uid in _EMAIL_SUMMARIZING or uid in _EMAIL_SUMMARIES:
+        return
+    _EMAIL_SUMMARIZING.add(uid)
+
+    def _run():
+        try:
+            body = _email_body(uid)
+            text = None
+            try:
+                from aria.agent import providers as _pv
+                contents = [{"role": "user", "parts": [{
+                    "text": f"From: {sender}\nSubject: {subject}\n\n{body[:2500]}"}]}]
+                for p in _pv._build_chain():
+                    if not p.is_available():
+                        continue
+                    try:
+                        resp = p.call(
+                            "Summarize this email in 2-3 short sentences. "
+                            "Plain text only, no preamble.",
+                            contents)
+                        if resp:
+                            for cand in resp.get("candidates") or []:
+                                for part in (cand.get("content") or {}).get("parts") or []:
+                                    if part.get("text"):
+                                        text = part["text"].strip()
+                                        break
+                                if text:
+                                    break
+                        if text:
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            _EMAIL_SUMMARIES[uid] = text or "(couldn't summarize — provider chain unavailable)"
+        except Exception as e:
+            _EMAIL_SUMMARIES[uid] = f"(summary failed: {e})"
+        finally:
+            _EMAIL_SUMMARIZING.discard(uid)
+    threading.Thread(target=_run, daemon=True).start()
 
 # ---------------------------------------------------------------- task rows
 def _task_rows() -> List[Dict[str, Any]]:
@@ -1065,6 +1148,56 @@ def _draw_system(canvas) -> None:
 
 
 # ---------------------------------------------------------------- DAY tab
+def _draw_email_reader(canvas) -> None:
+    """Overlay: full email with LISTEN and SUMMARIZE actions."""
+    global SELECTED_EMAIL
+    items, _ = _inbox_items()
+    meta = next((it for it in items if it.get("uid") == SELECTED_EMAIL), None)
+    sender = (meta or {}).get("sender", "?")
+    subject = (meta or {}).get("subject", "(no subject)")
+    uid = SELECTED_EMAIL or ""
+    x0, x1 = 180, W - 180
+    y0, y1 = CONTENT_Y + 20, CONTENT_BOT - 20
+    ry = _card(canvas, x0, y0, x1, y1, "EMAIL")
+    _txt(canvas, _trunc(sender, 60), x0 + 18, ry, 14, TEXT, True)
+    _txt(canvas, _trunc(subject, 70), x0 + 18, ry + 24, 13, INFO, True)
+    # action buttons
+    bx = x0 + 18
+    bw = _pill(canvas, bx, ry + 52, "LISTEN", OK)
+    _CLICKS.append((bx, ry + 52, bx + bw, ry + 76, "emaillisten", uid))
+    bx += bw + 10
+    if uid in _EMAIL_SUMMARIZING:
+        _pill(canvas, bx, ry + 52, "… SUMMARIZING", WARN)
+    else:
+        bw2 = _pill(canvas, bx, ry + 52, "SUMMARIZE", ACCENT)
+        _CLICKS.append((bx, ry + 52, bx + bw2, ry + 76, "emailsummarize", uid))
+        bx += bw2 + 10
+    bw3 = _pill_outline(canvas, x1 - 110, ry + 52, "CLOSE", DIM)
+    _CLICKS.append((x1 - 110, ry + 52, x1 - 110 + bw3, ry + 76, "emailclose", None))
+    # summary (if any)
+    yy = ry + 92
+    summary = _EMAIL_SUMMARIES.get(uid)
+    if summary:
+        _txt(canvas, "SUMMARY", x0 + 18, yy, 11, WARN, True)
+        yy += 20
+        for line in _wrap_lines(summary, 92)[:4]:
+            _txt(canvas, line, x0 + 18, yy, 13, TEXT)
+            yy += 20
+        yy += 8
+        cv2.line(canvas, (x0 + 18, yy), (x1 - 18, yy), BORDER_SOFT, 1)
+        yy += 12
+    # body
+    _txt(canvas, "MESSAGE", x0 + 18, yy, 11, FAINT, True)
+    yy += 20
+    body = _email_body(uid)
+    width = max(20, int((x1 - x0 - 36) / 7.8))
+    for line in _wrap_lines(body, width)[:22]:
+        if yy > y1 - 24:
+            break
+        _txt(canvas, line, x0 + 18, yy, 13, TEXT)
+        yy += 20
+
+
 def _draw_day(canvas) -> None:
     # dashboard left (2/3), notes right (1/3)
     dash_x1 = 830
@@ -1104,18 +1237,43 @@ def _draw_day(canvas) -> None:
                  46, ay, 12, FAINT)
             ay += 26
         # tasks
-        if ay < CONTENT_BOT - 80:
+        if ay < CONTENT_BOT - 140:
             cv2.line(canvas, (46, ay), (dash_x1 - 18, ay), BORDER_SOFT, 1)
             ay += 14
             _txt(canvas, "TASKS", 46, ay, 11, FAINT, True)
             ay += 24
-            for r in _task_rows()[:6]:
+            for r in _task_rows()[:5]:
                 col, lbl = _task_pill(r["status"])
                 _pill(canvas, 46, ay - 3, lbl, col)
                 _txt(canvas, _trunc(r["desc"], 48), 140, ay, 12, TEXT)
                 ay += 28
-                if ay > CONTENT_BOT - 40:
+                if ay > CONTENT_BOT - 140:
                     break
+        # inbox — recent important emails
+        if ay < CONTENT_BOT - 60:
+            cv2.line(canvas, (46, ay), (dash_x1 - 18, ay), BORDER_SOFT, 1)
+            ay += 14
+            _txt(canvas, "INBOX", 46, ay, 11, FAINT, True)
+            ay += 24
+            items, connected = _inbox_items()
+            if not connected:
+                _txt(canvas, "gmail not connected", 46, ay, 12, FAINT)
+            elif not items:
+                _txt(canvas, "no unread mail", 46, ay, 12, FAINT)
+            else:
+                for it in items[:5]:
+                    if ay > CONTENT_BOT - 40:
+                        break
+                    uid = it.get("uid", "")
+                    _txt(canvas, _trunc(it.get("sender", "?"), 22),
+                         46, ay, 12, WARN if it.get("important") else TEXT, True)
+                    _txt(canvas, _trunc(it.get("subject", "(no subject)"), 44),
+                         260, ay, 12, DIM)
+                    if SELECTED_EMAIL == uid:
+                        cv2.rectangle(canvas, (40, ay - 4), (dash_x1 - 24, ay + 18),
+                                      ACCENT_DIM, -1)
+                    _CLICKS.append((40, ay - 4, dash_x1 - 24, ay + 18, "email", uid))
+                    ay += 26
     except Exception:
         _txt(canvas, "dashboard unavailable", 46, dy, 13, FAINT)
     # notes card
@@ -1155,13 +1313,15 @@ def draw(canvas, ACC, ACC2, day_draw_fn: Callable) -> None:
         _draw_system(canvas)
     elif ACTIVE_TAB == "day":
         _draw_day(canvas)
+        if SELECTED_EMAIL:
+            _draw_email_reader(canvas)
     _draw_tab_bar(canvas)
     _draw_status(canvas)
 
 
 # ---------------------------------------------------------------- input
 def handle_click(x: int, y: int) -> bool:
-    global SELECTED_EVENT, SELECTED_TASK
+    global SELECTED_EVENT, SELECTED_TASK, SELECTED_EMAIL
     for (x0, y0, x1, y1, kind, arg) in _CLICKS:
         if x0 <= x <= x1 and y0 <= y <= y1:
             if kind == "tab":
@@ -1181,6 +1341,18 @@ def handle_click(x: int, y: int) -> bool:
                 SELECTED_TASK = arg if SELECTED_TASK != arg else None
             elif kind == "jobcancel":
                 _cancel_job(arg)
+            elif kind == "email":
+                SELECTED_EMAIL = None if SELECTED_EMAIL == arg else arg
+            elif kind == "emailclose":
+                SELECTED_EMAIL = None
+            elif kind == "emaillisten":
+                items, _ = _inbox_items()
+                meta = next((it for it in items if it.get("uid") == arg), {})
+                _listen_email(arg, meta.get("sender", "?"), meta.get("subject", ""))
+            elif kind == "emailsummarize":
+                items, _ = _inbox_items()
+                meta = next((it for it in items if it.get("uid") == arg), {})
+                _summarize_email(arg, meta.get("sender", "?"), meta.get("subject", ""))
             elif kind == "ctl":
                 _ctl_action(arg)
             elif kind == "script":
