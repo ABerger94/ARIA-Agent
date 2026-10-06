@@ -36,7 +36,8 @@ _DONE_FLAG = os.path.expanduser(os.path.join("~", "ARIA", ".first_run_done"))
 # (keys-file field, friendly prompt). Only asked when the stored value is
 # missing/"INSERT" — never re-asks for keys that are already set.
 _KEY_PROMPTS = [
-    ("GEMINI_API_KEY", "Gemini API key (main brain — required)"),
+    ("OLLAMA_API_KEY", "Ollama Cloud API key (main brain — required, free tier at ollama.com)"),
+    ("GEMINI_API_KEY", "Gemini API key (vision fallback — optional)"),
     ("GROQ_API_KEY", "Groq API key (fallback provider, optional)"),
     ("OPENROUTER_API_KEY", "OpenRouter API key (fallback provider, optional)"),
     ("GITHUB_TOKEN", "GitHub token (code pushes, optional)"),
