@@ -17,7 +17,7 @@ from typing import Optional, Dict, Any, Tuple, Callable, List
 
 from aria.config import WORKSPACE_DIR, ROOT_DIR, add_log
 from aria.memory import (
-    incident_db_log, incident_db_list, spine_append
+    incident_db_log, incident_db_list, spine_append, memory_save
 )
 
 SAFE_AUTO_PACKAGES = {
@@ -48,10 +48,38 @@ def record_incident(category: str, source: str, error_text: str,
         })
         status_label = "RESOLVED" if resolved else "UNRESOLVED"
         add_log(f"Self-Heal [{status_label}] ({category}): {action_taken[:60]}")
+        _maybe_promote_lesson(category, source, diagnosis, action_taken)
         return iid
     except Exception as e:
         add_log(f"Failed to record self-healing incident: {e}")
         return 0
+
+
+def _maybe_promote_lesson(category: str, source: str, diagnosis: str,
+                          action_taken: str) -> None:
+    """Self-repair Part 3: incident learning.
+
+    When the same (category, source) failure recurs unresolved 3+ times, write
+    a durable lesson to memory so she stops tripping on it. Same-key saves are
+    idempotent — the lesson refreshes rather than duplicates. Never raises.
+    """
+    try:
+        recent = incident_db_list(50)
+        same = [i for i in recent
+                if i.get("category") == category
+                and i.get("source") == source
+                and not i.get("resolved")]
+        if len(same) >= 3:
+            key = f"lesson:{category}:{source}"
+            memory_save(
+                "self_heal", key,
+                f"Recurring failure ({len(same)}x): {diagnosis}. "
+                f"What was tried: {action_taken}. "
+                f"Before retrying '{source}', check this lesson and change approach."
+            )
+            add_log(f"Self-Heal: promoted recurring {category}/{source} to durable memory.")
+    except Exception as e:
+        add_log(f"Lesson promotion failed: {e}")
 
 
 def get_recent_incidents(limit: int = 10) -> List[Dict[str, Any]]:

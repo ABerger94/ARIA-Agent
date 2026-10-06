@@ -178,6 +178,20 @@ def _substitute(value, params: dict):
     return value
 
 
+def _preflight_steps(steps, known_tools):
+    """Self-repair Part 4: pre-flight check for routine replay.
+
+    Returns the sorted list of tool names in `steps` that are not in
+    `known_tools`. Empty list means clear to replay. Never raises.
+    """
+    try:
+        known = set(known_tools or [])
+        return sorted({str(s.get("tool", "?")) for s in (steps or [])
+                       if str(s.get("tool", "?")) not in known})
+    except Exception:
+        return []
+
+
 def run_routine_impl(name: str, params=None) -> str:
     """Replay a routine's steps via dispatch.execute_tool.
 
@@ -199,6 +213,22 @@ def run_routine_impl(name: str, params=None) -> str:
 
     from aria import approval as _approval_mod  # lazy: no import cycle
     from aria.tools import dispatch as _dispatch_mod  # lazy: no import cycle
+
+    # Self-repair Part 4: pre-flight. Validate every step's tool exists before
+    # replaying anything — fail fast with a clear message instead of dying
+    # midway through a multi-step routine.
+    try:
+        known = set(_dispatch_mod.tool_names())
+    except Exception:
+        known = set()
+    if known:
+        missing = _preflight_steps(steps, known)
+    else:
+        missing = []
+    if missing:
+        config.add_log(f"[routines] pre-flight FAILED for '{sname}': unknown tools {missing}")
+        return (f"[Routine '{sname}' aborted pre-flight: unknown tool(s): "
+                f"{', '.join(missing)}. Fix the routine before replaying.]")
 
     lines = []
     for i, step in enumerate(steps, 1):

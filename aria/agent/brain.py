@@ -256,6 +256,11 @@ def build_system_instruction(user_prompt: str) -> str:
         "(Log/Tasks/Sensors/Controls/Notes/HUB/Day), rendered by aria/ops_screen.py. "
         "When the user says 'OPS screen' they mean that overlay or its code — "
         "never the main HUD. "
+        "Self-repair: when a tool call fails you get a diagnosis and up to 2 "
+        "repair attempts — use them to fix your approach, never by repeating "
+        "the identical call; when the budget is exhausted, report the failure "
+        "plainly and move on. Before starting a multi-step task, validate "
+        "that the directories, keys, and tools you need actually exist. "
         "Every turn you MUST either call a tool or reply with text — "
         "never return an empty response with no tool call and no words."
     )

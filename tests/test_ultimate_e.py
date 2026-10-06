@@ -783,6 +783,105 @@ def t_ops_intent_none():
     assert fn("ops") is None  # bare mention, no intent verb
 
 
+def _extract_fn(path, name, namespace=None):
+    """AST-extract a single function from a source file without importing the
+    module (avoids heavy deps). `namespace` supplies the globals it needs."""
+    import ast
+    src = open(os.path.join(PKG, path), encoding="utf-8").read()
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            ns = dict(namespace or {})
+            exec(compile(ast.Module(body=[node], type_ignores=[]),
+                         path, "exec"), ns)
+            return ns[name]
+    raise AssertionError(f"{name} not found in {path}")
+
+
+def _stub_self_healing_module():
+    sh = types.ModuleType("aria.agent.self_healing")
+    sh.diagnose_error = lambda source, err, ctx=None: {
+        "diagnosis": "stub diagnosis",
+        "recommended_action": "stub fix",
+        "category": "STUB",
+        "can_auto_heal": False,
+    }
+    sys.modules["aria.agent.self_healing"] = sh
+
+
+def t_selfrepair_hallucination_match():
+    from typing import Optional
+    fn = _extract_fn("tools/dispatch.py", "_closest_tool",
+                     {"_REGISTRY": {"get_time": 1, "read_file": 2, "set_timer": 3},
+                      "Optional": Optional})
+    assert fn("get_tim") == "get_time"
+    assert fn("readfile") == "read_file"
+    assert fn("container.exec") is None  # the probe's hallucination: no close match
+    assert fn("xyzzy_nope") is None
+    assert fn("") is None
+
+
+def t_selfrepair_budget_allows_then_exhausts():
+    _stub_self_healing_module()
+    failures = {}
+    fn = _extract_fn("tools/dispatch.py", "_repair_or_exhaust",
+                     {"_TURN_FAILURES": failures, "_REPAIR_BUDGET": 2})
+    args = {"x": 1}
+    r1 = fn("some_tool", args, "ValueError: bad")
+    assert "[Repair attempt 1/2" in r1, r1
+    assert "Do not repeat the identical call" in r1
+    r2 = fn("some_tool", args, "ValueError: bad")
+    assert "[Repair attempt 2/2" in r2, r2
+    r3 = fn("some_tool", args, "ValueError: bad")
+    assert "budget exhausted" in r3.lower(), r3
+    assert "report the failure" in r3.lower()
+    # a different call signature gets its own budget
+    r4 = fn("some_tool", {"x": 2}, "ValueError: bad")
+    assert "[Repair attempt 1/2" in r4, r4
+
+
+def t_selfrepair_lesson_promotion():
+    saved = []
+    logged = []
+    incs = [
+        {"category": "NETWORK_TRANSIENT", "source": "fetch_url",
+         "resolved": 0},
+        {"category": "NETWORK_TRANSIENT", "source": "fetch_url",
+         "resolved": 0},
+        {"category": "NETWORK_TRANSIENT", "source": "fetch_url",
+         "resolved": 0},
+    ]
+    fn = _extract_fn("agent/self_healing.py", "_maybe_promote_lesson", {
+        "incident_db_list": lambda limit: incs,
+        "memory_save": lambda cat, key, val: saved.append((cat, key, val)),
+        "add_log": lambda msg: logged.append(msg),
+    })
+    fn("NETWORK_TRANSIENT", "fetch_url", "diag text", "tried retry")
+    assert len(saved) == 1, saved
+    cat, key, val = saved[0]
+    assert cat == "self_heal" and key == "lesson:NETWORK_TRANSIENT:fetch_url"
+    # below threshold: no promotion
+    saved.clear()
+    fn2 = _extract_fn("agent/self_healing.py", "_maybe_promote_lesson", {
+        "incident_db_list": lambda limit: incs[:2],
+        "memory_save": lambda cat, key, val: saved.append((cat, key, val)),
+        "add_log": lambda msg: None,
+    })
+    fn2("NETWORK_TRANSIENT", "fetch_url", "diag", "tried")
+    assert saved == []
+
+
+def t_selfrepair_preflight():
+    fn = _extract_fn("routines.py", "_preflight_steps")
+    steps = [{"tool": "get_time", "args": {}},
+             {"tool": "bogus_tool", "args": {}},
+             {"tool": "read_file", "args": {}}]
+    assert fn(steps, {"get_time", "read_file", "set_timer"}) == ["bogus_tool"]
+    assert fn(steps, {"get_time", "read_file", "bogus_tool"}) == []
+    assert fn([], {"get_time"}) == []
+    assert fn(None, None) == []  # never raises
+
+
 for name, fn in sorted([(k, v) for k, v in list(globals().items()) if k.startswith("t_")]):
     check(name, fn)
 

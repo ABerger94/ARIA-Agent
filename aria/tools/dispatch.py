@@ -32,6 +32,11 @@ _LAST_OPEN_TARGET: str = ""
 _TURN_NUDGED: bool = False
 _LAST_TOOL_EXECUTED: Tuple[Optional[str], float] = (None, 0.0)
 
+# Self-Repair State (Part 2 of the self-repair upgrade)
+# Consecutive failures per tool-call signature within the current turn.
+_TURN_FAILURES: Dict[str, int] = {}
+_REPAIR_BUDGET = 2  # repair attempts per failing call before she must stop and report
+
 # Pluggable Subsystem Hooks
 _SPINE_HOOK: Callable[[str, dict], None] = default_spine_append
 _HUD_HOOK: Optional[Callable[[str], Any]] = None
@@ -151,6 +156,7 @@ def reset_turn_state(user_message: str = "") -> None:
     """Reset per-turn state caches."""
     global _TURN_CALLS, _TURN_NUDGED, _LAST_USER_MESSAGE
     _TURN_CALLS.clear()
+    _TURN_FAILURES.clear()
     _TURN_NUDGED = False
     _LAST_USER_MESSAGE = user_message
 
@@ -171,6 +177,68 @@ def get_last_tool_executed() -> Tuple[Optional[str], float]:
 
 
 # --- Core Dispatch Execution ---
+
+
+def _closest_tool(name: str) -> Optional[str]:
+    """Fuzzy-match a hallucinated/typo'd tool name to the closest real tool.
+    (Self-repair Part 1.) Returns None when nothing is close enough."""
+    try:
+        import difflib
+        cands = difflib.get_close_matches(name or "", list(_REGISTRY.keys()),
+                                          n=1, cutoff=0.6)
+        return cands[0] if cands else None
+    except Exception:
+        return None
+
+
+def tool_names() -> List[str]:
+    """All registered tool names (used by routine pre-flight checks)."""
+    try:
+        return sorted(_REGISTRY.keys())
+    except Exception:
+        return []
+
+
+def _repair_or_exhaust(fn_name: str, args: dict, err_str: str) -> str:
+    """Structured repair loop (Self-repair Part 2).
+
+    Tracks consecutive failures per call signature within the turn. While the
+    budget lasts, returns the error WITH a diagnosis and a repair instruction
+    for the model. When exhausted, tells the model to stop retrying and
+    report to the user. Never raises.
+    """
+    try:
+        import json
+        sig = f"{fn_name}|{json.dumps(args or {}, sort_keys=True, default=str)}"
+    except Exception:
+        sig = f"{fn_name}|?"
+    n = _TURN_FAILURES.get(sig, 0) + 1
+    _TURN_FAILURES[sig] = n
+    err_short = err_str if len(err_str) <= 600 else err_str[:600] + "…[truncated]"
+    try:
+        from aria.agent.self_healing import diagnose_error
+        diag = diagnose_error(fn_name, err_str, args or {})
+        diagnosis = diag.get("diagnosis", "")
+        suggestion = diag.get("recommended_action", "")
+    except Exception:
+        diagnosis, suggestion = "", ""
+    if n <= _REPAIR_BUDGET:
+        parts = [f"[Tool Error: {err_short}]"]
+        if diagnosis:
+            parts.append(f"Diagnosis: {diagnosis}.")
+        if suggestion:
+            parts.append(f"Suggested fix: {suggestion}.")
+        parts.append(
+            f"[Repair attempt {n}/{_REPAIR_BUDGET} for '{fn_name}': "
+            f"diagnose the root cause and fix your approach, or say you "
+            f"cannot complete it. Do not repeat the identical call.]")
+        return "\n".join(parts)
+    return (f"[Tool Error: {err_short}]\n"
+            f"[Repair budget exhausted for '{fn_name}' after {_REPAIR_BUDGET} "
+            f"attempts. Stop retrying this call and report the failure to "
+            f"the user plainly.]")
+
+
 def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple[str, bool]:
     """Dispatch one tool with full validation, sandboxing, and audit logging.
     Returns (result_text, False) — confirmation gating was removed; the bool is
@@ -254,7 +322,18 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
         if handler:
             r = handler(args or {})
         else:
-            r = f"Unknown tool: {fn_name}"
+            # Self-repair Part 1: hallucinated tool name -> closest real tool,
+            # executed once directly (no recursion into execute_tool).
+            match = _closest_tool(fn_name)
+            if match:
+                try:
+                    _LOG_HOOK(f"Self-Heal: unknown tool '{fn_name}' -> '{match}'")
+                    r = _REGISTRY[match](args or {})
+                    r = f"{r}\n[Self-Heal: '{fn_name}' is not a tool; ran '{match}' instead]"
+                except Exception as e2:
+                    r = f"Unknown tool: {fn_name} (closest match '{match}' also failed: {e2})"
+            else:
+                r = f"Unknown tool: {fn_name}"
     except Exception as e:
         try:
             from aria.agent.self_healing import attempt_auto_heal
@@ -262,7 +341,7 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
             if healed:
                 r = f"{healed_res}\n[Autonomous Self-Healing: {heal_msg}]"
             else:
-                r = f"[Tool Error: {e}]"
+                r = _repair_or_exhaust(fn_name, args or {}, f"{type(e).__name__}: {e}")
         except Exception:
             r = f"[Tool Error: {e}]"
     finally:
@@ -279,6 +358,9 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
             healed, healed_res, heal_msg = attempt_auto_heal(fn_name, args or {}, r, handler)
             if healed:
                 r = f"{healed_res}\n[Autonomous Self-Healing: {heal_msg}]"
+            else:
+                # Self-repair Part 2: structured repair loop with a budget.
+                r = _repair_or_exhaust(fn_name, args or {}, r)
         except Exception:
             pass
 
