@@ -126,16 +126,17 @@ def gemini_contents_to_oai_messages(
             images = [p["inline_data"] for p in parts
                       if isinstance(p.get("inline_data"), dict) and p["inline_data"].get("data")]
             if images:
+                # Per Ollama's multimodal guidance: image content BEFORE text.
                 content_items: List[Dict[str, Any]] = []
-                for p in parts:
-                    if isinstance(p.get("text"), str):
-                        content_items.append({"type": "text", "text": p["text"]})
                 for idata in images:
                     mime = idata.get("mime_type", "image/jpeg")
                     content_items.append({
                         "type": "image_url",
                         "image_url": {"url": f"data:{mime};base64,{idata['data']}"},
                     })
+                for p in parts:
+                    if isinstance(p.get("text"), str):
+                        content_items.append({"type": "text", "text": p["text"]})
                 messages.append({"role": "user", "content": content_items})
             else:
                 text_bits = [p["text"] for p in parts if isinstance(p.get("text"), str)]
@@ -391,11 +392,15 @@ class OpenAICompatProvider(Provider):
                         f"{detail[:120]}")
                 return None
             if e.code in (400, 401, 402, 403, 404):
-                # 400 is a malformed request (payload), not a bad key:
-                # brief cooldown only. 401/403 (bad key) and 402/404 keep
-                # the long quarantine.
-                q = 60 if e.code == 400 else KEY_QUARANTINE_DURATION_S
-                quarantine_key(self.api_key, q, e.code)
+                # 400 is a malformed request (OUR payload), not a bad key:
+                # never quarantine — the key is fine and the main loop must
+                # not pay for a bad vision payload or model tag.
+                if e.code == 400:
+                    add_log(f"{self.name}: HTTP 400 (bad request, key NOT quarantined): "
+                            f"{detail[:120]}")
+                    return None
+                # 401/403 (bad key) and 402/404 keep the long quarantine.
+                quarantine_key(self.api_key, KEY_QUARANTINE_DURATION_S, e.code)
                 add_log(f"{self.name}: HTTP {e.code} ({key_mask(self.api_key)}): "
                         f"{detail[:120]}")
                 return None
@@ -464,9 +469,10 @@ def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
                            on_text_chunk, model_override: Optional[str]):
     """Call one provider, optionally on a role-specific model.
 
-    A failing role model falls back to the provider's default model WITHOUT
-    quarantining the API key (the key is fine; the tag may be retired).
-    The provider's configured model is always restored before returning.
+    A failing role model (exception OR empty result — provider.call swallows
+    HTTP errors into last_error + None) falls back to the provider's default
+    model WITHOUT quarantining the API key (the key is fine; the tag or
+    payload was bad). The provider's configured model is always restored.
     Returns (data, used_fallback).
     """
     use_override = bool(model_override) and provider.name == "ollama_cloud"
@@ -479,18 +485,25 @@ def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
                 system_instruction, contents,
                 tool_decls=tool_decls, on_text_chunk=on_text_chunk,
             )
-            return data, False
         except Exception as e:
-            if not use_override:
-                raise
-            add_log(f"provider {provider.name}: role model '{model_override}' failed "
-                    f"({e}); retrying default model (key NOT quarantined)")
-            provider.model = saved
+            data = None
+            provider.last_error = f"raised: {e}"
+        if data and data.get("candidates"):
+            return data, False
+        if not use_override:
+            return data, False
+        add_log(f"provider {provider.name}: role model '{model_override}' failed "
+                f"({provider.last_error}); retrying default model (key NOT quarantined)")
+        provider.model = saved
+        try:
             data = provider.call(
                 system_instruction, contents,
                 tool_decls=tool_decls, on_text_chunk=on_text_chunk,
             )
-            return data, True
+        except Exception as e:
+            data = None
+            provider.last_error = f"raised: {e}"
+        return data, True
     finally:
         if saved is not None:
             provider.model = saved
@@ -502,6 +515,7 @@ def provider_call(
     tool_decls: Optional[List[Dict[str, Any]]] = None,
     on_text_chunk: Optional[Callable[[Optional[str]], None]] = None,
     model_override: Optional[str] = None,
+    only_provider: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Walk the provider chain in order; first provider that returns
     candidates wins. Quarantined/unconfigured providers are skipped
@@ -510,6 +524,9 @@ def provider_call(
     model_override: temporarily run the ollama_cloud leg on a different
     model tag (see resolve_role_model). Prefer passing role= to
     provider_text; the main agent loop leaves this unset.
+    only_provider: restrict the walk to a single named provider (used for
+    vision, where only ollama_cloud can serve the image payload — walking
+    the other providers would 400/404/403 and quarantine THEIR keys).
     """
     global ACTIVE_PROVIDER
     chain = _build_chain()
@@ -517,6 +534,8 @@ def provider_call(
         add_log("provider_call: chain is empty, nothing configured")
         return None
     for provider in chain:
+        if only_provider and provider.name != only_provider:
+            continue
         if not provider.is_available():
             continue
         _note_call(provider.name)

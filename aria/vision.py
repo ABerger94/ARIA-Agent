@@ -169,8 +169,11 @@ def _default_vision_call(sys_prompt: str, contents: Any) -> str:
     data = None
     try:
         from aria.agent.providers import provider_call, resolve_role_model
+        # Vision is ollama_cloud-only: the image payload would 400/404/403 on
+        # the other providers and quarantine THEIR keys for nothing.
         data = provider_call(sys_prompt, contents, tool_decls=None,
-                             model_override=resolve_role_model("vision"))
+                             model_override=resolve_role_model("vision"),
+                             only_provider="ollama_cloud")
     except Exception as e:
         add_log(f"vision role call failed: {e}")
     if data and data.get("candidates"):

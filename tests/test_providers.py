@@ -119,8 +119,8 @@ def test_images_dropped():
         ]},
     ])
     assert msgs[0] == {"role": "user", "content": [
-        {"type": "text", "text": "look"},
         {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAA"}},
+        {"type": "text", "text": "look"},
     ]}, msgs[0]
     print("ok images_dropped")
 
