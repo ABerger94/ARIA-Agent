@@ -9,7 +9,6 @@ import re
 import secrets
 from collections import deque
 from datetime import datetime
-from aria import config as _config_silent
 
 # Root paths
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -168,7 +167,7 @@ def _ensure_bridge_token():
                 _KEYS["bridge_token"] = m.group(1)
                 return m.group(1)
         except Exception as _e_silent:
-            _config_silent.log_silent("_ensure_bridge_token", _e_silent)
+            log_silent("_ensure_bridge_token", _e_silent)
         _tok = secrets.token_urlsafe(16)
         _KEYS["bridge_token"] = _tok
         return _tok
@@ -263,12 +262,12 @@ def add_log(msg: str, level: str = None, meta: dict = None):
     try:
         _EVENT_RING.append((ts, lvl, redacted[:400], dict(meta or {})))
     except Exception as _e_silent:
-        _config_silent.log_silent("add_log", _e_silent)
+        log_silent("add_log", _e_silent)
     for listener in _LOG_LISTENERS:
         try:
             listener(redacted)
         except Exception as _e_silent:
-            _config_silent.log_silent("add_log", _e_silent)
+            log_silent("add_log", _e_silent)
 
 
 def recent_events(n: int = 20):
@@ -321,7 +320,7 @@ def load_soul(path: str = None) -> str:
                 if t:
                     return t
     except Exception as _e_silent:
-        _config_silent.log_silent("load_soul", _e_silent)
+        log_silent("load_soul", _e_silent)
     return DEFAULT_SOUL
 
 ARIA_SOUL = load_soul()
@@ -341,7 +340,7 @@ def settings_save(d: dict):
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(d, f, indent=2)
     except Exception as _e_silent:
-        _config_silent.log_silent("settings_save", _e_silent)
+        log_silent("settings_save", _e_silent)
 
 def get_setting(key: str, default=None):
     return settings_load().get(key, default)
@@ -397,4 +396,4 @@ def log_silent(context: str, exc: BaseException) -> None:
             f.write(f"{datetime.now().isoformat(timespec='seconds')} "
                     f"[{context}] {type(exc).__name__}: {exc}\n")
     except Exception as _e_silent:
-        _config_silent.log_silent("log_silent", _e_silent)
+        log_silent("log_silent", _e_silent)
