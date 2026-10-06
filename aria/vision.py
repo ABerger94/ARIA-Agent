@@ -159,7 +159,35 @@ def describe_phone_view(question: str = "") -> str:
     except Exception as e:
         return f"[Vision unavailable: {e}]"
 
-_VISION_TEXT_CALL: Optional[Callable[[str, Any], str]] = None
+def _default_vision_call(sys_prompt: str, contents: Any) -> str:
+    """Vision via the provider chain on the vision-role model.
+
+    Attached as the default _VISION_TEXT_CALL so screen/phone vision no
+    longer depends on Gemini (whose keys are 402-dead). Falls back to the
+    legacy Gemini path only if the whole chain is down.
+    """
+    data = None
+    try:
+        from aria.agent.providers import provider_call, resolve_role_model
+        data = provider_call(sys_prompt, contents, tool_decls=None,
+                             model_override=resolve_role_model("vision"))
+    except Exception as e:
+        add_log(f"vision role call failed: {e}")
+    if data and data.get("candidates"):
+        parts = data["candidates"][0].get("content", {}).get("parts", [])
+        text = "".join(p.get("text", "") for p in parts
+                       if isinstance(p.get("text"), str)).strip()
+        if text:
+            return text
+        return "[Vision returned no description.]"
+    try:
+        from aria.agent.brain import gemini_text
+        return gemini_text(sys_prompt, contents)
+    except Exception as e:
+        return f"[Vision unavailable: {e}]"
+
+
+_VISION_TEXT_CALL: Optional[Callable[[str, Any], str]] = _default_vision_call
 
 
 def set_vision_text_caller(fn: Callable[[str, Any], str]):

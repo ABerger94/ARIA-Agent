@@ -110,13 +110,18 @@ def test_synth_id_deterministic():
 
 
 def test_images_dropped():
+    # Renamed behavior (role-routing build): inline_data is no longer dropped;
+    # it becomes an OpenAI image_url part so vision-capable models can see it.
     msgs = gemini_contents_to_oai_messages("", [
         {"role": "user", "parts": [
             {"text": "look"},
             {"inline_data": {"mime_type": "image/jpeg", "data": "AAA"}},
         ]},
     ])
-    assert msgs[0] == {"role": "user", "content": "look"}, msgs[0]
+    assert msgs[0] == {"role": "user", "content": [
+        {"type": "text", "text": "look"},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAA"}},
+    ]}, msgs[0]
     print("ok images_dropped")
 
 

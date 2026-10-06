@@ -242,8 +242,9 @@ def t_provider_text_helper_exists():
     assert callable(providers.provider_text)
     import inspect
     sig = inspect.signature(providers.provider_text)
-    assert list(sig.parameters) == ["system_instruction", "user_text"], sig
-check("providers: provider_text(system_instruction, user_text) exists", t_provider_text_helper_exists)
+    assert list(sig.parameters) == ["system_instruction", "user_text", "role"], sig
+    assert sig.parameters["role"].default == "default", sig
+check("providers: provider_text(system_instruction, user_text, role='default') exists", t_provider_text_helper_exists)
 
 # ============ summary ============
 passed = sum(1 for _, s, _ in results if s == "PASS")

@@ -25,6 +25,7 @@ from aria.config import (
     GEMINI_KEY_POOL, GROQ_API_KEY, GROQ_MODEL,
     OPENROUTER_API_KEY, OPENROUTER_MODEL, MISTRAL_API_KEY, MISTRAL_MODEL,
     OLLAMA_CLOUD_API_KEY, OLLAMA_CLOUD_MODEL,
+    OLLAMA_VISION_MODEL, OLLAMA_CODE_MODEL,
     PROVIDER_CHAIN, KEY_QUARANTINE_DURATION_S,
     quarantine_key, key_is_quarantined, key_mask, add_log,
 )
@@ -76,7 +77,8 @@ def gemini_contents_to_oai_messages(
 
     functionCall parts become tool_calls (with synthetic stable ids);
     functionResponse parts become tool messages matched FIFO per tool name.
-    inline_data (images) are dropped — vision is Gemini-only.
+    inline_data (images) become OpenAI image_url parts (data: URLs) so
+    vision-capable models can see them; pure-text parts stay plain strings.
     """
     messages: List[Dict[str, Any]] = []
     if system_instruction:
@@ -117,10 +119,28 @@ def gemini_contents_to_oai_messages(
                 msg["tool_calls"] = tool_calls
             messages.append(msg)
         else:
-            # user role: text parts -> user message; functionResponse -> tool
-            text_bits = [p["text"] for p in parts if isinstance(p.get("text"), str)]
-            if text_bits:
-                messages.append({"role": "user", "content": "\n".join(text_bits)})
+            # user role: text parts -> user message; functionResponse -> tool.
+            # inline_data images become image_url parts (vision-capable
+            # models); when images are present the message uses the multipart
+            # content-item form, otherwise the plain joined string as before.
+            images = [p["inline_data"] for p in parts
+                      if isinstance(p.get("inline_data"), dict) and p["inline_data"].get("data")]
+            if images:
+                content_items: List[Dict[str, Any]] = []
+                for p in parts:
+                    if isinstance(p.get("text"), str):
+                        content_items.append({"type": "text", "text": p["text"]})
+                for idata in images:
+                    mime = idata.get("mime_type", "image/jpeg")
+                    content_items.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{idata['data']}"},
+                    })
+                messages.append({"role": "user", "content": content_items})
+            else:
+                text_bits = [p["text"] for p in parts if isinstance(p.get("text"), str)]
+                if text_bits:
+                    messages.append({"role": "user", "content": "\n".join(text_bits)})
             for p in parts:
                 fr = p.get("functionResponse")
                 if not isinstance(fr, dict):
@@ -420,15 +440,77 @@ def get_active_provider() -> str:
     return ACTIVE_PROVIDER
 
 
+# --- Role-based model routing (Ollama Cloud) ---
+# Routes by ROLE, never by hard-coded model name at call sites: if a tag is
+# retired or 403s, set OLLAMA_VISION_MODEL / OLLAMA_CODE_MODEL to "" (or a new
+# tag) in aria_keys.json and the role silently falls back to the default
+# OLLAMA_CLOUD_MODEL. The conversational loop always uses the default.
+
+def resolve_role_model(role: str) -> Optional[str]:
+    """Map a task role to an Ollama Cloud model tag.
+
+    Returns None for the default/unknown roles (provider's configured model)
+    and when the role's override is empty/disabled.
+    """
+    r = (role or "default").strip().lower()
+    if r == "vision":
+        return OLLAMA_VISION_MODEL or None
+    if r == "code":
+        return OLLAMA_CODE_MODEL or None
+    return None
+
+
+def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
+                           on_text_chunk, model_override: Optional[str]):
+    """Call one provider, optionally on a role-specific model.
+
+    A failing role model falls back to the provider's default model WITHOUT
+    quarantining the API key (the key is fine; the tag may be retired).
+    The provider's configured model is always restored before returning.
+    Returns (data, used_fallback).
+    """
+    use_override = bool(model_override) and provider.name == "ollama_cloud"
+    saved = provider.model if use_override else None
+    try:
+        if use_override:
+            provider.model = model_override
+        try:
+            data = provider.call(
+                system_instruction, contents,
+                tool_decls=tool_decls, on_text_chunk=on_text_chunk,
+            )
+            return data, False
+        except Exception as e:
+            if not use_override:
+                raise
+            add_log(f"provider {provider.name}: role model '{model_override}' failed "
+                    f"({e}); retrying default model (key NOT quarantined)")
+            provider.model = saved
+            data = provider.call(
+                system_instruction, contents,
+                tool_decls=tool_decls, on_text_chunk=on_text_chunk,
+            )
+            return data, True
+    finally:
+        if saved is not None:
+            provider.model = saved
+
+
 def provider_call(
     system_instruction: str,
     contents: List[Dict[str, Any]],
     tool_decls: Optional[List[Dict[str, Any]]] = None,
     on_text_chunk: Optional[Callable[[Optional[str]], None]] = None,
+    model_override: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Walk the provider chain in order; first provider that returns
     candidates wins. Quarantined/unconfigured providers are skipped
-    without network traffic, so recovery is automatic on quarantine expiry."""
+    without network traffic, so recovery is automatic on quarantine expiry.
+
+    model_override: temporarily run the ollama_cloud leg on a different
+    model tag (see resolve_role_model). Prefer passing role= to
+    provider_text; the main agent loop leaves this unset.
+    """
     global ACTIVE_PROVIDER
     chain = _build_chain()
     if not chain:
@@ -439,9 +521,9 @@ def provider_call(
             continue
         _note_call(provider.name)
         try:
-            data = provider.call(
-                system_instruction, contents,
-                tool_decls=tool_decls, on_text_chunk=on_text_chunk,
+            data, _used_fallback = _attempt_provider_call(
+                provider, system_instruction, contents, tool_decls,
+                on_text_chunk, model_override,
             )
         except Exception as e:  # never let one provider kill the turn
             add_log(f"provider {provider.name} raised: {e}")
@@ -459,15 +541,18 @@ def provider_call(
     return None
 
 
-def provider_text(system_instruction: str, user_text: str) -> str:
+def provider_text(system_instruction: str, user_text: str, role: str = "default") -> str:
     """One-shot plain-text call through the provider chain (no tools).
 
     Used by tools that need a quick classification/read, e.g. triage.
+    role: "default" (conversational model), "vision", or "code" — resolved
+    via resolve_role_model(); unknown/empty roles use the default model.
     Returns the concatenated response text, or a bracketed error string.
     """
     try:
         contents = [{"role": "user", "parts": [{"text": str(user_text)}]}]
-        data = provider_call(system_instruction, contents, tool_decls=None)
+        data = provider_call(system_instruction, contents, tool_decls=None,
+                             model_override=resolve_role_model(role))
     except Exception as e:
         add_log(f"provider_text: chain error: {e}")
         return f"[provider_text error: {e}]"

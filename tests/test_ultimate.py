@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SUITES = ["test_ultimate_a.py", "test_ultimate_b.py", "test_ultimate_c.py", "test_ultimate_d.py"]
+SUITES = ["test_ultimate_a.py", "test_ultimate_b.py", "test_ultimate_c.py", "test_ultimate_d.py", "test_ultimate_e.py"]
 
 total_pass, total_fail = 0, 0
 for suite in SUITES:

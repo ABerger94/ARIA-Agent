@@ -37,7 +37,12 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
   (gpt-oss:120b) is the primary brain, failing over through Groq, OpenRouter,
   and Mistral, with per-key rotation and automatic quarantine on rate limits
   and errors. The HUD reports which provider is serving and flags fallbacks.
-  (Screenshot vision still uses Gemini.)
+  **Task-based routing:** the conversational loop stays on gpt-oss:120b while
+  vision runs on gemma4:31b-cloud and heavy background code on
+  qwen3-coder:480b-cloud — routed by role, never hard-coded, so a retired
+  model tag can't break her (override via `OLLAMA_VISION_MODEL` /
+  `OLLAMA_CODE_MODEL`; empty disables the role). Vision falls back to the
+  legacy Gemini path only if the whole provider chain is down.
 - **Progressive Tool Loading** — only the core tool schemas go to the model
   per call; specialist toolkits (autonomy, Gmail, Spotify, scheduler, GitHub,
   vision/hardware, Windows control, MTG, memory/notes, admin, MCP, routines,
