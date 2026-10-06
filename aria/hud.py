@@ -28,7 +28,9 @@ from aria.config import PHONE_BRIDGE_PORT, GITHUB_USERNAME, GITHUB_TOKEN
 from aria.vision import publish_face_frame
 import aria.vision as _vision  # module ref: read LATEST_CAMERA_FRAME live (see Optical PIP)
 import aria.ops as _ops  # OPS command-center data (no cv2 dep)
-import aria.ops_screen as _ops_screen  # tabbed OPS overlay renderer
+# NOTE: aria.ops_screen is imported lazily inside draw_hud (see below). A
+# top-level import here closes a circular loop:
+#   spotify -> tools.dispatch -> hud -> ops_screen -> aria.agent -> shortcuts -> spotify
 from aria.tools.schemas import COMMAND_GUIDE
 
 _HUD_SUBS = {
@@ -1480,6 +1482,7 @@ def draw_hud() -> np.ndarray:
     cv2.line(canvas, (20, 72), (1260, 72), ACC, 1)
 
     if HUD_MODE == "ops":
+        import aria.ops_screen as _ops_screen  # lazy: avoids circular import
         _ops_screen.draw(canvas, ACC, ACC2,
                          lambda c, a1, a2: _draw_ops_body(c, a1, a2))
         if SHOW_COMMANDS:
