@@ -160,12 +160,21 @@ def main():
         return 1
 
     config = load_config()
+    print(f"keys file: {config.KEYS_FILE}")
     key = config.OLLAMA_CLOUD_API_KEY
     if not key or key == "INSERT":
         print("FAIL: no Ollama API key in aria_keys.json "
               "(field OLLAMA_API_KEY). Add it, then re-run.")
         return 1
     print("key: present (source hidden)")
+    try:
+        with open(config.KEYS_FILE, encoding="utf-8") as _f:
+            _d = json.load(_f)
+        populated = sorted(k for k, v in _d.items()
+                           if v and v != "INSERT" and "KEY" in k.upper())
+        print(f"populated key fields: {populated}")
+    except Exception as e:
+        print(f"WARNING: could not re-read keys file: {e}")
 
     vision_model = (os.environ.get("OLLAMA_VISION_MODEL")
                     or getattr(config, "OLLAMA_VISION_MODEL", None)
