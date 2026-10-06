@@ -1,10 +1,13 @@
 """
-ARIA Provider fallback chain (Phase 1: Gemini pool -> Groq).
+ARIA provider fallback chain (default order: ollama_cloud -> groq -> openrouter
+-> mistral, configurable via PROVIDER_CHAIN).
 
 Every provider normalizes to the internal parts-dict shape:
     {"candidates": [{"content": {"parts": [...]}}]}
 with "functionCall" / "text" parts, so run_agent's tool loop stays
-provider-agnostic. Only the gemini_call(...) call site changes.
+provider-agnostic. Non-OpenAI-native wire formats (the legacy Gemini-style
+parts dicts) are translated to OpenAI-compatible chat messages on the way
+in and back to parts on the way out.
 
 Recovery needs no timer: the existing key-quarantine mechanism IS the
 recovery mechanism. A rate-limited provider is skipped while its keys are
@@ -22,7 +25,7 @@ import urllib.request
 from typing import Optional, Callable, List, Dict, Any
 
 from aria.config import (
-    GEMINI_KEY_POOL, GROQ_API_KEY, GROQ_MODEL,
+    GROQ_API_KEY, GROQ_MODEL,
     OPENROUTER_API_KEY, OPENROUTER_MODEL, MISTRAL_API_KEY, MISTRAL_MODEL,
     OLLAMA_CLOUD_API_KEY, OLLAMA_CLOUD_MODEL,
     OLLAMA_VISION_MODEL, OLLAMA_CODE_MODEL,
@@ -30,7 +33,7 @@ from aria.config import (
     quarantine_key, key_is_quarantined, key_mask, add_log,
 )
 
-ACTIVE_PROVIDER = PROVIDER_CHAIN[0] if PROVIDER_CHAIN else "gemini"
+ACTIVE_PROVIDER = PROVIDER_CHAIN[0] if PROVIDER_CHAIN else "ollama_cloud"
 
 
 # Session stats for the OPS dashboard: failover count, per-provider call
@@ -162,8 +165,8 @@ def _lowercase_schema_types(obj: Any) -> Any:
 
     ARIA's declarations use Gemini conventions ("STRING", "OBJECT"); the
     OpenAI-compatible endpoints 400 on anything but lowercase. Normalizing
-    here (not in schemas.py) keeps the Gemini path untouched and covers
-    dynamic/MCP declarations too.
+    here (not in schemas.py) leaves the declaration files untouched and
+    covers dynamic/MCP declarations too.
     """
     if isinstance(obj, dict):
         return {k: (v.lower() if k == "type" and isinstance(v, str)
@@ -244,27 +247,6 @@ class Provider:
         return None
 
 
-class GeminiProvider(Provider):
-    """Wraps the existing gemini_call — zero behavior change."""
-
-    name = "gemini"
-
-    def is_available(self) -> bool:
-        pool = GEMINI_KEY_POOL or []
-        if not pool:
-            return False
-        return any(not key_is_quarantined(k) for k in pool)
-
-    def call(self, system_instruction, contents, tool_decls=None,
-             on_text_chunk=None):
-        from aria.agent.brain import gemini_call  # deferred: avoids circular import
-        return gemini_call(
-            system_instruction, contents,
-            tool_decls=tool_decls,
-            on_text_chunk=on_text_chunk,
-        )
-
-
 class OpenAICompatProvider(Provider):
     """One class for Groq / OpenRouter / Mistral (and Ollama's /v1)."""
 
@@ -293,7 +275,8 @@ class OpenAICompatProvider(Provider):
         return headers
 
     def _parse_sse_stream(self, resp, on_text_chunk) -> List[Dict[str, Any]]:
-        """Accumulate OpenAI SSE deltas -> parts. Feeds on_text_chunk like Gemini."""
+        """Accumulate OpenAI SSE deltas -> parts. Feeds on_text_chunk per
+        chunk; a final on_text_chunk(None) signals stream completion."""
         text_buf = ""
         tc_accum: Dict[int, Dict[str, Any]] = {}
         try:
@@ -330,7 +313,7 @@ class OpenAICompatProvider(Provider):
         finally:
             if on_text_chunk:
                 try:
-                    on_text_chunk(None)  # stream-complete signal, mirrors Gemini path
+                    on_text_chunk(None)  # stream-complete signal: brain treats None as done
                 except Exception:
                     pass
 
@@ -424,7 +407,6 @@ class OpenAICompatProvider(Provider):
 def _build_chain() -> List[Provider]:
     """Providers in configured order. Phase 2/3 entries plug in here."""
     registry: Dict[str, Provider] = {
-        "gemini": GeminiProvider(),
         "groq": OpenAICompatProvider(
             "groq", "https://api.groq.com/openai/v1", GROQ_API_KEY, GROQ_MODEL),
         "openrouter": OpenAICompatProvider(
@@ -550,7 +532,7 @@ def provider_call(
             data = None
         if data and data.get("candidates"):
             if ACTIVE_PROVIDER != provider.name:
-                note = " (fallback)" if provider.name != "gemini" else " (recovered)"
+                note = " (fallback)"
                 add_log(f"provider now serving: {provider.name}{note}")
                 ACTIVE_PROVIDER = provider.name
             return data

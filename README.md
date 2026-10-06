@@ -41,8 +41,9 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
   vision runs on gemma4:31b-cloud and heavy background code on
   qwen3-coder:480b-cloud — routed by role, never hard-coded, so a retired
   model tag can't break her (override via `OLLAMA_VISION_MODEL` /
-  `OLLAMA_CODE_MODEL`; empty disables the role). Vision falls back to the
-  legacy Gemini path only if the whole provider chain is down.
+  `OLLAMA_CODE_MODEL`; empty disables the role). Vision calls native Ollama
+  /api/chat first (gemma4:31b-cloud), then the provider chain; if nothing
+  answers she reports vision as unavailable.
 - **Progressive Tool Loading** — only the core tool schemas go to the model
   per call; specialist toolkits (autonomy, Gmail, Spotify, scheduler, GitHub,
   vision/hardware, Windows control, MTG, memory/notes, admin, MCP, routines,
@@ -149,8 +150,8 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
   them, `aria.py` automatically relaunches under 3.9 when it's installed)
 - An [Ollama Cloud](https://ollama.com/) API key (`OLLAMA_API_KEY` — free
   starter tier) for her primary brain (gpt-oss:120b); Groq / OpenRouter /
-  Mistral keys are optional fallbacks. A Gemini key is still used for
-  screenshot vision.
+  Mistral keys are optional fallbacks. Screenshot vision runs natively
+  through Ollama Cloud /api/chat (gemma4:31b-cloud), then the provider chain.
 - Microphone + speakers (webcam optional, used for face tracking / vision)
 
 ## Quick start
@@ -166,7 +167,7 @@ First run creates `aria_keys.json` next to the script. Add your keys with:
 python tools\aria_add_key.py
 ```
 
-(or set `OLLAMA_API_KEY` / `GEMINI_API_KEY` / `GITHUB_TOKEN` as environment
+(or set `OLLAMA_API_KEY` / `GROQ_API_KEY` / `GITHUB_TOKEN` as environment
 variables — env vars take precedence over `aria_keys.json`). On first launch
 she runs a short setup wizard that checks dependencies and walks through any
 missing keys (Ctrl+C skips it).
@@ -296,8 +297,9 @@ tools/                   Helper scripts (key manager)
   circular import (`spotify → dispatch → hud → ops_screen → agent →
   shortcuts → spotify`) by lazily importing `ops_screen`.
 - **Ollama Cloud primary** — the default brain chain is now ollama_cloud
-  (gpt-oss:120b) → Groq → OpenRouter → Mistral; Gemini leaves the default
-  chain while its keys return 402 (screenshot vision stays Gemini-only).
+  (gpt-oss:120b) → Groq → OpenRouter → Mistral. Embeddings go to Ollama's
+  /api/embeddings (nomic-embed-text); transcription runs locally via
+  faster-whisper when available, else Google cloud STT.
   The HUD reports the serving provider and flags fallbacks.
 - **HUD fault tracebacks** — full exception tracebacks now land in the log
   instead of a bare fault line; fixed an undefined `List` import in
@@ -486,4 +488,5 @@ tools/                   Helper scripts (key manager)
   faster-whisper dormant behind `_USE_LOCAL_STT`") was never implemented —
   no such flag exists in the code. Current behavior: the desktop mic prefers
   local faster-whisper whenever it is installed, falling back to Google cloud
-  transcription, and the bridge's voice messages are transcribed by Gemini.
+  transcription, and the bridge's voice messages go through the same
+  local-faster-whisper-then-Google pipeline.

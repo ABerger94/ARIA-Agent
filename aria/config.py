@@ -32,9 +32,7 @@ def _load_keys():
             return {}
     try:
         with open(KEYS_FILE, "w", encoding="utf-8") as _f:
-            json.dump({"GEMINI_API_KEY": "INSERT",
-                       "GEMINI_API_KEYS": [],
-                       "GROQ_API_KEY": "INSERT",
+            json.dump({"GROQ_API_KEY": "INSERT",
                        "OPENROUTER_API_KEY": "INSERT",
                        "MISTRAL_API_KEY": "INSERT",
                        "GITHUB_TOKEN": "INSERT",
@@ -71,27 +69,6 @@ def save_keys():
         return False
 
 
-def _gemini_key_pool():
-    _pool = []
-    _env = os.environ.get("GEMINI_API_KEYS", "").strip()
-    if _env:
-        _pool = [k.strip() for k in _env.split(",") if k.strip() and k.strip() != "INSERT"]
-    elif isinstance(_KEYS.get("GEMINI_API_KEYS"), list):
-        _pool = [k for k in _KEYS["GEMINI_API_KEYS"] if k and k != "INSERT"]
-    g_key, _ = key_get("GEMINI_API_KEY")
-    if not _pool and g_key and g_key != "INSERT":
-        _pool = [g_key]
-    _seen, _out = set(), []
-    for _k in _pool:
-        if _k not in _seen:
-            _seen.add(_k)
-            _out.append(_k)
-    return _out
-
-
-GEMINI_API_KEY, _GEMINI_SOURCE = key_get("GEMINI_API_KEY")
-GEMINI_KEY_POOL = _gemini_key_pool()
-_GEMINI_KEY_INDEX = 0
 _KEY_QUARANTINE_UNTIL = {}
 _KEY_QUARANTINE_CODE = {}
 KEY_QUARANTINE_DURATION_S = 3600
@@ -104,8 +81,8 @@ def key_is_quarantined(key):
     return _KEY_QUARANTINE_UNTIL.get(key, 0) > datetime.now().timestamp()
 
 
-# ---- Provider fallback chain (Phase 1: Gemini pool -> Groq) ----
-# Keys: env var first, then aria_keys.json (gitignored) — same pattern as Gemini.
+# ---- Provider fallback chain (Ollama Cloud -> Groq -> OpenRouter -> Mistral) ----
+# Keys: env var first, then aria_keys.json (gitignored).
 GROQ_API_KEY, _GROQ_SOURCE = key_get("GROQ_API_KEY")
 OPENROUTER_API_KEY, _OPENROUTER_SOURCE = key_get("OPENROUTER_API_KEY")
 MISTRAL_API_KEY, _MISTRAL_SOURCE = key_get("MISTRAL_API_KEY")
@@ -122,9 +99,8 @@ OLLAMA_CODE_MODEL, _ = key_get("OLLAMA_CODE_MODEL", "qwen3-coder:480b-cloud")
 OLLAMA_HOST, _ = key_get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL, _ = key_get("OLLAMA_MODEL", "qwen2.5:7b")
 
-# Chain: ollama_cloud -> groq -> openrouter -> mistral. Gemini sits out of the
-# default chain until its credits are topped up (402s); re-add it any time via
-# PROVIDER_CHAIN override, e.g. PROVIDER_CHAIN="ollama_cloud,gemini,groq,openrouter,mistral".
+# Chain: ollama_cloud -> groq -> openrouter -> mistral. Reorder any time via
+# PROVIDER_CHAIN override, e.g. PROVIDER_CHAIN="groq,ollama_cloud,mistral,openrouter".
 _PROVIDER_CHAIN_RAW, _ = key_get("PROVIDER_CHAIN", "")
 if _PROVIDER_CHAIN_RAW and _PROVIDER_CHAIN_RAW != "INSERT":
     PROVIDER_CHAIN = [p.strip().lower() for p in _PROVIDER_CHAIN_RAW.split(",") if p.strip()]
@@ -141,51 +117,17 @@ def key_mask(key):
     return key[:6] + "..." + key[-4:] if len(key) >= 12 else key[:3] + "..."
 
 
-def get_gemini_key():
-    global _GEMINI_KEY_INDEX
-    if not GEMINI_KEY_POOL:
-        return GEMINI_API_KEY
-    now = datetime.now().timestamp()
-    n = len(GEMINI_KEY_POOL)
-    for offset in range(n):
-        idx = (_GEMINI_KEY_INDEX + offset) % n
-        k = GEMINI_KEY_POOL[idx]
-        if _KEY_QUARANTINE_UNTIL.get(k, 0) <= now:
-            _GEMINI_KEY_INDEX = (idx + 1) % n
-            return k
-    earliest = min(_KEY_QUARANTINE_UNTIL.values())
-    wait_m = max(1, int((earliest - now) / 60))
-    print(f"[ARIA] All {n} Gemini keys are rate-limited or rejected. Earliest unblocks in ~{wait_m}m.")
-    k = GEMINI_KEY_POOL[_GEMINI_KEY_INDEX]
-    _GEMINI_KEY_INDEX = (_GEMINI_KEY_INDEX + 1) % n
-    return k
-
-
 def quarantine_key(key, duration_s=KEY_QUARANTINE_DURATION_S, code=429):
     if not key:
         return
     _KEY_QUARANTINE_UNTIL[key] = datetime.now().timestamp() + duration_s
     _KEY_QUARANTINE_CODE[key] = code
-    if key in GEMINI_KEY_POOL:
-        return GEMINI_KEY_POOL.index(key)
     return None
 
 
-def get_quarantined_keys_info():
-    now = datetime.now().timestamp()
-    active = {}
-    for i, k in enumerate(GEMINI_KEY_POOL):
-        until = _KEY_QUARANTINE_UNTIL.get(k, 0)
-        if until > now:
-            mins = int((until - now) / 60) + 1
-            code = _KEY_QUARANTINE_CODE.get(k, 429)
-            active[i] = (mins, code, key_mask(k))
-    return active
-
-
 def _secret_values():
-    vals = list(GEMINI_KEY_POOL or [])
-    for name in ("GEMINI_API_KEY", "GITHUB_TOKEN", "GMAIL_APP_PASSWORD",
+    vals = []
+    for name in ("GITHUB_TOKEN", "GMAIL_APP_PASSWORD",
                  "BRIDGE_TOKEN", "bridge_token"):
         v = os.environ.get(name) or _KEYS.get(name) or ""
         if v:
@@ -245,8 +187,9 @@ def _ensure_bridge_token():
 BRIDGE_TOKEN = _ensure_bridge_token()
 
 # Models and constants
-MODEL_NAME = "gemini-3.8-flash"
-EMBED_MODEL = "models/gemini-embedding-001"
+# Semantic-memory embedding model served by Ollama Cloud (768-dim, so stored
+# packed float32 embeddings from the retired model stay compatible).
+EMBED_MODEL, _EMBED_MODEL_SOURCE = key_get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 EDGE_TTS_VOICE = "en-US-AriaNeural"
 PHONE_BRIDGE_PORT = 8777
 

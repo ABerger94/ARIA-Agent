@@ -313,7 +313,7 @@ def compute_attention(dash: Dict[str, Dict[str, Any]],
         out.append(f"{len(imp)} important unread")
 
     prov = (dash.get("providers") or {}).get("data") or {}
-    _primary = prov.get("primary") or "gemini"
+    _primary = prov.get("primary") or "ollama_cloud"
     if prov.get("active") and prov["active"] != _primary:
         out.append(f"on {prov['active']} (fallback)")
 

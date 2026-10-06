@@ -1,6 +1,6 @@
 """
 ARIA Vision & Visual Perception Subsystem.
-Webcam capture, screen diffing/capture, screen reading via Gemini vision,
+Webcam capture, screen diffing/capture, screen reading via Ollama vision,
 photo/screenshot tools, face tracking with servos, and Phone Bridge MJPEG frame publishing.
 """
 
@@ -155,11 +155,7 @@ def describe_phone_view(question: str = "") -> str:
                   "Be concise and concrete.")
     if _VISION_TEXT_CALL:
         return _VISION_TEXT_CALL(sys_prompt, contents)
-    try:
-        from aria.agent.brain import gemini_text
-        return gemini_text(sys_prompt, contents)
-    except Exception as e:
-        return f"[Vision unavailable: {e}]"
+    return "[Vision unavailable: no vision text caller configured.]"
 
 _NATIVE_LAST_ERROR: Optional[str] = None
 
@@ -268,8 +264,7 @@ def _default_vision_call(sys_prompt: str, contents: Any) -> str:
 
     Order: (1) Ollama native /api/chat (documented image format),
     (2) OpenAI-compatible image_url via the provider chain (ollama_cloud
-    only), (3) legacy Gemini path. Falls back to the legacy Gemini path
-    only if everything above is down.
+    only). If both paths are down, returns a bracketed unavailable message.
     """
     try:
         text = _ollama_native_vision_call(sys_prompt, contents)
@@ -294,15 +289,11 @@ def _default_vision_call(sys_prompt: str, contents: Any) -> str:
         if text:
             return text
         return "[Vision returned no description.]"
-    try:
-        from aria.agent.brain import gemini_text
-        return gemini_text(sys_prompt, contents)
-    except Exception as e:
-        # Surface the real cause in the user-facing message: the OPS log
-        # panel truncates lines, so the diagnosis must travel in chat text.
-        native_err = _NATIVE_LAST_ERROR or "not attempted"
-        return (f"[Vision unavailable: ollama native: {native_err}; "
-                f"gemini fallback: {e}]")
+    # Native and provider-chain vision are both down — surface the real cause
+    # in the user-facing message: the OPS log panel truncates lines, so the
+    # diagnosis must travel in chat text.
+    native_err = _NATIVE_LAST_ERROR or "not attempted"
+    return f"[Vision unavailable: ollama native: {native_err}]"
 
 
 _VISION_TEXT_CALL: Optional[Callable[[str, Any], str]] = _default_vision_call
@@ -422,13 +413,8 @@ def tool_read_screen(question: str = "") -> str:
 
     if _VISION_TEXT_CALL:
         return _VISION_TEXT_CALL("You are a precise screen reader. Answer only what is asked, concisely.", contents)
-    
-    # Fallback to local import if handler not yet attached
-    try:
-        from aria.agent.brain import gemini_text
-        return gemini_text("You are a precise screen reader. Answer only what is asked, concisely.", contents)
-    except Exception as e:
-        return f"[Screen reading unavailable: {e}]"
+
+    return "[Screen reading unavailable: no vision text caller configured.]"
 
 
 def tool_describe_camera(question: str = "") -> str:
@@ -449,11 +435,7 @@ def tool_describe_camera(question: str = "") -> str:
                   "Be concise and concrete.")
     if _VISION_TEXT_CALL:
         return _VISION_TEXT_CALL(sys_prompt, contents)
-    try:
-        from aria.agent.brain import gemini_text
-        return gemini_text(sys_prompt, contents)
-    except Exception as e:
-        return f"[Camera description unavailable: {e}]"
+    return "[Camera description unavailable: no vision text caller configured.]"
 
 
 def tool_face_tracking(on: Any) -> str:

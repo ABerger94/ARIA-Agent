@@ -1,6 +1,6 @@
 """
 ARIA Central Agent Brain & LLM Orchestrator.
-Manages prompt generation, Gemini multi-key rotation, streaming SSE responses,
+Manages prompt generation, provider-chain fallback with streaming SSE responses,
 function calling loop with sandboxing/supervision, and self-edit auto-restart.
 """
 
@@ -24,10 +24,10 @@ from datetime import datetime
 from typing import Optional, Callable, List, Dict, Any, Tuple
 
 from aria.config import (
-    ARIA_SOUL, MODEL_NAME, GEMINI_API_KEY, GEMINI_KEY_POOL,
-    WORKSPACE_DIR, ROOT_DIR, SOUL_PATH, KEY_QUARANTINE_DURATION_S,
+    ARIA_SOUL,
+    WORKSPACE_DIR, ROOT_DIR, SOUL_PATH,
     PROVIDER_CHAIN,
-    get_gemini_key, quarantine_key, key_is_quarantined, add_log
+    add_log
 )
 from aria.memory import (
     build_prompt_memories, spine_append, spine_unbroken_thread,
@@ -166,112 +166,6 @@ def _maybe_restart_after_self_edit(say_fn: Callable[[str], None]):
     _RESTART_TIMER.start()
 
 
-def gemini_call(system_instruction: str, contents: List[Dict[str, Any]],
-                include_tools: bool = True, tool_decls: Optional[Any] = None,
-                on_text_chunk: Optional[Callable[[Optional[str]], None]] = None) -> Optional[Dict[str, Any]]:
-    payload = {
-        "systemInstruction": {"parts": [{"text": system_instruction}]},
-        "contents": contents
-    }
-    if include_tools:
-        payload["tools"] = tool_decls if tool_decls is not None else TOOLS_DECLARATION
-
-    body = json.dumps(payload).encode("utf-8")
-    # Fail fast (Alek 2026-10-05): one attempt per key, then move on.
-    # No per-key retries, no backoff sleeps — a dead key quarantines
-    # briefly and the turn moves to the next key/provider immediately.
-    attempts = max(1, len(GEMINI_KEY_POOL))
-    last_err = None
-
-    for _a in range(attempts):
-        key = get_gemini_key()
-        if not key or key_is_quarantined(key):
-            add_log("No usable Gemini key available.")
-            break
-
-        endpoint = "streamGenerateContent?alt=sse&key=" if on_text_chunk else "generateContent?key="
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:{endpoint}{key}"
-        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
-
-        try:
-            try:
-                with urllib.request.urlopen(req, timeout=60) as resp:
-                    if not on_text_chunk:
-                        return json.loads(resp.read().decode("utf-8"))
-
-                    # SSE Streaming reader
-                    current_parts = []
-                    line_iter = iter(resp)
-                    for raw_line in line_iter:
-                        line = raw_line.decode("utf-8", errors="replace").strip()
-                        if line.startswith("data: "):
-                            data_str = line[6:].strip()
-                            if not data_str:
-                                continue
-                            try:
-                                chunk_json = json.loads(data_str)
-                                if "candidates" in chunk_json and chunk_json["candidates"]:
-                                    c = chunk_json["candidates"][0]
-                                    parts = c.get("content", {}).get("parts", [])
-                                    for p in parts:
-                                        if "text" in p and not p.get("thought", False):
-                                            on_text_chunk(p["text"])
-                                        current_parts.append(p)
-                            except Exception:
-                                pass
-
-                    on_text_chunk(None)  # signal stream completion
-
-                    merged_parts = []
-                    for p in current_parts:
-                        if "functionCall" in p:
-                            merged_parts.append(p)
-                        elif "text" in p and not p.get("thought", False):
-                            if merged_parts and "text" in merged_parts[-1] and "functionCall" not in merged_parts[-1]:
-                                merged_parts[-1]["text"] += p["text"]
-                            else:
-                                merged_parts.append(p)
-                        else:
-                            merged_parts.append(p)
-
-                    return {"candidates": [{"content": {"parts": merged_parts}}]}
-            except (urllib.error.URLError, TimeoutError, ConnectionError, socket.timeout) as ne:
-                quarantine_key(key, 60, "network_drop")
-                add_log("Gemini network drop - next key...")
-                last_err = ne
-                continue
-        except urllib.error.HTTPError as e:
-            if e.code == 429:
-                quarantine_key(key, 429)
-                add_log("Gemini rate-limit (429) - rotating key...")
-                continue
-            if e.code in (400, 402, 403, 404):
-                quarantine_key(key, e.code)
-                last_err = e
-                continue
-            if e.code in (500, 502, 503, 504):
-                quarantine_key(key, e.code)
-                last_err = e
-                continue
-            raise e
-
-    if last_err:
-        raise last_err
-    return None
-
-
-def gemini_text(system_instruction: str, contents: List[Dict[str, Any]]) -> str:
-    """One-shot direct text query to Gemini without tool schemas."""
-    try:
-        data = gemini_call(system_instruction, contents, include_tools=False)
-        if not data or not data.get("candidates"):
-            return "[Gemini returned nothing.]"
-        parts = data["candidates"][0]["content"]["parts"]
-        return "".join(p.get("text", "") for p in parts).strip() or "[No text in response.]"
-    except Exception as e:
-        return f"[Gemini error: {e}]"
-
-
 def build_system_instruction(user_prompt: str) -> str:
     now_time = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
     known_memories = build_prompt_memories(user_prompt or "")
@@ -406,7 +300,7 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
 
             speech._SPEECH_STOP.clear()
 
-            # Call the provider chain (Gemini pool -> fallbacks)
+            # Call the provider chain
             loaded_tk = get_loaded_toolkits()
             decls = get_toolkit_declarations(loaded_tk)
 
@@ -416,7 +310,7 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                 on_text_chunk=_stream_chunk_cb if (not silent and reply_sink is None) else None
             )
 
-            _primary = PROVIDER_CHAIN[0] if PROVIDER_CHAIN else "gemini"
+            _primary = PROVIDER_CHAIN[0] if PROVIDER_CHAIN else "ollama_cloud"
             if get_active_provider() != _primary:
                 hud.set_hud_subtitle(f"Running on {get_active_provider()} (fallback)")
 

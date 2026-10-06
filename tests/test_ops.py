@@ -60,7 +60,7 @@ def test_compute_attention():
 
 def test_compute_attention_clear():
     dash = {n: {"data": {"events": [], "items": [],
-                         "active": "gemini", "chain": [],
+                         "active": "ollama_cloud", "chain": [],
                          "available": False, "overdue": 0},
                 "stale": False}
             for n in ("schedule", "inbox", "providers", "tasks", "systems")}

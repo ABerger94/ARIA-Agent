@@ -570,18 +570,52 @@ def tts_bytes_for_bridge(text: str) -> Tuple[bytes, str]:
     raise RuntimeError(f"edge-tts failed ({edge_err})")
 
 
-def transcribe_audio(audio_bytes: bytes, mime: str = "audio/webm") -> str:
-    """Transcribe raw audio bytes using Gemini multimodal audio perception."""
-    import base64
-    from aria.agent.brain import gemini_text
+def _ffmpeg_to_pcm16(audio_bytes: bytes, sample_rate: int = 16000) -> bytes:
+    """Decode any audio container to mono 16-bit PCM via ffmpeg. Raises on
+    failure (ffmpeg missing or decode error)."""
+    import subprocess
+    proc = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error",
+         "-i", "pipe:0", "-ac", "1", "-ar", str(sample_rate),
+         "-f", "s16le", "pipe:1"],
+        input=audio_bytes, capture_output=True, timeout=60)
+    if proc.returncode != 0 or not proc.stdout:
+        err = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"ffmpeg exit {proc.returncode}: {err[-300:]}")
+    return proc.stdout
 
-    b64 = base64.b64encode(audio_bytes).decode("utf-8")
-    clean_mime = mime.split(";")[0] if mime else "audio/webm"
-    contents = [{"role": "user", "parts": [
-        {"text": "Transcribe this voice command exactly. Output only the transcription, no commentary."},
-        {"inline_data": {"mime_type": clean_mime, "data": b64}}
-    ]}]
-    return gemini_text("You are a speech transcriber.", contents).strip().strip('"')
+
+def transcribe_audio(audio_bytes: bytes, mime: str = "audio/webm") -> str:
+    """Transcribe raw audio bytes with the same recognizer pipeline the mic
+    listener uses (local faster-whisper when available, else Google STT).
+
+    WAV/FLAC/AIFF go through sr.AudioFile directly; anything else
+    (webm/opus from the phone bridge) is decoded to PCM with ffmpeg first.
+    Raises RuntimeError when conversion is unavailable - the bridge turns that
+    into a real error response, never silence.
+    """
+    if not audio_bytes:
+        raise RuntimeError("transcribe got empty audio")
+    clean_mime = (mime or "audio/webm").split(";")[0].strip().lower()
+    recognizer = sr.Recognizer()
+    if clean_mime in ("audio/wav", "audio/x-wav", "audio/wave",
+                      "audio/flac", "audio/x-flac",
+                      "audio/aiff", "audio/x-aiff", "audio/x-aifc"):
+        try:
+            with sr.AudioFile(io.BytesIO(audio_bytes)) as source:
+                audio = recognizer.record(source)
+        except Exception as e:
+            raise RuntimeError(f"transcribe could not read {clean_mime}: {e}")
+    else:
+        try:
+            pcm = _ffmpeg_to_pcm16(audio_bytes)
+        except FileNotFoundError:
+            raise RuntimeError(
+                "transcribe needs ffmpeg to decode webm audio and it is not on PATH")
+        except Exception as e:
+            raise RuntimeError(f"transcribe decode failed: {e}")
+        audio = sr.AudioData(pcm, sample_rate=16000, sample_width=2)
+    return transcribe_local_or_cloud(audio, recognizer).strip().strip('"')
 
 
 # Singleton and module-level API

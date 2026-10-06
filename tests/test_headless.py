@@ -77,20 +77,29 @@ def t_quarantine_network_drop():
     assert config._KEY_QUARANTINE_CODE.get("TESTKEY123") == "network_drop"
 check("quarantine_key(key, DURATION, 'network_drop') records cleanly", t_quarantine_network_drop)
 
-# 3. quarantine visible through the status tool (index/value mismatch fixed)
+# 3. quarantine records cleanly and is visible through the read APIs
 def t_quarantine_visible():
-    config.GEMINI_KEY_POOL.append("STATUSKEY1")
     config.quarantine_key("STATUSKEY1", 600, 429)
-    out = builtins_mod.tool_gemini_keys("status")
-    assert "QUARANTINED" in out and "429" in out, out
-check("quarantined key shows QUARANTINED in gemini_keys status", t_quarantine_visible)
+    try:
+        assert config.key_is_quarantined("STATUSKEY1"), "quarantined key should report quarantined"
+        assert config._KEY_QUARANTINE_CODE.get("STATUSKEY1") == 429, config._KEY_QUARANTINE_CODE
+    finally:
+        config._KEY_QUARANTINE_UNTIL.pop("STATUSKEY1", None)
+        config._KEY_QUARANTINE_CODE.pop("STATUSKEY1", None)
+check("quarantined key reports quarantined with recorded code", t_quarantine_visible)
 
 # 4. redact masks secrets
 def t_redact():
-    config._KEYS["GEMINI_API_KEY"] = "AIzaFAKESECRETKEY1234567890"
-    config.GEMINI_KEY_POOL.append("AIzaFAKESECRETKEY1234567890")
-    out = config.redact("my key is AIzaFAKESECRETKEY1234567890 ok")
-    assert "AIzaFAKESECRETKEY1234567890" not in out and "[redacted]" in out, out
+    old = config._KEYS.get("GITHUB_TOKEN")
+    config._KEYS["GITHUB_TOKEN"] = "ghp_FAKESECRETKEY1234567890"
+    try:
+        out = config.redact("my token is ghp_FAKESECRETKEY1234567890 ok")
+        assert "ghp_FAKESECRETKEY1234567890" not in out and "[redacted]" in out, out
+    finally:
+        if old is None:
+            config._KEYS.pop("GITHUB_TOKEN", None)
+        else:
+            config._KEYS["GITHUB_TOKEN"] = old
 check("redact() masks secret values", t_redact)
 
 # 5. call_signature determinism
@@ -242,25 +251,18 @@ def t_prompt():
     assert "load_toolkit" in b.lower() or "toolkit" in b.lower()
 check("toolkit prompt block", t_prompt)
 
-# 16. normal quarantine path works (int duration) — key IN pool
+# 16. normal quarantine path works (int duration); placeholder/missing keys count as quarantined
 def t_quar_ok():
-    config.GEMINI_KEY_POOL.append("POOLKEY1")
     config.quarantine_key("POOLKEY1", 60, 429)
-    info = config.get_quarantined_keys_info()
-    assert any(v[2].startswith("POO") for v in info.values()), info
-    # single-key fallback ignores quarantine entirely
-    config.GEMINI_KEY_POOL.clear()
-    got = config.get_gemini_key()
-    assert got == config.GEMINI_API_KEY, "single-key path returns key with no quarantine check"
-check("quarantine_key normal path + single-key fallback ignores quarantine", t_quar_ok)
-
-# 17. gemini_keys tool add + status roundtrip
-def t_gk():
-    r = builtins_mod.tool_gemini_keys("add", "not-a-real-key")
-    assert "doesn't look like" in r, r
-    r2 = builtins_mod.tool_gemini_keys("status")
-    assert isinstance(r2, str)
-check("tool_gemini_keys add-validation + status", t_gk)
+    try:
+        assert config.key_is_quarantined("POOLKEY1"), "quarantined key should report quarantined"
+        assert config._KEY_QUARANTINE_CODE.get("POOLKEY1") == 429, config._KEY_QUARANTINE_CODE
+        assert config.key_is_quarantined("INSERT"), "placeholder key should count as quarantined"
+        assert config.key_is_quarantined(""), "missing key should count as quarantined"
+    finally:
+        config._KEY_QUARANTINE_UNTIL.pop("POOLKEY1", None)
+        config._KEY_QUARANTINE_CODE.pop("POOLKEY1", None)
+check("quarantine_key normal path + placeholder keys count as quarantined", t_quar_ok)
 
 # 18. risky tool audit description formats
 def t_risky():

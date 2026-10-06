@@ -21,7 +21,7 @@ import speech_recognition as sr
 
 # Core package imports
 from aria.config import (
-    ROOT_DIR, WORKSPACE_DIR, SOUL_PATH, MODEL_NAME,
+    ROOT_DIR, WORKSPACE_DIR, SOUL_PATH,
     PHONE_BRIDGE_PORT, BRIDGE_TOKEN, GITHUB_USERNAME, GITHUB_TOKEN,
     ARIA_SOUL, get_setting, set_setting, add_log, register_log_listener
 )
@@ -37,6 +37,7 @@ import aria.ops_screen as _ops_screen
 import aria.pixel_avatar as pixel_avatar
 import aria.bridge as bridge
 import aria.agent as agent
+from aria.agent.providers import provider_text
 from aria.tools.dispatch import (
     execute_tool, set_log_hook, set_hud_hook, set_history_hook, set_spine_hook,
 )
@@ -653,7 +654,9 @@ def _unique_greeting():
         part = "morning" if h < 12 else "afternoon" if h < 18 else "evening"
         last = memory.memory_get("system", "_last_greeting")
         mood = agent.mood_word()
-        text = agent.gemini_text(
+        greeting_prompt = (f"It's {part}. Today's schedule: {sched}. "
+                           f"Previous greeting (do not repeat): {last or 'none yet'}.")
+        text = provider_text(
             "You write A.R.I.A.'s spoken startup greeting for Alek. One or two "
             "sentences, warm, direct, a little playful - in her voice. Vary the "
             "opening; don't always start with 'Good morning/afternoon/evening'. "
@@ -661,9 +664,7 @@ def _unique_greeting():
             "lightly (never theatrical; it changes nothing factual). "
             "Make it different from her previous greeting, quoted below. Reply "
             "with ONLY the greeting text, no quotes.",
-            [{"role": "user", "parts": [{"text":
-                f"It's {part}. Today's schedule: {sched}. "
-                f"Previous greeting (do not repeat): {last or 'none yet'}."}]}])
+            greeting_prompt)
         text = (text or "").strip().strip('"').strip()
         if text and len(text) < 400 and not text.startswith("["):
             try:
@@ -712,7 +713,7 @@ def start_all():
     agent.workers.start_all_workers()
 
     threading.Thread(target=agent.idle_consolidation_loop,
-                     args=(agent.gemini_text, lambda: agent.BUSY_PROCESSING, lambda: agent.LAST_ACTIVITY),
+                     args=(lambda: agent.BUSY_PROCESSING, lambda: agent.LAST_ACTIVITY),
                      daemon=True).start()
 
     threading.Thread(target=bridge.start_bridge_server, daemon=True).start()

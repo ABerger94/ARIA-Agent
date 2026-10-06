@@ -28,7 +28,7 @@ from aria import config
 
 SETTINGS_KEY = "mcp_servers"
 
-_GEMINI_TYPES = {
+_SCHEMA_TYPES = {
     "string": "STRING",
     "number": "NUMBER",
     "integer": "INTEGER",
@@ -41,16 +41,16 @@ _NAME_RE = re.compile(r"[^A-Za-z0-9_.-]")
 
 
 def sanitize_tool_name(raw: str, limit: int = 64) -> str:
-    """Make a name safe for Gemini function declarations."""
+    """Make a name safe for function declarations."""
     return _NAME_RE.sub("_", raw or "unnamed")[:limit]
 
 
 def convert_schema(node: Any) -> Dict[str, Any]:
-    """Convert an MCP JSON Schema node to a Gemini function-declaration schema."""
+    """Convert an MCP JSON Schema node to a function-declaration schema."""
     if not isinstance(node, dict):
         return {"type": "OBJECT"}
     t = str(node.get("type", "object")).lower()
-    out: Dict[str, Any] = {"type": _GEMINI_TYPES.get(t, "OBJECT")}
+    out: Dict[str, Any] = {"type": _SCHEMA_TYPES.get(t, "OBJECT")}
     desc = node.get("description")
     if desc:
         out["description"] = str(desc)[:500]

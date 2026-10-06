@@ -1,6 +1,6 @@
 """
 ARIA Tool Schemas, Toolkits, and Command Guide.
-Defines function declarations for Gemini tool calling, progressive toolkit mappings,
+Defines function declarations for provider tool calling, progressive toolkit mappings,
 and user-facing command examples.
 """
 
@@ -198,11 +198,6 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
     {   'description': 'Shows the phone-bridge login token, for entering on the iPhone.',
         'name': 'bridge_token',
         'parameters': {'properties': {}, 'type': 'OBJECT'}},
-    {   'description': 'Manage the Gemini API key pool. Quota is per Google Cloud project, so each key should come '
-                       'from a separate project. Actions: status (pool health), add (adds a new key), remove (removes '
-                       'by number).',
-        'name': 'gemini_keys',
-        'parameters': {'properties': {'action': {'type': 'STRING'}, 'key': {'type': 'STRING'}}, 'type': 'OBJECT'}},
     {   'description': 'Run a bounded workflow skill: a reusable multi-step procedure with a hard cap on tool calls. '
                        'Skills: deep_research (web research with cited summary), system_check (laptop health report), '
                        'file_sweep (find and digest workspace files matching the objective), git_audit (git branch, status, and commits report). Prefer a skill over a '
@@ -388,7 +383,7 @@ TOOLS_DECLARATION = [
 TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persistent background jobs, system health audit, self-healing diagnostics',
                  'tools': ['manage_autonomous_goal', 'manage_background_job', 'system_health_audit', 'self_heal_diagnose']},
     'admin': {   'summary': 'API keys, bridge token, command guide, volume, approval controls, personas, user tools',
-                 'tools': ['gemini_keys', 'bridge_token', 'show_commands', 'hide_commands', 'volume',
+                 'tools': ['bridge_token', 'show_commands', 'hide_commands', 'volume',
                            'approve', 'deny', 'list_pending_approvals', 'set_approval_mode', 'get_approval_mode',
                            'reload_user_tools', 'set_persona', 'list_personas', 'get_persona']},
     'comms': {'summary': 'Gmail: store credentials, send and read email, triage the inbox',
@@ -499,7 +494,6 @@ COMMAND_GUIDE = [   ('Memory', 'save_memory', 'remember my Doja playlist is spot
     ('Face & body', 'move_head_servos', 'look left'),
     ('Face & body', 'drive_wheels', 'drive forward for 2 seconds'),
     ('Face & body', 'body_stop', 'stop moving'),
-    ('Phone & keys', 'gemini_keys', 'check my Gemini keys'),
     ('Phone & keys', 'bridge_token', 'what is my bridge token?'),
     ('GitHub', 'github_push_file', 'push this file to my repo'),
     ('GitHub', 'github_create_repo', 'create a repo called gig-tracker'),

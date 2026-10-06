@@ -26,9 +26,9 @@ from typing import Dict, List, Optional, Tuple, Any
 
 from aria.config import (
     WORKSPACE_DIR, MAX_TOOL_OUTPUT, GITHUB_TOKEN, GITHUB_USERNAME,
-    GITHUB_ARMED, KEYS_FILE, BRIDGE_TOKEN, GEMINI_KEY_POOL,
+    GITHUB_ARMED, KEYS_FILE, BRIDGE_TOKEN,
     PRICE_WATCH_DB, key_get, save_keys, _KEYS, redact,
-    get_gemini_key, key_mask, _KEY_QUARANTINE_UNTIL, _KEY_QUARANTINE_CODE
+    key_mask
 )
 from aria.memory import (
     memory_forget_entries,
@@ -892,59 +892,6 @@ def tool_unwatch_price(watch_id: int) -> str:
     with _price_db() as db:
         cur = db.execute("DELETE FROM price_watches WHERE id=?", (watch_id,))
     return f"Removed price watch #{watch_id}." if cur.rowcount else f"[No watch #{watch_id}]"
-
-
-# ---------------- Admin Tools ----------------
-def tool_gemini_keys(action: str = "status", key: str = "") -> str:
-    """Check status or add/remove Gemini API keys in pool."""
-    a = str(action).lower().strip()
-    now = time.time()
-    if a == "status":
-        if not GEMINI_KEY_POOL:
-            return "No Gemini API keys configured. Add one with the gemini_keys tool (action: add)."
-        lines = []
-        for i, k in enumerate(GEMINI_KEY_POOL):
-            quar = _KEY_QUARANTINE_UNTIL.get(k, 0) - now
-            if quar > 0:
-                qcode = _KEY_QUARANTINE_CODE.get(k)
-                why = f"HTTP {qcode}" if qcode else "key rejected by Google"
-                state = f"QUARANTINED ({int(quar)}s left - {why})"
-            else:
-                state = "ready"
-            lines.append(f"#{i + 1} {key_mask(k)} - {state}")
-        return f"{len(GEMINI_KEY_POOL)} key(s) in pool:\n" + "\n".join(lines)
-    if a == "add":
-        k = str(key).strip()
-        if not ((k.startswith("AIza") or k.startswith("AQ.")) and len(k) >= 20):
-            return "That doesn't look like a Gemini API key (expected AIza... or AQ... with 20+ chars). Not added."
-        if k in GEMINI_KEY_POOL:
-            return "That key is already in the pool."
-        GEMINI_KEY_POOL.append(k)
-        _KEYS["GEMINI_API_KEYS"] = list(GEMINI_KEY_POOL)
-        _KEYS.pop("GEMINI_API_KEY", None)
-        save_keys()
-        return f"Added key {key_mask(k)} to pool ({len(GEMINI_KEY_POOL)} keys total)."
-    if a == "remove":
-        target = str(key).strip()
-        idx = None
-        if target.isdigit():
-            idx = int(target) - 1
-        elif target.startswith("#") and target[1:].isdigit():
-            idx = int(target[1:]) - 1
-        else:
-            for i, k in enumerate(GEMINI_KEY_POOL):
-                if target and (target in k or key_mask(k) in target):
-                    idx = i
-                    break
-        if idx is None or idx < 0 or idx >= len(GEMINI_KEY_POOL):
-            return f"Invalid key identifier '{key}'. Pool has {len(GEMINI_KEY_POOL)} keys (1-{len(GEMINI_KEY_POOL)})."
-        removed = GEMINI_KEY_POOL.pop(idx)
-        _KEY_QUARANTINE_UNTIL.pop(removed, None)
-        _KEY_QUARANTINE_CODE.pop(removed, None)
-        _KEYS["GEMINI_API_KEYS"] = list(GEMINI_KEY_POOL)
-        save_keys()
-        return f"Removed key #{idx + 1} ({key_mask(removed)}) from pool ({len(GEMINI_KEY_POOL)} keys remaining)."
-    return f"Unknown action '{action}'. Use 'status', 'add', or 'remove'."
 
 
 # ---------------------------------------------------------------------------

@@ -147,7 +147,7 @@ def _pick_image(name: str = "") -> Optional[Dict[str, object]]:
 
 
 def describe_inbox_image(name: str = "") -> str:
-    """Describe an inbox photo with Gemini vision. Blank name = latest image."""
+    """Describe an inbox photo with ARIA vision. Blank name = latest image."""
     target = _pick_image(name)
     if target is None:
         if not list_inbox():
@@ -177,11 +177,7 @@ def describe_inbox_image(name: str = "") -> str:
             return _VISION_TEXT_CALL(sys_prompt, contents)
         except Exception as e:
             return f"[Vision unavailable: {e}]"
-    try:
-        from aria.agent.brain import gemini_text
-        return gemini_text(sys_prompt, contents)
-    except Exception as e:
-        return f"[Vision unavailable: {e}]"
+    return "[Vision unavailable: no vision backend loaded.]"
 
 
 def read_inbox_text(name: str = "", max_chars: int = 4000) -> str:

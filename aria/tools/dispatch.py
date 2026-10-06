@@ -364,7 +364,6 @@ def _init_default_registry():
     _REGISTRY["volume"] = lambda a: builtins.tool_volume(a.get("action", "status"), int(a.get("level", 50)))
     _REGISTRY["mtg_advice"] = lambda a: builtins.tool_mtg_advice(a.get("deck", ""), a.get("card_name", ""))
     _REGISTRY["bridge_token"] = lambda a: f"Your bridge token is: {BRIDGE_TOKEN}. Enter it on the phone bridge login page."
-    _REGISTRY["gemini_keys"] = lambda a: builtins.tool_gemini_keys(a.get("action", "status"), a.get("key", ""))
 
     # Inbox tools (phone bridge uploads)
     _REGISTRY["inbox_list"] = lambda a: builtins.tool_inbox_list()

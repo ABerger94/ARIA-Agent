@@ -23,6 +23,7 @@ from aria.memory import (
     goal_db_create, goal_db_list, goal_db_get_due, goal_db_update, goal_db_delete
 )
 import aria.agent.workers as workers
+from aria.agent.providers import provider_text
 from aria.scheduler import BREAK_REMINDERS
 
 _HEARTBEAT_MEM_FILE = os.path.join(WORKSPACE_DIR, "heartbeat_memory.json")
@@ -391,6 +392,22 @@ def mood_word(energy: Optional[float] = None, warmth: Optional[float] = None,
 
 
 # --- Idle memory consolidation ---
+def _parts_text(contents: Any) -> str:
+    """Defensively extract plain text from parts-dict contents.
+
+    Joins every string 'text' part across all blocks; non-text parts
+    (images, tool calls/responses) are skipped.
+    """
+    bits: List[str] = []
+    for block in contents or []:
+        if not isinstance(block, dict):
+            continue
+        for p in block.get("parts") or []:
+            if isinstance(p, dict):
+                t = p.get("text")
+                if isinstance(t, str):
+                    bits.append(t)
+    return "\n".join(bits)
 def _consolidation_watermark() -> int:
     try:
         with DB_LOCK:
@@ -412,8 +429,7 @@ def _set_consolidation_watermark(chat_id: int):
         conn.close()
 
 
-def idle_consolidation_loop(gemini_text_fn: Callable[[str, Any], str],
-                            is_busy_fn: Callable[[], bool],
+def idle_consolidation_loop(is_busy_fn: Callable[[], bool],
                             get_last_activity_fn: Callable[[], float]):
     time.sleep(300)
     while True:
@@ -445,7 +461,7 @@ def idle_consolidation_loop(gemini_text_fn: Callable[[str, Any], str],
                 "Skip small talk. If nothing durable, reply with the single word NONE."
             )
             contents = [{"role": "user", "parts": [{"text": convo}]}]
-            text = gemini_text_fn(system_instruction, contents)
+            text = provider_text(system_instruction, _parts_text(contents))
 
             last_id = rows[-1][0]
             _set_consolidation_watermark(last_id)

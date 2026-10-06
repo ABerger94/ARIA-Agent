@@ -7,8 +7,6 @@ and persistent worker threads.
 
 from aria.agent.brain import (
     run_agent,
-    gemini_call,
-    gemini_text,
     build_system_instruction,
     CONVERSATION_HISTORY,
     BUSY_PROCESSING,
@@ -54,8 +52,6 @@ import aria.agent.workers as workers
 
 __all__ = [
     "run_agent",
-    "gemini_call",
-    "gemini_text",
     "build_system_instruction",
     "CONVERSATION_HISTORY",
     "BUSY_PROCESSING",

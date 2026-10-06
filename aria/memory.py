@@ -18,7 +18,7 @@ from datetime import datetime
 
 from aria.config import (
     WORKSPACE_DIR, SPINE_PATH, RESUME_PATH, EMBED_MODEL,
-    get_gemini_key, GEMINI_KEY_POOL, redact, quarantine_key
+    OLLAMA_CLOUD_API_KEY, redact, quarantine_key
 )
 
 DB_PATH = os.path.join(WORKSPACE_DIR, "aria_memory.db")
@@ -232,33 +232,31 @@ def init_databases():
 
 
 def _embed(text):
-    """Gemini embedding (free tier). Returns list[float] or None."""
-    payload = {"content": {"parts": [{"text": text[:2000]}]}}
+    """Ollama Cloud embedding (768-dim, same as the retired model).
+    Returns list[float] or None."""
+    if not OLLAMA_CLOUD_API_KEY or OLLAMA_CLOUD_API_KEY == "INSERT":
+        add_log("Embed err: no OLLAMA_API_KEY configured")
+        return None
+    payload = {"model": EMBED_MODEL, "prompt": text[:2000]}
     body = json.dumps(payload).encode()
-    for _ in range(max(1, len(GEMINI_KEY_POOL))):
-        idx, key = (0, get_gemini_key())
-        if not key:
-            return None
-        url = (f"https://generativelanguage.googleapis.com/v1beta/"
-               f"{EMBED_MODEL}:embedContent?key={key}")
-        try:
-            req = urllib.request.Request(url, data=body,
-                                         headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                return json.loads(resp.read().decode())["embedding"]["values"]
-        except urllib.error.HTTPError as e:
-            if e.code == 429:
-                quarantine_key(key, 60, 429)
-                continue
-            if e.code in (400, 402, 403, 404):
-                quarantine_key(key, code=e.code)
-                continue
+    try:
+        req = urllib.request.Request(
+            "https://ollama.com/api/embeddings", data=body,
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {OLLAMA_CLOUD_API_KEY}"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read().decode())["embedding"]
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            quarantine_key(OLLAMA_CLOUD_API_KEY, 60, 429)
+        elif e.code in (401, 403):
+            quarantine_key(OLLAMA_CLOUD_API_KEY, code=e.code)
+        else:
             add_log(f"Embed err: {e}")
-            return None
-        except Exception as e:
-            add_log(f"Embed err: {e}")
-            return None
-    return None
+        return None
+    except Exception as e:
+        add_log(f"Embed err: {e}")
+        return None
 
 
 def _pack_embedding(vec):

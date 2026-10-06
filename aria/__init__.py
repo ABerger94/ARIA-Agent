@@ -4,8 +4,8 @@ Modular Agent Framework.
 """
 
 from aria.config import (
-    ROOT_DIR, WORKSPACE_DIR, SOUL_PATH, MODEL_NAME,
-    ARIA_SOUL, GEMINI_API_KEY, BRIDGE_TOKEN, add_log
+    ROOT_DIR, WORKSPACE_DIR, SOUL_PATH,
+    ARIA_SOUL, BRIDGE_TOKEN, add_log
 )
 import aria.config as config
 import aria.memory as memory
@@ -19,7 +19,7 @@ import aria.bridge as bridge
 import aria.tools as tools
 import aria.agent as agent
 
-from aria.agent.brain import run_agent, gemini_call, gemini_text
+from aria.agent.brain import run_agent
 from aria.speech import speak, interrupt_speech
 from aria.tools.dispatch import execute_tool, load_toolkit
 
@@ -36,8 +36,6 @@ __all__ = [
     "tools",
     "agent",
     "run_agent",
-    "gemini_call",
-    "gemini_text",
     "speak",
     "interrupt_speech",
     "execute_tool",
