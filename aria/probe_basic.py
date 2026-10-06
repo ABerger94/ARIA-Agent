@@ -1,6 +1,6 @@
 """Probe: what does the provider chain actually return for basic requests?
 
-Run:  cd E:\ARIA && python aria\probe_basic.py
+Run:  cd E:/ARIA && python aria/probe_basic.py
 Shows the serving provider and the exact parts returned for (1) plain text
 and (2) a trivial tool call — the two shapes the main loop depends on.
 """
