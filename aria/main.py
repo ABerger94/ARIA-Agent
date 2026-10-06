@@ -999,6 +999,7 @@ def main():
                         agent.LAST_ACTIVITY = time.time()
                     elif hud.HUD_MODE == "ops" and key in (ord('r'), ord('R')):
                         _ops.refresh_all()
+                        _ops_screen.invalidate_caches()
                         add_log("OPS refreshing...")
                         agent.LAST_ACTIVITY = time.time()
                     elif key in (ord('q'), ord('Q'), 27):  # ESC or Q
@@ -1024,7 +1025,7 @@ def main():
                         hud.HUD_MODE = "chat_log" if hud.HUD_MODE == "visor" else "visor"
                     elif key in (ord('o'), ord('O')):
                         hud.HUD_MODE = "ops"
-                        _ops_screen.open_panel()  # land on the HUB tab
+                        _ops_screen.open_panel()  # land on the DASH tab
                         _ops.refresh_all()
                         add_log("OPS command center.")
                         agent.LAST_ACTIVITY = time.time()

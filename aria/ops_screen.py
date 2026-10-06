@@ -259,6 +259,36 @@ def _card(canvas, x0, y0, x1, y1, title: Optional[str] = None) -> int:
         return y0 + 46
     return y0 + 14
 
+# ---------------------------------------------------------------- cached backend reads
+# draw() runs every frame; live network/subprocess calls here stutter the UI.
+# Cache them with short TTLs. R (refresh) and opening the panel invalidate.
+_CACHE: Dict[str, Tuple[float, Any]] = {}
+_CACHE_TTLS = {
+    "inbox": 60.0,
+    "chain": 15.0,
+    "model": 60.0,
+    "gpu": 10.0,
+    "tasks": 5.0,
+}
+
+
+def _cached(key: str, fn: Callable[[], Any]):
+    now = time.time()
+    at, val = _CACHE.get(key, (0.0, None))
+    if now - at < _CACHE_TTLS[key]:
+        return val
+    try:
+        val = fn()
+    except Exception:
+        return val  # on failure keep the old value
+    _CACHE[key] = (now, val)
+    return val
+
+
+def invalidate_caches() -> None:
+    _CACHE.clear()
+
+
 # ---------------------------------------------------------------- log feed
 # The canonical event ring lives in aria.config (bounded at 1000 entries;
 # each entry is (hh:mm:ss, level, msg, meta)). This module only reads it.
@@ -353,6 +383,7 @@ def open_panel() -> None:
     """O key: open OPS on the DASH tab."""
     global ACTIVE_TAB
     ACTIVE_TAB = "dash"
+    invalidate_caches()
     load_notes()
 
 
@@ -460,7 +491,7 @@ _EMAIL_SUMMARIES: Dict[str, str] = {}
 _EMAIL_SUMMARIZING: set = set()
 
 
-def _inbox_items():
+def _inbox_items_raw():
     try:
         d = _ops.fetch_inbox()
         if not d.get("connected"):
@@ -468,6 +499,10 @@ def _inbox_items():
         return d.get("items") or [], True
     except Exception:
         return [], False
+
+
+def _inbox_items():
+    return _cached("inbox", _inbox_items_raw) or ([], False)
 
 
 def _email_body(uid: str) -> str:
@@ -535,7 +570,7 @@ def _summarize_email(uid: str, sender: str, subject: str) -> None:
     threading.Thread(target=_run, daemon=True).start()
 
 # ---------------------------------------------------------------- task rows
-def _task_rows() -> List[Dict[str, Any]]:
+def _task_rows_raw() -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     try:
         for tid, kind, prompt, interval_s, next_run in _sched.sched_list():
@@ -558,6 +593,10 @@ def _task_rows() -> List[Dict[str, Any]]:
     order = {"running": 0, "sched": 1, "done": 2}
     rows.sort(key=lambda r: order.get(r["status"], 3))
     return rows
+
+
+def _task_rows() -> List[Dict[str, Any]]:
+    return _cached("tasks", _task_rows_raw) or []
 
 
 _TASK_PILL = {
@@ -602,7 +641,7 @@ def _sys_stats() -> Optional[Dict[str, float]]:
         return {"cpu": 0.0, "mem": 0.0, "disk": 0.0}
 
 
-def _gpu_pct() -> Optional[float]:
+def _gpu_pct_raw() -> Optional[float]:
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=utilization.gpu",
@@ -611,6 +650,10 @@ def _gpu_pct() -> Optional[float]:
         return float(out.stdout.strip().splitlines()[0])
     except Exception:
         return None
+
+
+def _gpu_pct() -> Optional[float]:
+    return _cached("gpu", _gpu_pct_raw)
 
 
 # ---------------------------------------------------------------- controls
@@ -710,7 +753,7 @@ def _provider_name() -> str:
 
 
 # ---------------------------------------------------------------- provider chain
-def _chain_legs() -> List[Dict[str, Any]]:
+def _chain_legs_raw() -> List[Dict[str, Any]]:
     """Legs for the SYSTEM provider strip: name, model, state, detail."""
     try:
         d = _ops.fetch_providers()
@@ -730,6 +773,10 @@ def _chain_legs() -> List[Dict[str, Any]]:
         return []
 
 
+def _chain_legs() -> List[Dict[str, Any]]:
+    return _cached("chain", _chain_legs_raw) or []
+
+
 def _chain_pill(state: str):
     if state == "serving":
         return (OK, "SERVING")
@@ -738,7 +785,7 @@ def _chain_pill(state: str):
     return (DIM, "READY")
 
 
-def _model_name() -> str:
+def _model_name_raw() -> str:
     try:
         from aria.agent import providers as _pv
         chain = _pv._build_chain()
@@ -749,6 +796,10 @@ def _model_name() -> str:
     except Exception:
         pass
     return ""
+
+
+def _model_name() -> str:
+    return _cached("model", _model_name_raw) or ""
 
 
 # ---------------------------------------------------------------- routines (AST-extracted by tests — keep verbatim shape)
