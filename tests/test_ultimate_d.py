@@ -1,4 +1,5 @@
 import os
+import re
 """Worker D (ownership) tests: Tool SDK (Module 8), persona engine (Module 9),
 installer dry-run (Module 10), OPS routines section parsing (Module 11).
 
@@ -255,6 +256,15 @@ check("usertools: stdlib+config top-level imports only (dispatch lazy)", t_usert
 
 # ---------------------------------------------------------------- Module 11
 
+def t_ops_day_no_platform_strftime():
+    # Regression: _draw_day used "%-d" (2026-10-06) which raises
+    # "Invalid format string" on Windows. No platform-specific
+    # strftime directives may appear in ops_screen.py.
+    src = open(os.path.join(PKG, "ops_screen.py"), encoding="utf-8").read()
+    bad = re.findall(r'strftime\([^)]*%[-#][^)]*\)', src)
+    assert not bad, f"platform-specific strftime: {bad}"
+
+
 def t_ops_routine_rows():
     # Exercise the SHIPPED _routine_rows parser from ops_screen.py via AST
     # extraction (ops_screen itself needs cv2; the function is stdlib-only).
@@ -299,6 +309,7 @@ def t_ops_routine_rows():
         else:
             os.environ["HOME"] = old_home
 check("OPS: _routine_rows parses ~/ARIA/routines/*.json (name/steps/trusted)", t_ops_routine_rows)
+check("OPS: no platform-specific strftime directives (Windows-safe)", t_ops_day_no_platform_strftime)
 
 print(f"\n{sum(1 for _, s, _ in results if s=='PASS')}/{len(results)} passed")
 fails = [r for r in results if r[1] != "PASS"]

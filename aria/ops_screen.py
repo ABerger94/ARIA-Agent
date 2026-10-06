@@ -1068,8 +1068,9 @@ def _draw_system(canvas) -> None:
 def _draw_day(canvas) -> None:
     # dashboard left (2/3), notes right (1/3)
     dash_x1 = 830
+    now = datetime.now()
     dy = _card(canvas, 28, CONTENT_Y, dash_x1, CONTENT_BOT,
-               "TODAY  ·  " + datetime.now().strftime("%A %b %-d"))
+               "TODAY  ·  " + now.strftime("%A %b ") + str(now.day))
     try:
         dash = _ops.get_dashboard()
         attn = _ops.compute_attention(dash, datetime.now())
