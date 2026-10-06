@@ -16,6 +16,47 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 CLOUD = "https://ollama.com"
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+
+
+def check_wiring():
+    """Verify the checkout actually contains the vision fix.
+
+    Catches stale or partially-updated pulls (seen on flaky drives):
+    the API can be healthy while ARIA runs old wiring.
+    Returns a list of missing pieces (empty = wiring OK).
+    """
+    import subprocess
+
+    def has(relpath, marker):
+        try:
+            with open(os.path.join(ROOT, relpath), encoding="utf-8") as f:
+                return marker in f.read()
+        except Exception:
+            return False
+
+    checks = [
+        ("aria/main.py", "vision._default_vision_call",
+         "vision hook wired to native path (main.py)"),
+        ("aria/vision.py", "_ollama_native_vision_call",
+         "native /api/chat vision (vision.py)"),
+        ("aria/vision.py", "only_provider",
+         "chain restriction (vision.py)"),
+    ]
+    try:
+        head = subprocess.run(
+            ["git", "log", "--oneline", "-1"], cwd=ROOT,
+            capture_output=True, text=True, timeout=15).stdout.strip()
+    except Exception:
+        head = "(git unavailable)"
+    print(f"git HEAD: {head or '(unknown)'}")
+    missing = []
+    for relpath, marker, desc in checks:
+        ok = has(relpath, marker)
+        print(f"[w] {desc}: {'OK' if ok else 'MISSING'}")
+        if not ok:
+            missing.append(desc)
+    return missing
 
 
 def load_config():
@@ -49,6 +90,15 @@ def call(path, payload, key, timeout=60):
 
 
 def main():
+    missing = check_wiring()
+    if missing:
+        print("VERDICT: your checkout is stale or partially updated — ARIA is "
+              "running old vision wiring even though the API is fine.")
+        print("Repair (keys are gitignored, safe to keep):")
+        print("  git fetch origin && git reset --hard origin/main")
+        print("Then restart ARIA and retry.")
+        return 1
+
     config = load_config()
     key = config.OLLAMA_CLOUD_API_KEY
     if not key or key == "INSERT":
