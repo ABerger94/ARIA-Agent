@@ -429,6 +429,8 @@ TYPING_ACTIVE: bool = False
 TYPING_BUFFER: str = ""
 COMMANDS_PAGE = 0
 COMMANDS_PAGES: List[Any] = []
+# Clickable command buttons: list of (x, y, w, h, phrase) refreshed each draw.
+COMMANDS_CLICK_BOXES: List[Tuple[int, int, int, int, str]] = []
 SUBTITLE_TEXT = ""
 LOG_STREAM: List[str] = []
 DISPLAY_CHAT_LOG: List[Tuple[str, str, str]] = []
@@ -798,13 +800,14 @@ def _build_commands_pages() -> List[List[Tuple[str, List[Tuple[str, str]]]]]:
 
 
 def _draw_commands_overlay(canvas: np.ndarray):
-    global COMMANDS_PAGES, COMMANDS_PAGE
+    global COMMANDS_PAGES, COMMANDS_PAGE, COMMANDS_CLICK_BOXES
     if not COMMANDS_PAGES:
         COMMANDS_PAGES = _build_commands_pages()
 
     total_pages = max(1, len(COMMANDS_PAGES))
     cur_page_idx = COMMANDS_PAGE % total_pages
     page = COMMANDS_PAGES[cur_page_idx]
+    COMMANDS_CLICK_BOXES = []
 
     overlay = canvas.copy()
     cv2.rectangle(overlay, (36, 52), (1244, 700), (8, 10, 16), -1)
@@ -831,6 +834,11 @@ def _draw_commands_overlay(canvas: np.ndarray):
         cv2.line(canvas, (x, y + 4), (x + 360, y + 4), BORDER, 1)
         y += 24
         for a, b in items:
+            # Clickable button background
+            btn_x, btn_y, btn_w, btn_h = x - 6, y - 16, 372, 20
+            cv2.rectangle(canvas, (btn_x, btn_y), (btn_x + btn_w, btn_y + btn_h), (18, 24, 34), -1)
+            cv2.rectangle(canvas, (btn_x, btn_y), (btn_x + btn_w, btn_y + btn_h), BORDER, 1)
+            COMMANDS_CLICK_BOXES.append((btn_x, btn_y, btn_w, btn_h, b))
             tw = cv2.getTextSize(a + ": ", cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)[0][0]
             cv2.putText(canvas, a + ": ", (x, y),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, CYAN, 1, cv2.LINE_AA)

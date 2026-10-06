@@ -435,6 +435,17 @@ def _on_hud_mouse(event, x, y, flags, param):
                 hud.SHOW_COMMANDS = False
                 return
 
+            # Clickable command buttons — execute the phrase
+            for bx, by, bw, bh, phrase in hud.COMMANDS_CLICK_BOXES:
+                if bx <= x <= bx + bw and by <= y <= by + bh:
+                    hud.SHOW_COMMANDS = False
+                    hud.add_hud_log(f"Running: {phrase[:40]}")
+                    threading.Thread(
+                        target=handle_action,
+                        args=("voice", phrase),
+                        daemon=True).start()
+                    return
+
             # Clicking anywhere outside overlay bounds closes it
             if not (36 <= x <= 1244 and 52 <= y <= 700):
                 hud.SHOW_COMMANDS = False
