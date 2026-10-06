@@ -25,30 +25,9 @@ BREAK_REMINDERS = True
 _SCHED_COUNT_HOOK: Optional[Callable[[int], None]] = None
 
 _SCHEDULE_SEED = [
-    ("2026-09-27", "14:00", "18:30", "Dock of the Bay — Bar"),
-    ("2026-09-28", "10:30", "11:30", "Smiles R Us dentist"),
-    ("2026-09-28", "15:00", "19:30", "Dock of the Bay — Wait"),
-    ("2026-09-29", "16:00", "20:30", "Dock of the Bay — Wait"),
-    ("2026-10-03", "16:00", "20:30", "Dock of the Bay — Bar"),
-    ("2026-10-05", "15:00", "21:00", "Dock of the Bay — Wait"),
-    ("2026-10-06", "16:00", "21:00", "Dock of the Bay — Wait"),
-    ("2026-10-07", "16:00", "21:00", "Dock of the Bay — Wait"),
-    ("2026-10-09", "12:00", "21:00", "Dock of the Bay — Wait (bartender from 4 PM)"),
-    ("2026-10-10", "11:30", "17:00", "Dock of the Bay — Wait"),
-    ("2026-10-11", "11:30", "17:00", "Dock of the Bay — Wait"),
-    ("2026-10-12", "15:00", "21:00", "Dock of the Bay — Wait"),
-    ("2026-10-14", "16:00", "21:00", "Dock of the Bay — Wait"),
-    ("2026-10-17", "15:00", "21:00", "Dock of the Bay — Wait"),
-    ("2026-10-19", "15:00", "21:00", "Dock of the Bay — Wait"),
-    ("2026-10-20", "11:30", "17:00", "Dock of the Bay — Wait"),
-    ("2026-10-21", "11:30", "17:00", "Dock of the Bay — Wait"),
-    ("2026-10-22", "11:30", "17:00", "Dock of the Bay — Wait"),
-    ("2026-10-23", "11:30", "17:00", "Dock of the Bay — Wait"),
+    # NOTE: Dock of the Bay shifts were REMOVED 2026-10-06 — Alek quit on
+    # 2026-10-05 and all future shifts were deleted. Do not re-add them.
     ("2026-10-23", "22:00", "23:59", "Poe Speakeasy, Annapolis (2 tickets)"),
-    ("2026-10-24", "14:00", "21:00", "Dock of the Bay — Wait"),
-    ("2026-10-25", "16:00", "21:00", "Dock of the Bay — Wait"),
-    ("2026-10-26", "15:00", "21:00", "Dock of the Bay — Wait"),
-    ("2026-10-28", "16:00", "21:00", "Dock of the Bay — Wait"),
     ("2026-11-20", "19:30", "23:00", "Doja Cat — Tour Ma Vie, CFG Bank Arena Baltimore"),
     ("2026-12-02", "10:30", "11:30", "Smiles R Us dentist follow-up"),
 ]
