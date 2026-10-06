@@ -329,8 +329,8 @@ class MCPBridge:
                                 tok = tdata.get("access_token")
                                 if tok:
                                     headers["Authorization"] = f"Bearer {tok}"
-                        except Exception:
-                            pass
+                        except Exception as _e_silent:
+                            config.log_silent("_server_actor", _e_silent)
                 client = HTTPMCPClient(cfg["url"], headers=headers)
                 await asyncio.to_thread(client.initialize)
                 tools = await asyncio.to_thread(client.list_tools)
@@ -435,16 +435,16 @@ class MCPBridge:
         if queue is not None:
             try:
                 await asyncio.wait_for(queue.put(None), timeout=5.0)
-            except Exception:
-                pass
+            except Exception as _e_silent:
+                config.log_silent("_stop_actor", _e_silent)
         if task is not None and not task.done():
             task.cancel()
             try:
                 await asyncio.wait_for(task, timeout=10.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
-            except Exception:
-                pass
+            except Exception as _e_silent:
+                config.log_silent("_stop_actor", _e_silent)
 
     def connect(self, name: str, timeout: float = 30.0) -> Tuple[bool, str]:
         """Connect one server and register its tools. Returns (ok, message)."""
@@ -479,8 +479,8 @@ class MCPBridge:
             return False, f"MCP server '{key}' is not connected."
         try:
             self._run(self._stop_actor(entry), timeout=20.0)
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            config.log_silent("disconnect", _e_silent)
         _unregister_server_tools(key, entry.get("aria_names") or [])
         return True, f"Disconnected MCP server '{key}'."
 
@@ -591,8 +591,8 @@ def autoconnect_enabled_servers() -> str:
     summary = " | ".join(parts) if parts else "no MCP servers configured"
     try:
         config.add_log(f"[ARIA] MCP autoconnect: {summary}")
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        config.log_silent("autoconnect_enabled_servers", _e_silent)
     return summary
 
 

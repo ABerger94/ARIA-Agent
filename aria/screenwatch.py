@@ -42,6 +42,7 @@ import time
 from typing import Dict
 
 from aria.config import add_log
+from aria import config as _config_silent
 
 WATCHES_PATH = os.path.expanduser(os.path.join("~", "ARIA", "screen_watches.json"))
 MIN_INTERVAL_S = 60
@@ -121,8 +122,8 @@ def check_watch(name: str) -> str:
                 "before": str(last)[:500],
                 "after": answer[:500],
             })
-        except Exception:
-            pass  # the bus never breaks producers
+        except Exception as _e_silent:
+            _config_silent.log_silent("check_watch", _e_silent)
         add_log(f"Screen watch '{name}' triggered (answer changed)")
         return f"Screen watch '{name}': change detected."
     return f"Screen watch '{name}': no change."

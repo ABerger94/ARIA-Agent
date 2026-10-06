@@ -29,6 +29,7 @@ from aria.vision import (
 from aria.speech import tts_bytes_for_bridge, transcribe_audio
 from aria.tools.schemas import COMMAND_GUIDE
 from aria import inbox as inbox_mod
+from aria import config as _config_silent
 
 BRIDGE_SCHEME = "http"
 BRIDGE_CERT: Optional[str] = None
@@ -289,8 +290,8 @@ def ensure_bridge_cert():
         if os.path.exists(mcert) and os.path.exists(mkey):
             BRIDGE_SCHEME, BRIDGE_CERT, BRIDGE_KEY = "https", mcert, mkey
             return
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_silent.log_silent("ensure_bridge_cert", _e_silent)
     # 2. Fall back to the bundled cert (shared across deployments — weaker).
     add_log("Bridge: WARNING - using bundled shared cert; install 'cryptography' "
             "for a unique per-machine certificate.")
@@ -308,8 +309,8 @@ def ensure_bridge_cert():
                 add_log(f"Bridge: wrote bundled HTTPS cert ({d})")
             BRIDGE_SCHEME, BRIDGE_CERT, BRIDGE_KEY = "https", cert_p, key_p
             return
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("ensure_bridge_cert", _e_silent)
     BRIDGE_SCHEME = "http"
     add_log("Bridge: cert write failed - HTTP fallback.")
 

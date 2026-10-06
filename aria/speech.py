@@ -20,6 +20,7 @@ import numpy as np
 import speech_recognition as sr
 
 from aria.config import WORKSPACE_DIR
+from aria import config as _config_silent
 
 EDGE_TTS_VOICE = "en-US-AriaNeural"
 WHISPER_EDGE_KWARGS = {"rate": "-10%", "pitch": "-8Hz", "volume": "-60%"}
@@ -145,14 +146,14 @@ def fw_pcm(audio: sr.AudioData) -> np.ndarray:
     if sample_width != 2:
         try:
             raw = audioop.lin2lin(raw, sample_width, 2)
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("fw_pcm", _e_silent)
 
     if sample_rate != 16000 and sample_rate > 0:
         try:
             raw, _ = audioop.ratecv(raw, 2, 1, sample_rate, 16000, None)
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("fw_pcm", _e_silent)
 
     return (np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0)
 
@@ -347,8 +348,8 @@ class SpeechManager:
                     finally:
                         try:
                             pygame.mixer.music.unload()
-                        except Exception:
-                            pass
+                        except Exception as _e_silent:
+                            _config_silent.log_silent("_play_worker", _e_silent)
                 else:
                     self.init_tts()
                     if self._tts_engine:
@@ -431,13 +432,13 @@ class SpeechManager:
         try:
             import pygame
             pygame.mixer.music.stop()
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("interrupt", _e_silent)
         if self._tts_engine:
             try:
                 self._tts_engine.stop()
-            except Exception:
-                pass
+            except Exception as _e_silent:
+                _config_silent.log_silent("interrupt", _e_silent)
         self.log(f"Speech interrupted ({drained} queued cleared)")
         return drained
 
@@ -449,8 +450,8 @@ class SpeechManager:
             import pygame
             if pygame.mixer.get_init() and pygame.mixer.music.get_busy():
                 return True
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("is_speaking", _e_silent)
         return False
 
     def wait_until_done(self, timeout: float = 6.0):
@@ -538,8 +539,8 @@ def _sapi_tts_wav_ex(text: str, timeout: int = 60) -> Tuple[bytes, str]:
     finally:
         try:
             os.remove(path)
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("_sapi_tts_wav_ex", _e_silent)
 
 
 def _sapi_tts_wav(text: str, timeout: int = 60) -> bytes:

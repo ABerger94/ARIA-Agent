@@ -256,8 +256,8 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
     if _SPINE_HOOK:
         try:
             _SPINE_HOOK("tool", {"name": fn_name, "args": str(args)[:300]})
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_mod.log_silent("execute_tool", _e_silent)
 
     # 2. Duplicate-call blocking
     sig = call_signature(fn_name, args)
@@ -280,6 +280,13 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
     # 3b. ARIA ULTIMATE (Module 4) — approval gating. Destructive tools pause
     # for user approval unless preauthorized (approve-token replay, trusted
     # routine replay) or the mode is auto. Lazy import: no import cycle.
+    # 3a. Safe mode: shell, GUI control, and email are hard-blocked.
+    if not preauthorized:
+        from aria import config as _config_mod
+        if _config_mod.is_safe_mode() and fn_name in _config_mod.SAFE_MODE_BLOCKED_TOOLS:
+            return (f"[Safe mode: '{fn_name}' is disabled. "
+                    f"Disable safe mode to use shell, GUI control, or email.]",
+                    False)
     if not preauthorized:
         from aria import approval as _approval_mod
         _approval_mod.purge_expired()
@@ -304,16 +311,16 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
                     "role": "model",
                     "parts": [{"text": "[Executed: " + redact(desc) + "]"}]
                 })
-            except Exception:
-                pass
+            except Exception as _e_silent:
+                _config_mod.log_silent("execute_tool", _e_silent)
 
     # 5. Visual HUD feedback
     prev_face = None
     if _HUD_HOOK:
         try:
             prev_face = _HUD_HOOK("coding")
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_mod.log_silent("execute_tool", _e_silent)
     _LAST_TOOL_EXECUTED = (fn_name, time.time())
 
     # 6. Execute Handler
@@ -348,8 +355,8 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
         if _HUD_HOOK and prev_face:
             try:
                 _HUD_HOOK(prev_face)
-            except Exception:
-                pass
+            except Exception as _e_silent:
+                _config_mod.log_silent("execute_tool", _e_silent)
 
     # Autonomous Self-Healing on tool output returning recoverable failure
     if isinstance(r, str) and ("Traceback (most recent call last)" in r or "FileNotFoundError" in r or "No such file or directory" in r or "ModuleNotFoundError" in r or "unicodeescape" in r) and "[Autonomous Self-Healing:" not in r:
@@ -361,8 +368,8 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
             else:
                 # Self-repair Part 2: structured repair loop with a budget.
                 r = _repair_or_exhaust(fn_name, args or {}, r)
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_mod.log_silent("execute_tool", _e_silent)
 
     # 7. Truncation and caching
     r = truncate_output(str(r), MAX_TOOL_OUTPUT)
@@ -375,8 +382,8 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
         try:
             from aria import routines as _routines_mod
             _routines_mod.maybe_capture(fn_name, args or {})
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_mod.log_silent("execute_tool", _e_silent)
     return r, False
 
 
@@ -536,6 +543,8 @@ def _init_default_registry():
     _REGISTRY["describe_routine"] = lambda a: routines_mod.tool_describe_routine(a.get("name", ""))
     _REGISTRY["trust_routine"] = lambda a: routines_mod.tool_trust_routine(a.get("name", ""))
     _REGISTRY["untrust_routine"] = lambda a: routines_mod.tool_untrust_routine(a.get("name", ""))
+    _REGISTRY["export_routine_pack"] = lambda a: routines_mod.tool_export_routine_pack(a.get("names_csv", ""), a.get("dest_path", ""))
+    _REGISTRY["import_routine_pack"] = lambda a: routines_mod.tool_import_routine_pack(a.get("pack_path", ""))
 
     # ---- ARIA ULTIMATE (Module 2): file commander ----
     _REGISTRY["file_organize"] = lambda a: fileops_mod.tool_file_organize(
@@ -577,12 +586,12 @@ def _init_default_registry():
         usertools_mod.load_user_tools_into_registry()
         for _uname, _uhandler, _udecl in usertools_mod.get_user_tools():
             register_dynamic_tool_declaration(_uname, _udecl, toolkit="user")
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_mod.log_silent("_init_default_registry", _e_silent)
     try:
         pricecheck_mod.ensure_pricecheck_task()
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_mod.log_silent("_init_default_registry", _e_silent)
 
 
 _init_default_registry()

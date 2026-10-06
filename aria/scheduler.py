@@ -19,6 +19,7 @@ from typing import Optional, Callable, List, Tuple, Dict, Any
 from aria.config import ROOT_DIR, add_log
 from aria.memory import DB_LOCK, DB_PATH
 import aria.speech as speech
+from aria import config as _config_silent
 
 SCHEDULE_FILE = os.path.join(ROOT_DIR, "aria_schedule.json")
 BREAK_REMINDERS = True
@@ -44,8 +45,8 @@ def _bump_sched_count(delta: int):
     if _SCHED_COUNT_HOOK:
         try:
             _SCHED_COUNT_HOOK(delta)
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("_bump_sched_count", _e_silent)
 
 
 def _load_schedule() -> List[Dict[str, str]]:
@@ -63,8 +64,8 @@ def _load_schedule() -> List[Dict[str, str]]:
             try:
                 with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
                     json.dump(cleaned, f, indent=2)
-            except Exception:
-                pass
+            except Exception as _e_silent:
+                _config_silent.log_silent("_heal", _e_silent)
         return cleaned
 
     if not os.path.exists(SCHEDULE_FILE):
@@ -403,8 +404,8 @@ def scheduler_loop(is_busy_fn: Optional[Callable[[], bool]] = None,
                     try:  # Module 5 event bus: never break scheduling
                         from aria.events import emit_reminder_fired
                         emit_reminder_fired(tid, prompt)
-                    except Exception:
-                        pass
+                    except Exception as _e_silent:
+                        _config_silent.log_silent("scheduler_loop", _e_silent)
                     busy = is_busy_fn() if is_busy_fn else False
                     if not busy:
                         speech.speak(prompt)
@@ -450,8 +451,8 @@ def scheduler_loop(is_busy_fn: Optional[Callable[[], bool]] = None,
                     try:  # Module 5 event bus: never break scheduling
                         from aria.events import emit_task_fired
                         emit_task_fired(tid, "interval", prompt, interval_s)
-                    except Exception:
-                        pass
+                    except Exception as _e_silent:
+                        _config_silent.log_silent("scheduler_loop", _e_silent)
                     if run_agent_fn:
                         threading.Thread(target=run_agent_fn,
                                          args=(f"[Scheduled task] {prompt}",),
@@ -462,8 +463,8 @@ def scheduler_loop(is_busy_fn: Optional[Callable[[], bool]] = None,
             try:
                 from aria.events import poll_inbox
                 poll_inbox()
-            except Exception:
-                pass
+            except Exception as _e_silent:
+                _config_silent.log_silent("scheduler_loop", _e_silent)
         except Exception as e:
             add_log(f"Scheduler err: {e}")
         time.sleep(10)

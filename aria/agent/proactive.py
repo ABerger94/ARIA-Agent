@@ -23,6 +23,7 @@ from aria.memory import (
 import aria.agent.workers as workers
 from aria.agent.providers import provider_text
 from aria.scheduler import BREAK_REMINDERS
+from aria import config as _config_silent
 
 _HEARTBEAT_MEM_FILE = os.path.join(WORKSPACE_DIR, "heartbeat_memory.json")
 _MOOD_FILE = os.path.join(WORKSPACE_DIR, "mood.json")
@@ -46,8 +47,8 @@ def _heartbeat_mem_save(mem: Dict[str, Any]):
     try:
         with open(_HEARTBEAT_MEM_FILE, "w", encoding="utf-8") as f:
             json.dump(mem, f, indent=2)
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_silent.log_silent("_heartbeat_mem_save", _e_silent)
 
 
 def looks_like_decline(user_text: str) -> bool:
@@ -162,8 +163,8 @@ def _get_user_name() -> str:
                 if m:
                     return m.group(1)
                 return val
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_silent.log_silent("_get_user_name", _e_silent)
     return "Alek"
 
 
@@ -347,8 +348,8 @@ def _mood_save(d: Dict[str, Any]):
         os.makedirs(WORKSPACE_DIR, exist_ok=True)
         with open(_MOOD_FILE, "w", encoding="utf-8") as f:
             json.dump(d, f, indent=2)
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_silent.log_silent("_mood_save", _e_silent)
 
 
 def mood_state(now: Optional[float] = None) -> Tuple[float, float]:

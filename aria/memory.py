@@ -19,6 +19,7 @@ from aria.config import (
     WORKSPACE_DIR, SPINE_PATH, RESUME_PATH, EMBED_MODEL,
     OLLAMA_CLOUD_API_KEY, redact, quarantine_key
 )
+from aria import config as _config_silent
 
 DB_PATH = os.path.join(WORKSPACE_DIR, "aria_memory.db")
 CHAT_LOG_FILE = os.path.join(WORKSPACE_DIR, "chat_history.md")
@@ -35,8 +36,8 @@ def add_log(msg):
     if _LOG_CALLBACK:
         try:
             _LOG_CALLBACK(msg)
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("add_log", _e_silent)
 
 def spine_append(event_type, payload):
     """Append one redacted event to the spine. Never raises."""
@@ -112,8 +113,8 @@ def _spine_unbroken_thread(limit_chars=1500):
         try:
             with open(RESUME_PATH, encoding="utf-8") as f:
                 card = f.read(600)
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("_spine_unbroken_thread", _e_silent)
         out = text + ("\n--- where we left off ---\n" + card if card else "")
         return out[:limit_chars] or "(thread just starting)"
     except Exception:
@@ -178,14 +179,14 @@ def init_databases():
             value TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
         try:
             cur.execute("ALTER TABLE memory ADD COLUMN embedding BLOB")
-        except Exception:
-            pass  # column already exists
+        except Exception as _e_silent:
+            _config_silent.log_silent("init_databases", _e_silent)
         # Ensure memory keys are unique and deduplicated
         try:
             cur.execute("DELETE FROM memory WHERE rowid NOT IN (SELECT MIN(rowid) FROM memory GROUP BY key)")
             cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_key ON memory(key)")
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("init_databases", _e_silent)
         cur.execute('''CREATE TABLE IF NOT EXISTS chat_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT,
             sender TEXT, message TEXT)''')
@@ -442,8 +443,8 @@ def log_conversation(sender: str, message: str):
     for listener in _CHAT_LOG_LISTENERS:
         try:
             listener(ts_short, sender, redacted_msg)
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("log_conversation", _e_silent)
 
     with DB_LOCK:
         try:

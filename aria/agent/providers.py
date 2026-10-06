@@ -33,6 +33,7 @@ from aria.config import (
     PROVIDER_CHAIN, KEY_QUARANTINE_DURATION_S,
     quarantine_key, key_is_quarantined, key_mask, add_log,
 )
+from aria import config as _config_silent
 
 ACTIVE_PROVIDER = PROVIDER_CHAIN[0] if PROVIDER_CHAIN else "ollama_cloud"
 
@@ -77,8 +78,8 @@ def _record_call_stats(provider_name: str, latency_ms: int, usage: Any) -> None:
             "prompt_tokens": u.get("prompt_tokens"),
             "completion_tokens": u.get("completion_tokens"),
         })
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_silent.log_silent("_record_call_stats", _e_silent)
 
 
 # --------------------------------------------------------------------------
@@ -369,8 +370,8 @@ class OpenAICompatProvider(Provider):
                     if on_text_chunk:
                         try:
                             on_text_chunk(c)
-                        except Exception:
-                            pass
+                        except Exception as _e_silent:
+                            _config_silent.log_silent("_parse_sse_stream", _e_silent)
                 for tc in delta.get("tool_calls") or []:
                     idx = tc.get("index", 0)
                     acc = tc_accum.setdefault(idx, {"id": None, "name": None, "args": ""})
@@ -385,8 +386,8 @@ class OpenAICompatProvider(Provider):
             if on_text_chunk:
                 try:
                     on_text_chunk(None)  # stream-complete signal: brain treats None as done
-                except Exception:
-                    pass
+                except Exception as _e_silent:
+                    _config_silent.log_silent("_parse_sse_stream", _e_silent)
 
         parts: List[Dict[str, Any]] = []
         if text_buf:
@@ -559,8 +560,8 @@ def _note_role_model_failed(tag: Optional[str]) -> None:
         if tag:
             _ROLE_MODEL_COOLDOWN[tag] = time.time() + ROLE_MODEL_COOLDOWN_S
             add_log(f"role model '{tag}' parked for {ROLE_MODEL_COOLDOWN_S // 60} min after failure")
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_silent.log_silent("_note_role_model_failed", _e_silent)
 
 
 def clear_role_model_cooldown() -> None:
@@ -568,8 +569,8 @@ def clear_role_model_cooldown() -> None:
     Alek swaps a model tag and wants the new one tried immediately)."""
     try:
         _ROLE_MODEL_COOLDOWN.clear()
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_silent.log_silent("clear_role_model_cooldown", _e_silent)
 
 
 def chain_all_quarantined() -> bool:

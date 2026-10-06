@@ -160,8 +160,8 @@ def fetch_inbox() -> Dict[str, Any]:
         imp_raw = builtins.tool_read_email(query="is:important newer_than:2d",
                                            limit=10) or ""
         important_uids = {it["uid"] for it in _parse_mail_lines(imp_raw)}
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        cfg.log_silent("fetch_inbox", _e_silent)
     for it in items:
         auto = bool(AUTOMATED_SENDERS.search(it["sender"] + it["subject"]))
         it["important"] = (it["uid"] in important_uids) or not auto
@@ -242,8 +242,8 @@ def fetch_systems() -> Dict[str, Any]:
         b = psutil.sensor_battery() if hasattr(psutil, "sensors_battery") else None
         if b is not None:
             batt = {"pct": int(b.percent), "plugged": bool(b.power_plugged)}
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        cfg.log_silent("fetch_systems", _e_silent)
 
     return {
         "available": True,

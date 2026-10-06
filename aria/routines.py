@@ -364,3 +364,127 @@ def tool_untrust_routine(name: str) -> str:
     if not sname:
         return "[Routine name has no valid characters.]"
     return _save_trusted(sname, False)
+
+
+# ---------------------------------------------------------------- routine packs
+# A pack is a zip: manifest.json + one <name>.json per routine. Shareable:
+# export a pack, send the file, import it on another machine.
+PACK_FORMAT = "aria-routine-pack"
+PACK_VERSION = 1
+
+
+def _pack_manifest(names):
+    return {
+        "format": PACK_FORMAT,
+        "version": PACK_VERSION,
+        "exported": datetime.now(timezone.utc).isoformat(),
+        "routines": sorted(names),
+    }
+
+
+def export_pack(names, dest_path: str) -> str:
+    """Zip the named routines + manifest to dest_path. Returns dest_path."""
+    import zipfile
+    wanted = []
+    for n in names or []:
+        sname = sanitize_name(n)
+        if not sname:
+            continue
+        p = _routine_path(sname)
+        if os.path.exists(p):
+            wanted.append((sname, p))
+    if not wanted:
+        return "[No matching routines to export.]"
+    os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
+    with zipfile.ZipFile(dest_path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("manifest.json",
+                   json.dumps(_pack_manifest([s for s, _ in wanted]), indent=2))
+        for sname, p in wanted:
+            z.write(p, f"{sname}.json")
+    return f"Exported {len(wanted)} routine(s) to {dest_path}"
+
+
+def _valid_routine_data(data) -> bool:
+    return (isinstance(data, dict)
+            and isinstance(data.get("steps"), list)
+            and bool(sanitize_name(data.get("name"))))
+
+
+def import_pack(pack_path: str) -> str:
+    """Validate and import a routine pack. Never overwrites existing routines."""
+    import zipfile
+    if not os.path.exists(pack_path):
+        return f"[Pack not found: {pack_path}]"
+    try:
+        z = zipfile.ZipFile(pack_path)
+    except Exception as e:
+        return f"[Not a valid pack file: {e}]"
+    try:
+        try:
+            manifest = json.loads(z.read("manifest.json"))
+        except KeyError:
+            return "[Pack has no manifest.json — refusing to import.]"
+        if manifest.get("format") != PACK_FORMAT:
+            return "[Not an ARIA routine pack — refusing to import.]"
+        imported, skipped, bad = [], [], []
+        os.makedirs(_routines_dir(), exist_ok=True)
+        for info in z.infolist():
+            if info.is_dir() or info.filename == "manifest.json":
+                continue
+            if not info.filename.endswith(".json") or "/" in info.filename:
+                bad.append(info.filename)
+                continue
+            sname = sanitize_name(info.filename[:-5])
+            if not sname:
+                bad.append(info.filename)
+                continue
+            try:
+                data = json.loads(z.read(info.filename))
+            except Exception:
+                bad.append(info.filename)
+                continue
+            if not _valid_routine_data(data):
+                bad.append(info.filename)
+                continue
+            dest = _routine_path(sname)
+            if os.path.exists(dest):
+                skipped.append(sname)
+                continue
+            data["name"] = sname
+            # Imported routines are untrusted until explicitly trusted.
+            data["trusted"] = False
+            with open(dest, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            imported.append(sname)
+    finally:
+        z.close()
+    parts = []
+    if imported:
+        parts.append(f"imported: {', '.join(imported)}")
+    if skipped:
+        parts.append(f"skipped (already exist): {', '.join(skipped)}")
+    if bad:
+        parts.append(f"rejected: {', '.join(bad)}")
+    return "; ".join(parts) or "[Pack contained no routines.]"
+
+
+def tool_export_routine_pack(names_csv: str = "", dest_path: str = "") -> str:
+    """Export routines to a shareable pack zip. names_csv empty = all."""
+    if names_csv.strip():
+        names = [n.strip() for n in names_csv.split(",") if n.strip()]
+    else:
+        try:
+            names = [f[:-5] for f in sorted(os.listdir(_routines_dir()))
+                     if f.endswith(".json")]
+        except Exception:
+            names = []
+    if not dest_path.strip():
+        dest_path = os.path.join(
+            os.path.expanduser("~"), "ARIA",
+            f"routines-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.zip")
+    return export_pack(names, dest_path.strip())
+
+
+def tool_import_routine_pack(pack_path: str) -> str:
+    """Import a routine pack zip. Never overwrites; imports are untrusted."""
+    return import_pack((pack_path or "").strip())

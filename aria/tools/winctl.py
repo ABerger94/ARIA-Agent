@@ -14,6 +14,7 @@ import sys
 from typing import Optional
 
 from aria.config import add_log, redact
+from aria import config as _config_silent
 
 _UNAVAILABLE = "[window control unavailable on this platform]"
 _SNAP_POSITIONS = ("left", "right", "maximize", "minimize", "center")
@@ -46,8 +47,8 @@ def _find_hwnd(win32gui, title: str) -> Optional[int]:
             text = win32gui.GetWindowText(hwnd) or ""
             if text and (not needle or needle in text.lower()):
                 found.append((hwnd, text))
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("_cb", _e_silent)
         return True
 
     try:
@@ -120,8 +121,8 @@ def _resolve_start_menu(name: str) -> Optional[str]:
     try:
         dirs.append(os.path.join(os.path.expanduser("~"),
                                  r"AppData\Roaming\Microsoft\Windows\Start Menu\Programs"))
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_silent.log_silent("_resolve_start_menu", _e_silent)
     needle = (name or "").strip().lower()
     if not needle:
         return None

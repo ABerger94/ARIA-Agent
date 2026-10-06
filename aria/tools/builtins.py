@@ -29,6 +29,7 @@ from aria.memory import (
     memory_forget_entries,
     memory_save, spine_append, add_log, DB_PATH, DB_LOCK
 )
+from aria import config as _config_silent
 
 try:
     from duckduckgo_search import DDGS
@@ -187,8 +188,8 @@ def _open_video_downloader() -> str:
         urllib.request.urlopen(dl_url, timeout=2)
         os.system(f'start "" "{dl_url}"')
         return f"Video downloader is already running — opened {dl_url}."
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_silent.log_silent("_open_video_downloader", _e_silent)
     home = os.environ.get("USERPROFILE", "")
     candidates = [
         os.path.join(d, "start-windows.bat") for d in (
@@ -595,8 +596,8 @@ def tool_read_email(query: str = "", limit: int = 10, unread_only: bool = False,
     finally:
         try:
             m.logout()
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("tool_read_email", _e_silent)
 
 
 # ---------------- Calendar (live iCal feed) ----------------

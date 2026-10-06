@@ -22,6 +22,7 @@ from PIL import ImageGrab
 
 from aria.config import WORKSPACE_DIR, add_log
 from aria.hardware import send_servo_command, SERVO_POS
+from aria import config as _config_silent
 
 VISION_SCREEN_SIZE = (800, 450)
 VISION_CAM_SIZE = (640, 480)
@@ -502,8 +503,8 @@ def publish_face_frame(canvas: np.ndarray):
         with _FACE_FRAME["lock"]:
             _FACE_FRAME["jpeg"] = data
             _FACE_FRAME["last"] = now
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_silent.log_silent("publish_face_frame", _e_silent)
 
 
 def get_face_frame_jpeg() -> Optional[bytes]:

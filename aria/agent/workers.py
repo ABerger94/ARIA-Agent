@@ -21,6 +21,7 @@ from aria.config import WORKSPACE_DIR, add_log
 from aria.memory import (
     job_db_create, job_db_update, job_db_list, spine_append
 )
+from aria import config as _config_silent
 
 _JOBS_LOG_DIR = os.path.join(WORKSPACE_DIR, "logs", "jobs")
 os.makedirs(_JOBS_LOG_DIR, exist_ok=True)
@@ -102,8 +103,8 @@ def cancel_background_job(job_id: int) -> bool:
                 time.sleep(0.2)
                 if proc.poll() is None:
                     proc.kill()
-            except Exception:
-                pass
+            except Exception as _e_silent:
+                _config_silent.log_silent("cancel_background_job", _e_silent)
             job_db_update(job_id, "killed", exit_code=-9)
             del _ACTIVE_JOBS[job_id]
             add_log(f"Worker: Cancelled job #{job_id} '{name}'")
@@ -117,8 +118,8 @@ def cancel_background_job(job_id: int) -> bool:
             try:
                 p = psutil.Process(pid)
                 p.terminate()
-            except Exception:
-                pass
+            except Exception as _e_silent:
+                _config_silent.log_silent("cancel_background_job", _e_silent)
             job_db_update(job_id, "killed", exit_code=-9)
             return True
     return False
@@ -188,10 +189,10 @@ def _downloads_watcher_loop():
                 try:
                     stat = entry.stat()
                     seen[str(entry)] = (stat.st_size, stat.st_mtime, 2)
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                except Exception as _e_silent:
+                    _config_silent.log_silent("_downloads_watcher_loop", _e_silent)
+    except Exception as _e_silent:
+        _config_silent.log_silent("_downloads_watcher_loop", _e_silent)
 
     TEMP_EXTS = {".tmp", ".crdownload", ".part", ".opdownload", ".aria2", ".download"}
 
@@ -272,8 +273,8 @@ def _system_resource_loop():
                             spine_append("system_alert", {"type": "disk", "target": part.mountpoint, "free_gb": free_gb})
                             with _QUEUES_LOCK:
                                 _PENDING_SYSTEM_ALERTS.append(alert)
-                except Exception:
-                    pass
+                except Exception as _e_silent:
+                    _config_silent.log_silent("_system_resource_loop", _e_silent)
 
             # 2. RAM check
             mem = psutil.virtual_memory()
@@ -333,8 +334,8 @@ def system_health_audit() -> str:
         try:
             u = psutil.disk_usage(part.mountpoint)
             lines.append(f"  * {part.mountpoint} ({part.device}): {u.percent}% used ({u.free / (1024**3):.1f} GB free / {u.total / (1024**3):.1f} GB total)")
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("system_health_audit", _e_silent)
 
     # 3. Active Background Jobs
     with _JOBS_LOCK:

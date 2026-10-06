@@ -9,6 +9,7 @@ import re
 import secrets
 from collections import deque
 from datetime import datetime
+from aria import config as _config_silent
 
 # Root paths
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -166,8 +167,8 @@ def _ensure_bridge_token():
             if m:
                 _KEYS["bridge_token"] = m.group(1)
                 return m.group(1)
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("_ensure_bridge_token", _e_silent)
         _tok = secrets.token_urlsafe(16)
         _KEYS["bridge_token"] = _tok
         return _tok
@@ -261,13 +262,13 @@ def add_log(msg: str, level: str = None, meta: dict = None):
     lvl = level or _level_of(redacted)
     try:
         _EVENT_RING.append((ts, lvl, redacted[:400], dict(meta or {})))
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_silent.log_silent("add_log", _e_silent)
     for listener in _LOG_LISTENERS:
         try:
             listener(redacted)
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("add_log", _e_silent)
 
 
 def recent_events(n: int = 20):
@@ -319,8 +320,8 @@ def load_soul(path: str = None) -> str:
                 t = f.read().strip()
                 if t:
                     return t
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_silent.log_silent("load_soul", _e_silent)
     return DEFAULT_SOUL
 
 ARIA_SOUL = load_soul()
@@ -339,8 +340,8 @@ def settings_save(d: dict):
         os.makedirs(WORKSPACE_DIR, exist_ok=True)
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(d, f, indent=2)
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_silent.log_silent("settings_save", _e_silent)
 
 def get_setting(key: str, default=None):
     return settings_load().get(key, default)
@@ -349,3 +350,51 @@ def set_setting(key: str, value):
     d = settings_load()
     d[key] = value
     settings_save(d)
+
+
+# ---------------------------------------------------------------- safe mode
+# When enabled, blocks shell execution, GUI control, and email — for demos
+# or new users. Enabled via ARIA_SAFE_MODE=1 env var or the "safe_mode"
+# setting. Checked in dispatch.execute_tool before anything runs.
+SAFE_MODE_BLOCKED_TOOLS = frozenset({
+    "run_python_code",
+    "manage_background_job",
+    "gui_click",
+    "gui_type",
+    "close_window",
+    "open_app_or_url",
+    "send_email",
+    "drive_wheels",
+    "move_head_servos",
+})
+
+
+def is_safe_mode() -> bool:
+    if os.environ.get("ARIA_SAFE_MODE", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    try:
+        return bool(get_setting("safe_mode", False))
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------- silent-error log
+# Replaces bare `except Exception: pass` — failures get recorded to
+# ~/ARIA/logs/silent-errors.log (capped at 200KB) instead of vanishing.
+# Debug visibility without spamming the user-facing event ring.
+_SILENT_LOG_MAX = 200 * 1024
+
+
+def log_silent(context: str, exc: BaseException) -> None:
+    try:
+        logdir = os.path.join(os.path.expanduser("~"), "ARIA", "logs")
+        os.makedirs(logdir, exist_ok=True)
+        p = os.path.join(logdir, "silent-errors.log")
+        if os.path.exists(p) and os.path.getsize(p) > _SILENT_LOG_MAX:
+            os.replace(p, p + ".1")
+        from datetime import datetime
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().isoformat(timespec='seconds')} "
+                    f"[{context}] {type(exc).__name__}: {exc}\n")
+    except Exception as _e_silent:
+        _config_silent.log_silent("log_silent", _e_silent)

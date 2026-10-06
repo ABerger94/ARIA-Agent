@@ -168,10 +168,10 @@ def tool_reload_user_tools() -> str:
             from aria.tools.schemas import unregister_dynamic_tool_declaration
             for name in before:
                 unregister_dynamic_tool_declaration(name, toolkit="user")
-        except Exception:
-            pass
-    except Exception:
-        pass
+        except Exception as _e_silent:
+            _config.log_silent("tool_reload_user_tools", _e_silent)
+    except Exception as _e_silent:
+        _config.log_silent("tool_reload_user_tools", _e_silent)
     _USER_TOOLS.clear()
     loaded = load_user_tools()
     added = _register_into_dispatch(loaded)

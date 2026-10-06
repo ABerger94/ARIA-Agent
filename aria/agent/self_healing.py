@@ -19,6 +19,7 @@ from aria.config import WORKSPACE_DIR, add_log
 from aria.memory import (
     incident_db_log, incident_db_list, spine_append, memory_save
 )
+from aria import config as _config_silent
 
 SAFE_AUTO_PACKAGES = {
     "requests", "urllib3", "bs4", "beautifulsoup4", "numpy", "pandas",
@@ -262,8 +263,8 @@ def attempt_auto_heal(fn_name: str, args: dict, error_or_output: Any,
                     record_incident(cat, fn_name, err_str, diag["diagnosis"],
                                     "Retried transient network request with backoff", resolved=True)
                     return True, new_res, "Recovered after transient network backoff retry."
-            except Exception:
-                pass
+            except Exception as _e_silent:
+                _config_silent.log_silent("attempt_auto_heal", _e_silent)
 
     # --- Heuristic 6: Locked File Permission ---
     if cat == "PERMISSION_LOCKED":
@@ -275,8 +276,8 @@ def attempt_auto_heal(fn_name: str, args: dict, error_or_output: Any,
                     record_incident(cat, fn_name, err_str, diag["diagnosis"],
                                     "Resolved after releasing file lock delay", resolved=True)
                     return True, new_res, "File access recovered after brief lock clearance."
-            except Exception:
-                pass
+            except Exception as _e_silent:
+                _config_silent.log_silent("attempt_auto_heal", _e_silent)
 
     # Record unresolved incident
     record_incident(cat, fn_name, err_str, diag["diagnosis"], "No automatic remediation succeeded", resolved=False)

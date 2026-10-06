@@ -331,8 +331,8 @@ def load_state() -> None:
         SELECTED_TASK = st.get("selected_task")
         if st.get("log_filter") in ("all", "info", "warn", "error"):
             LOG_FILTER = st["log_filter"]
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config.log_silent("load_state", _e_silent)
 
 
 def save_state() -> None:
@@ -342,8 +342,8 @@ def save_state() -> None:
             json.dump({"active_tab": ACTIVE_TAB, "scroll": SCROLL,
                        "selected_task": SELECTED_TASK,
                        "log_filter": LOG_FILTER}, f)
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config.log_silent("save_state", _e_silent)
 
 
 def load_notes() -> None:
@@ -353,8 +353,8 @@ def load_notes() -> None:
         if os.path.exists(NOTES_PATH):
             with open(NOTES_PATH, "r", encoding="utf-8") as f:
                 NOTES_BUF = f.read()
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config.log_silent("load_notes", _e_silent)
 
 
 def save_notes() -> None:
@@ -370,8 +370,8 @@ def save_notes() -> None:
             os.fsync(f.fileno())
         os.replace(tmp, NOTES_PATH)
         _NOTES_DIRTY_AT = 0.0
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config.log_silent("save_notes", _e_silent)
 
 
 load_state()
@@ -560,8 +560,8 @@ def _summarize_email(uid: str, sender: str, subject: str) -> None:
                             break
                     except Exception:
                         continue
-            except Exception:
-                pass
+            except Exception as _e_silent:
+                _config.log_silent("_run", _e_silent)
             _EMAIL_SUMMARIES[uid] = text or "(couldn't summarize — provider chain unavailable)"
         except Exception as e:
             _EMAIL_SUMMARIES[uid] = f"(summary failed: {e})"
@@ -578,8 +578,8 @@ def _task_rows_raw() -> List[Dict[str, Any]]:
                          "desc": (prompt or "")[:60] or kind,
                          "status": "sched", "eta": str(next_run or "?"),
                          "detail": f"kind={kind} interval={interval_s}s next={next_run}"})
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config.log_silent("_task_rows_raw", _e_silent)
     try:
         for j in _workers.list_background_jobs(limit=12):
             st = j.get("status", "?")
@@ -588,8 +588,8 @@ def _task_rows_raw() -> List[Dict[str, Any]]:
                          "status": st, "eta": "-",
                          "detail": f"pid={j.get('pid')} log={j.get('log_file')}",
                          "job_id": j.get("id")})
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config.log_silent("_task_rows_raw", _e_silent)
     order = {"running": 0, "sched": 1, "done": 2}
     rows.sort(key=lambda r: order.get(r["status"], 3))
     return rows
@@ -785,6 +785,31 @@ def _chain_pill(state: str):
     return (DIM, "READY")
 
 
+def _call_stats_line() -> str:
+    """Compact cost/latency line: last call + per-provider call counts."""
+    try:
+        from aria.agent import providers as _pv
+        last = _pv.get_last_call_stats()
+        stats = getattr(_pv, "PROVIDER_STATS", {}) or {}
+        calls = stats.get("calls", {}) or {}
+        bits = []
+        if last.get("provider"):
+            tok = ""
+            pt, ct = last.get("prompt_tokens"), last.get("completion_tokens")
+            if pt is not None or ct is not None:
+                tok = f" {pt or '?'}/{ct or '?'} tok"
+            bits.append(f"last: {last['provider']} {last.get('latency_ms', '?')}ms{tok}")
+        if calls:
+            bits.append("calls: " + " ".join(f"{k}={v}" for k, v in sorted(calls.items())))
+        fo = stats.get("failovers", 0)
+        if fo:
+            lf = stats.get("last_failover")
+            bits.append(f"failovers: {fo}" + (f" (last: {lf[0]})" if lf else ""))
+        return "  ·  ".join(bits)
+    except Exception:
+        return ""
+
+
 def _model_name_raw() -> str:
     try:
         from aria.agent import providers as _pv
@@ -793,8 +818,8 @@ def _model_name_raw() -> str:
         for p in chain:
             if getattr(p, "name", "") == active:
                 return str(getattr(p, "model", "") or "")
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config.log_silent("_model_name_raw", _e_silent)
     return ""
 
 
@@ -1124,6 +1149,10 @@ def _draw_system(canvas) -> None:
                 ax = x + slot
                 _txt(canvas, "→", int(ax) - 12, py + 26, 16, FAINT)
             x += slot
+    # cost/latency line at the bottom of the chain card
+    stats_line = _call_stats_line()
+    if stats_line:
+        _txt(canvas, _trunc(stats_line, 150), 46, CONTENT_Y + 122, 11, DIM)
     # bottom: sensors | controls
     by = CONTENT_Y + 166
     sy = _card(canvas, 28, by, 620, CONTENT_BOT, "SENSORS")

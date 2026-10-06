@@ -15,6 +15,7 @@ from typing import Optional
 
 import cv2
 import numpy as np
+from aria import config as _config_silent
 
 # ---------------------------------------------------------------------------
 # Palettes & Constants
@@ -97,8 +98,8 @@ def load_theme() -> str:
                 saved_style = f.read().strip().lower()
                 if saved_style in ("chassis", "classic"):
                     _avatar_style = saved_style
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_silent.log_silent("load_theme", _e_silent)
     _apply_theme()
     return _theme_name
 
@@ -116,8 +117,8 @@ def set_theme(name: str) -> str:
         try:
             with open(_THEME_FILE, "w", encoding="utf-8") as f:
                 f.write(name)
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("set_theme", _e_silent)
     return _theme_name
 
 
@@ -142,8 +143,8 @@ def set_avatar_style(style: str) -> str:
         try:
             with open(_STYLE_FILE, "w", encoding="utf-8") as f:
                 f.write(style)
-        except Exception:
-            pass
+        except Exception as _e_silent:
+            _config_silent.log_silent("set_avatar_style", _e_silent)
     return _avatar_style
 
 

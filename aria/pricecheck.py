@@ -19,6 +19,7 @@ import re
 import sqlite3
 
 from aria.config import PRICE_WATCH_DB, add_log, redact
+from aria import config as _config_silent
 
 # JSON-LD product markup is the most reliable signal; fall back to $ amounts.
 _JSONLD_PRICE_RE = re.compile(r'"price"\s*:\s*"?([0-9][0-9,]*\.[0-9]{2})"?')
@@ -84,8 +85,8 @@ def check_price_watches() -> str:
             add_log(f"Price check #{wid} ({label}) failed: {redact(str(e))}")
     try:
         conn.close()
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        _config_silent.log_silent("check_price_watches", _e_silent)
     summary = f"Checked {checked} price watch(es)."
     if alerts:
         summary += "\n" + "\n".join(alerts)

@@ -192,8 +192,8 @@ def _describe_tool(tool: str, args) -> str:
             return f"open '{a.get('target', '')}'"
         if tool == "move_head_servos":
             return f"move head servos (pan={a.get('pan', 90)} tilt={a.get('tilt', 45)})"
-    except Exception:
-        pass
+    except Exception as _e_silent:
+        config.log_silent("_describe_tool", _e_silent)
     return f"execute tool '{tool}'"
 
 
