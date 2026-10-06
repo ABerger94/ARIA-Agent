@@ -141,7 +141,10 @@ def gemini_contents_to_oai_messages(
                 })
             msg: Dict[str, Any] = {
                 "role": "assistant",
-                "content": "\n".join(text_bits) if text_bits else None,
+                # Never None: several OpenAI-compatible servers (Ollama
+                # included) 400 on null assistant content. Empty string is
+                # accepted everywhere, with or without tool_calls.
+                "content": "\n".join(text_bits) if text_bits else "",
             }
             if tool_calls:
                 msg["tool_calls"] = tool_calls
@@ -183,6 +186,43 @@ def gemini_contents_to_oai_messages(
                     "content": json.dumps(fr.get("response", {})),
                 })
     return messages
+
+
+def _payload_fingerprint(payload: Dict[str, Any]) -> str:
+    """Compact shape summary of a chat-completions payload, for 400 diagnosis.
+
+    Logs structure only — roles, content kinds, part types, counts — never
+    message text and never the API key (the key travels in headers, not the
+    body). When a provider 400s on "invalid message type", this shows exactly
+    which message had the offending shape.
+    """
+    try:
+        descs = []
+        for m in payload.get("messages", []) or []:
+            role = m.get("role", "?")
+            c = m.get("content")
+            if c is None:
+                ck = "null"
+            elif isinstance(c, str):
+                ck = "str"
+            elif isinstance(c, list):
+                kinds = sorted({p.get("type", "?") for p in c if isinstance(p, dict)})
+                ck = "list[" + ",".join(kinds) + "]"
+            else:
+                ck = type(c).__name__
+            extra = ""
+            if m.get("tool_calls"):
+                extra += f"+tool_calls({len(m['tool_calls'])})"
+            if m.get("tool_call_id"):
+                extra += "+tool_call_id"
+            descs.append(f"{role}:{ck}{extra}")
+        if len(descs) > 20:
+            descs = descs[:8] + ["..."] + descs[-4:]
+        tools = payload.get("tools")
+        return (f"model={payload.get('model')} msgs={len(payload.get('messages', []) or [])} "
+                f"[{', '.join(descs)}] tools={len(tools) if tools else 0}")
+    except Exception:
+        return "fingerprint failed"
 
 
 def _lowercase_schema_types(obj: Any) -> Any:
@@ -416,6 +456,11 @@ class OpenAICompatProvider(Provider):
                 if e.code == 400:
                     add_log(f"{self.name}: HTTP 400 (bad request, key NOT quarantined): "
                             f"{detail[:120]}")
+                    # 400 means OUR payload was malformed — log its shape so the
+                    # next occurrence self-diagnoses instead of needing a manual
+                    # OPS-log capture.
+                    add_log(f"{self.name}: 400 payload shape: "
+                            f"{_payload_fingerprint(payload)}")
                     return None
                 # 401/403 (bad key) and 402/404 keep the long quarantine.
                 quarantine_key(self.api_key, KEY_QUARANTINE_DURATION_S, e.code)

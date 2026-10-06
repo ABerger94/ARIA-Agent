@@ -20,6 +20,7 @@ from aria.agent.providers import (
     gemini_contents_to_oai_messages,
     gemini_decls_to_oai_tools,
     oai_response_to_parts,
+    _payload_fingerprint,
     _synth_tool_id,
     _build_chain,
 )
@@ -203,21 +204,6 @@ def test_uppercase_schema_types_lowercased():
     assert params["properties"]["items"]["items"]["type"] == "number", params
     print("ok uppercase_schema_types_lowercased")
 
-if __name__ == "__main__":
-    test_system_and_user_text()
-    test_model_function_call_roundtrip()
-    test_oai_id_preserved()
-    test_bad_tool_args()
-    test_decls_mapping()
-    test_synth_id_deterministic()
-    test_images_dropped()
-    test_chain_order()
-    test_user_agent_header()
-    test_fail_fast_single_attempt()
-    test_uppercase_schema_types_lowercased()
-    print("ALL PROVIDER TESTS PASSED")
-
-
 def test_user_agent_header():
     from aria.agent.providers import OpenAICompatProvider
     p = OpenAICompatProvider("groq", "https://api.groq.com/openai/v1", "k", "m")
@@ -279,3 +265,58 @@ def test_gemini_leg_present():
     assert len(gem) == 1, [p.name for p in chain]
     assert gem[0].base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
     print("ok gemini_leg_present", gem[0].model)
+
+
+def test_assistant_no_text_content_not_null():
+    # A model block with only functionCall parts must not produce
+    # "content": null — several OpenAI-compatible servers 400 on it.
+    contents = [
+        {"role": "model", "parts": [
+            {"functionCall": {"name": "get_time", "args": {}}},
+        ]},
+    ]
+    msgs = gemini_contents_to_oai_messages("", contents)
+    asst = [m for m in msgs if m["role"] == "assistant"][0]
+    assert asst["content"] == "", repr(asst["content"])
+    assert len(asst["tool_calls"]) == 1
+    print("ok assistant_no_text_content_not_null")
+
+
+def test_payload_fingerprint():
+    msgs = gemini_contents_to_oai_messages("sys", [
+        {"role": "user", "parts": [{"text": "secret hello"}]},
+        {"role": "model", "parts": [
+            {"functionCall": {"name": "get_time", "args": {}}},
+        ]},
+        {"role": "user", "parts": [
+            {"functionResponse": {"name": "get_time", "response": {"output": "noon"}}},
+        ]},
+    ])
+    fp = _payload_fingerprint({"model": "m", "messages": msgs,
+                               "tools": [{"type": "function"}]})
+    assert "system:str" in fp, fp
+    assert "user:str" in fp, fp
+    assert "assistant:str+tool_calls(1)" in fp, fp
+    assert "tool:str+tool_call_id" in fp, fp
+    assert "tools=1" in fp, fp
+    assert "secret hello" not in fp, "fingerprint must never leak message text"
+    print("ok payload_fingerprint", fp)
+
+
+if __name__ == "__main__":
+    test_system_and_user_text()
+    test_model_function_call_roundtrip()
+    test_oai_id_preserved()
+    test_bad_tool_args()
+    test_decls_mapping()
+    test_synth_id_deterministic()
+    test_images_dropped()
+    test_chain_order()
+    test_user_agent_header()
+    test_fail_fast_single_attempt()
+    test_uppercase_schema_types_lowercased()
+    test_assistant_no_text_content_not_null()
+    test_payload_fingerprint()
+    print("ALL PROVIDER TESTS PASSED")
+
+
