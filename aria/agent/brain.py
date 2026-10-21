@@ -21,6 +21,7 @@ from datetime import datetime
 from typing import Optional, Callable, List, Dict, Any
 
 from aria.config import (
+    AGENT_LOOP_TIME_BUDGET_S,
     ARIA_SOUL,
     SOUL_PATH,
     PROVIDER_CHAIN,
@@ -510,17 +511,43 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
     ] + CONVERSATION_HISTORY[:-1] + [{"role": "user", "parts": user_parts}]
 
     system_instruction = build_system_instruction(user_prompt)
+    _turn_t0 = time.time()
 
     try:
         _empty_retries = 0
         while True:
+            # A5: AGENT_LOOP_TIME_BUDGET_S was defined in config but
+            # never referenced — the tool loop below was uncapped.
+            # Enforce it per turn so a runaway tool chain ends with an
+            # explanation instead of running indefinitely.
+            if time.time() - _turn_t0 > AGENT_LOOP_TIME_BUDGET_S:
+                add_log(f"Agent loop budget exceeded "
+                        f"({AGENT_LOOP_TIME_BUDGET_S}s) — ending turn")
+                say("That took too long, so I stopped. Ask me again "
+                    "and I'll pick it up fresh.")
+                return "Agent loop time budget exceeded."
+
             stream_buf = [""]
             stream_sents = []
+            streamed_sents = []
+
+            def _emit_sentence(s: str):
+                stream_sents.append(s)
+                # A5 (audit §1C #1): hand each completed sentence to
+                # the speaker AS IT STREAMS IN. queue_stream_chunk
+                # existed for exactly this but had zero call sites —
+                # the entire reply used to be generated before the
+                # first word was spoken. streamed_sents records what
+                # was already spoken so the final branch doesn't
+                # repeat it.
+                if not silent and reply_sink is None:
+                    speech.queue_stream_chunk(s)
+                    streamed_sents.append(s)
 
             def _stream_chunk_cb(chunk: Optional[str]):
                 if chunk is None:
                     if stream_buf[0].strip():
-                        stream_sents.append(stream_buf[0].strip())
+                        _emit_sentence(stream_buf[0].strip())
                     stream_buf[0] = ""
                     return
                 if speech._SPEECH_STOP.is_set():
@@ -528,7 +555,7 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                 stream_buf[0] += chunk
                 sents, stream_buf[0] = speech.extract_sentences(stream_buf[0], first_clause=(len(stream_sents) == 0))
                 for s in sents:
-                    stream_sents.append(s)
+                    _emit_sentence(s)
 
             speech._SPEECH_STOP.clear()
 
@@ -583,7 +610,9 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                 add_log(f"Speech: {final_text[:28]}...")
 
                 if not silent:
-                    if stream_sents:
+                    if streamed_sents:
+                        pass  # already spoken live as they streamed in (A5)
+                    elif stream_sents:
                         for s in stream_sents:
                             if not speech._SPEECH_STOP.is_set():
                                 speech._SPEECH_QUEUE.put(s)

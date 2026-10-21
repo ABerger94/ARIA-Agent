@@ -244,7 +244,14 @@ def _embed(text):
             "https://ollama.com/api/embeddings", data=body,
             headers={"Content-Type": "application/json",
                      "Authorization": f"Bearer {OLLAMA_CLOUD_API_KEY}"})
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        # A5 (audit §1C #3): timeout cut 20s -> 5s. _embed feeds
+        # build_prompt_memories, which builds the CURRENT turn's
+        # system prompt — moving it async would silently change this
+        # turn's retrieval to stale/no matches, a behaviour change
+        # worse than the toll. So it stays synchronous and the toll is
+        # capped instead: on timeout the turn proceeds with core
+        # memories only (the graceful path that already existed).
+        with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read().decode())["embedding"]
     except urllib.error.HTTPError as e:
         if e.code == 429:

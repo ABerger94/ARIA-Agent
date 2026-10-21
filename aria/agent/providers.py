@@ -298,6 +298,11 @@ def oai_response_to_parts(resp_json: Dict[str, Any]) -> List[Dict[str, Any]]:
 # Providers
 # --------------------------------------------------------------------------
 
+# A5: per-attempt socket timeout for every provider leg (see
+# OpenAICompatProvider.call for the rationale). Was a hard-coded 90s.
+PROVIDER_CALL_TIMEOUT_S = 30
+
+
 class Provider:
     name = "base"
 
@@ -412,6 +417,11 @@ class OpenAICompatProvider(Provider):
     def call(self, system_instruction, contents, tool_decls=None, on_text_chunk=None):
         # Fail fast (Alek 2026-10-05): one attempt, then the turn moves to the
         # next provider immediately. No retries, no backoff sleeps.
+        # A5: the socket timeout is PROVIDER_CALL_TIMEOUT_S (30s), down
+        # from 90s — this is a conversational loop, and urllib's timeout
+        # bounds each socket operation, so a steadily streaming reply is
+        # not cut off; only a STALLED provider pays it. Worst-case full
+        # chain walk drops from 450s to 150s per brain iteration.
         self.last_error = None
         if not self.is_available():
             return None
@@ -429,13 +439,13 @@ class OpenAICompatProvider(Provider):
                 payload["stream"] = True
                 sbody = json.dumps(payload).encode("utf-8")
                 req = urllib.request.Request(url, data=sbody, headers=self._headers())
-                with urllib.request.urlopen(req, timeout=90) as resp:
+                with urllib.request.urlopen(req, timeout=PROVIDER_CALL_TIMEOUT_S) as resp:
                     parts = self._parse_sse_stream(resp, on_text_chunk)
                 _record_call_stats(self.name, int((time.time() - t0) * 1000),
                                    getattr(self, "_stream_usage", None))
                 return {"candidates": [{"content": {"parts": parts}}]}
             req = urllib.request.Request(url, data=body, headers=self._headers())
-            with urllib.request.urlopen(req, timeout=90) as resp:
+            with urllib.request.urlopen(req, timeout=PROVIDER_CALL_TIMEOUT_S) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             _record_call_stats(self.name, int((time.time() - t0) * 1000),
                                data.get("usage"))
@@ -573,6 +583,42 @@ def clear_role_model_cooldown() -> None:
         _config_silent.log_silent("clear_role_model_cooldown", _e_silent)
 
 
+# --- Provider cooldown registry (A5) ---
+# Pattern reimplemented from Mark-XXXIX-OR's or_client.py (FatihMakes,
+# CC BY-NC 4.0) — credit for the pattern: a provider that just failed
+# is skipped for a cooldown window instead of being re-walked at full
+# timeout cost on every subsequent turn. This is a per-PROVIDER axis,
+# complementary to aria.memory's per-KEY quarantine: it also covers
+# failures that never quarantine a key (5xx, network drops, empty
+# results), which previously cost a full leg every single turn.
+_PROVIDER_COOLDOWN: Dict[str, float] = {}
+PROVIDER_COOLDOWN_S = 60
+
+
+def _provider_in_cooldown(name: str) -> bool:
+    return _PROVIDER_COOLDOWN.get(name, 0) > time.time()
+
+
+def _note_provider_failed(name: str, last_error: Optional[str] = None) -> None:
+    # HTTP 400 is OUR malformed payload, not a sick provider — the same
+    # payload would fail everywhere, so cooling the provider down
+    # would only hide the road. (Matches the no-quarantine rule for
+    # 400 in OpenAICompatProvider.call.)
+    if last_error and last_error.startswith("HTTP 400"):
+        return
+    _PROVIDER_COOLDOWN[name] = time.time() + PROVIDER_COOLDOWN_S
+
+
+def _note_provider_ok(name: str) -> None:
+    _PROVIDER_COOLDOWN.pop(name, None)
+
+
+def clear_provider_cooldown() -> None:
+    """Reset the provider cooldown registry (used by tests; also handy
+    after swapping a key/model and wanting an immediate retry)."""
+    _PROVIDER_COOLDOWN.clear()
+
+
 def chain_all_quarantined() -> bool:
     """True when every configured provider's key is currently quarantined
     (e.g. all 429'd) — the chain has no road, not just a flat tire."""
@@ -655,10 +701,21 @@ def provider_call(
     if not chain:
         add_log("provider_call: chain is empty, nothing configured")
         return None
+    # A5: skip providers inside their failure-cooldown window — unless
+    # EVERY candidate is cooling down, in which case walk them anyway:
+    # a possibly-sick provider beats a guaranteed-dead turn.
+    candidates = [p for p in chain
+                  if (not only_provider or p.name == only_provider)
+                  and p.is_available()]
+    ignore_cooldowns = bool(candidates) and all(
+        _provider_in_cooldown(p.name) for p in candidates)
     for provider in chain:
         if only_provider and provider.name != only_provider:
             continue
         if not provider.is_available():
+            continue
+        if not ignore_cooldowns and _provider_in_cooldown(provider.name):
+            add_log(f"provider {provider.name} in failure cooldown, skipping")
             continue
         _note_call(provider.name)
         try:
@@ -671,12 +728,15 @@ def provider_call(
             _note_failover(provider.name)
             data = None
         if data and data.get("candidates"):
+            _note_provider_ok(provider.name)
             if ACTIVE_PROVIDER != provider.name:
                 note = " (fallback)"
                 add_log(f"provider now serving: {provider.name}{note}")
                 ACTIVE_PROVIDER = provider.name
             return data
         _note_failover(provider.name)
+        _note_provider_failed(provider.name,
+                              getattr(provider, "last_error", None))
         add_log(f"provider {provider.name} returned nothing, trying next")
     add_log("provider_call: chain exhausted, all providers down")
     return None

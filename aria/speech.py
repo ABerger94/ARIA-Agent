@@ -963,6 +963,11 @@ def speak(text: str, whisper_mode: bool = False):
         return None
     return _DEFAULT_SPEECH_MANAGER.speak(text, whisper_mode)
 
+
+def queue_stream_chunk(chunk: str):
+    """Queue one completed sentence from a streaming LLM reply (A5)."""
+    return _DEFAULT_SPEECH_MANAGER.queue_stream_chunk(chunk)
+
 def interrupt_speech() -> int:
     return _DEFAULT_SPEECH_MANAGER.interrupt()
 
