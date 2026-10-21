@@ -6,7 +6,7 @@ the one-folder bundle must be built there too.
 
 ## 0. Prereqs (Windows)
 
-- Python 3.9+ from python.org, with **"Add python.exe to PATH"** checked
+- Python 3.12 from python.org (the `py` launcher must resolve `py -3.12`)
 - This repo, cloned or pulled fresh
 - Inno Setup 6 (https://jrsoftware.org/isdl.php)
 
@@ -14,14 +14,14 @@ the one-folder bundle must be built there too.
 
 ```bat
 cd <repo>
-pip install -r requirements.txt
-pip install pyinstaller
+py -3.12 -m pip install -r requirements.txt
+py -3.12 -m pip install pyinstaller
 ```
 
 ## 2. Sanity-check the build command (optional, works on Linux too)
 
 ```bat
-python installer\build_installer.py --dry-run
+py -3.12 installer\build_installer.py --dry-run
 ```
 
 This prints the exact PyInstaller command without executing it. If you are
@@ -31,7 +31,7 @@ the green light — the real build still happens on Windows.
 ## 3. Build the one-folder bundle
 
 ```bat
-python installer\build_installer.py
+py -3.12 installer\build_installer.py
 ```
 
 This runs `py_compile` over the tree first (fails fast on syntax errors),

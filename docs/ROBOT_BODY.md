@@ -147,7 +147,7 @@ display (saves ~10 KB flash). Verified to compile for the Nano: 44% flash,
 
 ## ARIA software setup
 
-1. `pip install -r requirements.txt` (pyserial was already a dependency).
+1. `py -3.12 -m pip install -r requirements.txt` (pyserial was already a dependency).
 2. Flip the battery switch ON, then start ARIA. `init_hardware()` auto-detects
    the Nano (looks for CH340 / USB Serial ports) and connects at 115200.
 3. If the laptop's built-in camera should stay camera 0 and the body's webcam is
@@ -165,7 +165,7 @@ same `P/T/W/S` protocol over TCP, so ARIA can't tell the difference.
 Terminal 1 (either laptop):
 
 ```
-python sim/robot_sim.py --port 9999
+py -3.12 sim/robot_sim.py --port 9999
 ```
 
 Terminal 2 — point ARIA at it instead of a COM port:
@@ -186,7 +186,7 @@ handy if one laptop ends up being the robot's permanent host.
 ### The second-laptop play
 
 Honestly the best use of a spare laptop: make it the robot's dedicated brain.
-Install Python + `pip install -r requirements.txt`, pull this repo, set
+Install Python 3.12 + `py -3.12 -m pip install -r requirements.txt`, pull this repo, set
 `ARIA_BODY_CAMERA` if the webcam isn't index 0, and leave ARIA running there.
 The robot tethers to it via USB; your main machine stays free, and you can
 still reach ARIA from your phone through the phone bridge.

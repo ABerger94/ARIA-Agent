@@ -8,13 +8,12 @@ import sys
 import os
 import subprocess
 
-# Optional alternate Python used to relaunch when PyAudio/pygame are missing
+# Optional alternate Python used to relaunch when pygame is missing
 # (set ARIA_ALT_PYTHON to a full interpreter path). Defaults to no relaunch:
 # the hardcoded machine-specific path this replaced only worked on one PC.
 _ALT_PY = os.environ.get("ARIA_ALT_PYTHON", "")
 if _ALT_PY and os.path.exists(_ALT_PY) and os.path.abspath(sys.executable).lower() != os.path.abspath(_ALT_PY).lower():
     try:
-        import pyaudio
         import pygame
     except ImportError:
         subprocess.Popen([_ALT_PY] + sys.argv)

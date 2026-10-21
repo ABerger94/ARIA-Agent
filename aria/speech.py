@@ -25,6 +25,12 @@ from aria import config as _config_silent
 EDGE_TTS_VOICE = "en-US-AriaNeural"
 WHISPER_EDGE_KWARGS = {"rate": "-10%", "pitch": "-8Hz", "volume": "-60%"}
 
+# A2: Edge availability supervision — re-probe cadence while Edge is
+# down, and how many consecutive per-sentence synthesis failures revoke
+# readiness mid-session.
+EDGE_REPROBE_INTERVAL_S = 60.0
+EDGE_FAIL_STREAK_LIMIT = 3
+
 STOP_WORDS = {
     "stop", "quiet", "shut up", "enough", "silence",
     "stop talking", "hush", "be quiet", "cut it out",
@@ -95,6 +101,229 @@ def init_pyttsx3(on_log: Optional[Callable[[str], None]] = None):
         if on_log:
             on_log(f"Voice fallback init failed: {e}")
         return None
+
+
+class _SapiVoice:
+    """Owns the pyttsx3 engine on ONE dedicated thread (A3, audit §3B-3).
+
+    pyttsx3's Windows driver is SAPI-over-COM. The engine used to be
+    created on the main thread and then driven — say / runAndWait /
+    stop / property access — from the play-worker thread and arbitrary
+    caller threads, with no CoInitialize anywhere in this module:
+    cross-apartment COM use, the audit's prime suspect for the access
+    violation in Release() that killed the process seconds after boot.
+
+    Here the engine is created on a thread that calls
+    pythoncom.CoInitialize() first, and EVERY engine interaction is
+    marshalled onto that thread through a queue. Utterances run through
+    pyttsx3's external event loop (startLoop/iterate) so a queued
+    "stop" is processed between pump iterations — barge-in stays
+    responsive without ever touching the engine off-thread. Drivers
+    without an external loop fall back to runAndWait on the owner
+    thread (still fully COM-disciplined; stop then lands between
+    utterances).
+    """
+
+    def __init__(self, on_log: Optional[Callable[[str], None]] = None):
+        self.on_log = on_log
+        self._queue: "queue.Queue[tuple]" = queue.Queue()
+        self._thread: Optional[threading.Thread] = None
+        self._start_lock = threading.Lock()
+
+    def _log(self, msg: str):
+        if self.on_log:
+            self.on_log(msg)
+
+    def start(self):
+        """Start the engine thread (idempotent)."""
+        with self._start_lock:
+            if self._thread is not None:
+                return
+            self._thread = threading.Thread(
+                target=self._run, daemon=True, name="aria-sapi-engine")
+            self._thread.start()
+
+    def say(self, text: str, whisper_mode: bool = False) -> threading.Event:
+        """Queue an utterance; returns an Event set when it completes
+        (immediately, if no engine is available)."""
+        self.start()
+        done = threading.Event()
+        self._queue.put(("say", text, whisper_mode, done))
+        return done
+
+    def stop(self):
+        """Interrupt the current utterance (handled on the engine thread)."""
+        self.start()
+        self._queue.put(("stop",))
+
+    # -- engine thread -------------------------------------------------
+
+    def _run(self):
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+        except Exception:
+            pass  # non-Windows / no pywin32: engine init fails cleanly below
+        engine = None
+        try:
+            engine = init_pyttsx3(on_log=self.on_log)
+        except Exception as e:
+            self._log(f"Voice fallback init failed: {e}")
+
+        use_loop = False
+        current = None  # (done_event, (volume, rate) to restore or None)
+
+        def _finish_current():
+            nonlocal current
+            if current is None:
+                return
+            done, restore = current
+            current = None
+            if restore and engine is not None:
+                try:
+                    engine.setProperty("volume", restore[0])
+                    engine.setProperty("rate", restore[1])
+                except Exception:
+                    pass
+            done.set()
+
+        if engine is not None:
+            try:
+                engine.startLoop(False)
+                use_loop = True
+            except Exception:
+                use_loop = False
+            if use_loop:
+                try:
+                    engine.connect("finished-utterance",
+                                   lambda *_a, **_k: _finish_current())
+                except Exception:
+                    pass
+
+        while True:
+            try:
+                req = self._queue.get(timeout=0.02)
+            except queue.Empty:
+                req = None
+            if req is not None:
+                if req[0] == "say":
+                    _, text, whisper, done = req
+                    if engine is None:
+                        done.set()
+                    elif use_loop:
+                        _finish_current()  # defensive; play worker serialises
+                        restore = None
+                        try:
+                            if whisper:
+                                v0 = engine.getProperty("volume")
+                                r0 = engine.getProperty("rate")
+                                restore = (v0, r0)
+                                engine.setProperty("volume", min(float(v0), 0.4))
+                                engine.setProperty("rate", max(60, int(r0) - 40))
+                            engine.say(text)
+                        except Exception as e:
+                            self._log(f"SAPI say err: {e}")
+                            current = (done, restore)
+                            _finish_current()
+                        else:
+                            current = (done, restore)
+                    else:
+                        try:
+                            if whisper:
+                                v0 = engine.getProperty("volume")
+                                r0 = engine.getProperty("rate")
+                                try:
+                                    engine.setProperty("volume", min(float(v0), 0.4))
+                                    engine.setProperty("rate", max(60, int(r0) - 40))
+                                    engine.say(text)
+                                    engine.runAndWait()
+                                finally:
+                                    engine.setProperty("volume", v0)
+                                    engine.setProperty("rate", r0)
+                            else:
+                                engine.say(text)
+                                engine.runAndWait()
+                        except Exception as e:
+                            self._log(f"SAPI say err: {e}")
+                        done.set()
+                elif req[0] == "stop":
+                    if engine is not None:
+                        try:
+                            engine.stop()
+                        except Exception:
+                            pass
+                    _finish_current()
+            if use_loop and engine is not None:
+                try:
+                    engine.iterate()
+                except Exception:
+                    pass
+
+
+# ---------------- Mic capture (sounddevice) ----------------
+
+class _SoundDeviceStream:
+    """Blocking byte stream over a sounddevice InputStream, exposing the
+    PyAudio-style read() interface sr.Recognizer expects."""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def read(self, size):
+        data, _overflowed = self._stream.read(size)
+        return data.tobytes()
+
+    def close(self):
+        try:
+            self._stream.stop()
+        except Exception:
+            pass
+        try:
+            self._stream.close()
+        except Exception:
+            pass
+
+
+# sr.AudioSource is the base class Recognizer.listen() type-checks its
+# source against. Resolve it defensively: minimal stub environments
+# (the headless test harness) provide a bare speech_recognition module
+# without it, and a hard AttributeError here would break the import.
+_SRAudioSource = getattr(sr, "AudioSource", object)
+
+
+class SoundDeviceSource(_SRAudioSource):
+    """Microphone capture via sounddevice (PortAudio) as an sr.AudioSource.
+
+    Drop-in replacement for sr.Microphone, which is backed by PyAudio —
+    unmaintained upstream and without wheels for newer Pythons (the
+    3.14 install failure that started the Fork A audit). sounddevice
+    ships an ABI-independent wheel with PortAudio bundled. Capture is
+    16 kHz mono int16, blocksize 1024 (the constants Mark-XXXIX-OR uses
+    for the same job). Everything downstream — Recognizer.listen,
+    adjust_for_ambient_noise, AudioData — sees the identical interface.
+    """
+
+    def __init__(self, sample_rate: int = 16000, chunk: int = 1024, device=None):
+        self.SAMPLE_RATE = sample_rate
+        self.SAMPLE_WIDTH = 2  # int16
+        self.CHANNELS = 1
+        self.CHUNK = chunk
+        self._device = device
+        self.stream = None
+
+    def __enter__(self):
+        import sounddevice as sd
+        raw = sd.InputStream(
+            samplerate=self.SAMPLE_RATE, channels=self.CHANNELS,
+            dtype="int16", blocksize=self.CHUNK, device=self._device)
+        raw.start()
+        self.stream = _SoundDeviceStream(raw)
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.stream is not None:
+            self.stream.close()
+            self.stream = None
 
 
 # ---------------- Local STT (faster-whisper) ----------------
@@ -194,11 +423,39 @@ def clean_stt_transcript(text: str) -> str:
     return t
 
 
+_GOOGLE_STT_TIMEOUT_S = 10.0
+
+
+def _recognize_google(recognizer: sr.Recognizer, audio: sr.AudioData,
+                      timeout: float = _GOOGLE_STT_TIMEOUT_S) -> str:
+    """recognize_google with a hard timeout. The library call takes no
+    timeout argument, so a hung request would stall the wake listener
+    indefinitely (audit §1C). The call runs on a daemon thread; on
+    timeout the thread is abandoned (it dies with the process)."""
+    result: List[str] = []
+    error: List[Exception] = []
+
+    def _call():
+        try:
+            result.append(recognizer.recognize_google(audio))
+        except Exception as e:
+            error.append(e)
+
+    t = threading.Thread(target=_call, daemon=True, name="aria-google-stt")
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise TimeoutError(f"Google STT timed out after {timeout:.0f}s")
+    if error:
+        raise error[0]
+    return result[0] if result else ""
+
+
 def transcribe(audio: sr.AudioData, recognizer: sr.Recognizer, use_local_stt: bool = False, on_log: Optional[Callable[[str], None]] = None) -> str:
     """Transcribe sr.AudioData to text. Prefers faster-whisper with strict VAD filtering, falls back to Google on STT failure."""
     if not use_local_stt:
         try:
-            return clean_stt_transcript(recognizer.recognize_google(audio))
+            return clean_stt_transcript(_recognize_google(recognizer, audio))
         except Exception:
             return ""
 
@@ -221,7 +478,7 @@ def transcribe(audio: sr.AudioData, recognizer: sr.Recognizer, use_local_stt: bo
                 on_log(f"Local STT failed, falling back to Google: {e}")
 
     try:
-        return clean_stt_transcript(recognizer.recognize_google(audio))
+        return clean_stt_transcript(_recognize_google(recognizer, audio))
     except Exception:
         return ""
 
@@ -251,7 +508,18 @@ class SpeechManager:
         self.edge_ready = False
         self.whisper_mode = False
 
-        self._tts_engine = None
+        # A2: Edge availability is supervised, not latched (see
+        # _edge_supervisor). edge_probe_done fires when the FIRST probe
+        # round completes — the startup greeting waits on it (A6).
+        self.edge_probe_done = threading.Event()
+        self._edge_revoked = threading.Event()
+        self._probe_lock = threading.Lock()
+        self._edge_fail_streak = 0
+        self._edge_fail_lock = threading.Lock()
+
+        # A3: the pyttsx3 engine lives on its own COM-initialised
+        # thread inside _SapiVoice; nothing else touches it directly.
+        self._sapi = _SapiVoice(on_log=on_log)
         self._voice_rotation_idx = 0
         self._voice_rotation_lock = threading.Lock()
         self._started = False
@@ -261,41 +529,95 @@ class SpeechManager:
             self.on_log(msg)
 
     def init_tts(self):
-        if self._tts_engine is None:
-            self._tts_engine = init_pyttsx3(on_log=self.on_log)
+        """Ensure the SAPI engine thread is running (idempotent)."""
+        self._sapi.start()
 
     def _whisper_edge_kwargs(self) -> dict:
         return dict(WHISPER_EDGE_KWARGS) if self.whisper_mode else {}
 
-    def _init_edge_voice(self):
-        try:
-            pass
-        except Exception as e:
-            self.log("Voice: system fallback (edge-tts import broken)")
-            return
+    def _probe_edge_once(self) -> bool:
+        """Run one Edge probe round; log the outcome; return success.
 
-        try:
-            import pygame
-            pygame.mixer.init()
-        except Exception as e:
-            self.log("Voice: system fallback (mixer init failed)")
-            return
-
-        probe_ok = False
-        for attempt in range(1, 4):
+        A1 (audit §1A #2): the probe must say WHY Edge is unavailable.
+        Step 0 actually imports edge_tts — the previous body was
+        `try: pass`, which made the "(edge-tts import broken)" branch
+        unreachable and a broken install indistinguishable from a
+        network failure. Synthesis goes through the STRICT path so the
+        real error survives: edge_tts_bytes() swallows every failure
+        into b"" — probed through it, the retry loop could never see an
+        exception, its sleep(3) was dead code, and the actual reason
+        (e.g. Microsoft's HTTP 403 to pre-Sec-MS-GEC clients) was
+        discarded. Serialised: the supervisor is the only caller, but
+        the lock keeps that true if that ever changes.
+        """
+        with self._probe_lock:
             try:
-                b = edge_tts_bytes("Voice check.")
-                if b:
-                    probe_ok = True
-                    break
+                import edge_tts  # noqa: F401
             except Exception as e:
-                time.sleep(3)
+                self.log(f"Voice: system fallback (edge-tts import broken: {e})")
+                return False
 
-        if probe_ok:
-            self.edge_ready = True
-            self.log("Voice: Edge TTS (AriaNeural)")
-        else:
-            self.log("Voice: system fallback (synthesis failed)")
+            try:
+                import pygame
+                pygame.mixer.init()
+            except Exception as e:
+                self.log(f"Voice: system fallback (mixer init failed: {e})")
+                return False
+
+            last_err: Optional[Exception] = None
+            for attempt in range(1, 4):
+                try:
+                    if _edge_tts_bytes_strict("Voice check."):
+                        self.edge_ready = True
+                        with self._edge_fail_lock:
+                            self._edge_fail_streak = 0
+                        self.log("Voice: Edge TTS (AriaNeural)")
+                        return True
+                except Exception as e:
+                    last_err = e
+                    if attempt < 3:
+                        time.sleep(3)
+
+            self.log(f"Voice: system fallback (synthesis failed: {last_err})")
+            return False
+
+    def _edge_supervisor(self):
+        """Own Edge availability for the whole session (A2: de-latch).
+
+        Runs the first probe round (setting edge_probe_done for the
+        greeting), then keeps watching: while Edge is down it re-probes
+        every EDGE_REPROBE_INTERVAL_S, and a mid-session revocation
+        (repeated synthesis failures) wakes it immediately. Before A2
+        the probe ran exactly once at boot and edge_ready was never
+        re-checked — one boot-time network blip meant pyttsx3 for the
+        entire session (audit §1A #3).
+        """
+        try:
+            self._probe_edge_once()
+        finally:
+            self.edge_probe_done.set()
+        while True:
+            self._edge_revoked.wait(timeout=EDGE_REPROBE_INTERVAL_S)
+            self._edge_revoked.clear()
+            if not self.edge_ready:
+                self._probe_edge_once()
+
+    def _note_edge_result(self, ok: bool):
+        """Track per-sentence Edge synthesis results from the synth
+        worker. EDGE_FAIL_STREAK_LIMIT consecutive failures revoke
+        edge_ready (utterances route to pyttsx3) and wake the
+        supervisor to re-probe; any success resets the streak."""
+        with self._edge_fail_lock:
+            if ok:
+                self._edge_fail_streak = 0
+                return
+            self._edge_fail_streak += 1
+            streak = self._edge_fail_streak
+        if not ok and streak >= EDGE_FAIL_STREAK_LIMIT and self.edge_ready:
+            self.edge_ready = False
+            self.log(f"Voice: Edge TTS lost ({streak} consecutive synthesis "
+                     "failures) — system fallback until re-probe succeeds")
+            self._edge_revoked.set()
 
     def _synth_worker(self):
         while True:
@@ -317,6 +639,7 @@ class SpeechManager:
                     success = True
             except Exception as e:
                 self.log(f"Edge synth err: {e}")
+            self._note_edge_result(success)
 
             if not self.speech_stop.is_set():
                 self.audio_play_queue.put((text, audio_buf, success))
@@ -351,22 +674,16 @@ class SpeechManager:
                         except Exception as _e_silent:
                             _config_silent.log_silent("_play_worker", _e_silent)
                 else:
+                    # A3: SAPI playback is marshalled to the engine's
+                    # owner thread; block here until it completes (the
+                    # pacing the direct runAndWait() used to provide),
+                    # bailing promptly if an interrupt lands.
                     self.init_tts()
-                    if self._tts_engine:
-                        if self.whisper_mode:
-                            v0 = self._tts_engine.getProperty("volume")
-                            r0 = self._tts_engine.getProperty("rate")
-                            try:
-                                self._tts_engine.setProperty("volume", min(float(v0), 0.4))
-                                self._tts_engine.setProperty("rate", max(60, int(r0) - 40))
-                                self._tts_engine.say(text)
-                                self._tts_engine.runAndWait()
-                            finally:
-                                self._tts_engine.setProperty("volume", v0)
-                                self._tts_engine.setProperty("rate", r0)
-                        else:
-                            self._tts_engine.say(text)
-                            self._tts_engine.runAndWait()
+                    done = self._sapi.say(text, whisper_mode=self.whisper_mode)
+                    while not done.wait(0.05):
+                        if self.speech_stop.is_set():
+                            self._sapi.stop()
+                            break
             except Exception as e:
                 self.log(f"Speech play err: {e}")
             finally:
@@ -381,7 +698,7 @@ class SpeechManager:
         self._started = True
         self.init_tts()
 
-        threading.Thread(target=self._init_edge_voice, daemon=True, name="aria-voice-init").start()
+        threading.Thread(target=self._edge_supervisor, daemon=True, name="aria-voice-init").start()
 
         def _supervise(target, name):
             while True:
@@ -434,11 +751,10 @@ class SpeechManager:
             pygame.mixer.music.stop()
         except Exception as _e_silent:
             _config_silent.log_silent("interrupt", _e_silent)
-        if self._tts_engine:
-            try:
-                self._tts_engine.stop()
-            except Exception as _e_silent:
-                _config_silent.log_silent("interrupt", _e_silent)
+        try:
+            self._sapi.stop()
+        except Exception as _e_silent:
+            _config_silent.log_silent("interrupt", _e_silent)
         self.log(f"Speech interrupted ({drained} queued cleared)")
         return drained
 
@@ -632,10 +948,25 @@ def voice_ready() -> bool:
     return _DEFAULT_SPEECH_MANAGER.edge_ready
 
 
+def voice_probe_completed() -> bool:
+    """True once the first Edge probe round has finished (either way)."""
+    return _DEFAULT_SPEECH_MANAGER.edge_probe_done.is_set()
+
+
+def wait_for_voice_probe(timeout: Optional[float] = None) -> bool:
+    """Block until the first Edge probe round completes; False on timeout."""
+    return _DEFAULT_SPEECH_MANAGER.edge_probe_done.wait(timeout)
+
+
 def speak(text: str, whisper_mode: bool = False):
     if not VOICE_ENABLED:
         return None
     return _DEFAULT_SPEECH_MANAGER.speak(text, whisper_mode)
+
+
+def queue_stream_chunk(chunk: str):
+    """Queue one completed sentence from a streaming LLM reply (A5)."""
+    return _DEFAULT_SPEECH_MANAGER.queue_stream_chunk(chunk)
 
 def interrupt_speech() -> int:
     return _DEFAULT_SPEECH_MANAGER.interrupt()
