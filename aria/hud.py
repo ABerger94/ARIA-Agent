@@ -183,7 +183,19 @@ def _get_spotify_telemetry() -> Dict[str, Any]:
 
 
 class VolumeManager:
-    """Non-blocking volume controller for Windows master device and Spotify audio session."""
+    """Non-blocking volume controller for Windows master device and Spotify audio session.
+
+    A4 lifecycle: the COM worker is NOT started at construction (the
+    module-level instance used to spawn it at hud import time). Call
+    start() — main.start_all does, via hud.start_volume_manager(),
+    after boot. A monitor thread then runs the worker and restarts it
+    with backoff if it dies, surfacing the death in the HUD log; before
+    A4 a dead worker was never noticed (never joined/checked/restarted,
+    stale levels served forever, only trace in the silent log). Every
+    pycaw/COM object is created AND released on the worker thread —
+    the closures below del their wrappers explicitly instead of leaving
+    them for the cyclic GC to Release() on an arbitrary thread.
+    """
     def __init__(self):
         self.target = "device"  # "device" or "spotify"
         self.device_vol = 0.5
@@ -193,8 +205,34 @@ class VolumeManager:
         self._event = threading.Event()
         self._lock = threading.Lock()
         self._running = True
-        self._thread = threading.Thread(target=self._worker, daemon=True)
-        self._thread.start()
+        self._thread = None
+        self._monitor_thread = None
+        self._started = False
+
+    def start(self):
+        """Start the COM worker under its monitor (idempotent)."""
+        if self._started:
+            return
+        self._started = True
+        self._running = True
+        self._monitor_thread = threading.Thread(
+            target=self._supervise, daemon=True, name="aria-volume-monitor")
+        self._monitor_thread.start()
+
+    def _supervise(self):
+        delay = 2.0
+        while self._running:
+            self._thread = threading.Thread(
+                target=self._worker, daemon=True, name="aria-volume-worker")
+            self._thread.start()
+            self._thread.join()
+            if not self._running:
+                break
+            add_hud_log("Volume worker died — restarting (volume control "
+                        "was offline; see silent log)")
+            _config_silent.log_silent("VolumeManager._supervise", "worker exited")
+            time.sleep(delay)
+            delay = min(delay * 2, 60.0)
 
     def _worker(self):
         try:
@@ -208,35 +246,53 @@ class VolumeManager:
             from ctypes import cast, POINTER
 
             def _query_dev():
-                dev = AudioUtilities.GetSpeakers()
-                if hasattr(dev, "EndpointVolume"):
-                    vol = dev.EndpointVolume
-                else:
-                    iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                    vol = cast(iface, POINTER(IAudioEndpointVolume))
-                return float(vol.GetMasterVolumeLevelScalar())
+                dev = None
+                vol = None
+                iface = None
+                try:
+                    dev = AudioUtilities.GetSpeakers()
+                    if hasattr(dev, "EndpointVolume"):
+                        vol = dev.EndpointVolume
+                    else:
+                        iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                        vol = cast(iface, POINTER(IAudioEndpointVolume))
+                    return float(vol.GetMasterVolumeLevelScalar())
+                finally:
+                    del vol, iface, dev
 
             def _apply_dev(level):
-                dev = AudioUtilities.GetSpeakers()
-                if hasattr(dev, "EndpointVolume"):
-                    vol = dev.EndpointVolume
-                else:
-                    iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                    vol = cast(iface, POINTER(IAudioEndpointVolume))
-                vol.SetMasterVolumeLevelScalar(max(0.0, min(1.0, level)), None)
+                dev = None
+                vol = None
+                iface = None
+                try:
+                    dev = AudioUtilities.GetSpeakers()
+                    if hasattr(dev, "EndpointVolume"):
+                        vol = dev.EndpointVolume
+                    else:
+                        iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                        vol = cast(iface, POINTER(IAudioEndpointVolume))
+                    vol.SetMasterVolumeLevelScalar(max(0.0, min(1.0, level)), None)
+                finally:
+                    del vol, iface, dev
 
             def _query_spot():
                 sessions = AudioUtilities.GetAllSessions()
-                for s in sessions:
-                    if s.Process and s.Process.name().lower() == "spotify.exe":
-                        return float(s.SimpleAudioVolume.GetMasterVolume())
-                return 1.0
+                try:
+                    for s in sessions:
+                        if s.Process and s.Process.name().lower() == "spotify.exe":
+                            return float(s.SimpleAudioVolume.GetMasterVolume())
+                    return 1.0
+                finally:
+                    del sessions
 
             def _apply_spot(level):
                 sessions = AudioUtilities.GetAllSessions()
-                for s in sessions:
-                    if s.Process and s.Process.name().lower() == "spotify.exe":
-                        s.SimpleAudioVolume.SetMasterVolume(max(0.0, min(1.0, level)), None)
+                try:
+                    for s in sessions:
+                        if s.Process and s.Process.name().lower() == "spotify.exe":
+                            s.SimpleAudioVolume.SetMasterVolume(max(0.0, min(1.0, level)), None)
+                finally:
+                    del sessions
 
             try:
                 self.device_vol = _query_dev()
@@ -283,8 +339,13 @@ class VolumeManager:
                     except Exception as _e_silent:
                         _config_silent.log_silent("_worker", _e_silent)
                     last_poll = now
-        except Exception as _e_silent:
-            _config_silent.log_silent("_worker", _e_silent)
+        except Exception as _e_fatal:
+            # A4: a fatal worker error (e.g. a pycaw import failure in
+            # this thread) must reach the supervisor, not only the
+            # silent log — log it and re-raise; _supervise restarts the
+            # worker with backoff and notes the death in the HUD log.
+            _config_silent.log_silent("_worker", _e_fatal)
+            raise
         finally:
             try:
                 import pythoncom
@@ -312,6 +373,13 @@ class VolumeManager:
 
 
 _VOL_MGR = VolumeManager()
+
+
+def start_volume_manager():
+    """Start the VolumeManager COM worker (A4). Called explicitly from
+    main.start_all after boot — constructing _VOL_MGR no longer starts
+    any COM thread at import time."""
+    _VOL_MGR.start()
 
 
 def get_hud_volume() -> float:

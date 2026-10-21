@@ -761,6 +761,10 @@ def start_all():
     # 3. Speech workers
     speech.start_speech_worker()
 
+    # 3b. Volume manager COM worker — started explicitly after boot
+    # (A4: it used to spawn at hud import time, unmonitored).
+    hud.start_volume_manager()
+
     # 4. Background threads
     threading.Thread(target=vision.face_track_loop,
                      args=(lambda: agent.BUSY_PROCESSING,),
