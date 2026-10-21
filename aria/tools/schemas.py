@@ -358,6 +358,18 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
     {   'description': 'Shows the largest files and subdirectories under a directory.',
         'name': 'disk_usage',
         'parameters': {'properties': {'directory': {'type': 'STRING'}, 'top_n': {'type': 'INTEGER'}}, 'required': ['directory'], 'type': 'OBJECT'}},
+    {   'description': "Processes a file and reports what it is and what's in it: text/code are read, "
+                       'PDF/Word/Excel/PowerPoint text is extracted, CSV/JSON are digested, images are '
+                       'described by vision, audio is transcribed. With no path, uses the file most '
+                       "recently dropped on the frame. Use for 'what's in that file' about a dropped, "
+                       'staged, or named file.',
+        'name': 'process_file',
+        'parameters': {'properties': {'path': {'type': 'STRING'}, 'question': {'type': 'STRING'}}, 'type': 'OBJECT'}},
+    {   'description': 'Quick first look through vision at one image: the webcam right now, a staged/dropped '
+                       'image, or an image file path — answers an ad-hoc question about it. Faster than '
+                       'describe_camera; use it for specific questions about a provided image.',
+        'name': 'vision_look',
+        'parameters': {'properties': {'image_path': {'type': 'STRING'}, 'question': {'type': 'STRING'}}, 'type': 'OBJECT'}},
     {   'description': 'Snaps a window by (partial) title: left, right, maximize, minimize, center. Windows only.',
         'name': 'window_snap',
         'parameters': {'properties': {'position': {'type': 'STRING'}, 'title': {'type': 'STRING'}}, 'required': ['title', 'position'], 'type': 'OBJECT'}},
@@ -415,8 +427,8 @@ TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persiste
                            'reload_user_tools', 'set_persona', 'list_personas', 'get_persona']},
     'comms': {'summary': 'Gmail: store credentials, send and read email, triage the inbox',
               'tools': ['gmail_setup', 'send_email', 'read_email', 'triage_email']},
-    'files': {'summary': 'file commander: organize a folder, advanced find, duplicate detection, disk usage',
-              'tools': ['file_organize', 'file_find_advanced', 'file_duplicates', 'disk_usage']},
+    'files': {'summary': 'file commander: organize a folder, advanced find, duplicate detection, disk usage, process a file (contents, digest, description, transcript)',
+              'tools': ['file_organize', 'file_find_advanced', 'file_duplicates', 'disk_usage', 'process_file']},
     'monitor': {'summary': 'screen watcher: alert when watched screen content changes',
                 'tools': ['watch_screen', 'unwatch_screen', 'list_screen_watches']},
     'routines': {'summary': 'record and replay multi-step routines (named automations)',
@@ -460,8 +472,8 @@ TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persiste
                                   'calendar_setup',
                                   'check_calendar']},
     'spotify': {'summary': 'music: Spotify control, DJ mode, media keys', 'tools': ['spotify', 'dj', 'media_key']},
-    'vision': {   'summary': 'webcam photos, camera descriptions, face tracking, neck servos',
-                  'tools': ['take_photo', 'describe_camera', 'face_tracking', 'move_head_servos', 'drive_wheels', 'body_stop']},
+    'vision': {   'summary': 'webcam photos, camera descriptions, vision first-look questions, face tracking, neck servos',
+                  'tools': ['take_photo', 'describe_camera', 'vision_look', 'face_tracking', 'move_head_servos', 'drive_wheels', 'body_stop']},
     'windows': {   'summary': 'list, focus, minimize, close, snap windows; launch apps',
                    'tools': ['list_windows', 'focus_window', 'minimize_window', 'close_window', 'window_snap', 'launch_app']}}
 
@@ -492,6 +504,7 @@ COMMAND_GUIDE = [   ('Memory', 'save_memory', 'remember my Doja playlist is spot
     ('Seeing', 'read_screen', 'what does this error say?'),
     ('Seeing', 'take_photo', 'take a photo'),
     ('Seeing', 'describe_camera', 'what do I look like?'),
+    ('Seeing', 'vision_look', 'what is in this picture?'),
     ('Time', 'set_timer', 'set a 20 minute timer'),
     ('Time', 'set_reminder', 'remind me at 6pm to take the trash out'),
     ('Time', 'set_recurring_task', 'remind me every weekday at 8am to check tips'),
@@ -544,6 +557,7 @@ COMMAND_GUIDE = [   ('Memory', 'save_memory', 'remember my Doja playlist is spot
     ('Files', 'file_find_advanced', 'find large videos in my downloads'),
     ('Files', 'file_duplicates', 'find duplicate files in my photos'),
     ('Files', 'disk_usage', 'what is eating my disk space?'),
+    ('Files', 'process_file', "what's in the file I dropped?"),
     ('Laptop', 'window_snap', 'snap Spotify to the left'),
     ('Laptop', 'launch_app', 'open Notepad'),
     ('Email', 'triage_email', 'triage my inbox'),

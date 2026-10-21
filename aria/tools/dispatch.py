@@ -482,6 +482,7 @@ from aria import pricecheck as pricecheck_mod
 from aria import inbox as inbox_mod
 from aria import memory as memory_mod
 from aria.tools import fileops as fileops_mod
+from aria.tools import fileproc as fileproc_mod
 from aria.tools import winctl as winctl_mod
 from aria.tools import triage as triage_mod
 from aria.tools import usertools as usertools_mod
@@ -589,6 +590,7 @@ def _init_default_registry():
     # Vision tools
     _REGISTRY["take_photo"] = lambda a: vision.tool_take_photo(a.get("name", ""))
     _REGISTRY["describe_camera"] = lambda a: vision.tool_describe_camera(a.get("question", ""))
+    _REGISTRY["vision_look"] = lambda a: vision.tool_vision_look(a.get("question", ""), a.get("image_path", ""))
     _REGISTRY["read_screen"] = lambda a: vision.tool_read_screen(a.get("question", ""))
     _REGISTRY["take_screenshot"] = lambda a: vision.tool_screenshot(a.get("name", ""))
     _REGISTRY["face_tracking"] = lambda a: vision.tool_face_tracking(a.get("on", True))
@@ -634,6 +636,10 @@ def _init_default_registry():
     _REGISTRY["file_duplicates"] = lambda a: fileops_mod.tool_file_duplicates(a.get("directory", ""))
     _REGISTRY["disk_usage"] = lambda a: fileops_mod.tool_disk_usage(
         a.get("directory", ""), int(a.get("top_n", 20) or 20))
+
+    # ---- Merger Phase 5: the file organ ----
+    _REGISTRY["process_file"] = lambda a: fileproc_mod.tool_process_file(
+        a.get("path", ""), a.get("question", ""))
 
     # ---- ARIA ULTIMATE (Module 3): window/app control expansion ----
     _REGISTRY["window_snap"] = lambda a: winctl_mod.tool_window_snap(a.get("title", ""), a.get("position", ""))

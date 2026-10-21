@@ -6,6 +6,7 @@ faster-whisper and Google cloud STT, and speech interrupt control.
 
 from __future__ import annotations
 
+import gc
 import io
 import os
 import queue
@@ -129,6 +130,9 @@ class _SapiVoice:
         self._queue: "queue.Queue[tuple]" = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._start_lock = threading.Lock()
+        # Owner-thread GC cadence for _run's loop (iterations; the loop
+        # wakes every ~20 ms, so 3000 ≈ once a minute). See _run.
+        self._gc_every_iters = 3000
 
     def _log(self, msg: str):
         if self.on_log:
@@ -200,6 +204,7 @@ class _SapiVoice:
                 except Exception:
                     pass
 
+        iters_since_gc = 0
         while True:
             try:
                 req = self._queue.get(timeout=0.02)
@@ -256,6 +261,22 @@ class _SapiVoice:
             if use_loop and engine is not None:
                 try:
                     engine.iterate()
+                except Exception:
+                    pass
+            # Owner-thread GC (COM-containment hotfix, 2026-10-21):
+            # the engine and its SAPI COM wrappers form reference
+            # cycles (the finished-utterance callback closes over the
+            # engine and its restore state). If the cyclic GC finalises
+            # those wrappers on an arbitrary thread, the comtypes
+            # Release() is a native access violation — the fault in
+            # the 2026-10-21 faulthandler dump. Collect periodically
+            # on THIS thread so finalisation stays in the apartment
+            # that owns the engine.
+            iters_since_gc += 1
+            if iters_since_gc >= self._gc_every_iters:
+                iters_since_gc = 0
+                try:
+                    gc.collect()
                 except Exception:
                     pass
 

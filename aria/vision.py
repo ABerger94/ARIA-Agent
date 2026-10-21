@@ -439,6 +439,139 @@ def tool_describe_camera(question: str = "") -> str:
     return "[Camera description unavailable: no vision text caller configured.]"
 
 
+# ---------------------------------------------------------------------------
+# Vision first-look (Merger Phase 6 — blueprint SS2.4 #4 pattern, SS5
+# Phase 6). Pattern credited to Mark-XXXIX-OR's actions/screen_processor.py
+# fast path (capture -> one vision call -> short answer); his persistent
+# Gemini Live session itself is SKIP (blueprint SS4): it speaks in a
+# prebuilt Gemini voice, which invariant #1 forbids. Here the call is
+# stateless, goes through the Phase 2 orpool vision pool, and the answer
+# is TEXT that the brain speaks through her own Edge pipeline.
+#
+# Coexistence rule (per the phase brief): the describe_camera /
+# read_screen chain above keeps its own _VISION_TEXT_CALL path,
+# untouched. First-look is a separate tool for ad-hoc questions over a
+# provided image (a dropped/staged file, an explicit path, or a fresh
+# webcam capture). The shared piece is the transport — the orpool —
+# not the tools.
+
+_FIRST_LOOK_SYSTEM = (
+    "You are ARIA's eyes for a quick first look. Answer the question "
+    "about the image directly and concisely, in plain text that ARIA "
+    "can speak aloud. Never invent details you cannot see."
+)
+
+_FIRST_LOOK_MIME = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".webp": "image/webp", ".gif": "image/gif",
+}
+
+
+def _first_look_surface(error, user_message: str) -> None:
+    """Phase 1 surfacing for vision failures — never raises."""
+    try:
+        from aria.agent.failures import surface_failure
+        surface_failure("vision_first_look", error, user_message=user_message)
+    except Exception:
+        pass
+
+
+def _first_look_pool(pool):
+    if pool is not None:
+        return pool
+    try:
+        from aria.agent.orpool import get_pool
+        return get_pool()
+    except Exception:
+        return None
+
+
+def vision_first_look(image_bytes: bytes, question: str = "",
+                      mime: str = "image/jpeg", *, pool=None) -> str:
+    """One stateless vision-pool call over a single image.
+
+    Returns the model's text answer. Every failure — fastpath off, no
+    image, pool missing/unavailable, pool error, empty answer — is
+    surfaced through Phase 1 and returned as an honest bracketed line;
+    a description is never fabricated.
+    """
+    if not getattr(_config_silent, "VISION_FASTPATH_ENABLED", True):
+        return "[Vision first-look is disabled (ARIA_VISION_FASTPATH=0).]"
+    if not image_bytes:
+        return "[Vision first-look unavailable: no image was provided.]"
+    pool = _first_look_pool(pool)
+    ready = False
+    try:
+        ready = bool(pool is not None and pool.available())
+    except Exception:
+        ready = False
+    if not ready:
+        _first_look_surface(
+            "background vision pool unavailable (disabled or no "
+            "OpenRouter key configured)",
+            "My quick-look vision is unavailable right now.")
+        return ("[Vision first-look unavailable: the background vision "
+                "pool is not available.]")
+    q = (question or "").strip() or \
+        "Describe what you see clearly and concisely."
+    try:
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        text = pool.vision(q, b64, mime, system=_FIRST_LOOK_SYSTEM)
+    except Exception as e:
+        _first_look_surface(e, "My quick look at that image failed.")
+        return f"[Vision first-look unavailable: {e}]"
+    if not text or not str(text).strip():
+        _first_look_surface("vision pool returned an empty answer",
+                            "My quick look came back empty.")
+        return "[Vision first-look returned no description.]"
+    return str(text).strip()
+
+
+def _first_look_image(image_path: str = ""):
+    """Resolve the image for a first look: explicit path, else the
+    frame's staged file when it is an image, else a fresh webcam
+    capture. Returns (bytes_or_None, mime, error_line_or_None)."""
+    path = (image_path or "").strip()
+    if not path:
+        try:
+            from aria import frame as _frame
+            staged = _frame.staged_file() or ""
+        except Exception:
+            staged = ""
+        if staged and os.path.splitext(staged)[1].lower() in _FIRST_LOOK_MIME:
+            path = staged
+    if path:
+        if not os.path.isfile(path):
+            return None, "image/jpeg", f"[Image not found: {path}]"
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except Exception as e:
+            _first_look_surface(e, "I couldn't read that image file.")
+            return None, "image/jpeg", f"[Could not read image: {e}]"
+        mime = _FIRST_LOOK_MIME.get(
+            os.path.splitext(path)[1].lower(), "image/jpeg")
+        return data, mime, None
+    try:
+        data = capture_webcam()
+    except Exception as e:
+        _first_look_surface(e, "The camera capture failed.")
+        return None, "image/jpeg", f"[Camera capture failed: {e}]"
+    if not data:
+        return None, "image/jpeg", "[Camera not available right now.]"
+    return data, "image/jpeg", None
+
+
+def tool_vision_look(question: str = "", image_path: str = "", *,
+                     pool=None) -> str:
+    """Tool: ad-hoc vision question over the webcam, a staged/dropped
+    image, or an image file path — answered by the first-look pool."""
+    data, mime, err = _first_look_image(image_path)
+    if err:
+        return err
+    return vision_first_look(data, question, mime, pool=pool)
+
+
 def tool_face_tracking(on: Any) -> str:
     """Toggle continuous camera face tracking to control physical neck servos."""
     global FACE_TRACKING

@@ -411,33 +411,45 @@ def tool_media_key(action: str = "play_pause", key: str = "") -> str:
 
 
 def tool_volume(action: str = "status", level: int = 50) -> str:
-    """Control master system audio volume via pycaw."""
+    """Control master system audio volume via the HUD volume manager.
+
+    COM containment (2026-10-21 crash hotfix): this tool used to call
+    pycaw INLINE on whatever thread the dispatcher ran it on — no
+    CoInitialize, and the endpoint wrappers were dropped into reference
+    cycles (the error path's traceback holds the frame, the frame holds
+    the locals) for the cyclic GC to finalise on an arbitrary thread.
+    The 2026-10-21 faulthandler dump shows exactly that finalisation —
+    comtypes Release() on the main thread — killing the process. All
+    COM now stays on the VolumeManager's worker thread in aria.hud;
+    this function only reads/writes the manager's plain cached state.
+    """
     try:
-        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-        from comtypes import CLSCTX_ALL
-        from ctypes import cast, POINTER
-        dev = AudioUtilities.GetSpeakers()
-        if hasattr(dev, "EndpointVolume"):
-            vol = dev.EndpointVolume
-        else:
-            iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-            vol = cast(iface, POINTER(IAudioEndpointVolume))
-        a = str(action).lower().strip()
+        from aria.hud import (
+            get_hud_volume, set_hud_volume, set_hud_mute,
+            volume_manager_started,
+        )
+    except Exception as e:
+        return f"[Volume control failed: {e}]"
+    if not volume_manager_started():
+        return ("[Volume control unavailable: the volume manager "
+                "is not running.]")
+    a = str(action).lower().strip()
+    try:
         if a == "set":
             pct = max(0, min(100, int(level)))
-            vol.SetMasterVolumeLevelScalar(pct / 100.0, None)
+            set_hud_volume(pct / 100.0)
             return f"Volume set to {pct}%."
         if a == "mute":
-            vol.SetMute(1, None)
+            set_hud_mute(True)
             return "Muted."
         if a == "unmute":
-            vol.SetMute(0, None)
+            set_hud_mute(False)
             return "Unmuted."
         if a == "up":
-            vol.SetMasterVolumeLevelScalar(min(1.0, vol.GetMasterVolumeLevelScalar() + 0.1), None)
+            set_hud_volume(min(1.0, get_hud_volume() + 0.1))
         elif a == "down":
-            vol.SetMasterVolumeLevelScalar(max(0.0, vol.GetMasterVolumeLevelScalar() - 0.1), None)
-        cur = int(vol.GetMasterVolumeLevelScalar() * 100)
+            set_hud_volume(max(0.0, get_hud_volume() - 0.1))
+        cur = int(get_hud_volume() * 100)
         return f"Volume is at {cur}%."
     except Exception as e:
         return f"[Volume control failed: {e}]"

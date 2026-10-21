@@ -24,4 +24,4 @@ jobs:
         # tests/_run_suite.py). A failure in any file still fails the job.
         run: |
           python -m pytest tests/test_headless.py tests/test_providers.py -q
-          for f in tests/test_failures.py tests/test_orpool.py tests/test_memextract.py tests/test_tasks.py tests/test_frame.py tests/test_ultimate_a.py tests/test_ultimate_b.py tests/test_ultimate_c.py tests/test_ultimate_d.py tests/test_ultimate_e.py; do python -m pytest "$f" -q || exit 1; done
+          for f in tests/test_failures.py tests/test_orpool.py tests/test_memextract.py tests/test_tasks.py tests/test_frame.py tests/test_qthost.py tests/test_fileproc.py tests/test_vision_look.py tests/test_com_hotfix.py tests/test_commands_pages.py tests/test_ultimate_a.py tests/test_ultimate_b.py tests/test_ultimate_c.py tests/test_ultimate_d.py tests/test_ultimate_e.py; do python -m pytest "$f" -q || exit 1; done

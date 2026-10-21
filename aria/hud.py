@@ -7,6 +7,7 @@ Live Audio Waveforms, Active Task Chips, and Spotify Telemetry.
 
 from __future__ import annotations
 
+import gc
 import math
 import random
 import socket
@@ -161,6 +162,12 @@ def _get_spotify_telemetry() -> Dict[str, Any]:
     return info
 
 
+# Owner-thread GC cadence for the volume worker (loop iterations, ~1 s
+# apart when idle): cycles holding the worker's COM wrappers must be
+# finalised on the worker thread itself — see VolumeManager's docstring.
+_VOLUME_GC_EVERY_ITERS = 60
+
+
 class VolumeManager:
     """Non-blocking volume controller for Windows master device and Spotify audio session.
 
@@ -174,13 +181,30 @@ class VolumeManager:
     pycaw/COM object is created AND released on the worker thread —
     the closures below del their wrappers explicitly instead of leaving
     them for the cyclic GC to Release() on an arbitrary thread.
+
+    COM-containment hotfix (2026-10-21): the faulthandler dump showed
+    the main thread dying in comtypes Release() while garbage-collecting
+    — wrappers that escape into reference cycles (locals held by frames
+    in tracebacks) outlive their explicit del and get finalised by the
+    cyclic GC on whatever thread happens to collect. The worker
+    therefore also runs gc.collect() ON ITS OWN THREAD, periodically
+    and once more in its finally block before CoUninitialize, so cycles
+    holding its wrappers are finalised in their owning apartment; the
+    supervisor's restart then drops only plain state. Mute lives here
+    too: callers (tool_volume, the HUD) queue desired state via
+    set_level/set_mute and read cached state via get_level/get_muted —
+    only this thread ever touches COM.
     """
     def __init__(self):
         self.target = "device"  # "device" or "spotify"
         self.device_vol = 0.5
         self.spotify_vol = 1.0
+        self.device_muted = False
+        self.spotify_muted = False
         self._desired_device = None
         self._desired_spotify = None
+        self._desired_mute_device = None
+        self._desired_mute_spotify = None
         self._event = threading.Event()
         self._lock = threading.Lock()
         self._running = True
@@ -284,6 +308,55 @@ class VolumeManager:
                 finally:
                     del sessions
 
+            def _query_dev_mute():
+                dev = None
+                vol = None
+                iface = None
+                try:
+                    dev = AudioUtilities.GetSpeakers()
+                    if hasattr(dev, "EndpointVolume"):
+                        vol = dev.EndpointVolume
+                    else:
+                        iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                        vol = cast(iface, POINTER(IAudioEndpointVolume))
+                    return bool(vol.GetMute())
+                finally:
+                    del vol, iface, dev
+
+            def _apply_dev_mute(muted):
+                dev = None
+                vol = None
+                iface = None
+                try:
+                    dev = AudioUtilities.GetSpeakers()
+                    if hasattr(dev, "EndpointVolume"):
+                        vol = dev.EndpointVolume
+                    else:
+                        iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                        vol = cast(iface, POINTER(IAudioEndpointVolume))
+                    vol.SetMute(1 if muted else 0, None)
+                finally:
+                    del vol, iface, dev
+
+            def _query_spot_mute():
+                sessions = AudioUtilities.GetAllSessions()
+                try:
+                    for s in sessions:
+                        if s.Process and s.Process.name().lower() == "spotify.exe":
+                            return bool(s.SimpleAudioVolume.GetMute())
+                    return False
+                finally:
+                    del sessions
+
+            def _apply_spot_mute(muted):
+                sessions = AudioUtilities.GetAllSessions()
+                try:
+                    for s in sessions:
+                        if s.Process and s.Process.name().lower() == "spotify.exe":
+                            s.SimpleAudioVolume.SetMute(1 if muted else 0, None)
+                finally:
+                    del sessions
+
             def _surface_op(exc):
                 # Merger Phase 1 (blueprint SS3.2): a failed volume
                 # operation is a classified SKIP in the failure
@@ -305,8 +378,17 @@ class VolumeManager:
                 self.spotify_vol = _query_spot()
             except Exception as _e_silent:
                 _surface_op(_e_silent)
+            try:
+                self.device_muted = _query_dev_mute()
+            except Exception as _e_silent:
+                _surface_op(_e_silent)
+            try:
+                self.spotify_muted = _query_spot_mute()
+            except Exception as _e_silent:
+                _surface_op(_e_silent)
 
             last_poll = time.time()
+            iters_since_gc = 0
             while self._running:
                 self._event.wait(timeout=1.0)
                 self._event.clear()
@@ -314,8 +396,12 @@ class VolumeManager:
                 with self._lock:
                     s_dev = self._desired_device
                     s_spot = self._desired_spotify
+                    s_mute_dev = self._desired_mute_device
+                    s_mute_spot = self._desired_mute_spotify
                     self._desired_device = None
                     self._desired_spotify = None
+                    self._desired_mute_device = None
+                    self._desired_mute_spotify = None
 
                 if s_dev is not None:
                     try:
@@ -331,8 +417,23 @@ class VolumeManager:
                     except Exception as _e_silent:
                         _surface_op(_e_silent)
 
+                if s_mute_dev is not None:
+                    try:
+                        _apply_dev_mute(s_mute_dev)
+                        self.device_muted = s_mute_dev
+                    except Exception as _e_silent:
+                        _surface_op(_e_silent)
+
+                if s_mute_spot is not None:
+                    try:
+                        _apply_spot_mute(s_mute_spot)
+                        self.spotify_muted = s_mute_spot
+                    except Exception as _e_silent:
+                        _surface_op(_e_silent)
+
                 now = time.time()
-                if now - last_poll > 1.5 and s_dev is None and s_spot is None:
+                if (now - last_poll > 1.5 and s_dev is None and s_spot is None
+                        and s_mute_dev is None and s_mute_spot is None):
                     try:
                         self.device_vol = _query_dev()
                     except Exception as _e_silent:
@@ -341,7 +442,28 @@ class VolumeManager:
                         self.spotify_vol = _query_spot()
                     except Exception as _e_silent:
                         _surface_op(_e_silent)
+                    try:
+                        self.device_muted = _query_dev_mute()
+                    except Exception as _e_silent:
+                        _surface_op(_e_silent)
+                    try:
+                        self.spotify_muted = _query_spot_mute()
+                    except Exception as _e_silent:
+                        _surface_op(_e_silent)
                     last_poll = now
+
+                # Owner-thread GC (2026-10-21 hotfix): collect cycles
+                # holding THIS thread's COM wrappers here, in their
+                # owning apartment, before the main thread's cyclic GC
+                # can finalise them — that finalisation is the access
+                # violation in the faulthandler dump.
+                iters_since_gc += 1
+                if iters_since_gc >= _VOLUME_GC_EVERY_ITERS:
+                    iters_since_gc = 0
+                    try:
+                        gc.collect()
+                    except Exception:
+                        pass
         except Exception as _e_fatal:
             # A4: a fatal worker error (e.g. a pycaw import failure in
             # this thread) must reach the supervisor, not only the
@@ -360,6 +482,15 @@ class VolumeManager:
                 pass
             raise
         finally:
+            # Teardown collection ON THIS THREAD: any wrapper cycles
+            # still alive when the worker exits are finalised here, in
+            # their owning apartment — not later, on an arbitrary
+            # thread, after the supervisor restarts the worker and
+            # drops the frame that referenced them.
+            try:
+                gc.collect()
+            except Exception:
+                pass
             try:
                 import pythoncom
                 pythoncom.CoUninitialize()
@@ -384,6 +515,26 @@ class VolumeManager:
         self.target = "spotify" if self.target == "device" else "device"
         return self.target
 
+    def get_muted(self) -> bool:
+        return self.device_muted if self.target == "device" else self.spotify_muted
+
+    def set_mute(self, muted: bool):
+        """Queue a mute change; the worker applies it on its own
+        (COM-owning) thread. The cached state flips immediately so
+        readers see the intended state without touching COM."""
+        muted = bool(muted)
+        with self._lock:
+            if self.target == "device":
+                self.device_muted = muted
+                self._desired_mute_device = muted
+            else:
+                self.spotify_muted = muted
+                self._desired_mute_spotify = muted
+        self._event.set()
+
+    def is_started(self) -> bool:
+        return self._started
+
 
 _VOL_MGR = VolumeManager()
 
@@ -405,6 +556,14 @@ def set_hud_volume(pct: float):
 
 def toggle_volume_target() -> str:
     return _VOL_MGR.toggle_target()
+
+
+def set_hud_mute(muted: bool):
+    _VOL_MGR.set_mute(muted)
+
+
+def volume_manager_started() -> bool:
+    return _VOL_MGR.is_started()
 
 
 # Colors (BGR)
@@ -657,9 +816,15 @@ def _build_commands_pages() -> List[List[Tuple[str, List[Tuple[str, str]]]]]:
     items_per_col = 14
     capacity = cols_per_page * items_per_col
     all_items: List[Tuple[str, str, str]] = []
-    for cat, items in COMMAND_GUIDE.items():
-        for act, phr in items:
-            all_items.append((cat, act, phr))
+    # COMMAND_GUIDE (aria/tools/schemas.py) is a LIST of
+    # (category, action, phrase) triples — bridge.py consumes it the
+    # same way. This loop used to iterate it as a dict
+    # ({category: [(action, phrase)]}), so opening the overlay raised
+    # "'list' object has no attribute 'items'" and the render guard in
+    # main.py painted HUD RENDER FAULT (user screenshot, 2026-10-21;
+    # the shape mismatch predates the merger — present at f80957e).
+    for cat, act, phr in COMMAND_GUIDE:
+        all_items.append((cat, act, phr))
 
     pages: List[List[Tuple[str, List[Tuple[str, str]]]]] = []
     for p_start in range(0, len(all_items), capacity):

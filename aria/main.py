@@ -298,29 +298,32 @@ def _ptt_poll_loop():
         time.sleep(0.05)
 
 
-def _on_hud_mouse(event, x, y, flags, param):
-    """Handle mouse clicks and wheel on HUD interactive buttons."""
-    # Mouse wheel support for paging commands, scrolling the activity
-    # column, or adjusting volume (frame hit-testing decides)
-    if event == getattr(cv2, "EVENT_MOUSEWHEEL", 10):
-        if hud.SHOW_COMMANDS:
-            if flags > 0:
-                hud.commands_prev_page()
-            else:
-                hud.commands_next_page()
-            return
-        elif hud.handle_wheel(x, y, flags > 0):
-            return
+def _hud_mouse_wheel(x, y, up):
+    """Wheel: page the commands overlay, else the frame wheel routes it
+    (activity-column scroll, volume). Host-agnostic — the cv2 callback
+    and the Qt host (Phase 4e) both call this."""
+    if hud.SHOW_COMMANDS:
+        if up:
+            hud.commands_prev_page()
+        else:
+            hud.commands_next_page()
+        return
+    hud.handle_wheel(x, y, up)
 
-    # Mouse drag over interactive sliders (e.g. volume)
-    if event == cv2.EVENT_MOUSEMOVE and (flags & cv2.EVENT_FLAG_LBUTTON):
-        if hud.handle_drag(x, y):
-            return
 
-    if event == cv2.EVENT_LBUTTONUP:
-        hud.handle_release(x, y)
+def _hud_mouse_drag(x, y):
+    """Drag with the left button held (volume slider)."""
+    hud.handle_drag(x, y)
 
-    if event == cv2.EVENT_RBUTTONDOWN:
+
+def _hud_mouse_release(x, y):
+    """Left-button release (push-to-talk edge)."""
+    hud.handle_release(x, y)
+
+
+def _hud_mouse_press(x, y, button):
+    """Mouse press. button is "left" or "right"."""
+    if button == "right":
         # Right click anywhere on the command bar pastes from clipboard
         ix, iy, iw, ih = _frame.input_rect()
         if ix <= x <= ix + iw and iy <= y <= iy + ih:
@@ -331,58 +334,71 @@ def _on_hud_mouse(event, x, y, flags, param):
                 add_log(f"Pasted from clipboard ({len(pasted)} chars).")
             else:
                 add_log("Clipboard empty or non-text.")
+        return
+
+    # If commands overlay is visible, intercept clicks on overlay buttons
+    if hud.SHOW_COMMANDS:
+        # Prev page button
+        px, py, pw, ph = hud._COMMANDS_PREV_BTN
+        if px <= x <= px + pw and py <= y <= py + ph:
+            hud.commands_prev_page()
             return
 
-    if event == cv2.EVENT_LBUTTONDOWN:
-        # If commands overlay is visible, intercept clicks on overlay buttons
-        if hud.SHOW_COMMANDS:
-            # Prev page button
-            px, py, pw, ph = hud._COMMANDS_PREV_BTN
-            if px <= x <= px + pw and py <= y <= py + ph:
-                hud.commands_prev_page()
-                return
-
-            # Next page button
-            nx, ny, nw, nh = hud._COMMANDS_NEXT_BTN
-            if nx <= x <= nx + nw and ny <= y <= ny + nh:
-                hud.commands_next_page()
-                return
-
-            # Close button
-            cx, cy, cw, ch = hud._COMMANDS_CLOSE_BTN
-            if cx <= x <= cx + cw and cy <= y <= cy + ch:
-                hud.SHOW_COMMANDS = False
-                return
-
-            # Top right X button
-            xx, xy, xw, xh = hud._COMMANDS_X_BTN
-            if xx <= x <= xx + xw and xy <= y <= xy + xh:
-                hud.SHOW_COMMANDS = False
-                return
-
-            # Clickable command buttons — execute the phrase
-            for bx, by, bw, bh, phrase in hud.COMMANDS_CLICK_BOXES:
-                if bx <= x <= bx + bw and by <= y <= by + bh:
-                    hud.SHOW_COMMANDS = False
-                    hud.add_hud_log(f"Running: {phrase[:40]}")
-                    threading.Thread(
-                        target=handle_action,
-                        args=("voice", phrase),
-                        daemon=True).start()
-                    return
-
-            # Clicking anywhere outside overlay bounds closes it
-            if not (36 <= x <= 1244 and 52 <= y <= 700):
-                hud.SHOW_COMMANDS = False
-                return
-
+        # Next page button
+        nx, ny, nw, nh = hud._COMMANDS_NEXT_BTN
+        if nx <= x <= nx + nw and ny <= y <= ny + nh:
+            hud.commands_next_page()
             return
 
-        # Frame widgets: command bar (CMDS / MIC / VOICE / input / PASTE /
-        # SEND / CLR), Spotify transport, volume slider, drop zone, whisper
-        # pill — all hit-tested inside aria.frame via hud.handle_click.
-        if hud.handle_click(x, y):
+        # Close button
+        cx, cy, cw, ch = hud._COMMANDS_CLOSE_BTN
+        if cx <= x <= cx + cw and cy <= y <= cy + ch:
+            hud.SHOW_COMMANDS = False
             return
+
+        # Top right X button
+        xx, xy, xw, xh = hud._COMMANDS_X_BTN
+        if xx <= x <= xx + xw and xy <= y <= xy + xh:
+            hud.SHOW_COMMANDS = False
+            return
+
+        # Clickable command buttons — execute the phrase
+        for bx, by, bw, bh, phrase in hud.COMMANDS_CLICK_BOXES:
+            if bx <= x <= bx + bw and by <= y <= by + bh:
+                hud.SHOW_COMMANDS = False
+                hud.add_hud_log(f"Running: {phrase[:40]}")
+                threading.Thread(
+                    target=handle_action,
+                    args=("voice", phrase),
+                    daemon=True).start()
+                return
+
+        # Clicking anywhere outside overlay bounds closes it
+        if not (36 <= x <= 1244 and 52 <= y <= 700):
+            hud.SHOW_COMMANDS = False
+            return
+
+        return
+
+    # Frame widgets: command bar (CMDS / MIC / VOICE / input / PASTE /
+    # SEND / CLR), Spotify transport, volume slider, drop zone, whisper
+    # pill — all hit-tested inside aria.frame via hud.handle_click.
+    hud.handle_click(x, y)
+
+
+def _on_hud_mouse(event, x, y, flags, param):
+    """cv2 mouse callback — thin adapter over the semantic handlers
+    above, which the Qt host (Phase 4e) calls directly."""
+    if event == getattr(cv2, "EVENT_MOUSEWHEEL", 10):
+        _hud_mouse_wheel(x, y, flags > 0)
+    elif event == cv2.EVENT_MOUSEMOVE and (flags & cv2.EVENT_FLAG_LBUTTON):
+        _hud_mouse_drag(x, y)
+    elif event == cv2.EVENT_LBUTTONUP:
+        _hud_mouse_release(x, y)
+    elif event == cv2.EVENT_RBUTTONDOWN:
+        _hud_mouse_press(x, y, "right")
+    elif event == cv2.EVENT_LBUTTONDOWN:
+        _hud_mouse_press(x, y, "left")
 
 
 def _console_input_loop():
@@ -752,8 +768,172 @@ def _render_hud_frame():
         return frame
 
 
+def _tick_housekeeping():
+    """Per-frame housekeeping shared by both UI hosts: settle the
+    wake-up burst once her excited moment passes."""
+    if hud.CURRENT_STATE == "excited" and time.time() >= EXCITED_UNTIL:
+        hud.set_hud_state(EXCITED_REVERT)
+
+
+def _handle_keypress(key, key_raw, is_ctrl=False, is_shift=False,
+                     is_alt=False, is_left=False, is_right=False,
+                     is_up=False, is_down=False) -> bool:
+    """One keypress, host-agnostic: the exact dispatch the cv2 loop has
+    always run, extracted so the Qt host (Phase 4e) feeds it translated
+    QKeyEvents. Returns True when shutdown was requested (quit key)."""
+    # Universal paste shortcut: Ctrl+V or Shift+Insert
+    is_paste = (key == 22) or (key in (ord('v'), ord('V')) and is_ctrl) or (key_raw in (45, 0x2D0000) and is_shift)
+
+    if is_paste:
+        pasted = hud.get_clipboard_text()
+        hud.TYPING_ACTIVE = True
+        if pasted:
+            hud.TYPING_BUFFER += pasted
+            agent.LAST_ACTIVITY = time.time()
+            add_log(f"Pasted from clipboard ({len(pasted)} chars).")
+        else:
+            add_log("Clipboard empty or non-text.")
+    elif key in (ord('x'), ord('X')) and hud.CURRENT_STATE == "speaking" and not hud.TYPING_ACTIVE:
+        # X: cut her off — stop speech immediately. Only fires while
+        # she's actually talking and not currently typing.
+        drained = speech.interrupt_speech()
+        hud.set_hud_state("idle")
+        add_log("Speech cut off." if not drained
+                else f"Speech cut off ({drained} queued cleared).")
+        agent.LAST_ACTIVITY = time.time()
+    elif key in (ord('c'), ord('C')) and not hud.TYPING_ACTIVE:
+        # C: cycle HUD color theme. Guarded so typing 'c' is unaffected.
+        name = pixel_avatar.cycle_theme()
+        add_log(f"Color theme: {name}.")
+        agent.LAST_ACTIVITY = time.time()
+    elif hud.SHOW_COMMANDS:
+        if is_left or is_up:
+            hud.commands_prev_page()
+        elif is_right or is_down:
+            hud.commands_next_page()
+        elif key in (ord('h'), ord('H'), 27):  # H or ESC closes commands
+            hud.SHOW_COMMANDS = False
+    elif hud.TYPING_ACTIVE:
+        if key in (13, 10):  # Enter: submit directive
+            prompt = hud.TYPING_BUFFER.strip()
+            hud.TYPING_ACTIVE = False
+            hud.TYPING_BUFFER = ""
+            if prompt:
+                add_log(f"Typed directive: '{prompt[:35]}...'")
+                _submit_typed(prompt)
+        elif key == 27:  # ESC: cancel typing mode
+            hud.TYPING_ACTIVE = False
+            hud.TYPING_BUFFER = ""
+            add_log("Typing cancelled.")
+        elif key in (8, 127):  # Backspace
+            hud.TYPING_BUFFER = hud.TYPING_BUFFER[:-1]
+        elif key == 21:  # Ctrl+U: clear buffer
+            hud.TYPING_BUFFER = ""
+        elif 32 <= key_raw <= 126 and not is_ctrl:  # Printable character (including space)
+            hud.TYPING_BUFFER += chr(key_raw)
+            agent.LAST_ACTIVITY = time.time()
+    else:
+        if key in (ord('q'), ord('Q'), 27):  # ESC or Q
+            add_log("Shutdown requested by user.")
+            return True
+        elif key in (ord('t'), ord('T'), 13):  # T or Enter: activate typing
+            hud.TYPING_ACTIVE = True
+            add_log("Typing mode: type your directive and press Enter.")
+        elif key in (ord('w'), ord('W')):
+            on = toggle_whisper_mode()
+            speech.speak(f"Whisper mode {'on' if on else 'off'}.")
+        elif key in (ord('h'), ord('H')):
+            hud.SHOW_COMMANDS = not hud.SHOW_COMMANDS
+        elif key in (ord('j'), ord('J')) or is_down:
+            _frame.scroll_activity(-3)
+        elif key in (ord('k'), ord('K')) or is_up:
+            _frame.scroll_activity(3)
+    return False
+
+
+def _run_cv2_loop():
+    """The classic host: cv2.imshow window + waitKeyEx polling. Kept as
+    the fallback host (Phase 4e) — behaviour unchanged."""
+    win_name = "A.R.I.A. // OS"
+    cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
+    cv2.setMouseCallback(win_name, _on_hud_mouse)
+
+    while RUNNING:
+        frame = _render_hud_frame()
+        cv2.imshow(win_name, frame)
+        _tick_housekeeping()
+
+        key_raw = cv2.waitKeyEx(30)
+        if key_raw != -1:
+            key = key_raw & 0xFF
+            is_left = (key_raw in (0x250000, 2424832, 65361)) or (key_raw >> 16 == 0x25)
+            is_right = (key_raw in (0x270000, 2555904, 65363)) or (key_raw >> 16 == 0x27)
+            is_up = (key_raw in (0x260000, 2490368, 65362)) or (key_raw >> 16 == 0x26)
+            is_down = (key_raw in (0x280000, 2621440, 65364)) or (key_raw >> 16 == 0x28)
+
+            # Check modifier keys via Windows API
+            is_ctrl = False
+            is_shift = False
+            is_alt = False
+            try:
+                is_ctrl = bool(ctypes.windll.user32.GetAsyncKeyState(0x11) & 0x8000)
+                is_shift = bool(ctypes.windll.user32.GetAsyncKeyState(0x10) & 0x8000)
+                is_alt = bool(ctypes.windll.user32.GetAsyncKeyState(0x12) & 0x8000)
+            except Exception as _e_silent:
+                _config_silent.log_silent("main", _e_silent)
+
+            if _handle_keypress(key, key_raw, is_ctrl, is_shift, is_alt,
+                                is_left, is_right, is_up, is_down):
+                break
+
+
+def _qt_callbacks():
+    """The callbacks bundle aria.qthost drives (see its docstring)."""
+    import types as _types
+    return _types.SimpleNamespace(
+        render_frame=_render_hud_frame,
+        housekeeping=_tick_housekeeping,
+        key_press=_handle_keypress,
+        mouse_press=_hud_mouse_press,
+        mouse_release=_hud_mouse_release,
+        mouse_drag=_hud_mouse_drag,
+        mouse_wheel=_hud_mouse_wheel,
+        is_running=lambda: RUNNING,
+        request_stop=request_shutdown,
+    )
+
+
+def _surface_qt_fallback(err):
+    """A Qt host failure is never silent and never fatal: log it, run it
+    through Phase 1 failure surfacing (classify: skip — the classic
+    window carries on), and let the caller start the cv2 host."""
+    add_log(f"Qt UI host unavailable ({err}); using the classic window.")
+    try:
+        from aria.agent.failures import surface_failure
+        surface_failure(
+            "main.ui_host", err, decision="skip",
+            user_message="Qt window unavailable; classic window used instead.")
+    except Exception:
+        _config_silent.log_silent("main.ui_host", err)
+
+
+def _select_ui_host() -> str:
+    """Resolve the UI host (Phase 4e): config request + PyQt6 presence,
+    via aria.qthost's pure decision. A requested-but-unavailable Qt is
+    surfaced here; a Qt that fails later, at init, is surfaced by
+    main()'s QtHostError handler."""
+    from aria import qthost as _qthost
+    requested = _qthost.requested_host()
+    host = _qthost.select_host(requested, _qthost.qt_available())
+    if _qthost.normalize_host_request(requested) == "qt" and host != "qt":
+        _surface_qt_fallback(RuntimeError("PyQt6 is not importable"))
+    return host
+
+
 def main():
-    """Main application loop with OpenCV HUD window."""
+    """Main application loop. UI host: Qt by default (Phase 4e), the
+    classic cv2 window as fallback (ARIA_UI_HOST=cv2, or Qt missing /
+    failed to initialise — surfaced, never silent)."""
     global RUNNING
 
     # ARIA ULTIMATE (Module 10): first-run wizard — checks the environment and
@@ -762,105 +942,19 @@ def main():
 
     start_all()
 
-    win_name = "A.R.I.A. // OS"
-    cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
-    cv2.setMouseCallback(win_name, _on_hud_mouse)
-
     try:
-        while RUNNING:
-            frame = _render_hud_frame()
-            cv2.imshow(win_name, frame)
-
-            # wake-up burst expiry: settle back once her excited moment passes
-            if hud.CURRENT_STATE == "excited" and time.time() >= EXCITED_UNTIL:
-                hud.set_hud_state(EXCITED_REVERT)
-
-            key_raw = cv2.waitKeyEx(30)
-            if key_raw != -1:
-                key = key_raw & 0xFF
-                is_left = (key_raw in (0x250000, 2424832, 65361)) or (key_raw >> 16 == 0x25)
-                is_right = (key_raw in (0x270000, 2555904, 65363)) or (key_raw >> 16 == 0x27)
-                is_up = (key_raw in (0x260000, 2490368, 65362)) or (key_raw >> 16 == 0x26)
-                is_down = (key_raw in (0x280000, 2621440, 65364)) or (key_raw >> 16 == 0x28)
-
-                # Check modifier keys via Windows API
-                is_ctrl = False
-                is_shift = False
-                is_alt = False
-                try:
-                    is_ctrl = bool(ctypes.windll.user32.GetAsyncKeyState(0x11) & 0x8000)
-                    is_shift = bool(ctypes.windll.user32.GetAsyncKeyState(0x10) & 0x8000)
-                    is_alt = bool(ctypes.windll.user32.GetAsyncKeyState(0x12) & 0x8000)
-                except Exception as _e_silent:
-                    _config_silent.log_silent("main", _e_silent)
-
-                # Universal paste shortcut: Ctrl+V or Shift+Insert
-                is_paste = (key == 22) or (key in (ord('v'), ord('V')) and is_ctrl) or (key_raw in (45, 0x2D0000) and is_shift)
-
-                if is_paste:
-                    pasted = hud.get_clipboard_text()
-                    hud.TYPING_ACTIVE = True
-                    if pasted:
-                        hud.TYPING_BUFFER += pasted
-                        agent.LAST_ACTIVITY = time.time()
-                        add_log(f"Pasted from clipboard ({len(pasted)} chars).")
-                    else:
-                        add_log("Clipboard empty or non-text.")
-                elif key in (ord('x'), ord('X')) and hud.CURRENT_STATE == "speaking" and not hud.TYPING_ACTIVE:
-                    # X: cut her off — stop speech immediately. Only fires while
-                    # she's actually talking and not currently typing.
-                    drained = speech.interrupt_speech()
-                    hud.set_hud_state("idle")
-                    add_log("Speech cut off." if not drained
-                            else f"Speech cut off ({drained} queued cleared).")
-                    agent.LAST_ACTIVITY = time.time()
-                elif key in (ord('c'), ord('C')) and not hud.TYPING_ACTIVE:
-                    # C: cycle HUD color theme. Guarded so typing 'c' is unaffected.
-                    name = pixel_avatar.cycle_theme()
-                    add_log(f"Color theme: {name}.")
-                    agent.LAST_ACTIVITY = time.time()
-                elif hud.SHOW_COMMANDS:
-                    if is_left or is_up:
-                        hud.commands_prev_page()
-                    elif is_right or is_down:
-                        hud.commands_next_page()
-                    elif key in (ord('h'), ord('H'), 27):  # H or ESC closes commands
-                        hud.SHOW_COMMANDS = False
-                elif hud.TYPING_ACTIVE:
-                    if key in (13, 10):  # Enter: submit directive
-                        prompt = hud.TYPING_BUFFER.strip()
-                        hud.TYPING_ACTIVE = False
-                        hud.TYPING_BUFFER = ""
-                        if prompt:
-                            add_log(f"Typed directive: '{prompt[:35]}...'")
-                            _submit_typed(prompt)
-                    elif key == 27:  # ESC: cancel typing mode
-                        hud.TYPING_ACTIVE = False
-                        hud.TYPING_BUFFER = ""
-                        add_log("Typing cancelled.")
-                    elif key in (8, 127):  # Backspace
-                        hud.TYPING_BUFFER = hud.TYPING_BUFFER[:-1]
-                    elif key == 21:  # Ctrl+U: clear buffer
-                        hud.TYPING_BUFFER = ""
-                    elif 32 <= key_raw <= 126 and not is_ctrl:  # Printable character (including space)
-                        hud.TYPING_BUFFER += chr(key_raw)
-                        agent.LAST_ACTIVITY = time.time()
-                else:
-                    if key in (ord('q'), ord('Q'), 27):  # ESC or Q
-                        add_log("Shutdown requested by user.")
-                        break
-                    elif key in (ord('t'), ord('T'), 13):  # T or Enter: activate typing
-                        hud.TYPING_ACTIVE = True
-                        add_log("Typing mode: type your directive and press Enter.")
-                    elif key in (ord('w'), ord('W')):
-                        on = toggle_whisper_mode()
-                        speech.speak(f"Whisper mode {'on' if on else 'off'}.")
-                    elif key in (ord('h'), ord('H')):
-                        hud.SHOW_COMMANDS = not hud.SHOW_COMMANDS
-                    elif key in (ord('j'), ord('J')) or is_down:
-                        _frame.scroll_activity(-3)
-                    elif key in (ord('k'), ord('K')) or is_up:
-                        _frame.scroll_activity(3)
+        if _select_ui_host() == "qt":
+            from aria import qthost as _qthost
+            try:
+                _qthost.run_qt_host(_qt_callbacks())
+            except _qthost.QtHostError as _qt_err:
+                # Qt died at init (no display, broken plugin): surface
+                # it and carry on with the classic window — never a
+                # dead window, never a silent fallback.
+                _surface_qt_fallback(_qt_err)
+                _run_cv2_loop()
+        else:
+            _run_cv2_loop()
 
     except KeyboardInterrupt:
         pass

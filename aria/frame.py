@@ -18,8 +18,8 @@ Layout (1280x800):
            by main's listener via hud.set_mic_level when listening)
   right    CONVERSATION (chat log) over ACTIVITY (the config event ring —
            the data layer the OPS LOG tab used to present) over the FILE
-           DROP ZONE (click-to-browse receipt; the fileproc organ that
-           analyses drops is Phase 5)
+           DROP ZONE (click-to-browse receipt; drops are analysed by
+           the Phase 5 fileproc organ, off-thread, via receive_file)
   bottom   command bar: CMDS (commands overlay), MIC (push-to-talk),
            VOICE (the rehoused VOICE_ENABLED master gate), typed-command
            input routed through the same handle_action path as voice,
@@ -441,8 +441,10 @@ def _basename(path: str) -> str:
 
 
 def receive_file(path: str) -> str:
-    """Drop-zone receipt: stage the file and log it by name. Analysis is
-    Phase 5's fileproc organ — this phase only receives."""
+    """Drop-zone receipt: stage the file, log it by name, and hand it
+    to the Phase 5 fileproc organ on a daemon thread (processing must
+    never block the render loop; the organ reports back through the
+    event ring + a chat-log line when it finishes)."""
     global STAGED_FILE
     STAGED_FILE = str(path)
     name = _basename(str(path)) or str(path)
@@ -451,7 +453,18 @@ def receive_file(path: str) -> str:
         _hud.add_hud_log(f"File received: {name}")
     except Exception:
         pass
+    _start_file_processing(str(path))
     return name
+
+
+def _start_file_processing(path: str) -> None:
+    def _run():
+        try:
+            from aria.tools import fileproc
+            fileproc.process_and_report(path)
+        except Exception as e:
+            add_log(f"File processing failed to start: {e}")
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def _browse_for_file() -> None:

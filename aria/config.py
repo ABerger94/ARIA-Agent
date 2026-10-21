@@ -235,6 +235,33 @@ MAX_REPLAN_ATTEMPTS = 2            # SS3.3: replans per task <= 2
 ERROR_USER_MESSAGE_MAX_WORDS = 15  # SS3.2/SS3.3: spoken failure text cap
 TASK_QUEUE_MAX_CONCURRENT = 1      # SS3.3: queue concurrency is 1
 DELEGATED_TASK_BUDGET_S = 600      # SS3.3: whole-task wall-clock budget
+
+# File organ (Merger Phase 5 — blueprint SS2.4 #1, SS5 Phase 5).
+# FILEPROC_ENABLED is the rollback switch (ARIA_FILEPROC=0 unregisters
+# the organ's behaviour; the drop zone falls back to receipt-only).
+# The byte/char caps bound what the organ will read, transcribe, or
+# hand to the background pool — readers stop at the cap and say so.
+FILEPROC_ENABLED = os.environ.get(
+    "ARIA_FILEPROC", "1").strip().lower() not in ("0", "false", "no")
+FILEPROC_MAX_FILE_BYTES = 64 * 1024 * 1024        # over: metadata only
+FILEPROC_TEXT_MAX_CHARS = 20000                   # extracted text kept
+FILEPROC_TRANSCRIBE_MAX_BYTES = 25 * 1024 * 1024  # audio/video transcript cap
+
+# Vision first-look (Merger Phase 6 — blueprint SS2.4 #4, SS5 Phase 6).
+# Kill switch for the stateless orpool-vision first-look tool
+# (ARIA_VISION_FASTPATH=0). The existing describe_camera / read_screen
+# chain does not read this flag and is unaffected by it.
+VISION_FASTPATH_ENABLED = os.environ.get(
+    "ARIA_VISION_FASTPATH", "1").strip().lower() not in ("0", "false", "no")
+
+# UI host (Merger Phase 4e). "qt" = the PyQt6 host window (aria/qthost.py)
+# — the only window that can receive real OS file drops; it displays the
+# same cv2 canvas the classic host shows. "cv2" = the classic
+# cv2.imshow loop, kept as the fallback host. ARIA_UI_HOST=cv2 is the
+# rollback switch; a missing or failed Qt also falls back to cv2, with
+# the fallback surfaced (never silent). Read once at import, like the
+# other merger flags.
+UI_HOST = os.environ.get("ARIA_UI_HOST", "qt").strip().lower()
 CHAT_PRUNE_DAYS = 30
 VISION_SCREEN_SIZE = (1280, 720)
 VISION_CAM_SIZE = (640, 480)

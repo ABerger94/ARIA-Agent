@@ -20,6 +20,12 @@ psutil==5.9.0
 Pillow==10.0.0
 edge-tts==7.3.1
 pygame==2.6.1
+# UI host (Merger Phase 4e): PyQt6 window hosting the frame canvas —
+# the only host that can receive real OS drag-and-drop (cv2.imshow
+# windows never deliver drop events). ARIA_UI_HOST=cv2, or a missing /
+# failed Qt, falls back to the classic window. Floor pin: the laptop
+# already satisfies this (PyQt6 installed for Mark-XXXIX-OR).
+PyQt6>=6.6.0
 pyserial==3.5
 pyautogui==0.9.54
 pycaw==20230407; sys_platform == "win32"
