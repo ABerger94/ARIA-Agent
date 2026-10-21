@@ -819,10 +819,15 @@ def start_all():
     # the model call and the voice-ready wait never block startup.
     def _greet_when_ready():
         try:
-            for _ in range(250):  # up to ~25s for the Edge voice
-                if speech.voice_ready():
-                    break
-                time.sleep(0.1)
+            # A6 (audit §3B-8): wait for the Edge probe to COMPLETE —
+            # success or failure — instead of a fixed ~25s guess. A slow
+            # but working probe used to guarantee a pyttsx3 greeting
+            # even when Edge came up seconds later; now the greeting
+            # uses Edge whenever the probe succeeded, and falls back
+            # only on a completed failure. The probe's own worst case
+            # (3 attempts x 30s synth timeout + retry sleeps, ~96s)
+            # bounds the wait; 120s here is just a safety net.
+            speech.wait_for_voice_probe(timeout=120.0)
             greeting = _unique_greeting()
             add_log(f"Greeting: {greeting}")
             speech.speak(greeting)
