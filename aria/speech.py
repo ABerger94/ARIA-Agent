@@ -103,6 +103,163 @@ def init_pyttsx3(on_log: Optional[Callable[[str], None]] = None):
         return None
 
 
+class _SapiVoice:
+    """Owns the pyttsx3 engine on ONE dedicated thread (A3, audit §3B-3).
+
+    pyttsx3's Windows driver is SAPI-over-COM. The engine used to be
+    created on the main thread and then driven — say / runAndWait /
+    stop / property access — from the play-worker thread and arbitrary
+    caller threads, with no CoInitialize anywhere in this module:
+    cross-apartment COM use, the audit's prime suspect for the access
+    violation in Release() that killed the process seconds after boot.
+
+    Here the engine is created on a thread that calls
+    pythoncom.CoInitialize() first, and EVERY engine interaction is
+    marshalled onto that thread through a queue. Utterances run through
+    pyttsx3's external event loop (startLoop/iterate) so a queued
+    "stop" is processed between pump iterations — barge-in stays
+    responsive without ever touching the engine off-thread. Drivers
+    without an external loop fall back to runAndWait on the owner
+    thread (still fully COM-disciplined; stop then lands between
+    utterances).
+    """
+
+    def __init__(self, on_log: Optional[Callable[[str], None]] = None):
+        self.on_log = on_log
+        self._queue: "queue.Queue[tuple]" = queue.Queue()
+        self._thread: Optional[threading.Thread] = None
+        self._start_lock = threading.Lock()
+
+    def _log(self, msg: str):
+        if self.on_log:
+            self.on_log(msg)
+
+    def start(self):
+        """Start the engine thread (idempotent)."""
+        with self._start_lock:
+            if self._thread is not None:
+                return
+            self._thread = threading.Thread(
+                target=self._run, daemon=True, name="aria-sapi-engine")
+            self._thread.start()
+
+    def say(self, text: str, whisper_mode: bool = False) -> threading.Event:
+        """Queue an utterance; returns an Event set when it completes
+        (immediately, if no engine is available)."""
+        self.start()
+        done = threading.Event()
+        self._queue.put(("say", text, whisper_mode, done))
+        return done
+
+    def stop(self):
+        """Interrupt the current utterance (handled on the engine thread)."""
+        self.start()
+        self._queue.put(("stop",))
+
+    # -- engine thread -------------------------------------------------
+
+    def _run(self):
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+        except Exception:
+            pass  # non-Windows / no pywin32: engine init fails cleanly below
+        engine = None
+        try:
+            engine = init_pyttsx3(on_log=self.on_log)
+        except Exception as e:
+            self._log(f"Voice fallback init failed: {e}")
+
+        use_loop = False
+        current = None  # (done_event, (volume, rate) to restore or None)
+
+        def _finish_current():
+            nonlocal current
+            if current is None:
+                return
+            done, restore = current
+            current = None
+            if restore and engine is not None:
+                try:
+                    engine.setProperty("volume", restore[0])
+                    engine.setProperty("rate", restore[1])
+                except Exception:
+                    pass
+            done.set()
+
+        if engine is not None:
+            try:
+                engine.startLoop(False)
+                use_loop = True
+            except Exception:
+                use_loop = False
+            if use_loop:
+                try:
+                    engine.connect("finished-utterance",
+                                   lambda *_a, **_k: _finish_current())
+                except Exception:
+                    pass
+
+        while True:
+            try:
+                req = self._queue.get(timeout=0.02)
+            except queue.Empty:
+                req = None
+            if req is not None:
+                if req[0] == "say":
+                    _, text, whisper, done = req
+                    if engine is None:
+                        done.set()
+                    elif use_loop:
+                        _finish_current()  # defensive; play worker serialises
+                        restore = None
+                        try:
+                            if whisper:
+                                v0 = engine.getProperty("volume")
+                                r0 = engine.getProperty("rate")
+                                restore = (v0, r0)
+                                engine.setProperty("volume", min(float(v0), 0.4))
+                                engine.setProperty("rate", max(60, int(r0) - 40))
+                            engine.say(text)
+                        except Exception as e:
+                            self._log(f"SAPI say err: {e}")
+                            current = (done, restore)
+                            _finish_current()
+                        else:
+                            current = (done, restore)
+                    else:
+                        try:
+                            if whisper:
+                                v0 = engine.getProperty("volume")
+                                r0 = engine.getProperty("rate")
+                                try:
+                                    engine.setProperty("volume", min(float(v0), 0.4))
+                                    engine.setProperty("rate", max(60, int(r0) - 40))
+                                    engine.say(text)
+                                    engine.runAndWait()
+                                finally:
+                                    engine.setProperty("volume", v0)
+                                    engine.setProperty("rate", r0)
+                            else:
+                                engine.say(text)
+                                engine.runAndWait()
+                        except Exception as e:
+                            self._log(f"SAPI say err: {e}")
+                        done.set()
+                elif req[0] == "stop":
+                    if engine is not None:
+                        try:
+                            engine.stop()
+                        except Exception:
+                            pass
+                    _finish_current()
+            if use_loop and engine is not None:
+                try:
+                    engine.iterate()
+                except Exception:
+                    pass
+
+
 # ---------------- Mic capture (sounddevice) ----------------
 
 class _SoundDeviceStream:
@@ -360,7 +517,9 @@ class SpeechManager:
         self._edge_fail_streak = 0
         self._edge_fail_lock = threading.Lock()
 
-        self._tts_engine = None
+        # A3: the pyttsx3 engine lives on its own COM-initialised
+        # thread inside _SapiVoice; nothing else touches it directly.
+        self._sapi = _SapiVoice(on_log=on_log)
         self._voice_rotation_idx = 0
         self._voice_rotation_lock = threading.Lock()
         self._started = False
@@ -370,8 +529,8 @@ class SpeechManager:
             self.on_log(msg)
 
     def init_tts(self):
-        if self._tts_engine is None:
-            self._tts_engine = init_pyttsx3(on_log=self.on_log)
+        """Ensure the SAPI engine thread is running (idempotent)."""
+        self._sapi.start()
 
     def _whisper_edge_kwargs(self) -> dict:
         return dict(WHISPER_EDGE_KWARGS) if self.whisper_mode else {}
@@ -515,22 +674,16 @@ class SpeechManager:
                         except Exception as _e_silent:
                             _config_silent.log_silent("_play_worker", _e_silent)
                 else:
+                    # A3: SAPI playback is marshalled to the engine's
+                    # owner thread; block here until it completes (the
+                    # pacing the direct runAndWait() used to provide),
+                    # bailing promptly if an interrupt lands.
                     self.init_tts()
-                    if self._tts_engine:
-                        if self.whisper_mode:
-                            v0 = self._tts_engine.getProperty("volume")
-                            r0 = self._tts_engine.getProperty("rate")
-                            try:
-                                self._tts_engine.setProperty("volume", min(float(v0), 0.4))
-                                self._tts_engine.setProperty("rate", max(60, int(r0) - 40))
-                                self._tts_engine.say(text)
-                                self._tts_engine.runAndWait()
-                            finally:
-                                self._tts_engine.setProperty("volume", v0)
-                                self._tts_engine.setProperty("rate", r0)
-                        else:
-                            self._tts_engine.say(text)
-                            self._tts_engine.runAndWait()
+                    done = self._sapi.say(text, whisper_mode=self.whisper_mode)
+                    while not done.wait(0.05):
+                        if self.speech_stop.is_set():
+                            self._sapi.stop()
+                            break
             except Exception as e:
                 self.log(f"Speech play err: {e}")
             finally:
@@ -598,11 +751,10 @@ class SpeechManager:
             pygame.mixer.music.stop()
         except Exception as _e_silent:
             _config_silent.log_silent("interrupt", _e_silent)
-        if self._tts_engine:
-            try:
-                self._tts_engine.stop()
-            except Exception as _e_silent:
-                _config_silent.log_silent("interrupt", _e_silent)
+        try:
+            self._sapi.stop()
+        except Exception as _e_silent:
+            _config_silent.log_silent("interrupt", _e_silent)
         self.log(f"Speech interrupted ({drained} queued cleared)")
         return drained
 
