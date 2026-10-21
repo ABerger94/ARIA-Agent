@@ -362,34 +362,42 @@ class SpeechManager:
         return dict(WHISPER_EDGE_KWARGS) if self.whisper_mode else {}
 
     def _init_edge_voice(self):
+        # A1 (audit §1A #2): the probe must say WHY Edge is unavailable.
+        # Step 0 actually imports edge_tts — the previous body was
+        # `try: pass`, which made the "(edge-tts import broken)" branch
+        # unreachable and a broken install indistinguishable from a
+        # network failure.
         try:
-            pass
+            import edge_tts  # noqa: F401
         except Exception as e:
-            self.log("Voice: system fallback (edge-tts import broken)")
+            self.log(f"Voice: system fallback (edge-tts import broken: {e})")
             return
 
         try:
             import pygame
             pygame.mixer.init()
         except Exception as e:
-            self.log("Voice: system fallback (mixer init failed)")
+            self.log(f"Voice: system fallback (mixer init failed: {e})")
             return
 
-        probe_ok = False
+        # Synthesize through the STRICT path so the real error survives.
+        # edge_tts_bytes() swallows every failure into b"" — probed
+        # through it, this loop could never see an exception, its
+        # sleep(3) was dead code, and the actual reason (e.g. Microsoft's
+        # HTTP 403 to pre-Sec-MS-GEC clients) was discarded.
+        last_err: Optional[Exception] = None
         for attempt in range(1, 4):
             try:
-                b = edge_tts_bytes("Voice check.")
-                if b:
-                    probe_ok = True
-                    break
+                if _edge_tts_bytes_strict("Voice check."):
+                    self.edge_ready = True
+                    self.log("Voice: Edge TTS (AriaNeural)")
+                    return
             except Exception as e:
-                time.sleep(3)
+                last_err = e
+                if attempt < 3:
+                    time.sleep(3)
 
-        if probe_ok:
-            self.edge_ready = True
-            self.log("Voice: Edge TTS (AriaNeural)")
-        else:
-            self.log("Voice: system fallback (synthesis failed)")
+        self.log(f"Voice: system fallback (synthesis failed: {last_err})")
 
     def _synth_worker(self):
         while True:
