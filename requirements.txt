@@ -87,4 +87,9 @@ cryptography==41.0.0
 mcp==1.0.0
 # Optional (v9.14+): local speech recognition via Whisper on CPU.
 # Without it, ARIA uses Google's cloud recognizer exactly as before.
-faster-whisper==1.0.0
+# 1.1.0 floor: 1.0.0 pins av==11.*, which has no Python 3.12 wheels
+# (source build needs MSVC + FFmpeg dev libs). 1.1.0 opens the range
+# (av>=11); the av pin below keeps the resolution on the verified
+# cp312 wheel instead of whatever is newest.
+faster-whisper==1.1.0
+av==19.0.2
