@@ -21,8 +21,10 @@ pythoncom / comtypes modules and pin:
 Suite conventions: heavy modules are stubbed in sys.modules at
 import; each test installs the exact module surface it needs.
 """
+import contextlib
 import gc
 import importlib
+import io
 import os
 import sys
 import threading
@@ -428,6 +430,179 @@ def test_g_sapi_runandwait_path_and_whisper_restore():
         assert emitted[-1] == {"event": "sapi.finished", "id": 2,
                                "ok": True}
         assert tracker.calls == 1
+    finally:
+        comhost.init_pyttsx3 = real
+
+
+# --------------------------------------- health follow-up (2026-10-21)
+# The session log's stale-wrapper disease: cached wrappers must be
+# invalidated + re-resolved ONCE on a stale-object failure, an
+# absent Spotify session must back off instead of being enumerated
+# every 1 s poll, and __del__ noise must compress to counted lines.
+
+class _StaleOnceEndpoint(_FakeEndpointVolume):
+    def __init__(self):
+        super().__init__()
+        self._armed = True
+
+    def GetMasterVolumeLevelScalar(self):
+        if self._armed:
+            self._armed = False
+            raise ValueError("COM method call without VTable")
+        return super().GetMasterVolumeLevelScalar()
+
+
+def _install_au(au_cls):
+    class _IAudioEndpointVolume:
+        _iid_ = "fake-iid"
+
+    pycaw_pkg = _mod("pycaw")
+    pycaw_mod = _mod("pycaw.pycaw",
+                     AudioUtilities=au_cls,
+                     IAudioEndpointVolume=_IAudioEndpointVolume)
+    pycaw_pkg.pycaw = pycaw_mod
+    _mod("comtypes", CLSCTX_ALL=0)
+    _mod("pythoncom", CoInitialize=lambda: None,
+         CoUninitialize=lambda: None)
+
+
+def test_i_stale_endpoint_reresolves_once_then_caches():
+    stale = _StaleOnceEndpoint()
+    good = _FakeEndpointVolume()
+    good.level = 0.42
+    calls = {"speakers": 0}
+
+    class _AU:
+        @staticmethod
+        def GetSpeakers():
+            calls["speakers"] += 1
+            return _FakeSpeakers(stale if calls["speakers"] == 1
+                                 else good)
+
+        @staticmethod
+        def GetAllSessions():
+            return []
+
+    _install_au(_AU)
+    core, _emitted = _core()
+    resp = core.handle({"id": 1, "op": "volume.get_state"})
+    assert resp["ok"] is True
+    assert resp["result"]["device_vol"] == 0.42, resp
+    assert "errors" not in resp["result"], resp
+    # Initial resolution + exactly ONE re-resolve after the stale hit.
+    assert calls["speakers"] == 2, calls
+    # Second poll reuses the cached wrapper — no new resolution.
+    resp2 = core.handle({"id": 2, "op": "volume.get_state"})
+    assert resp2["result"]["device_vol"] == 0.42
+    assert calls["speakers"] == 2, calls
+
+
+def test_j_spotify_absent_backs_off_and_serves_last_known():
+    calls = {"sessions": 0}
+
+    class _AU:
+        @staticmethod
+        def GetSpeakers():
+            return _FakeSpeakers(_FakeEndpointVolume())
+
+        @staticmethod
+        def GetAllSessions():
+            calls["sessions"] += 1
+            return []
+
+    _install_au(_AU)
+    core, _emitted = _core()
+    r1 = core.handle({"id": 1, "op": "volume.get_state"})["result"]
+    assert r1["spotify_vol"] == 1.0 and r1["spotify_muted"] is False
+    assert "errors" not in r1, r1
+    assert calls["sessions"] == 1, calls
+    # Immediate re-poll: backoff serves last-known, no re-enumeration.
+    core.handle({"id": 2, "op": "volume.get_state"})
+    assert calls["sessions"] == 1, calls
+    # After the backoff lapses, resolution is attempted again.
+    core._vol._spot_backoff_until = 0.0
+    core.handle({"id": 3, "op": "volume.get_state"})
+    assert calls["sessions"] == 2, calls
+
+
+def test_k_spotify_stale_session_reresolves_once():
+    class _StaleSessionVolume(_FakeSessionVolume):
+        def GetMasterVolume(self):
+            raise ValueError("COM method call without VTable")
+
+    stale = _FakeSession("spotify.exe", _StaleSessionVolume())
+    good_vol = _FakeSessionVolume()
+    good_vol.level = 0.33
+    good = _FakeSession("spotify.exe", good_vol)
+    calls = {"sessions": 0}
+
+    class _AU:
+        @staticmethod
+        def GetSpeakers():
+            return _FakeSpeakers(_FakeEndpointVolume())
+
+        @staticmethod
+        def GetAllSessions():
+            calls["sessions"] += 1
+            return [stale] if calls["sessions"] == 1 else [good]
+
+    _install_au(_AU)
+    core, _emitted = _core()
+    resp = core.handle({"id": 1, "op": "volume.get_state"})
+    assert resp["result"]["spotify_vol"] == 0.33, resp
+    assert calls["sessions"] == 2, calls
+
+
+def test_l_unraisable_hook_compresses_to_counted_lines():
+    comhost._UNRAISABLE_COUNTS.clear()
+    args = types.SimpleNamespace(
+        exc_type=OSError,
+        exc_value=OSError("exception: access violation writing 0x1"),
+        exc_traceback=None, object=None)
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        for _ in range(3):
+            comhost._unraisable_hook(args)
+    lines = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
+    assert len(lines) == 1, lines
+    assert "unraisable suppressed (x1)" in lines[0], lines
+    assert comhost.unraisable_count() == 3
+    comhost._UNRAISABLE_COUNTS.clear()
+
+
+class _StaleLoopEngine(_LoopEngine):
+    def say(self, text):
+        raise OSError("exception: access violation writing 0x0")
+
+
+class _SeqTracker:
+    def __init__(self, engines):
+        self.engines = list(engines)
+        self.calls = 0
+
+    def __call__(self, on_log=None):
+        self.calls += 1
+        return self.engines.pop(0) if self.engines else None
+
+
+def test_m_sapi_stale_engine_reinits_once_and_retries():
+    _install_fake_com()
+    bad = _StaleLoopEngine()
+    good = _LoopEngine()
+    tracker = _SeqTracker([bad, good])
+    _mod("pyttsx3", init=lambda: None)
+    real = comhost.init_pyttsx3
+    comhost.init_pyttsx3 = tracker
+    core, emitted = _core()
+    try:
+        ack = core.handle({"id": 1, "op": "sapi.say",
+                           "text": "still spoken", "whisper": False})
+        assert ack["ok"] is True
+        assert tracker.calls == 2, tracker.calls  # dropped + re-init
+        assert good.said == ["still spoken"], good.said
+        good.finish()
+        assert emitted == [{"event": "sapi.finished", "id": 1,
+                            "ok": True}], emitted
     finally:
         comhost.init_pyttsx3 = real
 

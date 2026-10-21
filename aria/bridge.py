@@ -149,7 +149,7 @@ def _pem_wrap(der: bytes, label: str) -> bytes:
 # -TextExtension with OID 2.5.29.17 (duplicate extension -> cmdlet throws).
 _PS_CERT_SCRIPT = (
     "$ErrorActionPreference='Stop';"
-    "$cert=New-SelfSignedCertificate -DnsName 'aria-bridge','localhost' "
+    "$cert=New-SelfSignedCertificate -DnsName __DNS_NAMES__ "
     "-CertStoreLocation 'Cert:\\CurrentUser\\My' -KeyExportPolicy Exportable "
     "-KeyLength 2048 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddYears(10);"
     "try{"
@@ -180,9 +180,22 @@ def _generate_machine_cert_powershell(cert_p: str, key_p: str) -> bool:
     """
     if sys.platform != "win32":
         return False
+    # -DnsName entries become the cert's SANs; the current LAN IP
+    # must be among them or the phone's browser rejects the cert for
+    # the very address the bridge advertises (see _cert_covers_machine).
+    dns_names = ["aria-bridge", "localhost"]
+    try:
+        import ipaddress as _ipmod
+        cur = lan_ip()
+        if cur and not _ipmod.ip_address(cur).is_loopback:
+            dns_names.append(cur)
+    except Exception:
+        pass
+    script = _PS_CERT_SCRIPT.replace(
+        "__DNS_NAMES__", ",".join(f"'{n}'" for n in dns_names))
     r = subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-         "-Command", _PS_CERT_SCRIPT],
+         "-Command", script],
         capture_output=True, text=True, timeout=90,
     )
     if r.returncode != 0:
@@ -228,6 +241,21 @@ def _generate_machine_cert(cert_p: str, key_p: str) -> bool:
 
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "aria-bridge")])
+        # SANs must cover the addresses the phone actually uses: the
+        # machine's CURRENT LAN IP above all — a cert naming only
+        # 127.0.0.1 is rejected by the phone's browser at the LAN
+        # address the bridge advertises.
+        sans = [
+            x509.DNSName("aria-bridge"),
+            x509.DNSName("localhost"),
+            x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+        ]
+        try:
+            cur_ip = ipaddress.ip_address(lan_ip())
+            if not cur_ip.is_loopback:
+                sans.append(x509.IPAddress(cur_ip))
+        except Exception:
+            pass
         cert = (
             x509.CertificateBuilder()
             .subject_name(name)
@@ -237,11 +265,7 @@ def _generate_machine_cert(cert_p: str, key_p: str) -> bool:
             .not_valid_before(_dt.datetime.now(_dt.timezone.utc))
             .not_valid_after(_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=3650))
             .add_extension(
-                x509.SubjectAlternativeName([
-                    x509.DNSName("aria-bridge"),
-                    x509.DNSName("localhost"),
-                    x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
-                ]),
+                x509.SubjectAlternativeName(sans),
                 critical=False,
             )
             .sign(key, hashes.SHA256())
@@ -277,6 +301,60 @@ def _generate_machine_cert(cert_p: str, key_p: str) -> bool:
     return False
 
 
+def _cert_san_names(cert_path: str):
+    """(dns_names, ip_strings) from a PEM cert's SAN extension, or
+    None when the cert can't be parsed at all. Prefers
+    `cryptography`; falls back to ssl's built-in decoder so the
+    coverage check still works where cryptography is broken."""
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import ExtensionOID
+        with open(cert_path, "rb") as f:
+            cert = x509.load_pem_x509_certificate(f.read())
+        try:
+            san = cert.extensions.get_extension_for_oid(
+                ExtensionOID.SUBJECT_ALTERNATIVE_NAME).value
+        except Exception:
+            return set(), set()
+        return (set(san.get_values_for_type(x509.DNSName)),
+                {str(ip) for ip in san.get_values_for_type(x509.IPAddress)})
+    except Exception:
+        pass
+    try:
+        info = ssl._ssl._test_decode_cert(cert_path)
+        dns, ips = set(), set()
+        for kind, val in info.get("subjectAltName", ()):
+            if kind == "DNS":
+                dns.add(val)
+            elif kind == "IP Address":
+                ips.add(val)
+        return dns, ips
+    except Exception:
+        return None
+
+
+def _cert_covers_machine(cert_path: str, ip: Optional[str] = None) -> bool:
+    """True when the cert's SANs cover every name/address the bridge
+    is reached by: aria-bridge + localhost (DNS), 127.0.0.1, and the
+    machine's CURRENT LAN IP. The pre-fix generator emitted only
+    the first three, and ensure_bridge_cert reused that cert
+    forever — so the phone's browser rejected the cert at the LAN
+    address even though the bridge was up. An unparseable cert
+    counts as not covering (regenerate)."""
+    names = _cert_san_names(cert_path)
+    if names is None:
+        return False
+    dns, ips = names
+    if not {"aria-bridge", "localhost"} <= dns:
+        return False
+    if "127.0.0.1" not in ips:
+        return False
+    cur = ip if ip is not None else lan_ip()
+    if cur and cur != "localhost" and cur not in ips:
+        return False
+    return True
+
+
 def ensure_bridge_cert():
     global BRIDGE_SCHEME, BRIDGE_CERT, BRIDGE_KEY
     # 1. Prefer a per-machine cert in the workspace dir (unique, gitignored).
@@ -284,7 +362,30 @@ def ensure_bridge_cert():
         os.makedirs(WORKSPACE_DIR, exist_ok=True)
         mcert, mkey = (os.path.join(WORKSPACE_DIR, "aria_bridge_machine.pem"),
                        os.path.join(WORKSPACE_DIR, "aria_bridge_machine_key.pem"))
-        if not (os.path.exists(mcert) and os.path.exists(mkey)):
+        have = os.path.exists(mcert) and os.path.exists(mkey)
+        if have and not _cert_covers_machine(mcert):
+            # Stale cert (e.g. generated before a LAN IP change, or
+            # by a pre-fix build without the LAN IP in its SANs):
+            # regenerate into temp files and swap in only on success,
+            # so a failed refresh keeps the old cert rather than
+            # dropping the bridge to the bundled fallback.
+            add_log("Bridge: existing machine cert does not cover this "
+                    "machine's current LAN address — regenerating.")
+            tmp_c, tmp_k = mcert + ".new", mkey + ".new"
+            if _generate_machine_cert(tmp_c, tmp_k):
+                os.replace(tmp_c, mcert)
+                os.replace(tmp_k, mkey)
+                add_log("Bridge: refreshed per-machine HTTPS cert for "
+                        "the current LAN address.")
+            else:
+                add_log("Bridge: cert refresh failed — keeping the "
+                        "existing cert.")
+                for tmp in (tmp_c, tmp_k):
+                    try:
+                        os.remove(tmp)
+                    except Exception:
+                        pass
+        elif not have:
             if _generate_machine_cert(mcert, mkey):
                 add_log("Bridge: generated unique per-machine HTTPS cert.")
         if os.path.exists(mcert) and os.path.exists(mkey):
@@ -315,8 +416,37 @@ def ensure_bridge_cert():
     add_log("Bridge: cert write failed - HTTP fallback.")
 
 
+def _bridge_bind_host() -> str:
+    """Bind host for the bridge server. Default 0.0.0.0 — the bridge
+    exists so the PHONE can reach it, and every route stays
+    token-gated, so binding wide does not weaken auth. (Pre-fix the
+    default was 127.0.0.1 while the startup banner printed the LAN
+    URL: the phone connected to an address nothing listened on.)
+    The 'phone_bridge_host' setting overrides in either direction —
+    set it to 127.0.0.1 to confine the bridge to this machine."""
+    host = get_setting("phone_bridge_host", "0.0.0.0")
+    return host or "0.0.0.0"
+
+
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def _advertised_url(host: str, port: int,
+                    scheme: Optional[str] = None) -> str:
+    """The phone-ready URL to advertise for a given bind: the LAN
+    address when bound wide, localhost when bound loopback — never
+    a LAN URL for a bridge that isn't listening on the LAN. Carries
+    the ?token= the root route exchanges for the auth cookie, so
+    opening it on the phone just works."""
+    shown = "127.0.0.1" if host in _LOOPBACK_HOSTS else lan_ip()
+    base = f"{scheme or BRIDGE_SCHEME}://{shown}:{port}"
+    if BRIDGE_TOKEN:
+        return f"{base}/?token={urllib.parse.quote(BRIDGE_TOKEN, safe='')}"
+    return base
+
+
 def get_bridge_url() -> str:
-    return f"{BRIDGE_SCHEME}://{lan_ip()}:{PHONE_BRIDGE_PORT}"
+    return _advertised_url(_bridge_bind_host(), PHONE_BRIDGE_PORT)
 
 
 
@@ -1400,26 +1530,34 @@ class BridgeHandler(BaseHTTPRequestHandler):
 def start_bridge_server(port: int = PHONE_BRIDGE_PORT) -> ThreadingHTTPServer:
     global _BRIDGE_SERVER
     ensure_bridge_cert()
-    # Configurable bind host ("phone_bridge_host" setting). Defaults to
-    # localhost only; set to "0.0.0.0" to expose the bridge on the LAN
-    # (e.g. so the phone app can reach it). Every route requires the
-    # bridge token regardless of bind address.
-    host = get_setting("phone_bridge_host", "127.0.0.1")
+    # Bind host: 0.0.0.0 by default (the phone must be able to reach
+    # it; every route requires the bridge token regardless). The
+    # "phone_bridge_host" setting overrides in either direction.
+    host = _bridge_bind_host()
     srv = ThreadingHTTPServer((host, port), BridgeHandler)
     _BRIDGE_SERVER = srv
+    online_scheme = BRIDGE_SCHEME
     if BRIDGE_SCHEME == "https" and BRIDGE_CERT and BRIDGE_KEY:
         try:
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.load_cert_chain(certfile=BRIDGE_CERT, keyfile=BRIDGE_KEY)
             srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
-            add_log(f"Phone bridge (HTTPS TLS): https://{lan_ip()}:{port}")
-            print(f"[ARIA] Phone bridge online: https://{lan_ip()}:{port}", flush=True)
         except Exception as e:
             add_log(f"Bridge TLS wrap failed: {e}")
             print(f"[ARIA] Bridge TLS wrap failed: {e}", flush=True)
-    else:
-        add_log(f"Phone bridge (HTTP): http://{lan_ip()}:{port}")
-        print(f"[ARIA] Phone bridge online: http://{lan_ip()}:{port}", flush=True)
+            online_scheme = "http"  # the socket stayed plain
+    # Advertise the address ACTUALLY bound, in its phone-ready
+    # (token-carrying) form — never a LAN URL for a localhost bind.
+    url = _advertised_url(host, port, scheme=online_scheme)
+    kind = "HTTPS TLS" if online_scheme == "https" else "HTTP"
+    add_log(f"Phone bridge ({kind}): {url}")
+    print(f"[ARIA] Phone bridge online: {url}", flush=True)
+    if host in _LOOPBACK_HOSTS:
+        warn = ("Bridge is bound to localhost only — a phone cannot "
+                "reach it. Set phone_bridge_host to 0.0.0.0 to use "
+                "the phone bridge.")
+        add_log(f"Bridge: {warn}")
+        print(f"[ARIA] {warn}", flush=True)
     try:
         srv.serve_forever()
     except Exception as e:

@@ -120,6 +120,24 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
     {   'description': 'Lists all workspace files.',
         'name': 'list_workspace',
         'parameters': {'properties': {}, 'type': 'OBJECT'}},
+    {   'description': 'Rewrites one of YOUR OWN source files in full (self-editing). Only .py files inside the '
+                       'aria/ package, the aria.py launcher, or soul.md — anything else is refused. write_file '
+                       'CANNOT change your code (it saves to the workspace). After your turn the change is '
+                       'validated, announced, and you restart to load it; broken code is restored from git.',
+        'name': 'edit_own_code',
+        'parameters': {   'properties': {'content': {'type': 'STRING'}, 'path': {'type': 'STRING'}},
+                          'required': ['path', 'content'],
+                          'type': 'OBJECT'}},
+    {   'description': 'Patches one of YOUR OWN source files by exact text replacement (self-editing). '
+                       'old_text must match exactly one place in the file or the patch is refused. Same '
+                       'allowlist and post-turn validate/announce/restart behaviour as edit_own_code. '
+                       'Prefer this over edit_own_code for small changes.',
+        'name': 'patch_own_code',
+        'parameters': {   'properties': {   'new_text': {'type': 'STRING'},
+                                            'old_text': {'type': 'STRING'},
+                                            'path': {'type': 'STRING'}},
+                          'required': ['path', 'old_text', 'new_text'],
+                          'type': 'OBJECT'}},
     {   'description': 'Controls Spotify: open launches the app, play_pause toggles, next/previous skip tracks (media '
                        "keys); search opens the Spotify app's search; play_uri opens a spotify: URI and starts "
                        'playback.',
@@ -279,6 +297,15 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
     {   'description': 'Removes an MCP server configuration entirely (disconnects it first).',
         'name': 'mcp_remove_server',
         'parameters': {'properties': {'name': {'type': 'STRING'}}, 'required': ['name'], 'type': 'OBJECT'}},
+    {   'description': 'Lists files in the inbox (uploads from the phone bridge), newest first, with sizes '
+                       'and ages.',
+        'name': 'inbox_list',
+        'parameters': {'properties': {}, 'type': 'OBJECT'}},
+    {   'description': 'Describes a photo from the inbox with vision. Pass a file name (or number from '
+                       'inbox_list); blank describes the latest image. Use this for sent/uploaded photos — '
+                       'never the webcam.',
+        'name': 'inbox_describe',
+        'parameters': {'properties': {'name': {'type': 'STRING'}}, 'type': 'OBJECT'}},
     {   'description': 'Reads a text file from the inbox (txt, md, csv, json, log...). Pass a file name (or number '
                        'from inbox_list); blank reads the latest text file.',
         'name': 'inbox_read',
@@ -433,7 +460,8 @@ TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persiste
                 'tools': ['watch_screen', 'unwatch_screen', 'list_screen_watches']},
     'routines': {'summary': 'record and replay multi-step routines (named automations)',
                  'tools': ['routine_record_start', 'routine_record_stop', 'run_routine', 'list_routines',
-                           'delete_routine', 'describe_routine', 'trust_routine', 'untrust_routine']},
+                           'delete_routine', 'describe_routine', 'trust_routine', 'untrust_routine',
+                           'export_routine_pack', 'import_routine_pack']},
     'user': {'summary': 'user-installed custom tools (see docs/USER_TOOL_SDK.md); populated at boot and via reload_user_tools',
              'tools': []},
     'core': {   'summary': 'everyday tools: web search, open apps/URLs, run Python code, click/type, screenshots, '
@@ -454,6 +482,11 @@ TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persiste
                              'read_file',
                              'write_file',
                              'list_workspace',
+                             'edit_own_code',
+                             'patch_own_code',
+                             'inbox_list',
+                             'inbox_describe',
+                             'inbox_read',
                              'run_skill']},
     'github': {'summary': 'push files and create GitHub repos', 'tools': ['github_push_file', 'github_create_repo']},
     'memory_plus': {   'summary': 'notes, journal, forgetting memories, morning briefing',

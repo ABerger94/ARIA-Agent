@@ -8,6 +8,19 @@ import sys
 import os
 import subprocess
 
+# Round-5 follow-up (2026-10-21 session log): stdout/stderr must be
+# line-buffered from the very start. ARIA is run with output
+# redirected to a file, and Python block-buffers redirected streams —
+# in the captured session the process's whole conversation/tool
+# output was still sitting in the buffer when the session ended and
+# the log held only stderr noise. Guarded: some stream objects
+# (embedded interpreters, IDEs) don't support reconfigure.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
 # Optional alternate Python used to relaunch when pygame is missing
 # (set ARIA_ALT_PYTHON to a full interpreter path). Defaults to no relaunch:
 # the hardcoded machine-specific path this replaced only worked on one PC.

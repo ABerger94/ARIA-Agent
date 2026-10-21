@@ -199,3 +199,73 @@ def test_pool_specific_model_first():
     assert out == "from requested", out
     assert transport.calls[0] == "m2"
     print("ok pool_specific_model_first")
+
+
+# ------------------------------------------------- dead-model parking
+# 2026-10-21 session log: the roster had gone stale upstream and the
+# pool cycled dead models at 2 attempts each, per call, all session.
+# A 404 (retired id) or 400 (request shape rejected) now parks the
+# model after ONE attempt, for the rest of the session.
+
+def test_pool_404_parks_model_for_session():
+    transport = _ScriptedTransport({
+        "m1": [_Resp(404)],
+        "m2": [_Resp(200, "m2 one"), _Resp(200, "m2 two")],
+    })
+    pool = _pool(transport, models=("m1", "m2"))
+    assert pool.chat("hi") == "m2 one"
+    # Exactly ONE attempt on the dead model — no retry, ever.
+    assert transport.calls == ["m1", "m2"], transport.calls
+    assert pool.parked_models() == ["m1"]
+    assert pool.available_models()["parked"] == ["m1"]
+    # Later calls skip it entirely (the old code re-cycled it).
+    transport.calls.clear()
+    assert pool.chat("hi again") == "m2 two"
+    assert transport.calls == ["m2"], transport.calls
+    print("ok pool_404_parks_model_for_session")
+
+
+def test_pool_400_parks_model_too():
+    transport = _ScriptedTransport({
+        "m1": [_Resp(400)],
+        "m2": [_Resp(200, "m2 answers")],
+    })
+    pool = _pool(transport, models=("m1", "m2"))
+    assert pool.chat("hi") == "m2 answers"
+    assert transport.calls == ["m1", "m2"], transport.calls
+    assert pool.parked_models() == ["m1"]
+    print("ok pool_400_parks_model_too")
+
+
+def test_pool_parked_requested_model_falls_back():
+    transport = _ScriptedTransport({
+        "m1": [_Resp(404)],
+        "m2": [_Resp(200, "fallback answer")],
+    })
+    pool = _pool(transport, models=("m1", "m2"))
+    pool._park_model("m1", 404)
+    out = pool.chat("hi", model="m1")
+    assert out == "fallback answer", out
+    assert transport.calls == ["m2"], transport.calls
+    print("ok pool_parked_requested_model_falls_back")
+
+
+def test_roster_matches_live_catalog_shape():
+    # Rebuilt 2026-10-21 from GET /api/v1/models. Every entry is a
+    # free-priced chat model id; the session log's worst 404
+    # offenders (retired upstream) must stay out.
+    for roster in (orpool.TEXT_MODELS, orpool.VISION_MODELS):
+        assert len(roster) == len(set(roster)), "duplicate roster entry"
+        for m in roster:
+            assert m.endswith(":free") or m == "openrouter/free", m
+    assert len(orpool.TEXT_MODELS) <= 14
+    assert len(orpool.VISION_MODELS) <= 10
+    for dead in ("nousresearch/hermes-3-llama-3.1-405b:free",
+                 "minimax/minimax-m2.5:free",
+                 "meta-llama/llama-3.3-70b-instruct:free",
+                 "qwen/qwen3-coder:free",
+                 "google/gemma-3-27b-it:free",
+                 "nvidia/llama-nemotron-embed-vl-1b-v2:free"):
+        assert dead not in orpool.TEXT_MODELS, dead
+        assert dead not in orpool.VISION_MODELS, dead
+    print("ok roster_matches_live_catalog_shape")

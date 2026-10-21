@@ -11,7 +11,10 @@ here and in the commit message. His model pools, cooldown semantics
   * API key comes from aria.config (aria_keys.json) instead of his
     config/api_keys.json, and NO client is constructed at import
     time — his module builds one at import and raises without a
-    key; here a missing key disables the pool cleanly.
+    key; here a missing key disables the pool cleanly. (His model
+    rosters were carried over at first but went stale upstream;
+    the 2026-10-21 rebuild from the live catalog is documented at
+    TEXT_MODELS below.)
   * The 429 registry is the shared aria.agent.cooldown mechanism
     (blueprint SS3.1: one mechanism, two scopes), not a private dict.
   * Identifies as ARIA-Agent in request headers, not MARK XXV.
@@ -52,41 +55,46 @@ MAX_RETRIES_PER_MODEL = 2   # attempts before moving to the next model
 RETRY_DELAY = 2             # seconds between attempts on one model
 RATE_LIMIT_COOLDOWN = 60    # seconds before retrying a rate-limited model
 
-# His free-tier pools, carried over verbatim (or_client.py).
+# Model rosters — REBUILT 2026-10-21 from the live OpenRouter
+# catalog (GET /api/v1/models: 468 models, 20 free-priced). The
+# previous list was Mark's free-tier pool carried over verbatim; by
+# the 2026-10-21 session log nearly every entry answered HTTP 404
+# (the models had been retired/renamed upstream) and the pool cycled
+# the dead roster for the whole session. The rebuild keeps only
+# models that exist in the catalog with free pricing (id ends
+# ":free", or zero prompt/completion price), ordered capable-first
+# with context length as the capability proxy. Excluded despite free
+# pricing: google/lyria-* (audio output, not chat) and
+# nvidia/nemotron-3.5-content-safety (a moderation classifier).
+# "openrouter/free" is OpenRouter's own free auto-router — a real
+# chat model and a useful catch-all near the end of the walk. Any
+# entry that still 404s at call time is parked for the session by
+# the pool itself (see _park_model), so a stale roster degrades to
+# the working subset instead of cycling.
 TEXT_MODELS: List[str] = [
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "thinkingmachines/inkling:free",
+    "minimax/minimax-m3.1-flash:free",
+    "nvidia/nemotron-3.5-lightning:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
-    "nousresearch/hermes-3-llama-3.1-405b:free",
-    "minimax/minimax-m2.5:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "qwen/qwen3-next-80b-a3b-instruct:free",
-    "qwen/qwen3-coder:free",
     "google/gemma-4-31b-it:free",
     "google/gemma-4-26b-a4b-it:free",
-    "google/gemma-3-27b-it:free",
-    "arcee-ai/trinity-large-preview:free",
-    "z-ai/glm-4.5-air:free",
-    "nvidia/nemotron-nano-30b-a3b:free",
-    "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
-    "google/gemma-3-12b-it:free",
-    "nvidia/nemotron-nano-12b-v2-vl:free",
-    "nvidia/nemotron-nano-9b-v2:free",
-    "google/gemma-3-4b-it:free",
-    "google/gemma-3n-e4b-it:free",
-    "meta-llama/llama-3.2-3b-instruct:free",
-    "google/gemma-3n-e2b-it:free",
-    "liquid/lfm-2.5-1.2b-instruct:free",
-    "liquid/lfm-2.5-1.2b-thinking:free",
+    "poolside/laguna-s-2.1:free",
+    "xingchen-agi/xing4.0-29b-a4b:free",
+    "cohere/north-mini-code:free",
+    "openrouter/free",
+    "liquid/lfm-2.5-2.6b:free",
 ]
 
 VISION_MODELS: List[str] = [
-    "nvidia/nemotron-nano-12b-v2-vl:free",
-    "nvidia/llama-nemotron-embed-vl-1b-v2:free",
+    "thinkingmachines/inkling:free",
+    "minimax/minimax-m3.1-flash:free",
+    "nvidia/nemotron-3.5-super-vl:free",
+    "dots-studio/dots-3-note-preview:free",
     "google/gemma-4-31b-it:free",
     "google/gemma-4-26b-a4b-it:free",
-    "google/gemma-3n-e4b-it:free",
-    "google/gemma-3n-e2b-it:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "nvidia/nemotron-3-super-120b-a12b:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    "openrouter/free",
 ]
 
 
@@ -116,6 +124,14 @@ class OrPool:
         self._text_models = list(text_models) if text_models else list(TEXT_MODELS)
         self._vision_models = list(vision_models) if vision_models else list(VISION_MODELS)
         self._cooldowns = CooldownRegistry(RATE_LIMIT_COOLDOWN)
+        # Session-scoped dead-model set: a model that answers 404
+        # (retired/renamed upstream) or 400 (rejects the request
+        # shape) will never succeed later in this session, so it is
+        # parked after ONE attempt and skipped by every later walk —
+        # the 2026-10-21 log showed the old behaviour cycling a dead
+        # roster at 2 attempts per model, per call, all session.
+        self._parked: set = set()
+        self._parked_lock = threading.Lock()
 
     # -- availability -------------------------------------------------
     @property
@@ -155,6 +171,25 @@ class OrPool:
         add_log(f"orpool: {model} rate-limited (429), cooling down "
                 f"{RATE_LIMIT_COOLDOWN}s")
 
+    # -- dead-model parking (session scope) ----------------------------
+    def _is_parked(self, model: str) -> bool:
+        with self._parked_lock:
+            return model in self._parked
+
+    def _park_model(self, model: str, status: int) -> None:
+        with self._parked_lock:
+            if model in self._parked:
+                return
+            self._parked.add(model)
+        logger.warning("[orpool] %s → HTTP %s — parked for this session",
+                       model, status)
+        add_log(f"orpool: {model} answered HTTP {status}; "
+                f"parked for this session")
+
+    def parked_models(self) -> List[str]:
+        with self._parked_lock:
+            return sorted(self._parked)
+
     # -- one model ------------------------------------------------------
     def _call(self, model: str, messages: List[dict],
               max_tokens: int = DEFAULT_MAX_TOKENS,
@@ -169,6 +204,8 @@ class OrPool:
         if response_format:
             payload["response_format"] = response_format
 
+        if self._is_parked(model):
+            return None
         for attempt in range(1, MAX_RETRIES_PER_MODEL + 1):
             try:
                 resp = self._transport(
@@ -176,6 +213,12 @@ class OrPool:
                     timeout=REQUEST_TIMEOUT)
                 if resp.status_code == 429:
                     self._mark_rate_limited(model)
+                    return None
+                if resp.status_code in (400, 404):
+                    # Dead model (retired id) or a request shape this
+                    # model rejects: retrying cannot help, and the
+                    # next call must not cycle back to it either.
+                    self._park_model(model, resp.status_code)
                     return None
                 if resp.status_code == 200:
                     data = resp.json()
@@ -201,7 +244,8 @@ class OrPool:
                             temperature: float = DEFAULT_TEMPERATURE,
                             response_format: Optional[dict] = None) -> str:
         self._require_available()
-        if model and not self._is_rate_limited(model):
+        if model and not self._is_rate_limited(model) \
+                and not self._is_parked(model):
             result = self._call(model, messages, max_tokens, temperature,
                                 response_format)
             if result:
@@ -209,7 +253,7 @@ class OrPool:
             logger.info("[orpool] Requested model failed, falling back "
                         "to pool: %s", model)
         for m in pool:
-            if self._is_rate_limited(m):
+            if self._is_rate_limited(m) or self._is_parked(m):
                 continue
             logger.info("[orpool] Trying: %s", m)
             result = self._call(m, messages, max_tokens, temperature,
@@ -313,6 +357,7 @@ class OrPool:
             "text_models": self._text_models,
             "vision_models": self._vision_models,
             "rate_limited": self._cooldowns.cooling_keys(),
+            "parked": self.parked_models(),
             "total_text": len(self._text_models),
             "total_vision": len(self._vision_models),
         }

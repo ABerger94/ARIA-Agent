@@ -31,6 +31,22 @@ thread shuts down and the process exits — no orphans.
 The pycaw query/apply functions and the pyttsx3 lazy-init engine
 below are the code that used to live in aria.hud.VolumeManager._worker
 and aria.speech._SapiVoice, moved as verbatim as the move allows.
+
+Health follow-up (2026-10-21 session log): isolation held — the
+main process never died — but the helper's own COM objects went
+stale under it. The facade polls state every 1 s; the moved code
+re-resolved every wrapper per operation (four endpoint activations
+plus two full session enumerations per poll), and wrappers whose
+sessions had since ended were finalised by the 30 s collect with
+Release() faulting on dead pointers — 809 "COM method call without
+VTable" ValueErrors and 879 ignored __del__ tracebacks in one
+session. Three fixes: (1) wrappers are now CACHED on the COM
+thread and a stale-object failure (VTable ValueError / COMError /
+OSError) invalidates the cache and re-resolves ONCE per operation
+before surfacing honestly; (2) an absent Spotify session backs off
+for ~10 s instead of being re-enumerated every poll, serving
+last-known state meanwhile; (3) sys.unraisablehook compresses the
+remaining __del__ noise into counted one-line stderr logs.
 """
 
 from __future__ import annotations
@@ -46,6 +62,54 @@ from typing import Any, Callable, Dict, Optional
 
 def _log(msg: str) -> None:
     print(f"[comhost] {msg}", file=sys.stderr, flush=True)
+
+
+# ---------------- unraisable noise compression ----------------
+_UNRAISABLE_COUNTS: Dict[str, int] = {}
+_UNRAISABLE_LOCK = threading.Lock()
+
+
+def _unraisable_hook(args) -> None:
+    """sys.unraisablehook replacement. A comtypes wrapper finalised
+    after its native object died raises inside __del__ (Release() on
+    a dead pointer) — unraisable by construction, and Python's
+    default hook prints a full traceback for EACH one (879 in the
+    2026-10-21 session log, drowning every real signal). Compress
+    to a counted one-liner on stderr: the first occurrence of each
+    error kind, then every 100th."""
+    etype = getattr(args, "exc_type", None)
+    exc = getattr(args, "exc_value", None)
+    key = f"{getattr(etype, '__name__', 'Error')}: {exc}"[:120]
+    with _UNRAISABLE_LOCK:
+        n = _UNRAISABLE_COUNTS.get(key, 0) + 1
+        _UNRAISABLE_COUNTS[key] = n
+    if n == 1 or n % 100 == 0:
+        print(f"[comhost] unraisable suppressed (x{n}): {key}",
+              file=sys.stderr, flush=True)
+
+
+def unraisable_count() -> int:
+    """Total unraisable exceptions compressed so far (diagnostics)."""
+    with _UNRAISABLE_LOCK:
+        return sum(_UNRAISABLE_COUNTS.values())
+
+
+def _is_stale_error(exc: BaseException) -> bool:
+    """True when exc means 'this COM wrapper's native object is
+    gone' rather than 'the operation failed': comtypes raises
+    ValueError('COM method call without VTable') for a call on a
+    pointer whose vtable has been torn down, COMError for dead
+    interfaces, and OSError when the native call faults (the access
+    violations in the session log's __del__ tracebacks). All three
+    are cured the same way: drop the cached wrapper, re-resolve,
+    retry once."""
+    if isinstance(exc, ValueError) and "VTable" in str(exc):
+        return True
+    if type(exc).__name__ == "COMError":
+        return True
+    if isinstance(exc, OSError):
+        return True
+    return False
 
 
 # ---------------- Fallback TTS (pyttsx3) ----------------
@@ -97,8 +161,17 @@ class _VolumeOps:
             self.available = True
         except Exception as e:
             _log(f"volume ops unavailable: {type(e).__name__}: {e}")
+        # Cached wrappers (health follow-up): resolved once, held on
+        # the COM thread, dropped the moment a call proves them
+        # stale. _spot_state is the last-known Spotify (vol, muted)
+        # served while the session is absent / backing off.
+        self._dev_cache = None        # (dev, vol, iface)
+        self._spot_cache = None       # SimpleAudioVolume wrapper
+        self._spot_state = (1.0, False)
+        self._spot_backoff_until = 0.0
 
-    def _endpoint(self):
+    # -- device endpoint: cached wrapper, one stale re-resolve ------
+    def _resolve_endpoint(self):
         dev = self._au.GetSpeakers()
         if hasattr(dev, "EndpointVolume"):
             return dev, dev.EndpointVolume, None
@@ -106,85 +179,108 @@ class _VolumeOps:
         vol = self._cast(iface, self._pointer(self._iface_cls))
         return dev, vol, iface
 
-    def query_dev(self):
-        dev = None
-        vol = None
-        iface = None
+    def _endpoint_vol(self):
+        if self._dev_cache is None:
+            self._dev_cache = self._resolve_endpoint()
+        return self._dev_cache[1]
+
+    def _dev_call(self, fn):
+        """fn(endpoint_volume) with the stale-guard: a dead-wrapper
+        failure drops the cache, re-resolves, and retries ONCE; a
+        second failure (or a non-stale one) propagates to the caller
+        and is surfaced honestly by get_state / handle."""
         try:
-            dev, vol, iface = self._endpoint()
-            return float(vol.GetMasterVolumeLevelScalar())
-        finally:
-            del vol, iface, dev
+            return fn(self._endpoint_vol())
+        except Exception as e:
+            if not _is_stale_error(e):
+                raise
+            self._dev_cache = None
+            return fn(self._endpoint_vol())
+
+    def query_dev(self):
+        return float(self._dev_call(
+            lambda v: v.GetMasterVolumeLevelScalar()))
 
     def apply_dev(self, level):
-        dev = None
-        vol = None
-        iface = None
-        try:
-            dev, vol, iface = self._endpoint()
-            vol.SetMasterVolumeLevelScalar(
-                max(0.0, min(1.0, level)), None)
-        finally:
-            del vol, iface, dev
-
-    def query_spot(self):
-        sessions = self._au.GetAllSessions()
-        try:
-            for s in sessions:
-                if s.Process and s.Process.name().lower() == "spotify.exe":
-                    return float(s.SimpleAudioVolume.GetMasterVolume())
-            return 1.0
-        finally:
-            del sessions
-
-    def apply_spot(self, level):
-        sessions = self._au.GetAllSessions()
-        try:
-            for s in sessions:
-                if s.Process and s.Process.name().lower() == "spotify.exe":
-                    s.SimpleAudioVolume.SetMasterVolume(
-                        max(0.0, min(1.0, level)), None)
-        finally:
-            del sessions
+        level = max(0.0, min(1.0, level))
+        self._dev_call(
+            lambda v: v.SetMasterVolumeLevelScalar(level, None))
 
     def query_dev_mute(self):
-        dev = None
-        vol = None
-        iface = None
-        try:
-            dev, vol, iface = self._endpoint()
-            return bool(vol.GetMute())
-        finally:
-            del vol, iface, dev
+        return bool(self._dev_call(lambda v: v.GetMute()))
 
     def apply_dev_mute(self, muted):
-        dev = None
-        vol = None
-        iface = None
+        self._dev_call(lambda v: v.SetMute(1 if muted else 0, None))
+
+    # -- Spotify session: cached wrapper + absence backoff ----------
+    def _resolve_spotify(self):
+        """Spotify's SimpleAudioVolume wrapper, or None when the
+        session is absent (or resolution is backing off). A dead
+        session must not be re-enumerated on every 1 s facade poll:
+        a successful enumeration that finds no Spotify arms a
+        ~10 s backoff during which last-known state is served."""
+        if self._spot_cache is not None:
+            return self._spot_cache
+        now = time.monotonic()
+        if now < self._spot_backoff_until:
+            return None
+        sessions = self._au.GetAllSessions()
         try:
-            dev, vol, iface = self._endpoint()
-            vol.SetMute(1 if muted else 0, None)
+            for s in sessions:
+                if s.Process and s.Process.name().lower() == "spotify.exe":
+                    self._spot_cache = s.SimpleAudioVolume
+                    return self._spot_cache
         finally:
-            del vol, iface, dev
+            del sessions
+        self._spot_backoff_until = now + _SPOTIFY_BACKOFF_S
+        return None
+
+    def _spot_call(self, fn):
+        """fn(session_volume) -> value, with the stale-guard.
+        Returns (True, value) when a live session was used,
+        (False, None) when Spotify is absent / backing off — the
+        caller then serves last-known state, quietly."""
+        vol = self._resolve_spotify()
+        if vol is None:
+            return False, None
+        try:
+            return True, fn(vol)
+        except Exception as e:
+            if not _is_stale_error(e):
+                raise
+            self._spot_cache = None
+            vol = self._resolve_spotify()
+            if vol is None:
+                return False, None
+            return True, fn(vol)
+
+    def query_spot(self):
+        found, val = self._spot_call(
+            lambda v: float(v.GetMasterVolume()))
+        if found:
+            self._spot_state = (val, self._spot_state[1])
+            return val
+        return self._spot_state[0]
+
+    def apply_spot(self, level):
+        level = max(0.0, min(1.0, level))
+        found, _ = self._spot_call(
+            lambda v: v.SetMasterVolume(level, None))
+        if found:
+            self._spot_state = (level, self._spot_state[1])
 
     def query_spot_mute(self):
-        sessions = self._au.GetAllSessions()
-        try:
-            for s in sessions:
-                if s.Process and s.Process.name().lower() == "spotify.exe":
-                    return bool(s.SimpleAudioVolume.GetMute())
-            return False
-        finally:
-            del sessions
+        found, val = self._spot_call(lambda v: bool(v.GetMute()))
+        if found:
+            self._spot_state = (self._spot_state[0], val)
+            return val
+        return self._spot_state[1]
 
     def apply_spot_mute(self, muted):
-        sessions = self._au.GetAllSessions()
-        try:
-            for s in sessions:
-                if s.Process and s.Process.name().lower() == "spotify.exe":
-                    s.SimpleAudioVolume.SetMute(1 if muted else 0, None)
-        finally:
-            del sessions
+        found, _ = self._spot_call(
+            lambda v: v.SetMute(1 if muted else 0, None))
+        if found:
+            self._spot_state = (self._spot_state[0], bool(muted))
 
     def get_state(self) -> Dict[str, Any]:
         """Assemble the four-part volume state. Each part is queried
@@ -214,6 +310,12 @@ class _VolumeOps:
 _STOP = object()
 
 _GC_INTERVAL_S = 30.0
+_SPOTIFY_BACKOFF_S = 10.0
+
+
+class _StaleEngine(Exception):
+    """Internal signal: the cached SAPI engine's COM objects died
+    mid-operation — drop it, re-init once, retry the say once."""
 
 
 class _ComCore:
@@ -315,16 +417,39 @@ class _ComCore:
 
     def _sapi_say(self, req: Dict[str, Any]):
         rid = req.get("id")
-        text = req.get("text", "")
-        whisper = bool(req.get("whisper"))
-        engine = self._engine
-        if engine is None:
+        if self._engine is None:
             self._ensure_engine()
-            engine = self._engine
-        if engine is None:
+        if self._engine is None:
             self._emit({"event": "sapi.finished", "id": rid,
                         "ok": False, "error": "no SAPI engine available"})
             return
+        try:
+            self._sapi_say_with_engine(req)
+        except _StaleEngine:
+            # Same stale-wrapper disease as the volume path: the
+            # engine's SAPI objects died under it. Drop the engine,
+            # re-init ONCE, retry the say ONCE; a second stale
+            # failure finishes honestly as ok False.
+            self._engine = None
+            self._use_loop = False
+            self._current = None
+            if not self._ensure_engine():
+                self._emit({"event": "sapi.finished", "id": rid,
+                            "ok": False,
+                            "error": "no SAPI engine available"})
+                return
+            try:
+                self._sapi_say_with_engine(req)
+            except _StaleEngine:
+                self._emit({"event": "sapi.finished", "id": rid,
+                            "ok": False,
+                            "error": "SAPI engine failed after re-init"})
+
+    def _sapi_say_with_engine(self, req: Dict[str, Any]):
+        rid = req.get("id")
+        text = req.get("text", "")
+        whisper = bool(req.get("whisper"))
+        engine = self._engine
         if self._use_loop:
             self._finish_current()  # defensive; the client serialises
             restore = None
@@ -337,6 +462,8 @@ class _ComCore:
                     engine.setProperty("rate", max(60, int(r0) - 40))
                 engine.say(text)
             except Exception as e:
+                if _is_stale_error(e):
+                    raise _StaleEngine() from e
                 _log(f"SAPI say err: {e}")
                 self._current = (rid, restore)
                 self._finish_current(ok=False)
@@ -360,6 +487,8 @@ class _ComCore:
                     engine.say(text)
                     engine.runAndWait()
             except Exception as e:
+                if _is_stale_error(e):
+                    raise _StaleEngine() from e
                 _log(f"SAPI say err: {e}")
                 ok = False
             self._emit({"event": "sapi.finished", "id": rid, "ok": ok})
@@ -368,8 +497,12 @@ class _ComCore:
         if self._engine is not None:
             try:
                 self._engine.stop()
-            except Exception:
-                pass
+            except Exception as e:
+                if _is_stale_error(e):
+                    # Dead engine: drop it so the next say re-inits
+                    # instead of queueing onto a corpse.
+                    self._engine = None
+                    self._use_loop = False
         self._finish_current()
 
     # -- dispatch ----------------------------------------------------
@@ -453,6 +586,7 @@ class _ComCore:
 # ---------------- stdio plumbing ----------------
 
 def main() -> int:
+    sys.unraisablehook = _unraisable_hook
     work_q: "queue.Queue" = queue.Queue()
     out_q: "queue.Queue" = queue.Queue()
     core = _ComCore(emit=out_q.put)

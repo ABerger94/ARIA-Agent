@@ -936,6 +936,16 @@ def main():
     failed to initialise — surfaced, never silent)."""
     global RUNNING
 
+    # Defensive twin of the aria.py launcher fix: line-buffered
+    # stdout/stderr so a redirected session log survives a death even
+    # when main() is reached without the launcher having run first.
+    import sys as _sys
+    for _stream in (_sys.stdout, _sys.stderr):
+        try:
+            _stream.reconfigure(line_buffering=True)
+        except Exception:
+            pass
+
     # ARIA ULTIMATE (Module 10): first-run wizard — checks the environment and
     # API keys before subsystems boot. Fully skippable, never blocks startup.
     _maybe_run_first_run_wizard()

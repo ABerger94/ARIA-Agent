@@ -224,10 +224,19 @@ def _repair_or_exhaust(fn_name: str, args: dict, err_str: str) -> str:
     # Merger Phase 1 (blueprint SS3.2): every tool failure also lands
     # in the classified failure record (event ring + incident DB) —
     # before this, a failure existed only inside this turn's prompt.
+    # The record's user_message is the plain-language line Phase 1
+    # composed FOR the user; keep it — the exhausted branch below
+    # hands it to the model verbatim, because this return value is
+    # the only route that message has into the brain loop's reply
+    # (and from there to speech). Dropping it here left the user
+    # with whatever the model improvised, or nothing.
+    user_message = ""
     try:
         from aria.agent.failures import surface_failure
-        surface_failure(f"tool:{fn_name}", err_str, attempts=n,
-                        max_attempts=_REPAIR_BUDGET + 1)
+        rec = surface_failure(f"tool:{fn_name}", err_str, attempts=n,
+                              max_attempts=_REPAIR_BUDGET + 1)
+        if rec:
+            user_message = rec.get("user_message") or ""
     except Exception:
         pass
     if n <= _REPAIR_BUDGET:
@@ -241,10 +250,12 @@ def _repair_or_exhaust(fn_name: str, args: dict, err_str: str) -> str:
             f"diagnose the root cause and fix your approach, or say you "
             f"cannot complete it. Do not repeat the identical call.]")
         return "\n".join(parts)
+    report = (f"report the failure to the user: {user_message}"
+              if user_message
+              else "report the failure to the user plainly.")
     return (f"[Tool Error: {err_short}]\n"
             f"[Repair budget exhausted for '{fn_name}' after {_REPAIR_BUDGET} "
-            f"attempts. Stop retrying this call and report the failure to "
-            f"the user plainly.]")
+            f"attempts. Stop retrying this call and {report}]")
 
 
 def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple[str, bool]:
@@ -483,6 +494,7 @@ from aria import inbox as inbox_mod
 from aria import memory as memory_mod
 from aria.tools import fileops as fileops_mod
 from aria.tools import fileproc as fileproc_mod
+from aria.tools import selfedit as selfedit_mod
 from aria.tools import winctl as winctl_mod
 from aria.tools import triage as triage_mod
 from aria.tools import usertools as usertools_mod
@@ -510,6 +522,8 @@ def _init_default_registry():
         a.get("name", ""), a.get("description", ""), bool(a.get("private", True))
     )
     _REGISTRY["write_file"] = lambda a: builtins.tool_write_file(a.get("filename", "file.txt"), a.get("content", ""))
+    _REGISTRY["edit_own_code"] = lambda a: selfedit_mod.tool_edit_own_code(a.get("path", ""), a.get("content", ""))
+    _REGISTRY["patch_own_code"] = lambda a: selfedit_mod.tool_patch_own_code(a.get("path", ""), a.get("old_text", ""), a.get("new_text", ""))
     _REGISTRY["read_file"] = lambda a: builtins.tool_read_file(a.get("filename", ""))
     _REGISTRY["list_workspace"] = lambda a: builtins.tool_list_files()
     _REGISTRY["fetch_url"] = lambda a: builtins.tool_fetch_url(a.get("url", ""))

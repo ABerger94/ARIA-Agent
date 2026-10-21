@@ -1060,11 +1060,18 @@ def tool_manage_background_job(action: str = "list", command: str = "",
 
 def tool_system_health_audit() -> str:
     """Inspect system resources, memory, disks, worker threads, and active jobs."""
-    import aria.agent as agent_mod
-    return agent_mod.system_health_audit()
+    # Import from the DEFINING submodule, not via the aria.agent
+    # package: the package-attribute form only works when
+    # aria/agent/__init__ has already executed its re-exports, so
+    # these tools broke with AttributeError in any context that
+    # reached builtins first (headless runs, background workers —
+    # caught by the registry self-test, tests/test_registry.py).
+    from aria.agent.workers import system_health_audit
+    return system_health_audit()
 
 
 def tool_self_heal_diagnose(error_text: str = "", context: str = "") -> str:
     """Diagnose errors and view self-healing incidents."""
-    import aria.agent as agent_mod
-    return agent_mod.tool_self_heal_diagnose(error_text=error_text, context=context)
+    from aria.agent.self_healing import (
+        tool_self_heal_diagnose as _diagnose)
+    return _diagnose(error_text=error_text, context=context)

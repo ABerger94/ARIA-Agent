@@ -52,6 +52,12 @@ def check_price_watches() -> str:
 
     try:
         conn = sqlite3.connect(PRICE_WATCH_DB)
+        # The table is created lazily by builtins.tool_watch_price;
+        # on a fresh install (no watch ever added) it doesn't exist
+        # yet and the check must report "no watches", not fail.
+        conn.execute("""CREATE TABLE IF NOT EXISTS price_watches(
+            id INTEGER PRIMARY KEY, url TEXT, target REAL, label TEXT,
+            last_price REAL, alerted INTEGER DEFAULT 0, created TEXT)""")
         rows = conn.execute(
             "SELECT id, label, url, target, last_price, alerted FROM price_watches"
         ).fetchall()
