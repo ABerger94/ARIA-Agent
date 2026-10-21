@@ -25,6 +25,12 @@ from aria import config as _config_silent
 EDGE_TTS_VOICE = "en-US-AriaNeural"
 WHISPER_EDGE_KWARGS = {"rate": "-10%", "pitch": "-8Hz", "volume": "-60%"}
 
+# A2: Edge availability supervision — re-probe cadence while Edge is
+# down, and how many consecutive per-sentence synthesis failures revoke
+# readiness mid-session.
+EDGE_REPROBE_INTERVAL_S = 60.0
+EDGE_FAIL_STREAK_LIMIT = 3
+
 STOP_WORDS = {
     "stop", "quiet", "shut up", "enough", "silence",
     "stop talking", "hush", "be quiet", "cut it out",
@@ -345,6 +351,15 @@ class SpeechManager:
         self.edge_ready = False
         self.whisper_mode = False
 
+        # A2: Edge availability is supervised, not latched (see
+        # _edge_supervisor). edge_probe_done fires when the FIRST probe
+        # round completes — the startup greeting waits on it (A6).
+        self.edge_probe_done = threading.Event()
+        self._edge_revoked = threading.Event()
+        self._probe_lock = threading.Lock()
+        self._edge_fail_streak = 0
+        self._edge_fail_lock = threading.Lock()
+
         self._tts_engine = None
         self._voice_rotation_idx = 0
         self._voice_rotation_lock = threading.Lock()
@@ -361,43 +376,89 @@ class SpeechManager:
     def _whisper_edge_kwargs(self) -> dict:
         return dict(WHISPER_EDGE_KWARGS) if self.whisper_mode else {}
 
-    def _init_edge_voice(self):
-        # A1 (audit §1A #2): the probe must say WHY Edge is unavailable.
-        # Step 0 actually imports edge_tts — the previous body was
-        # `try: pass`, which made the "(edge-tts import broken)" branch
-        # unreachable and a broken install indistinguishable from a
-        # network failure.
-        try:
-            import edge_tts  # noqa: F401
-        except Exception as e:
-            self.log(f"Voice: system fallback (edge-tts import broken: {e})")
-            return
+    def _probe_edge_once(self) -> bool:
+        """Run one Edge probe round; log the outcome; return success.
 
-        try:
-            import pygame
-            pygame.mixer.init()
-        except Exception as e:
-            self.log(f"Voice: system fallback (mixer init failed: {e})")
-            return
-
-        # Synthesize through the STRICT path so the real error survives.
-        # edge_tts_bytes() swallows every failure into b"" — probed
-        # through it, this loop could never see an exception, its
-        # sleep(3) was dead code, and the actual reason (e.g. Microsoft's
-        # HTTP 403 to pre-Sec-MS-GEC clients) was discarded.
-        last_err: Optional[Exception] = None
-        for attempt in range(1, 4):
+        A1 (audit §1A #2): the probe must say WHY Edge is unavailable.
+        Step 0 actually imports edge_tts — the previous body was
+        `try: pass`, which made the "(edge-tts import broken)" branch
+        unreachable and a broken install indistinguishable from a
+        network failure. Synthesis goes through the STRICT path so the
+        real error survives: edge_tts_bytes() swallows every failure
+        into b"" — probed through it, the retry loop could never see an
+        exception, its sleep(3) was dead code, and the actual reason
+        (e.g. Microsoft's HTTP 403 to pre-Sec-MS-GEC clients) was
+        discarded. Serialised: the supervisor is the only caller, but
+        the lock keeps that true if that ever changes.
+        """
+        with self._probe_lock:
             try:
-                if _edge_tts_bytes_strict("Voice check."):
-                    self.edge_ready = True
-                    self.log("Voice: Edge TTS (AriaNeural)")
-                    return
+                import edge_tts  # noqa: F401
             except Exception as e:
-                last_err = e
-                if attempt < 3:
-                    time.sleep(3)
+                self.log(f"Voice: system fallback (edge-tts import broken: {e})")
+                return False
 
-        self.log(f"Voice: system fallback (synthesis failed: {last_err})")
+            try:
+                import pygame
+                pygame.mixer.init()
+            except Exception as e:
+                self.log(f"Voice: system fallback (mixer init failed: {e})")
+                return False
+
+            last_err: Optional[Exception] = None
+            for attempt in range(1, 4):
+                try:
+                    if _edge_tts_bytes_strict("Voice check."):
+                        self.edge_ready = True
+                        with self._edge_fail_lock:
+                            self._edge_fail_streak = 0
+                        self.log("Voice: Edge TTS (AriaNeural)")
+                        return True
+                except Exception as e:
+                    last_err = e
+                    if attempt < 3:
+                        time.sleep(3)
+
+            self.log(f"Voice: system fallback (synthesis failed: {last_err})")
+            return False
+
+    def _edge_supervisor(self):
+        """Own Edge availability for the whole session (A2: de-latch).
+
+        Runs the first probe round (setting edge_probe_done for the
+        greeting), then keeps watching: while Edge is down it re-probes
+        every EDGE_REPROBE_INTERVAL_S, and a mid-session revocation
+        (repeated synthesis failures) wakes it immediately. Before A2
+        the probe ran exactly once at boot and edge_ready was never
+        re-checked — one boot-time network blip meant pyttsx3 for the
+        entire session (audit §1A #3).
+        """
+        try:
+            self._probe_edge_once()
+        finally:
+            self.edge_probe_done.set()
+        while True:
+            self._edge_revoked.wait(timeout=EDGE_REPROBE_INTERVAL_S)
+            self._edge_revoked.clear()
+            if not self.edge_ready:
+                self._probe_edge_once()
+
+    def _note_edge_result(self, ok: bool):
+        """Track per-sentence Edge synthesis results from the synth
+        worker. EDGE_FAIL_STREAK_LIMIT consecutive failures revoke
+        edge_ready (utterances route to pyttsx3) and wake the
+        supervisor to re-probe; any success resets the streak."""
+        with self._edge_fail_lock:
+            if ok:
+                self._edge_fail_streak = 0
+                return
+            self._edge_fail_streak += 1
+            streak = self._edge_fail_streak
+        if not ok and streak >= EDGE_FAIL_STREAK_LIMIT and self.edge_ready:
+            self.edge_ready = False
+            self.log(f"Voice: Edge TTS lost ({streak} consecutive synthesis "
+                     "failures) — system fallback until re-probe succeeds")
+            self._edge_revoked.set()
 
     def _synth_worker(self):
         while True:
@@ -419,6 +480,7 @@ class SpeechManager:
                     success = True
             except Exception as e:
                 self.log(f"Edge synth err: {e}")
+            self._note_edge_result(success)
 
             if not self.speech_stop.is_set():
                 self.audio_play_queue.put((text, audio_buf, success))
@@ -483,7 +545,7 @@ class SpeechManager:
         self._started = True
         self.init_tts()
 
-        threading.Thread(target=self._init_edge_voice, daemon=True, name="aria-voice-init").start()
+        threading.Thread(target=self._edge_supervisor, daemon=True, name="aria-voice-init").start()
 
         def _supervise(target, name):
             while True:
@@ -732,6 +794,16 @@ VOICE_ENABLED = True
 def voice_ready() -> bool:
     """True once the Edge voice probe has succeeded (greeting uses her real voice)."""
     return _DEFAULT_SPEECH_MANAGER.edge_ready
+
+
+def voice_probe_completed() -> bool:
+    """True once the first Edge probe round has finished (either way)."""
+    return _DEFAULT_SPEECH_MANAGER.edge_probe_done.is_set()
+
+
+def wait_for_voice_probe(timeout: Optional[float] = None) -> bool:
+    """Block until the first Edge probe round completes; False on timeout."""
+    return _DEFAULT_SPEECH_MANAGER.edge_probe_done.wait(timeout)
 
 
 def speak(text: str, whisper_mode: bool = False):
