@@ -153,9 +153,11 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
 
 ## Requirements
 
-- Windows 10/11, Python 3.9+ (**Python 3.9 recommended** — PyAudio and pygame
-  install cleanly there; if you launch under a newer Python that's missing
-  them, `aria.py` automatically relaunches under 3.9 when it's installed)
+- Windows 10/11, **Python 3.12** — always invoked as `py -3.12`. 3.12 is a
+  hard ceiling, not a preference: `aria/speech.py` imports `audioop`
+  (removed in Python 3.13), and the default `python` on the target laptop
+  is 3.14, where PyAudio has no wheel. `aria.py` relaunches under an
+  alternate interpreter only when `ARIA_ALT_PYTHON` points at one.
 - An [Ollama Cloud](https://ollama.com/) API key (`OLLAMA_API_KEY` — free
   starter tier) for her primary brain (gpt-oss:120b); Groq / OpenRouter /
   Mistral / Gemini keys are optional fallbacks. Screenshot vision runs natively
@@ -165,14 +167,14 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
 ## Quick start
 
 ```bat
-python -m pip install -r requirements.txt
-python aria.py
+py -3.12 -m pip install -r requirements.txt
+py -3.12 aria.py
 ```
 
 First run creates `aria_keys.json` next to the script. Add your keys with:
 
 ```bat
-python tools\aria_add_key.py
+py -3.12 tools\aria_add_key.py
 ```
 
 (or set `OLLAMA_API_KEY` / `GROQ_API_KEY` / `GITHUB_TOKEN` as environment
@@ -190,17 +192,18 @@ with your bridge token, and tap Camera ON in the ⚙ settings panel.
 
 - **`ModuleNotFoundError: No module named 'numpy'`** (or cv2, etc.) — the
   interpreter running `aria.py` doesn't have the dependencies. Run
-  `python -m pip install -r requirements.txt` with the *same* `python` you
-  launch her with. If `pip` and `python` disagree about environments
-  (`where python` shows more than one), install into the right one explicitly.
+  `py -3.12 -m pip install -r requirements.txt` with the *same* interpreter
+  you launch her with. If `pip` and `python` disagree about environments
+  (`where python` shows more than one — the laptop default is 3.14), install
+  into the right one explicitly via `py -3.12 -m pip`.
 - **`pygame` fails to build** — pip couldn't find a prebuilt wheel for your
   Python and the from-source build needs a C++ toolchain. Upgrade pip first
-  (`python -m pip install --upgrade pip setuptools wheel`) and retry. If it
+  (`py -3.12 -m pip install --upgrade pip setuptools wheel`) and retry. If it
   still fails, skip it: pygame is only used for local audio playback and is
   imported lazily — she boots and runs fine without it. Install everything
   else with:
   `findstr /v /b "pygame" requirements.txt > %TEMP%\aria-req.txt`
-  followed by `python -m pip install -r %TEMP%\aria-req.txt`.
+  followed by `py -3.12 -m pip install -r %TEMP%\aria-req.txt`.
 - **She goes quiet after an update** — pull the latest code and restart her;
   she also restarts herself when she edits her own code.
 
@@ -328,7 +331,9 @@ tools/                   Helper scripts (key manager)
 - **Python 3.9 auto-redirect** — `aria.py` detects a Python missing PyAudio /
   pygame at launch and relaunches itself under the Python 3.9 install when
   present; self-restarts prefer 3.9 too. Ends the "works on one interpreter,
-  breaks on another" era.
+  breaks on another" era. *(Superseded by Fork A: the relaunch only ever
+  happened when `ARIA_ALT_PYTHON` was set; the supported runtime is now
+  Python 3.12 via `py -3.12`.)*
 - **HUD upgrade** — collapsible context tiles (dashboard, subtitles, audio,
   tasks, Spotify), full-body pixel avatar with reactive cognitive-state
   expressions and poses, subsystem rows capped to fit cleanly above the optic
@@ -498,8 +503,9 @@ tools/                   Helper scripts (key manager)
 
 - `aria_keys.json`, logs, memory DB, and journal are gitignored — they stay
   on your machine and never get committed.
-- Tested on Windows 11 (Python 3.9 for full audio support; 3.10+ works, and
-  `aria.py` redirects to 3.9 automatically when PyAudio/pygame are missing).
+- Tested on Windows 11 (Python 3.12 via `py -3.12` for full audio support;
+  `aria.py` relaunches under an alternate interpreter only when
+  `ARIA_ALT_PYTHON` is set).
 - The v9.17 changelog entry ("Google cloud transcription by default, local
   faster-whisper dormant behind `_USE_LOCAL_STT`") was never implemented —
   no such flag exists in the code. Current behavior: the desktop mic prefers
