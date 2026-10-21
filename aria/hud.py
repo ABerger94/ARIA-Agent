@@ -7,7 +7,6 @@ Live Audio Waveforms, Active Task Chips, and Spotify Telemetry.
 
 from __future__ import annotations
 
-import gc
 import math
 import random
 import socket
@@ -162,352 +161,109 @@ def _get_spotify_telemetry() -> Dict[str, Any]:
     return info
 
 
-# Owner-thread GC cadence for the volume worker: cycles holding the
-# worker's COM wrappers must be finalised on the worker thread itself
-# — see VolumeManager's docstring. Two triggers, whichever fires
-# first: every _VOLUME_GC_EVERY_ITERS loop iterations (~1 s apart
-# when idle), OR every _VOLUME_GC_INTERVAL_S seconds of wall time.
-# The wall-time trigger is the round-4 guarantee (aria/gcregime.py):
-# with automatic collection disabled process-wide, this thread's
-# timer is the ONLY thing that ever reaps cycles in this apartment,
-# so the cadence must not depend on loop-iteration counts alone.
-_VOLUME_GC_EVERY_ITERS = 60
-_VOLUME_GC_INTERVAL_S = 30.0
+def _get_volume_client():
+    """The shared COM-host client (aria.comclient singleton). A
+    function, not a module-level binding, so tests can substitute a
+    fake client by patching this one name."""
+    from aria.comclient import get_client
+    return get_client()
 
 
 class VolumeManager:
-    """Non-blocking volume controller for Windows master device and Spotify audio session.
+    """Non-blocking volume controller for Windows master device and
+    Spotify audio session — now a facade over the COM host process
+    (crash round 5, aria/comhost.py).
 
-    A4 lifecycle: the COM worker is NOT started at construction (the
-    module-level instance used to spawn it at hud import time). Call
-    start() — main.start_all does, via hud.start_volume_manager(),
-    after boot. A monitor thread then runs the worker and restarts it
-    with backoff if it dies, surfacing the death in the HUD log; before
-    A4 a dead worker was never noticed (never joined/checked/restarted,
-    stale levels served forever, only trace in the silent log). Every
-    pycaw/COM object is created AND released on the worker thread —
-    the closures below del their wrappers explicitly instead of leaving
-    them for the cyclic GC to Release() on an arbitrary thread.
-
-    COM-containment hotfix (2026-10-21): the faulthandler dump showed
-    the main thread dying in comtypes Release() while garbage-collecting
-    — wrappers that escape into reference cycles (locals held by frames
-    in tracebacks) outlive their explicit del and get finalised by the
-    cyclic GC on whatever thread happens to collect. The worker
-    therefore also runs gc.collect() ON ITS OWN THREAD, periodically
-    and once more in its finally block before CoUninitialize, so cycles
-    holding its wrappers are finalised in their owning apartment; the
-    supervisor's restart then drops only plain state. Mute lives here
-    too: callers (tool_volume, the HUD) queue desired state via
-    set_level/set_mute and read cached state via get_level/get_muted —
-    only this thread ever touches COM.
+    History: this class used to own a pycaw/COM worker thread in
+    this process. Four faulthandler dumps proved any in-process COM
+    is a process-killer here (cross-apartment GC finalisation of
+    comtypes wrappers), so ALL of pycaw moved into the helper
+    process. What remains is the exact public surface consumers
+    always used: cached attributes refreshed by a 1 s poll of the
+    helper, setters that flip the cached state immediately (as they
+    did when they queued desired state for the worker) and forward
+    the op. Helper down -> attributes hold last-known values and
+    setters no-op past the cache flip — the same outward behaviour
+    the dead-worker path always had.
     """
+
+    _POLL_INTERVAL_S = 1.0
+
     def __init__(self):
         self.target = "device"  # "device" or "spotify"
         self.device_vol = 0.5
         self.spotify_vol = 1.0
         self.device_muted = False
         self.spotify_muted = False
-        self._desired_device = None
-        self._desired_spotify = None
-        self._desired_mute_device = None
-        self._desired_mute_spotify = None
-        self._event = threading.Event()
         self._lock = threading.Lock()
-        self._running = True
-        self._thread = None
-        self._monitor_thread = None
         self._started = False
+        self._running = False
+        self._poll_thread = None
+        self._client = None
 
     def start(self):
-        """Start the COM worker under its monitor (idempotent)."""
+        """Start polling the COM host (idempotent)."""
         if self._started:
             return
         self._started = True
         self._running = True
-        self._monitor_thread = threading.Thread(
-            target=self._supervise, daemon=True, name="aria-volume-monitor")
-        self._monitor_thread.start()
+        self._client_now()
+        self._poll_thread = threading.Thread(
+            target=self._poll_loop, daemon=True, name="aria-volume-poll")
+        self._poll_thread.start()
 
-    def _supervise(self):
-        delay = 2.0
+    def _client_now(self):
+        if self._client is None and self._started:
+            try:
+                self._client = _get_volume_client()
+            except Exception as _e_silent:
+                _config_silent.log_silent("VolumeManager._client_now",
+                                          _e_silent)
+                self._client = None
+        return self._client
+
+    def _poll_loop(self):
         while self._running:
-            self._thread = threading.Thread(
-                target=self._worker, daemon=True, name="aria-volume-worker")
-            self._thread.start()
-            self._thread.join()
-            if not self._running:
-                break
-            add_hud_log("Volume worker died — restarting (volume control "
-                        "was offline; see silent log)")
-            _config_silent.log_silent("VolumeManager._supervise", "worker exited")
-            # Merger Phase 1 (blueprint SS3.2): the death is also a
-            # classified RETRY in the failure record — the restart
-            # this supervisor is about to do IS the retry.
-            try:
-                from aria.agent.failures import surface_failure
-                surface_failure(
-                    "hud.volume_worker", "worker thread exited",
-                    decision="retry",
-                    user_message="Volume control restarted itself after a hiccup.")
-            except Exception:
-                pass
-            time.sleep(delay)
-            delay = min(delay * 2, 60.0)
-
-    def _worker(self):
-        try:
-            import pythoncom
-            pythoncom.CoInitialize()
-        except Exception as _e_silent:
-            _config_silent.log_silent("_worker", _e_silent)
-        try:
-            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-            from comtypes import CLSCTX_ALL
-            from ctypes import cast, POINTER
-
-            def _query_dev():
-                dev = None
-                vol = None
-                iface = None
+            client = self._client_now()
+            if client is not None:
                 try:
-                    dev = AudioUtilities.GetSpeakers()
-                    if hasattr(dev, "EndpointVolume"):
-                        vol = dev.EndpointVolume
-                    else:
-                        iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                        vol = cast(iface, POINTER(IAudioEndpointVolume))
-                    return float(vol.GetMasterVolumeLevelScalar())
-                finally:
-                    del vol, iface, dev
-
-            def _apply_dev(level):
-                dev = None
-                vol = None
-                iface = None
-                try:
-                    dev = AudioUtilities.GetSpeakers()
-                    if hasattr(dev, "EndpointVolume"):
-                        vol = dev.EndpointVolume
-                    else:
-                        iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                        vol = cast(iface, POINTER(IAudioEndpointVolume))
-                    vol.SetMasterVolumeLevelScalar(max(0.0, min(1.0, level)), None)
-                finally:
-                    del vol, iface, dev
-
-            def _query_spot():
-                sessions = AudioUtilities.GetAllSessions()
-                try:
-                    for s in sessions:
-                        if s.Process and s.Process.name().lower() == "spotify.exe":
-                            return float(s.SimpleAudioVolume.GetMasterVolume())
-                    return 1.0
-                finally:
-                    del sessions
-
-            def _apply_spot(level):
-                sessions = AudioUtilities.GetAllSessions()
-                try:
-                    for s in sessions:
-                        if s.Process and s.Process.name().lower() == "spotify.exe":
-                            s.SimpleAudioVolume.SetMasterVolume(max(0.0, min(1.0, level)), None)
-                finally:
-                    del sessions
-
-            def _query_dev_mute():
-                dev = None
-                vol = None
-                iface = None
-                try:
-                    dev = AudioUtilities.GetSpeakers()
-                    if hasattr(dev, "EndpointVolume"):
-                        vol = dev.EndpointVolume
-                    else:
-                        iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                        vol = cast(iface, POINTER(IAudioEndpointVolume))
-                    return bool(vol.GetMute())
-                finally:
-                    del vol, iface, dev
-
-            def _apply_dev_mute(muted):
-                dev = None
-                vol = None
-                iface = None
-                try:
-                    dev = AudioUtilities.GetSpeakers()
-                    if hasattr(dev, "EndpointVolume"):
-                        vol = dev.EndpointVolume
-                    else:
-                        iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                        vol = cast(iface, POINTER(IAudioEndpointVolume))
-                    vol.SetMute(1 if muted else 0, None)
-                finally:
-                    del vol, iface, dev
-
-            def _query_spot_mute():
-                sessions = AudioUtilities.GetAllSessions()
-                try:
-                    for s in sessions:
-                        if s.Process and s.Process.name().lower() == "spotify.exe":
-                            return bool(s.SimpleAudioVolume.GetMute())
-                    return False
-                finally:
-                    del sessions
-
-            def _apply_spot_mute(muted):
-                sessions = AudioUtilities.GetAllSessions()
-                try:
-                    for s in sessions:
-                        if s.Process and s.Process.name().lower() == "spotify.exe":
-                            s.SimpleAudioVolume.SetMute(1 if muted else 0, None)
-                finally:
-                    del sessions
-
-            def _surface_op(exc):
-                # Merger Phase 1 (blueprint SS3.2): a failed volume
-                # operation is a classified SKIP in the failure
-                # record (throttled — the poll loop must not flood
-                # it), not a silent-log line nobody reads.
-                try:
-                    from aria.agent.failures import surface_failure
-                    surface_failure(
-                        "hud.volume_worker", exc, decision="skip",
-                        user_message="A volume update failed and was skipped.")
+                    state = client.request("volume.get_state",
+                                           timeout=3.0)
                 except Exception:
-                    _config_silent.log_silent("_worker", exc)
+                    state = None  # host down: cached state holds
+                if isinstance(state, dict):
+                    with self._lock:
+                        for attr in ("device_vol", "spotify_vol",
+                                     "device_muted", "spotify_muted"):
+                            val = state.get(attr)
+                            if val is not None:
+                                setattr(self, attr, val)
+                    errors = state.get("errors")
+                    if errors:
+                        # As the old in-process worker did (Merger
+                        # Phase 1): a failed volume read is a
+                        # classified SKIP in the failure record.
+                        try:
+                            from aria.agent.failures import \
+                                surface_failure
+                            surface_failure(
+                                "hud.volume_client",
+                                "; ".join(str(e) for e in errors),
+                                decision="skip",
+                                user_message="A volume update failed "
+                                             "and was skipped.")
+                        except Exception:
+                            pass
+            time.sleep(self._POLL_INTERVAL_S)
 
-            try:
-                self.device_vol = _query_dev()
-            except Exception as _e_silent:
-                _surface_op(_e_silent)
-            try:
-                self.spotify_vol = _query_spot()
-            except Exception as _e_silent:
-                _surface_op(_e_silent)
-            try:
-                self.device_muted = _query_dev_mute()
-            except Exception as _e_silent:
-                _surface_op(_e_silent)
-            try:
-                self.spotify_muted = _query_spot_mute()
-            except Exception as _e_silent:
-                _surface_op(_e_silent)
-
-            last_poll = time.time()
-            last_gc = time.time()
-            iters_since_gc = 0
-            while self._running:
-                self._event.wait(timeout=1.0)
-                self._event.clear()
-
-                with self._lock:
-                    s_dev = self._desired_device
-                    s_spot = self._desired_spotify
-                    s_mute_dev = self._desired_mute_device
-                    s_mute_spot = self._desired_mute_spotify
-                    self._desired_device = None
-                    self._desired_spotify = None
-                    self._desired_mute_device = None
-                    self._desired_mute_spotify = None
-
-                if s_dev is not None:
-                    try:
-                        _apply_dev(s_dev)
-                        self.device_vol = s_dev
-                    except Exception as _e_silent:
-                        _surface_op(_e_silent)
-
-                if s_spot is not None:
-                    try:
-                        _apply_spot(s_spot)
-                        self.spotify_vol = s_spot
-                    except Exception as _e_silent:
-                        _surface_op(_e_silent)
-
-                if s_mute_dev is not None:
-                    try:
-                        _apply_dev_mute(s_mute_dev)
-                        self.device_muted = s_mute_dev
-                    except Exception as _e_silent:
-                        _surface_op(_e_silent)
-
-                if s_mute_spot is not None:
-                    try:
-                        _apply_spot_mute(s_mute_spot)
-                        self.spotify_muted = s_mute_spot
-                    except Exception as _e_silent:
-                        _surface_op(_e_silent)
-
-                now = time.time()
-                if (now - last_poll > 1.5 and s_dev is None and s_spot is None
-                        and s_mute_dev is None and s_mute_spot is None):
-                    try:
-                        self.device_vol = _query_dev()
-                    except Exception as _e_silent:
-                        _surface_op(_e_silent)
-                    try:
-                        self.spotify_vol = _query_spot()
-                    except Exception as _e_silent:
-                        _surface_op(_e_silent)
-                    try:
-                        self.device_muted = _query_dev_mute()
-                    except Exception as _e_silent:
-                        _surface_op(_e_silent)
-                    try:
-                        self.spotify_muted = _query_spot_mute()
-                    except Exception as _e_silent:
-                        _surface_op(_e_silent)
-                    last_poll = now
-
-                # Owner-thread GC (2026-10-21 hotfix; round-4 regime):
-                # collect cycles holding THIS thread's COM wrappers
-                # here, in their owning apartment. Since round 4
-                # (aria/gcregime.py) automatic collection is OFF
-                # process-wide, so this timer — iteration count OR
-                # 30 s of wall time, whichever first — is the only
-                # collection this apartment ever gets.
-                iters_since_gc += 1
-                if (iters_since_gc >= _VOLUME_GC_EVERY_ITERS
-                        or now - last_gc >= _VOLUME_GC_INTERVAL_S):
-                    iters_since_gc = 0
-                    last_gc = now
-                    try:
-                        gc.collect()
-                    except Exception:
-                        pass
-        except Exception as _e_fatal:
-            # A4: a fatal worker error (e.g. a pycaw import failure in
-            # this thread) must reach the supervisor, not only the
-            # silent log — log it and re-raise; _supervise restarts the
-            # worker with backoff and notes the death in the HUD log.
-            # Merger Phase 1: also a classified RETRY in the failure
-            # record (the supervisor's restart is the retry).
-            _config_silent.log_silent("_worker", _e_fatal)
-            try:
-                from aria.agent.failures import surface_failure
-                surface_failure(
-                    "hud.volume_worker", _e_fatal, decision="retry",
-                    reason="Volume worker crashed; its supervisor restarts it with backoff.",
-                    user_message="Volume control crashed and is restarting itself.")
-            except Exception:
-                pass
-            raise
-        finally:
-            # Teardown collection ON THIS THREAD: any wrapper cycles
-            # still alive when the worker exits are finalised here, in
-            # their owning apartment — not later, on an arbitrary
-            # thread, after the supervisor restarts the worker and
-            # drops the frame that referenced them.
-            try:
-                gc.collect()
-            except Exception:
-                pass
-            try:
-                import pythoncom
-                pythoncom.CoUninitialize()
-            except Exception as _e_silent:
-                _config_silent.log_silent("_worker", _e_silent)
+    def _forward(self, op, payload):
+        client = self._client_now()
+        if client is None:
+            return
+        try:
+            client.send(op, payload)
+        except Exception:
+            pass  # host down: the optimistic cache flip already landed
 
     def get_level(self) -> float:
         return self.device_vol if self.target == "device" else self.spotify_vol
@@ -517,11 +273,14 @@ class VolumeManager:
         with self._lock:
             if self.target == "device":
                 self.device_vol = level
-                self._desired_device = level
+                target = "device"
             else:
                 self.spotify_vol = level
-                self._desired_spotify = level
-        self._event.set()
+                target = "spotify"
+        self._forward(
+            "volume.set_device" if target == "device"
+            else "volume.set_spotify",
+            {"level": level})
 
     def toggle_target(self) -> str:
         self.target = "spotify" if self.target == "device" else "device"
@@ -531,30 +290,35 @@ class VolumeManager:
         return self.device_muted if self.target == "device" else self.spotify_muted
 
     def set_mute(self, muted: bool):
-        """Queue a mute change; the worker applies it on its own
-        (COM-owning) thread. The cached state flips immediately so
-        readers see the intended state without touching COM."""
+        """Flip the cached mute state immediately (readers see the
+        intended state without touching COM) and forward the op to
+        the COM host, which applies it on its own thread."""
         muted = bool(muted)
         with self._lock:
             if self.target == "device":
                 self.device_muted = muted
-                self._desired_mute_device = muted
+                target = "device"
             else:
                 self.spotify_muted = muted
-                self._desired_mute_spotify = muted
-        self._event.set()
+                target = "spotify"
+        self._forward("volume.set_mute",
+                      {"target": target, "muted": muted})
 
     def is_started(self) -> bool:
-        return self._started
-
+        """True only while started AND the COM host is live — the
+        availability contract tool_volume has always read."""
+        if not self._started:
+            return False
+        client = self._client_now()
+        return bool(client is not None and client.is_up())
 
 _VOL_MGR = VolumeManager()
 
 
 def start_volume_manager():
-    """Start the VolumeManager COM worker (A4). Called explicitly from
-    main.start_all after boot — constructing _VOL_MGR no longer starts
-    any COM thread at import time."""
+    """Start the VolumeManager facade polling the COM host. Called
+    explicitly from main.start_all after boot — constructing
+    _VOL_MGR starts nothing at import time."""
     _VOL_MGR.start()
 
 

@@ -20,6 +20,11 @@
 # Bumps from that audit are commented at their pins.
 opencv-python==4.8.0.76
 numpy==1.26.2
+# COM ISOLATION (crash round 5, 2026-10-21): pyttsx3 (below),
+# pycaw, comtypes and pywin32 are used ONLY by the helper process
+# (aria/comhost.py) — the main process imports none of them; a
+# static test enforces it. The pins stay because the helper needs
+# them on the laptop.
 pyttsx3==2.90
 SpeechRecognition==3.10.0
 # psutil 5.9.0 predates Python 3.12: its newest Windows wheel is
@@ -47,15 +52,13 @@ pyserial==3.5
 # the toolchain failure class. Same for pygetwindow below.
 pyautogui==0.9.54
 pycaw==20230407; sys_platform == "win32"
-# comtypes is imported directly (aria/hud.py) but used to arrive only
-# transitively via pycaw — pin it explicitly: pycaw 20230407 is the
-# known-good pairing for 1.2.0. NOTE (2026-10-21, laptop-verified):
-# the Release() crashes happened WITH 1.2.0 installed — the fault is
-# cross-thread finalization of comtypes wrappers, not the version;
-# containment lives in the code (owner threads, lazy SAPI init).
-# (aria/tools/
-# builtins.py used to import comtypes too; the COM hotfix routed its
-# volume tool through hud's VolumeManager instead.)
+# comtypes is imported directly by aria/comhost.py (the helper
+# process) but used to arrive only transitively via pycaw — pin it
+# explicitly: pycaw 20230407 is the known-good pairing for 1.2.0.
+# NOTE (2026-10-21, laptop-verified): the Release() crashes happened
+# WITH 1.2.0 installed — the fault was cross-thread finalization of
+# comtypes wrappers, not the version; round 5 contains it by
+# process isolation (aria/comhost.py is the only COM consumer).
 comtypes==1.2.0; sys_platform == "win32"
 pywin32==306; sys_platform == "win32"
 # Mic capture (Fork A, Step 2): sounddevice replaces PyAudio/sr.Microphone.

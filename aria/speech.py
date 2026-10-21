@@ -6,7 +6,6 @@ faster-whisper and Google cloud STT, and speech interrupt control.
 
 from __future__ import annotations
 
-import gc
 import io
 import os
 import queue
@@ -14,7 +13,7 @@ import re
 import sys
 import threading
 import time
-from typing import Callable, Optional, Tuple, List
+from typing import Callable, Dict, Optional, Tuple, List
 
 import audioop
 import numpy as np
@@ -81,255 +80,111 @@ def whisper_shorten(text, max_sentences=2, hard_cap=240):
     short = " ".join(sents[:max_sentences]).strip()
     return short if short else t
 
-# ---------------- Fallback TTS (pyttsx3) ----------------
+# ---------------- Fallback TTS (COM host) ----------------
 
-def init_pyttsx3(on_log: Optional[Callable[[str], None]] = None):
-    """Initialize pyttsx3 and attempt to select a Windows Natural voice."""
-    import pyttsx3
-    try:
-        engine = pyttsx3.init()
-        engine.setProperty("rate", 170)
-        voices = engine.getProperty("voices") or []
-        for v in voices:
-            name = (v.name or "").lower()
-            if any(k in name for k in ["aria", "jenny", "guy", "natural"]):
-                engine.setProperty("voice", v.id)
-                if on_log:
-                    on_log(f"Voice fallback: {v.name}")
-                return engine
-        return engine
-    except Exception as e:
-        if on_log:
-            on_log(f"Voice fallback init failed: {e}")
-        return None
+def _get_sapi_client():
+    """The shared COM-host client (aria.comclient singleton). A
+    function, not a module-level binding, so tests can substitute a
+    fake client by patching this one name."""
+    from aria.comclient import get_client
+    return get_client()
 
 
 class _SapiVoice:
-    """Owns the pyttsx3 engine on ONE dedicated thread (A3, audit §3B-3).
+    """Desktop SAPI fallback voice — now a facade over the COM host
+    process (crash round 5, aria/comhost.py).
 
-    pyttsx3's Windows driver is SAPI-over-COM. The engine used to be
-    created on the main thread and then driven — say / runAndWait /
-    stop / property access — from the play-worker thread and arbitrary
-    caller threads, with no CoInitialize anywhere in this module:
-    cross-apartment COM use, the audit's prime suspect for the access
-    violation in Release() that killed the process seconds after boot.
-
-    Here the engine is created — lazily, at first actual use
-    (Round 3; see _ensure_engine) — on a thread that calls
-    pythoncom.CoInitialize() first, and EVERY engine interaction is
-    marshalled onto that thread through a queue. Utterances run through
-    pyttsx3's external event loop (startLoop/iterate) so a queued
-    "stop" is processed between pump iterations — barge-in stays
-    responsive without ever touching the engine off-thread. Drivers
-    without an external loop fall back to runAndWait on the owner
-    thread (still fully COM-disciplined; stop then lands between
-    utterances).
+    History: this class used to own the pyttsx3 engine on a
+    dedicated in-process COM thread. Four faulthandler dumps proved
+    any in-process COM is a process-killer here — pyttsx3.init()
+    generates its SpeechLib type library as cyclic comtypes
+    wrappers, and the cyclic GC finalised them on foreign threads
+    (Release() access violation) — so the engine, its CoInitialize,
+    lazy init and iterate() pump moved into the helper process
+    unchanged. What remains is the interface SpeechManager always
+    used: say() returns an Event that the helper's async
+    "sapi.finished" event sets; if the host is down, the Event is
+    set immediately and the failure logged, exactly as an
+    engineless say always behaved.
     """
 
     def __init__(self, on_log: Optional[Callable[[str], None]] = None):
         self.on_log = on_log
-        self._queue: "queue.Queue[tuple]" = queue.Queue()
-        self._thread: Optional[threading.Thread] = None
         self._start_lock = threading.Lock()
-        # Owner-thread GC cadence for _run's loop: every
-        # _gc_every_iters iterations (the loop wakes every ~20 ms, so
-        # 3000 ≈ once a minute) OR every _gc_interval_s seconds of
-        # wall time, whichever first. The wall-time trigger is the
-        # round-4 guarantee (aria/gcregime.py): with automatic
-        # collection disabled process-wide, this thread's timer is
-        # the only collection its apartment ever gets, so the cadence
-        # must not depend on iteration counts alone. See _run.
-        self._gc_every_iters = 3000
-        self._gc_interval_s = 30.0
+        self._started = False
+        self._pending: Dict[int, threading.Event] = {}
+        self._pending_lock = threading.Lock()
 
     def _log(self, msg: str):
         if self.on_log:
             self.on_log(msg)
 
     def start(self):
-        """Start the engine thread (idempotent)."""
+        """Register with the COM host client (idempotent)."""
         with self._start_lock:
-            if self._thread is not None:
+            if self._started:
                 return
-            self._thread = threading.Thread(
-                target=self._run, daemon=True, name="aria-sapi-engine")
-            self._thread.start()
+            self._started = True
+        try:
+            client = _get_sapi_client()
+            client.add_event_listener(self._on_host_event)
+            client.add_down_listener(self._on_host_down)
+        except Exception as e:
+            self._log(f"Voice fallback unavailable: {e}")
 
     def say(self, text: str, whisper_mode: bool = False) -> threading.Event:
-        """Queue an utterance; returns an Event set when it completes
-        (immediately, if no engine is available)."""
+        """Queue an utterance in the COM host; returns an Event set
+        when it completes (immediately, if the host is down)."""
         self.start()
         done = threading.Event()
-        self._queue.put(("say", text, whisper_mode, done))
+        # Hold the pending lock across send+register so a fast
+        # finished event can never slip between them.
+        with self._pending_lock:
+            try:
+                client = _get_sapi_client()
+                rid = client.send(
+                    "sapi.say",
+                    {"text": text, "whisper": bool(whisper_mode)})
+            except Exception as e:
+                self._log(f"Voice fallback unavailable: {e}")
+                done.set()
+                return done
+            self._pending[rid] = done
         return done
 
     def stop(self):
-        """Interrupt the current utterance (handled on the engine thread)."""
+        """Interrupt the current utterance (handled in the COM host)."""
         self.start()
-        self._queue.put(("stop",))
-
-    # -- engine thread -------------------------------------------------
-
-    def _run(self):
         try:
-            import pythoncom
-            pythoncom.CoInitialize()
+            _get_sapi_client().send("sapi.stop")
         except Exception:
-            pass  # non-Windows / no pywin32: lazy init fails cleanly later
-        engine = None
-        use_loop = False
-        current = None  # (done_event, (volume, rate) to restore or None)
+            pass
 
-        def _finish_current():
-            nonlocal current
-            if current is None:
-                return
-            done, restore = current
-            current = None
-            if restore and engine is not None:
-                try:
-                    engine.setProperty("volume", restore[0])
-                    engine.setProperty("rate", restore[1])
-                except Exception:
-                    pass
+    # -- comhost client callbacks ------------------------------------
+
+    def _on_host_event(self, msg):
+        if msg.get("event") != "sapi.finished":
+            return
+        with self._pending_lock:
+            done = self._pending.pop(msg.get("id"), None)
+        if done is not None:
+            if not msg.get("ok", True):
+                self._log("Voice fallback utterance failed in comhost: "
+                          f"{msg.get('error', 'unknown error')}")
             done.set()
 
-        def _ensure_engine() -> bool:
-            """Create the engine HERE, on first actual use (Round 3:
-            lazy init); True when an engine is ready.
-
-            The thread used to call init_pyttsx3() eagerly at start —
-            but SAPI is only the fallback for a dead Edge, so on a
-            healthy boot the engine was created for nothing. Worse,
-            pyttsx3.init() makes comtypes GENERATE its SpeechLib type
-            library in-process, and the generation temporaries are
-            cyclic comtypes wrappers: faulthandler dump #2
-            (2026-10-21) shows a foreign thread's GC finalising one
-            mid-generation, Release() access-violating, and the
-            process dying inside pyttsx3.init() itself. Confining
-            init to sessions that actually fall back removes that
-            exposure from every healthy boot, and the gc.collect()
-            immediately below flushes any generation temporaries on
-            THIS thread — in the owning apartment — before a foreign
-            GC can finalise them. Init failure keeps the old
-            behaviour: the log line fires, the engine stays absent,
-            the pending say is skipped exactly as an engineless say
-            always was, and the next say retries.
-            """
-            nonlocal engine, use_loop
-            if engine is not None:
-                return True
-            try:
-                engine = init_pyttsx3(on_log=self.on_log)
-            except Exception as e:
-                self._log(f"Voice fallback init failed: {e}")
-                engine = None
-            # Flush SpeechLib-generation temporaries in-apartment
-            # (see docstring) — after failure too: a half-generated
-            # library leaves the same strays behind.
-            try:
-                gc.collect()
-            except Exception:
-                pass
-            if engine is None:
-                return False
-            try:
-                engine.startLoop(False)
-                use_loop = True
-            except Exception:
-                use_loop = False
-            if use_loop:
-                try:
-                    engine.connect("finished-utterance",
-                                   lambda *_a, **_k: _finish_current())
-                except Exception:
-                    pass
-            return True
-
-        iters_since_gc = 0
-        last_gc = time.monotonic()
-        while True:
-            try:
-                req = self._queue.get(timeout=0.02)
-            except queue.Empty:
-                req = None
-            if req is not None:
-                if req[0] == "say":
-                    _, text, whisper, done = req
-                    if engine is None:
-                        _ensure_engine()  # Round 3: lazy init
-                    if engine is None:
-                        done.set()
-                    elif use_loop:
-                        _finish_current()  # defensive; play worker serialises
-                        restore = None
-                        try:
-                            if whisper:
-                                v0 = engine.getProperty("volume")
-                                r0 = engine.getProperty("rate")
-                                restore = (v0, r0)
-                                engine.setProperty("volume", min(float(v0), 0.4))
-                                engine.setProperty("rate", max(60, int(r0) - 40))
-                            engine.say(text)
-                        except Exception as e:
-                            self._log(f"SAPI say err: {e}")
-                            current = (done, restore)
-                            _finish_current()
-                        else:
-                            current = (done, restore)
-                    else:
-                        try:
-                            if whisper:
-                                v0 = engine.getProperty("volume")
-                                r0 = engine.getProperty("rate")
-                                try:
-                                    engine.setProperty("volume", min(float(v0), 0.4))
-                                    engine.setProperty("rate", max(60, int(r0) - 40))
-                                    engine.say(text)
-                                    engine.runAndWait()
-                                finally:
-                                    engine.setProperty("volume", v0)
-                                    engine.setProperty("rate", r0)
-                            else:
-                                engine.say(text)
-                                engine.runAndWait()
-                        except Exception as e:
-                            self._log(f"SAPI say err: {e}")
-                        done.set()
-                elif req[0] == "stop":
-                    if engine is not None:
-                        try:
-                            engine.stop()
-                        except Exception:
-                            pass
-                    _finish_current()
-            if use_loop and engine is not None:
-                try:
-                    engine.iterate()
-                except Exception:
-                    pass
-            # Owner-thread GC (COM-containment hotfix, 2026-10-21;
-            # round-4 regime): the engine and its SAPI COM wrappers
-            # form reference cycles (the finished-utterance callback
-            # closes over the engine and its restore state). If the
-            # cyclic GC finalises those wrappers on an arbitrary
-            # thread, the comtypes Release() is a native access
-            # violation — the fault in the 2026-10-21 faulthandler
-            # dumps. Since round 4 (aria/gcregime.py) automatic
-            # collection is OFF process-wide, so this timer —
-            # iteration count OR _gc_interval_s of wall time,
-            # whichever first (the 20 ms queue timeout is the idle
-            # tick that lets the wall-time trigger fire) — is the
-            # only collection this apartment ever gets.
-            iters_since_gc += 1
-            if (iters_since_gc >= self._gc_every_iters
-                    or time.monotonic() - last_gc >= self._gc_interval_s):
-                iters_since_gc = 0
-                last_gc = time.monotonic()
-                try:
-                    gc.collect()
-                except Exception:
-                    pass
+    def _on_host_down(self):
+        # The helper died: every in-flight utterance is lost with
+        # it. Release the waiters rather than leaving them hanging
+        # (SpeechManager also has its own timeouts as backstop).
+        with self._pending_lock:
+            pending = self._pending
+            self._pending = {}
+        if pending:
+            self._log("Voice fallback host exited; "
+                      f"{len(pending)} utterance(s) dropped.")
+        for done in pending.values():
+            done.set()
 
 
 # ---------------- Mic capture (sounddevice) ----------------
