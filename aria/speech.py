@@ -114,7 +114,8 @@ class _SapiVoice:
     cross-apartment COM use, the audit's prime suspect for the access
     violation in Release() that killed the process seconds after boot.
 
-    Here the engine is created on a thread that calls
+    Here the engine is created — lazily, at first actual use
+    (Round 3; see _ensure_engine) — on a thread that calls
     pythoncom.CoInitialize() first, and EVERY engine interaction is
     marshalled onto that thread through a queue. Utterances run through
     pyttsx3's external event loop (startLoop/iterate) so a queued
@@ -167,13 +168,8 @@ class _SapiVoice:
             import pythoncom
             pythoncom.CoInitialize()
         except Exception:
-            pass  # non-Windows / no pywin32: engine init fails cleanly below
+            pass  # non-Windows / no pywin32: lazy init fails cleanly later
         engine = None
-        try:
-            engine = init_pyttsx3(on_log=self.on_log)
-        except Exception as e:
-            self._log(f"Voice fallback init failed: {e}")
-
         use_loop = False
         current = None  # (done_event, (volume, rate) to restore or None)
 
@@ -191,7 +187,45 @@ class _SapiVoice:
                     pass
             done.set()
 
-        if engine is not None:
+        def _ensure_engine() -> bool:
+            """Create the engine HERE, on first actual use (Round 3:
+            lazy init); True when an engine is ready.
+
+            The thread used to call init_pyttsx3() eagerly at start —
+            but SAPI is only the fallback for a dead Edge, so on a
+            healthy boot the engine was created for nothing. Worse,
+            pyttsx3.init() makes comtypes GENERATE its SpeechLib type
+            library in-process, and the generation temporaries are
+            cyclic comtypes wrappers: faulthandler dump #2
+            (2026-10-21) shows a foreign thread's GC finalising one
+            mid-generation, Release() access-violating, and the
+            process dying inside pyttsx3.init() itself. Confining
+            init to sessions that actually fall back removes that
+            exposure from every healthy boot, and the gc.collect()
+            immediately below flushes any generation temporaries on
+            THIS thread — in the owning apartment — before a foreign
+            GC can finalise them. Init failure keeps the old
+            behaviour: the log line fires, the engine stays absent,
+            the pending say is skipped exactly as an engineless say
+            always was, and the next say retries.
+            """
+            nonlocal engine, use_loop
+            if engine is not None:
+                return True
+            try:
+                engine = init_pyttsx3(on_log=self.on_log)
+            except Exception as e:
+                self._log(f"Voice fallback init failed: {e}")
+                engine = None
+            # Flush SpeechLib-generation temporaries in-apartment
+            # (see docstring) — after failure too: a half-generated
+            # library leaves the same strays behind.
+            try:
+                gc.collect()
+            except Exception:
+                pass
+            if engine is None:
+                return False
             try:
                 engine.startLoop(False)
                 use_loop = True
@@ -203,6 +237,7 @@ class _SapiVoice:
                                    lambda *_a, **_k: _finish_current())
                 except Exception:
                     pass
+            return True
 
         iters_since_gc = 0
         while True:
@@ -213,6 +248,8 @@ class _SapiVoice:
             if req is not None:
                 if req[0] == "say":
                     _, text, whisper, done = req
+                    if engine is None:
+                        _ensure_engine()  # Round 3: lazy init
                     if engine is None:
                         done.set()
                     elif use_loop:

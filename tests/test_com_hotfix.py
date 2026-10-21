@@ -15,7 +15,15 @@ These tests pin the three repairs:
     its own thread (fake pycaw), and gc.collect() runs on that thread —
     periodically and once more at teardown;
   * the _SapiVoice owner thread runs gc.collect() on its own thread
-    (fake pyttsx3 engine).
+    (fake pyttsx3 engine);
+  * Round 3 (faulthandler dump #2): the SAPI engine is created
+    LAZILY. Dump #2 showed the process dying inside pyttsx3.init()
+    itself — comtypes generates its SpeechLib type library during
+    init and a foreign thread's GC finalised a generation temporary
+    (comtypes __del__ -> Release -> access violation). Thread start
+    and stop must never init; the first say inits exactly once, on
+    the owner thread, immediately followed by an owner-thread
+    gc.collect() flushing the generation temporaries in-apartment.
 
 Suite conventions: heavy modules are stubbed in sys.modules at import;
 each test installs the exact module surface it needs.
@@ -350,4 +358,95 @@ def test_d_sapi_owner_thread_gc_on_own_thread():
         assert _wait_for(lambda: engine_ident in rec.idents(), 5)
     finally:
         rec.restore()
+        speech.init_pyttsx3 = real_init
+
+
+# ------------------------------------------------- Round 3: lazy SAPI init
+class _InitTracker:
+    """init_pyttsx3 replacement: counts calls, records the calling
+    thread, and snapshots how many collections the GC recorder had
+    already seen on that thread when init ran (the init-flush must
+    not have happened yet)."""
+
+    def __init__(self, engine, rec=None):
+        self.engine = engine
+        self.rec = rec
+        self.calls = 0
+        self.idents = []
+        self.collects_before = []
+        self._lock = threading.Lock()
+
+    def __call__(self, on_log=None):
+        with self._lock:
+            self.calls += 1
+            self.idents.append(threading.get_ident())
+            if self.rec is not None:
+                self.collects_before.append(
+                    self.rec.idents().count(threading.get_ident()))
+        return self.engine
+
+
+def test_e_sapi_engine_inits_lazily_on_first_say():
+    _mod("speech_recognition")
+    speech = importlib.import_module("aria.speech")
+
+    engine = _FakeEngine()
+    rec = _GcRecorder()
+    tracker = _InitTracker(engine, rec)
+    real_init = speech.init_pyttsx3
+    speech.init_pyttsx3 = tracker
+    rec.install()
+    voice = speech._SapiVoice()
+    try:
+        voice.start()
+        engine_ident = voice._thread.ident
+        assert engine_ident is not None
+        # Thread start must NOT create the engine: SAPI is only the
+        # Edge fallback, and eager init was dump #2's crash site.
+        time.sleep(0.2)
+        assert tracker.calls == 0
+        # A stop with no engine is a no-op and must not init either.
+        voice.stop()
+        time.sleep(0.1)
+        assert tracker.calls == 0
+
+        # First say: exactly one init, on the owner thread, followed
+        # by a gc.collect() on that same thread (the SpeechLib flush:
+        # no owner-thread collection had happened when init ran, at
+        # least one has by the time the utterance completes).
+        done = voice.say("first words")
+        assert done.wait(5)
+        assert tracker.calls == 1
+        assert tracker.idents == [engine_ident]
+        assert tracker.collects_before == [0]
+        assert rec.idents().count(engine_ident) >= 1
+        assert engine.said == ["first words"]
+
+        # Second say reuses the engine — no re-init.
+        done = voice.say("second words")
+        assert done.wait(5)
+        assert tracker.calls == 1
+        assert engine.said == ["first words", "second words"]
+    finally:
+        rec.restore()
+        speech.init_pyttsx3 = real_init
+
+
+def test_f_sapi_lazy_init_failure_leaves_engine_absent():
+    _mod("speech_recognition")
+    speech = importlib.import_module("aria.speech")
+
+    tracker = _InitTracker(None)  # init_pyttsx3's failure contract
+    real_init = speech.init_pyttsx3
+    speech.init_pyttsx3 = tracker
+    voice = speech._SapiVoice()
+    try:
+        # The say is skipped and completes immediately, exactly as
+        # engineless says always behaved.
+        done = voice.say("nobody home")
+        assert done.wait(5)
+        assert tracker.calls == 1
+        # A stop afterwards is still a harmless no-op.
+        voice.stop()
+    finally:
         speech.init_pyttsx3 = real_init

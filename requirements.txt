@@ -12,7 +12,7 @@
 # from the working laptop before treating it as final:
 #   py -3.12 -m pip freeze
 # and commit the result (keeping this header).
-opencv-python==4.8.0
+opencv-python==4.8.0.76
 numpy==1.26.2
 pyttsx3==2.90
 SpeechRecognition==3.10.0
@@ -29,8 +29,15 @@ PyQt6>=6.6.0
 pyserial==3.5
 pyautogui==0.9.54
 pycaw==20230407; sys_platform == "win32"
-# comtypes is imported directly (aria/hud.py, aria/tools/builtins.py) but
-# used to arrive only transitively via pycaw — pin it explicitly.
+# comtypes is imported directly (aria/hud.py) but used to arrive only
+# transitively via pycaw — pin it explicitly: pycaw 20230407 is the
+# known-good pairing for 1.2.0. NOTE (2026-10-21, laptop-verified):
+# the Release() crashes happened WITH 1.2.0 installed — the fault is
+# cross-thread finalization of comtypes wrappers, not the version;
+# containment lives in the code (owner threads, lazy SAPI init).
+# (aria/tools/
+# builtins.py used to import comtypes too; the COM hotfix routed its
+# volume tool through hud's VolumeManager instead.)
 comtypes==1.2.0; sys_platform == "win32"
 pywin32==306; sys_platform == "win32"
 # Mic capture (Fork A, Step 2): sounddevice replaces PyAudio/sr.Microphone.
