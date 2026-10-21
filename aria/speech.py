@@ -131,9 +131,16 @@ class _SapiVoice:
         self._queue: "queue.Queue[tuple]" = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._start_lock = threading.Lock()
-        # Owner-thread GC cadence for _run's loop (iterations; the loop
-        # wakes every ~20 ms, so 3000 ≈ once a minute). See _run.
+        # Owner-thread GC cadence for _run's loop: every
+        # _gc_every_iters iterations (the loop wakes every ~20 ms, so
+        # 3000 ≈ once a minute) OR every _gc_interval_s seconds of
+        # wall time, whichever first. The wall-time trigger is the
+        # round-4 guarantee (aria/gcregime.py): with automatic
+        # collection disabled process-wide, this thread's timer is
+        # the only collection its apartment ever gets, so the cadence
+        # must not depend on iteration counts alone. See _run.
         self._gc_every_iters = 3000
+        self._gc_interval_s = 30.0
 
     def _log(self, msg: str):
         if self.on_log:
@@ -240,6 +247,7 @@ class _SapiVoice:
             return True
 
         iters_since_gc = 0
+        last_gc = time.monotonic()
         while True:
             try:
                 req = self._queue.get(timeout=0.02)
@@ -300,18 +308,24 @@ class _SapiVoice:
                     engine.iterate()
                 except Exception:
                     pass
-            # Owner-thread GC (COM-containment hotfix, 2026-10-21):
-            # the engine and its SAPI COM wrappers form reference
-            # cycles (the finished-utterance callback closes over the
-            # engine and its restore state). If the cyclic GC finalises
-            # those wrappers on an arbitrary thread, the comtypes
-            # Release() is a native access violation — the fault in
-            # the 2026-10-21 faulthandler dump. Collect periodically
-            # on THIS thread so finalisation stays in the apartment
-            # that owns the engine.
+            # Owner-thread GC (COM-containment hotfix, 2026-10-21;
+            # round-4 regime): the engine and its SAPI COM wrappers
+            # form reference cycles (the finished-utterance callback
+            # closes over the engine and its restore state). If the
+            # cyclic GC finalises those wrappers on an arbitrary
+            # thread, the comtypes Release() is a native access
+            # violation — the fault in the 2026-10-21 faulthandler
+            # dumps. Since round 4 (aria/gcregime.py) automatic
+            # collection is OFF process-wide, so this timer —
+            # iteration count OR _gc_interval_s of wall time,
+            # whichever first (the 20 ms queue timeout is the idle
+            # tick that lets the wall-time trigger fire) — is the
+            # only collection this apartment ever gets.
             iters_since_gc += 1
-            if iters_since_gc >= self._gc_every_iters:
+            if (iters_since_gc >= self._gc_every_iters
+                    or time.monotonic() - last_gc >= self._gc_interval_s):
                 iters_since_gc = 0
+                last_gc = time.monotonic()
                 try:
                     gc.collect()
                 except Exception:

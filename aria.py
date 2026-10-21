@@ -24,6 +24,26 @@ _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+# GC regime (crash round 4, aria/gcregime.py): install BEFORE any
+# ARIA subsystem import takes effect — automatic cyclic collection
+# must be off before the first COM wrapper can exist. A normal
+# `import aria.gcregime` would execute aria/__init__ first (it
+# imports hud/speech/...), so load the file directly and register
+# it under its package name; later package imports reuse this exact
+# module object. If this bootstrap ever fails, aria.main.main()
+# installs the regime defensively before any thread starts.
+try:
+    import importlib.util as _ilu
+    _gc_spec = _ilu.spec_from_file_location(
+        "aria.gcregime", os.path.join(_ROOT, "aria", "gcregime.py"))
+    _gc_mod = _ilu.module_from_spec(_gc_spec)
+    _gc_spec.loader.exec_module(_gc_mod)
+    sys.modules.setdefault("aria.gcregime", _gc_mod)
+    _gc_mod.install()
+    del _ilu, _gc_spec, _gc_mod
+except Exception:
+    pass
+
 from aria import *
 from aria.main import main, start_all, handle_action
 

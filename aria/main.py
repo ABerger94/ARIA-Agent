@@ -33,6 +33,7 @@ import aria.frame as _frame
 import aria.pixel_avatar as pixel_avatar
 import aria.bridge as bridge
 import aria.agent as agent
+from aria.gcregime import install as _install_gc_regime
 from aria.agent.providers import provider_text
 from aria.tools.dispatch import (
     set_log_hook, set_hud_hook, set_history_hook, set_spine_hook,
@@ -935,6 +936,14 @@ def main():
     classic cv2 window as fallback (ARIA_UI_HOST=cv2, or Qt missing /
     failed to initialise — surfaced, never silent)."""
     global RUNNING
+
+    # GC regime (crash round 4): the launcher installs this before
+    # subsystem imports; install again defensively so EVERY entry
+    # path (python -m aria.main, embedding, tests) has the regime in
+    # force before start_all() spawns the VolumeManager/SAPI COM
+    # threads and the MCP/worker threads. Idempotent — a no-op when
+    # the launcher already installed it. See aria/gcregime.py.
+    _install_gc_regime()
 
     # ARIA ULTIMATE (Module 10): first-run wizard — checks the environment and
     # API keys before subsystems boot. Fully skippable, never blocks startup.

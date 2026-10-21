@@ -12,11 +12,24 @@
 # from the working laptop before treating it as final:
 #   py -3.12 -m pip freeze
 # and commit the result (keeping this header).
+#
+# Installability audit (2026-10-21, crash round 4): EVERY pin below was
+# checked against the PyPI JSON API for a CP312/win_amd64-compatible
+# wheel (the laptop has no MSVC/Rust toolchain, so a pin whose only
+# artifacts are sdists or other-platform wheels can never install).
+# Bumps from that audit are commented at their pins.
 opencv-python==4.8.0.76
 numpy==1.26.2
 pyttsx3==2.90
 SpeechRecognition==3.10.0
-psutil==5.9.0
+# psutil 5.9.0 predates Python 3.12: its newest Windows wheel is
+# cp310, so the laptop fell back to a C-extension source build with
+# no compiler and failed. 5.9.4 is the minimal bump shipping a
+# compatible wheel (psutil-5.9.4-cp36-abi3-win_amd64.whl, stable ABI
+# loads on 3.12); every ARIA call site (cpu_percent, virtual_memory,
+# disk_usage, disk_partitions, sensors_battery, net_io_counters,
+# boot_time, Process) verified unchanged against 5.9.4.
+psutil==5.9.4
 Pillow==10.0.0
 edge-tts==7.3.1
 pygame==2.6.1
@@ -27,6 +40,11 @@ pygame==2.6.1
 # already satisfies this (PyQt6 installed for Mark-XXXIX-OR).
 PyQt6>=6.6.0
 pyserial==3.5
+# pyautogui is sdist-only on PyPI (0.9.54 is the latest upstream
+# release — no wheel-shipping version exists to bump to). It is
+# PURE Python: its sdist builds a py3-none-any wheel with plain
+# setuptools, no compiler (verified 2026-10-21), so it does not hit
+# the toolchain failure class. Same for pygetwindow below.
 pyautogui==0.9.54
 pycaw==20230407; sys_platform == "win32"
 # comtypes is imported directly (aria/hud.py) but used to arrive only
@@ -45,7 +63,19 @@ pywin32==306; sys_platform == "win32"
 sounddevice==0.5.6
 pystray==0.19.0
 pygetwindow==0.0.9; sys_platform == "win32"
-duckduckgo-search==6.0.0
+# duckduckgo-search 6.0.0 depends on pyreqwest-impersonate, which is
+# sdist-only -> maturin tries to bootstrap Rust on the laptop and
+# dies (the 2026-10-21 install failure). Later releases use primp
+# (prebuilt wheels), but the bump must ALSO survive today's primp:
+# 6.2.4 (first primp release) and 7.5.5 both crash DDGS() against
+# primp 2.x ("Invalid impersonate"), and 8.0.0 fails the same way.
+# 8.0.1 is the minimal version verified end-to-end: wheel
+# duckduckgo_search-8.0.1-py3-none-any.whl; resolves primp 2.0.1
+# (cp310-abi3-win_amd64) + lxml 6.1.3 (cp312-win_amd64); DDGS()
+# constructs, and ARIA's call — DDGS().text(query, max_results=3),
+# consuming r['title']/r['body'] — binds unchanged (result dicts
+# still carry title/href/body).
+duckduckgo-search==8.0.1
 aiohttp==3.9.0
 requests==2.31.0
 cryptography==41.0.0

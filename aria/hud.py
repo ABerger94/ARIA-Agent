@@ -162,10 +162,17 @@ def _get_spotify_telemetry() -> Dict[str, Any]:
     return info
 
 
-# Owner-thread GC cadence for the volume worker (loop iterations, ~1 s
-# apart when idle): cycles holding the worker's COM wrappers must be
-# finalised on the worker thread itself — see VolumeManager's docstring.
+# Owner-thread GC cadence for the volume worker: cycles holding the
+# worker's COM wrappers must be finalised on the worker thread itself
+# — see VolumeManager's docstring. Two triggers, whichever fires
+# first: every _VOLUME_GC_EVERY_ITERS loop iterations (~1 s apart
+# when idle), OR every _VOLUME_GC_INTERVAL_S seconds of wall time.
+# The wall-time trigger is the round-4 guarantee (aria/gcregime.py):
+# with automatic collection disabled process-wide, this thread's
+# timer is the ONLY thing that ever reaps cycles in this apartment,
+# so the cadence must not depend on loop-iteration counts alone.
 _VOLUME_GC_EVERY_ITERS = 60
+_VOLUME_GC_INTERVAL_S = 30.0
 
 
 class VolumeManager:
@@ -388,6 +395,7 @@ class VolumeManager:
                 _surface_op(_e_silent)
 
             last_poll = time.time()
+            last_gc = time.time()
             iters_since_gc = 0
             while self._running:
                 self._event.wait(timeout=1.0)
@@ -452,14 +460,18 @@ class VolumeManager:
                         _surface_op(_e_silent)
                     last_poll = now
 
-                # Owner-thread GC (2026-10-21 hotfix): collect cycles
-                # holding THIS thread's COM wrappers here, in their
-                # owning apartment, before the main thread's cyclic GC
-                # can finalise them — that finalisation is the access
-                # violation in the faulthandler dump.
+                # Owner-thread GC (2026-10-21 hotfix; round-4 regime):
+                # collect cycles holding THIS thread's COM wrappers
+                # here, in their owning apartment. Since round 4
+                # (aria/gcregime.py) automatic collection is OFF
+                # process-wide, so this timer — iteration count OR
+                # 30 s of wall time, whichever first — is the only
+                # collection this apartment ever gets.
                 iters_since_gc += 1
-                if iters_since_gc >= _VOLUME_GC_EVERY_ITERS:
+                if (iters_since_gc >= _VOLUME_GC_EVERY_ITERS
+                        or now - last_gc >= _VOLUME_GC_INTERVAL_S):
                     iters_since_gc = 0
+                    last_gc = now
                     try:
                         gc.collect()
                     except Exception:
