@@ -97,6 +97,72 @@ def init_pyttsx3(on_log: Optional[Callable[[str], None]] = None):
         return None
 
 
+# ---------------- Mic capture (sounddevice) ----------------
+
+class _SoundDeviceStream:
+    """Blocking byte stream over a sounddevice InputStream, exposing the
+    PyAudio-style read() interface sr.Recognizer expects."""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def read(self, size):
+        data, _overflowed = self._stream.read(size)
+        return data.tobytes()
+
+    def close(self):
+        try:
+            self._stream.stop()
+        except Exception:
+            pass
+        try:
+            self._stream.close()
+        except Exception:
+            pass
+
+
+# sr.AudioSource is the base class Recognizer.listen() type-checks its
+# source against. Resolve it defensively: minimal stub environments
+# (the headless test harness) provide a bare speech_recognition module
+# without it, and a hard AttributeError here would break the import.
+_SRAudioSource = getattr(sr, "AudioSource", object)
+
+
+class SoundDeviceSource(_SRAudioSource):
+    """Microphone capture via sounddevice (PortAudio) as an sr.AudioSource.
+
+    Drop-in replacement for sr.Microphone, which is backed by PyAudio —
+    unmaintained upstream and without wheels for newer Pythons (the
+    3.14 install failure that started the Fork A audit). sounddevice
+    ships an ABI-independent wheel with PortAudio bundled. Capture is
+    16 kHz mono int16, blocksize 1024 (the constants Mark-XXXIX-OR uses
+    for the same job). Everything downstream — Recognizer.listen,
+    adjust_for_ambient_noise, AudioData — sees the identical interface.
+    """
+
+    def __init__(self, sample_rate: int = 16000, chunk: int = 1024, device=None):
+        self.SAMPLE_RATE = sample_rate
+        self.SAMPLE_WIDTH = 2  # int16
+        self.CHANNELS = 1
+        self.CHUNK = chunk
+        self._device = device
+        self.stream = None
+
+    def __enter__(self):
+        import sounddevice as sd
+        raw = sd.InputStream(
+            samplerate=self.SAMPLE_RATE, channels=self.CHANNELS,
+            dtype="int16", blocksize=self.CHUNK, device=self._device)
+        raw.start()
+        self.stream = _SoundDeviceStream(raw)
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.stream is not None:
+            self.stream.close()
+            self.stream = None
+
+
 # ---------------- Local STT (faster-whisper) ----------------
 
 _FW_AVAILABLE = False
@@ -194,11 +260,39 @@ def clean_stt_transcript(text: str) -> str:
     return t
 
 
+_GOOGLE_STT_TIMEOUT_S = 10.0
+
+
+def _recognize_google(recognizer: sr.Recognizer, audio: sr.AudioData,
+                      timeout: float = _GOOGLE_STT_TIMEOUT_S) -> str:
+    """recognize_google with a hard timeout. The library call takes no
+    timeout argument, so a hung request would stall the wake listener
+    indefinitely (audit §1C). The call runs on a daemon thread; on
+    timeout the thread is abandoned (it dies with the process)."""
+    result: List[str] = []
+    error: List[Exception] = []
+
+    def _call():
+        try:
+            result.append(recognizer.recognize_google(audio))
+        except Exception as e:
+            error.append(e)
+
+    t = threading.Thread(target=_call, daemon=True, name="aria-google-stt")
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise TimeoutError(f"Google STT timed out after {timeout:.0f}s")
+    if error:
+        raise error[0]
+    return result[0] if result else ""
+
+
 def transcribe(audio: sr.AudioData, recognizer: sr.Recognizer, use_local_stt: bool = False, on_log: Optional[Callable[[str], None]] = None) -> str:
     """Transcribe sr.AudioData to text. Prefers faster-whisper with strict VAD filtering, falls back to Google on STT failure."""
     if not use_local_stt:
         try:
-            return clean_stt_transcript(recognizer.recognize_google(audio))
+            return clean_stt_transcript(_recognize_google(recognizer, audio))
         except Exception:
             return ""
 
@@ -221,7 +315,7 @@ def transcribe(audio: sr.AudioData, recognizer: sr.Recognizer, use_local_stt: bo
                 on_log(f"Local STT failed, falling back to Google: {e}")
 
     try:
-        return clean_stt_transcript(recognizer.recognize_google(audio))
+        return clean_stt_transcript(_recognize_google(recognizer, audio))
     except Exception:
         return ""
 

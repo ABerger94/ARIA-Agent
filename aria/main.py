@@ -303,7 +303,7 @@ def _ptt_capture():
     sample_width = 2
 
     try:
-        with sr.Microphone(sample_rate=16000) as source:
+        with speech.SoundDeviceSource(sample_rate=16000) as source:
             sample_rate = source.SAMPLE_RATE
             sample_width = source.SAMPLE_WIDTH
             chunk_size = source.CHUNK
@@ -597,7 +597,7 @@ def continuous_voice_listener():
             time.sleep(1.0)
             continue
         try:
-            with sr.Microphone() as source:
+            with speech.SoundDeviceSource() as source:
                 VOICE_LISTENER_ONLINE = True
                 try:
                     wake_rec.adjust_for_ambient_noise(source, duration=0.8)

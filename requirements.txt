@@ -26,11 +26,10 @@ pycaw==20230407; sys_platform == "win32"
 # comtypes is imported directly (aria/hud.py, aria/tools/builtins.py) but
 # used to arrive only transitively via pycaw — pin it explicitly.
 comtypes==1.2.0; sys_platform == "win32"
-# PyAudio backs sr.Microphone() capture (aria.py, aria/main.py). It was
-# previously undeclared entirely. Step 2 of Fork A replaces capture with
-# sounddevice, after which this pin goes away.
-PyAudio==0.2.14; sys_platform == "win32"
 pywin32==306; sys_platform == "win32"
+# Mic capture (Fork A, Step 2): sounddevice replaces PyAudio/sr.Microphone.
+# ABI-independent wheel with PortAudio bundled — no per-Python wheel trap.
+sounddevice==0.5.6
 pystray==0.19.0
 pygetwindow==0.0.9; sys_platform == "win32"
 duckduckgo-search==6.0.0
