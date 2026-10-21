@@ -21,7 +21,7 @@ set "WATCHDOG=%~dp0aria_watchdog.bat"
 (
 echo @echo off
 echo :loop
-echo python "%ROBOT_PY%"
+echo py -3.12 "%ROBOT_PY%"
 echo echo ARIA exited %%%%date%%%% %%%%time%%%% - restarting in 5 seconds...
 echo timeout /t 5 /nobreak ^>nul
 echo goto loop

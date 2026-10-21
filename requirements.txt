@@ -1,28 +1,45 @@
-# ARIA v1 — dependency spec.
-# Uses compatible-release pins (~=) so patch/minor updates apply but
-# breaking major bumps do not. For a fully reproducible install, generate
-# requirements-lock.txt on a working machine: pip freeze > requirements-lock.txt
-opencv-python~=4.8
-numpy~=1.24
-pyttsx3~=2.90
-SpeechRecognition~=3.10
-psutil~=5.9
-Pillow~=10.0
-edge-tts~=6.1
-pygame~=2.5
-pyserial~=3.5
-pyautogui~=0.9.54
+# ARIA v1 — dependency pins (Fork A, Step 1: audit AUDIT-FINDINGS §3B-7).
+#
+# Supported runtime: Python 3.12 on Windows ONLY, always via the py
+# launcher — `aria/speech.py` imports audioop (removed in Python 3.13),
+# and the laptop's default `python`/`pip` is 3.14, where PyAudio has no
+# wheel. Never install with bare `pip` / `python`.
+#
+#   Install:  py -3.12 -m pip install -r requirements.txt
+#
+# WARNING: several pins below were carried from the audit and are NOT yet
+# verified against the laptop's actual environment. Regenerate this file
+# from the working laptop before treating it as final:
+#   py -3.12 -m pip freeze
+# and commit the result (keeping this header).
+opencv-python==4.8.0
+numpy==1.26.2
+pyttsx3==2.90
+SpeechRecognition==3.10.0
+psutil==5.9.0
+Pillow==10.0.0
+edge-tts==7.3.1
+pygame==2.6.1
+pyserial==3.5
+pyautogui==0.9.54
 pycaw==20230407; sys_platform == "win32"
+# comtypes is imported directly (aria/hud.py, aria/tools/builtins.py) but
+# used to arrive only transitively via pycaw — pin it explicitly.
+comtypes==1.2.0; sys_platform == "win32"
+# PyAudio backs sr.Microphone() capture (aria.py, aria/main.py). It was
+# previously undeclared entirely. Step 2 of Fork A replaces capture with
+# sounddevice, after which this pin goes away.
+PyAudio==0.2.14; sys_platform == "win32"
 pywin32==306; sys_platform == "win32"
-pystray~=0.19
-pygetwindow~=0.0.9; sys_platform == "win32"
-duckduckgo-search~=6.0
-aiohttp~=3.9
-requests~=2.31
-cryptography~=41.0
+pystray==0.19.0
+pygetwindow==0.0.9; sys_platform == "win32"
+duckduckgo-search==6.0.0
+aiohttp==3.9.0
+requests==2.31.0
+cryptography==41.0.0
 # Optional: MCP client support (mcp_* tools). Pin <2: the v2 SDK renamed
 # FastMCP and changed client APIs; ARIA targets the v1 API.
-mcp>=1.0,<2
+mcp==1.0.0
 # Optional (v9.14+): local speech recognition via Whisper on CPU.
 # Without it, ARIA uses Google's cloud recognizer exactly as before.
-faster-whisper~=1.0
+faster-whisper==1.0.0
