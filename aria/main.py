@@ -7,7 +7,6 @@ Vision Optics, Background Scheduler, Spotify Media, Phone Bridge, and Agent Brai
 from __future__ import annotations
 
 import ctypes
-import os
 import re
 import sys
 import threading
@@ -21,7 +20,7 @@ import speech_recognition as sr
 
 # Core package imports
 from aria.config import (
-    ROOT_DIR, GITHUB_USERNAME, GITHUB_TOKEN,
+    GITHUB_USERNAME, GITHUB_TOKEN,
     get_setting, set_setting, add_log, register_log_listener
 )
 import aria.memory as memory
@@ -30,8 +29,7 @@ import aria.hardware as hardware
 import aria.vision as vision
 import aria.scheduler as scheduler
 import aria.hud as hud
-import aria.ops as _ops
-import aria.ops_screen as _ops_screen
+import aria.frame as _frame
 import aria.pixel_avatar as pixel_avatar
 import aria.bridge as bridge
 import aria.agent as agent
@@ -46,7 +44,7 @@ RUNNING: bool = True
 
 
 def request_shutdown():
-    """OPS Controls tab: stop the main loop cleanly."""
+    """Frame shutdown control: stop the main loop cleanly."""
     global RUNNING
     RUNNING = False
     add_log("Shutdown requested.")
@@ -91,6 +89,18 @@ def _init_wiring():
     # 5. HUD mood & subsystems
     hud.set_mood_callback(lambda: agent.mood_word())
     hud.set_subsystems_callback(get_subsystem_statuses)
+
+    # 6. Frame (Phase 4): command-bar submit, whisper pill, MIC push-to-talk
+    _frame.set_submit_callback(_submit_typed)
+    _frame.set_whisper_callback(toggle_whisper_mode)
+    _frame.set_ptt_callbacks(_ptt_rising_edge, _ptt_falling_edge)
+
+
+def _submit_typed(text: str) -> None:
+    """Route a typed directive (frame command bar) to the brain — the
+    same handle_action path voice commands take."""
+    threading.Thread(target=handle_action, args=("voice", text),
+                     daemon=True).start()
 
 
 
@@ -154,41 +164,6 @@ def toggle_whisper_mode() -> bool:
     return set_whisper_mode(not WHISPER_MODE)
 
 
-def _ops_read_selected_aloud() -> None:
-    """Speak the currently selected OPS inbox item (runs in a thread)."""
-    try:
-        dash = _ops.get_dashboard()
-        items = ((dash.get("inbox") or {}).get("data") or {}).get("items", [])
-        idx = _ops.SELECTED_MAIL
-        if idx >= len(items):
-            speech.speak("No email selected.")
-            return
-        it = items[idx]
-        add_log(f"Reading mail {idx + 1} aloud.")
-        body = _ops.read_mail_body(it["uid"])
-        speech.speak(f"From {it['sender']}. Subject: {it['subject']}. {body}")
-    except Exception as e:
-        add_log(f"Read-aloud failed: {e}")
-
-
-def _classify_ops_intent(low: str) -> Optional[str]:
-    """'OPS screen' intent: 'visual' (look at the O overlay), 'code'
-    (review/redesign its source), or None. Code verbs win when both match
-    ('review the ops screen' is a code request). Never raises."""
-    try:
-        if "ops" not in low:
-            return None
-        if any(k in low for k in ["review", "redesign", "code", "redraw",
-                                  "rebuild", "fix", "improve"]):
-            return "code"
-        if any(k in low for k in ["look", "see", "show", "screen", "display",
-                                  "open", "overlay"]):
-            return "visual"
-        return None
-    except Exception:
-        return None
-
-
 def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silent: bool = False) -> str:
     """Central action pipeline invoked from voice, PTT, HUD typed commands, or Phone Bridge."""
     agent.proactive.mood_note_interaction()
@@ -218,45 +193,7 @@ def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silen
     # 5. Multimodal context attachment
     image_bytes = None
     is_screen = False
-    _ops_intent = _classify_ops_intent(low)
-    ops_visual = _ops_intent == "visual" and mode != "camera"
-    ops_code = _ops_intent == "code"
-    if ops_visual:
-        # "Look at the OPS screen" means the O overlay, not the main HUD.
-        # Open it first, let the render loop draw a few frames, then capture.
-        try:
-            hud.HUD_MODE = "ops"
-            _ops_screen.open_panel()
-            try:
-                _ops.refresh_all()
-            except Exception as _e_silent:
-                _config_silent.log_silent("handle_action", _e_silent)
-            time.sleep(0.4)
-        except Exception as e:
-            add_log(f"OPS auto-open failed: {e}")
-        image_bytes = vision.capture_screen_if_changed()
-        is_screen = True
-        if image_bytes is None:
-            user_text = "[Screen unchanged since my last view] " + user_text
-        user_text = ("[You are viewing the OPS command-center overlay "
-                     "(the O screen: Log/Tasks/Sensors/Controls/Notes/HUB/Day), "
-                     "not the main HUD] " + user_text)
-    elif ops_code:
-        # "Review/redesign the OPS screen" means its code: read it in.
-        try:
-            _ops_path = os.path.join(ROOT_DIR, "aria", "ops_screen.py")
-            with open(_ops_path, "r", encoding="utf-8") as _f:
-                _ops_code = _f.read()
-            user_text = ("[The OPS command-center overlay is rendered by "
-                         "aria/ops_screen.py (OpenCV + PIL, 7 tabs). "
-                         "Full source follows — review/redesign THIS file, not the main HUD.]\n"
-                         "```python\n" + _ops_code[:60000] + "\n```\n"
-                         f"User request: {user_text}")
-            add_log(f"OPS code ({len(_ops_code)} chars) attached for review.")
-        except Exception as e:
-            add_log(f"OPS code attach failed: {e}")
-            user_text = "[Could not read aria/ops_screen.py] " + user_text
-    elif mode == "screen" or any(k in low for k in ["screen", "display", "desktop", "my window"]):
+    if mode == "screen" or any(k in low for k in ["screen", "display", "desktop", "my window"]):
         image_bytes = vision.capture_screen_if_changed()
         is_screen = True
         if image_bytes is None:
@@ -363,22 +300,14 @@ def _ptt_poll_loop():
 
 def _on_hud_mouse(event, x, y, flags, param):
     """Handle mouse clicks and wheel on HUD interactive buttons."""
-    # Mouse wheel support for paging commands, scrolling chat, or adjusting volume
+    # Mouse wheel support for paging commands, scrolling the activity
+    # column, or adjusting volume (frame hit-testing decides)
     if event == getattr(cv2, "EVENT_MOUSEWHEEL", 10):
         if hud.SHOW_COMMANDS:
             if flags > 0:
                 hud.commands_prev_page()
             else:
                 hud.commands_next_page()
-            return
-        elif hud.HUD_MODE == "ops":
-            _ops_screen.handle_wheel(flags > 0)
-            return
-        elif hud.HUD_MODE == "chat_log":
-            if flags > 0:
-                hud.CHAT_SCROLL = hud.CHAT_SCROLL + 1
-            else:
-                hud.CHAT_SCROLL = max(0, hud.CHAT_SCROLL - 1)
             return
         elif hud.handle_wheel(x, y, flags > 0):
             return
@@ -392,8 +321,8 @@ def _on_hud_mouse(event, x, y, flags, param):
         hud.handle_release(x, y)
 
     if event == cv2.EVENT_RBUTTONDOWN:
-        # Right click anywhere on directive bar pastes from clipboard
-        ix, iy, iw, ih = hud._INPUT_BAR
+        # Right click anywhere on the command bar pastes from clipboard
+        ix, iy, iw, ih = _frame.input_rect()
         if ix <= x <= ix + iw and iy <= y <= iy + ih:
             pasted = hud.get_clipboard_text()
             if pasted:
@@ -405,10 +334,6 @@ def _on_hud_mouse(event, x, y, flags, param):
             return
 
     if event == cv2.EVENT_LBUTTONDOWN:
-        # OPS overlay: tabs, task rows, HUB events, control buttons
-        if hud.HUD_MODE == "ops":
-            if _ops_screen.handle_click(x, y):
-                return
         # If commands overlay is visible, intercept clicks on overlay buttons
         if hud.SHOW_COMMANDS:
             # Prev page button
@@ -453,67 +378,10 @@ def _on_hud_mouse(event, x, y, flags, param):
 
             return
 
-        # Check if HUD interactive context tiles or tabs handled the click
+        # Frame widgets: command bar (CMDS / MIC / VOICE / input / PASTE /
+        # SEND / CLR), Spotify transport, volume slider, drop zone, whisper
+        # pill — all hit-tested inside aria.frame via hud.handle_click.
         if hud.handle_click(x, y):
-            return
-
-        # Whisper button
-        bx, by, bw, bh = hud._WHISPER_BTN
-        if bx <= x <= bx + bw and by <= y <= by + bh:
-            on = toggle_whisper_mode()
-            speech.speak(f"Whisper mode {'on' if on else 'off'}.")
-            return
-
-        # Directive input bar buttons:
-        # 1. PASTE button
-        px, py, pw, ph = hud._INPUT_PASTE_BTN
-        if px <= x <= px + pw and py <= y <= py + ph:
-            pasted = hud.get_clipboard_text()
-            hud.TYPING_ACTIVE = True
-            if pasted:
-                hud.TYPING_BUFFER += pasted
-                add_log(f"Pasted from clipboard ({len(pasted)} chars).")
-            else:
-                add_log("Clipboard empty or non-text.")
-            return
-
-        # 2. SEND button
-        sx, sy, sw, sh = hud._INPUT_SEND_BTN
-        if sx <= x <= sx + sw and sy <= y <= sy + sh:
-            prompt = hud.TYPING_BUFFER.strip()
-            if prompt:
-                hud.TYPING_ACTIVE = False
-                hud.TYPING_BUFFER = ""
-                add_log(f"Typed directive: '{prompt[:35]}...'")
-                threading.Thread(target=handle_action, args=("voice", prompt), daemon=True).start()
-            else:
-                add_log("Directive is empty — paste or type text first.")
-            return
-
-        # 3. CLEAR button
-        cx, cy, cw, ch = hud._INPUT_CLEAR_BTN
-        if cx <= x <= cx + cw and cy <= y <= cy + ch:
-            hud.TYPING_BUFFER = ""
-            add_log("Directive buffer cleared.")
-            return
-
-        # 4. ESC / Toggle Typing button
-        ex, ey, ew, eh = hud._INPUT_ESC_BTN
-        if ex <= x <= ex + ew and ey <= y <= ey + eh:
-            if hud.TYPING_ACTIVE:
-                hud.TYPING_ACTIVE = False
-                hud.TYPING_BUFFER = ""
-                add_log("Typing cancelled.")
-            else:
-                hud.TYPING_ACTIVE = True
-                add_log("Typing mode engaged.")
-            return
-
-        # Directive input bar body click
-        ix, iy, iw, ih = hud._INPUT_BAR
-        if ix <= x <= ix + iw and iy <= y <= iy + ih:
-            hud.TYPING_ACTIVE = True
-            add_log("Typing mode engaged.")
             return
 
 
@@ -604,7 +472,17 @@ def continuous_voice_listener():
                     if wake_rec.energy_threshold < 250:
                         wake_rec.energy_threshold = 250
                 except Exception as _e_silent:
-                    _config_silent.log_silent("continuous_voice_listener", _e_silent)
+                    # Merger Phase 1 (blueprint SS3.2): a failed
+                    # ambient calibration is a classified SKIP (the
+                    # listener arms anyway), not a silent-log line.
+                    try:
+                        from aria.agent.failures import surface_failure
+                        surface_failure(
+                            "main.ambient_calibration", _e_silent,
+                            decision="skip",
+                            user_message="Microphone calibration skipped; listening anyway.")
+                    except Exception:
+                        _config_silent.log_silent("continuous_voice_listener", _e_silent)
                 add_log("Wake-word listener armed ('Aria' / 'Hey Aria').")
                 
                 while RUNNING:
@@ -629,7 +507,11 @@ def continuous_voice_listener():
                         if dur < 0.3:
                             continue
                         import audioop
-                        if audioop.rms(raw_data, audio.sample_width) < 150:
+                        _rms = audioop.rms(raw_data, audio.sample_width)
+                        # Publish the level the frame waveform renders
+                        # while listening (same RMS, no extra capture).
+                        hud.set_mic_level(min(1.0, _rms / 3000.0))
+                        if _rms < 150:
                             continue
                     except Exception as _e_silent:
                         _config_silent.log_silent("continuous_voice_listener", _e_silent)
@@ -856,7 +738,7 @@ def _render_hud_frame():
     try:
         return hud.draw_hud()
     except Exception as e:
-        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        frame = np.zeros((800, 1280, 3), dtype=np.uint8)
         cv2.putText(frame, f"HUD RENDER FAULT: {e}", (50, 360),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1, cv2.LINE_AA)
         # Full traceback goes to the log so a screenshot is never the
@@ -892,12 +774,6 @@ def main():
             # wake-up burst expiry: settle back once her excited moment passes
             if hud.CURRENT_STATE == "excited" and time.time() >= EXCITED_UNTIL:
                 hud.set_hud_state(EXCITED_REVERT)
-
-            # Debounced notes autosave (atomic write; cheap no-op when clean)
-            try:
-                _ops_screen.notes_flush_if_due()
-            except Exception as _e_silent:
-                _config_silent.log_silent("main", _e_silent)
 
             key_raw = cv2.waitKeyEx(30)
             if key_raw != -1:
@@ -951,38 +827,13 @@ def main():
                     elif key in (ord('h'), ord('H'), 27):  # H or ESC closes commands
                         hud.SHOW_COMMANDS = False
                 elif hud.TYPING_ACTIVE:
-                    if hud.HUD_MODE == "ops" and _ops_screen.search_editing():
-                        # LOG tab: typing filters the event log.
-                        if key in (13, 10, 27):  # Enter/ESC: done searching
-                            hud.TYPING_ACTIVE = False
-                            _ops_screen.unfocus_search()
-                        elif key in (8, 127):  # Backspace
-                            _ops_screen.search_backspace()
-                        elif key == 21:  # Ctrl+U: clear search
-                            _ops_screen.LOG_SEARCH = ""
-                        elif 32 <= key_raw <= 126 and not is_ctrl:  # Printable
-                            _ops_screen.search_type(chr(key_raw))
-                            agent.LAST_ACTIVITY = time.time()
-                    elif hud.HUD_MODE == "ops" and _ops_screen.notes_editing():
-                        # DAY tab notes: typing edits the notes buffer (autosaves).
-                        if key in (13, 10):  # Enter: newline
-                            _ops_screen.notes_newline()
-                        elif key == 27:  # ESC: stop editing
-                            hud.TYPING_ACTIVE = False
-                            _ops_screen.unfocus_notes()
-                            add_log("Notes saved.")
-                        elif key in (8, 127):  # Backspace
-                            _ops_screen.notes_backspace()
-                        elif 32 <= key_raw <= 126 and not is_ctrl:  # Printable
-                            _ops_screen.notes_type(chr(key_raw))
-                            agent.LAST_ACTIVITY = time.time()
-                    elif key in (13, 10):  # Enter: submit directive
+                    if key in (13, 10):  # Enter: submit directive
                         prompt = hud.TYPING_BUFFER.strip()
                         hud.TYPING_ACTIVE = False
                         hud.TYPING_BUFFER = ""
                         if prompt:
                             add_log(f"Typed directive: '{prompt[:35]}...'")
-                            threading.Thread(target=handle_action, args=("voice", prompt), daemon=True).start()
+                            _submit_typed(prompt)
                     elif key == 27:  # ESC: cancel typing mode
                         hud.TYPING_ACTIVE = False
                         hud.TYPING_BUFFER = ""
@@ -995,80 +846,21 @@ def main():
                         hud.TYPING_BUFFER += chr(key_raw)
                         agent.LAST_ACTIVITY = time.time()
                 else:
-                    if hud.HUD_MODE == "ops" and key in (ord('o'), ord('O'), 27):
-                        hud.HUD_MODE = "visor"  # O or ESC: back to face
-                        _ops_screen.save_state()
-                        add_log("OPS closed.")
-                        agent.LAST_ACTIVITY = time.time()
-                    elif hud.HUD_MODE == "ops" and key in (ord('q'), ord('Q')):
-                        hud.HUD_MODE = "visor"  # Q exits OPS; shutdown from visor only
-                        _ops_screen.save_state()
-                        add_log("OPS closed.")
-                        agent.LAST_ACTIVITY = time.time()
-                    elif hud.HUD_MODE == "ops" and key in tuple(ord(str(d)) for d in range(1, 5)):
-                        _ops_screen.set_tab(int(chr(key)) - 1)  # 1-4: switch OPS tab
-                        agent.LAST_ACTIVITY = time.time()
-                    elif hud.HUD_MODE == "ops" and is_ctrl and is_alt and key in (ord('l'), ord('L')):
-                        _ops_screen.set_tab(1)  # Ctrl+Alt+L: LOG tab
-                        agent.LAST_ACTIVITY = time.time()
-                    elif hud.HUD_MODE == "ops" and _ops_screen.ACTIVE_TAB == "log" and key == ord('/'):
-                        _ops_screen.focus_search()  # / : search the log
-                        hud.TYPING_ACTIVE = True
-                        agent.LAST_ACTIVITY = time.time()
-                    elif hud.HUD_MODE == "ops" and _ops_screen.ACTIVE_TAB == "day" and key in (ord('t'), ord('T')):
-                        _ops_screen.focus_notes()  # T: edit notes
-                        hud.TYPING_ACTIVE = True
-                        agent.LAST_ACTIVITY = time.time()
-                    elif hud.HUD_MODE == "ops" and (key in (ord('j'), ord('J')) or is_down):
-                        _ops_screen.scroll_active(-3)
-                        agent.LAST_ACTIVITY = time.time()
-                    elif hud.HUD_MODE == "ops" and (key in (ord('k'), ord('K')) or is_up):
-                        _ops_screen.scroll_active(3)
-                        agent.LAST_ACTIVITY = time.time()
-                    elif hud.HUD_MODE == "ops" and key in (ord('e'), ord('E')):
-                        threading.Thread(target=_ops_read_selected_aloud, daemon=True).start()
-                        agent.LAST_ACTIVITY = time.time()
-                    elif hud.HUD_MODE == "ops" and key in (ord('r'), ord('R')):
-                        _ops.refresh_all()
-                        _ops_screen.invalidate_caches()
-                        add_log("OPS refreshing...")
-                        agent.LAST_ACTIVITY = time.time()
-                    elif key in (ord('q'), ord('Q'), 27):  # ESC or Q
+                    if key in (ord('q'), ord('Q'), 27):  # ESC or Q
                         add_log("Shutdown requested by user.")
                         break
                     elif key in (ord('t'), ord('T'), 13):  # T or Enter: activate typing
                         hud.TYPING_ACTIVE = True
                         add_log("Typing mode: type your directive and press Enter.")
-                    elif key in (ord('1'), ord('2'), ord('3'), ord('4'), ord('5')):
-                        tile_map = {
-                            ord('1'): "dashboard",
-                            ord('2'): "subtitles",
-                            ord('3'): "audio",
-                            ord('4'): "tasks",
-                            ord('5'): "spotify"
-                        }
-                        hud.set_tile_mode(tile_map[key])
-                        add_log(f"Context tile: {tile_map[key].upper()}")
-                    elif key in (9, ord('\t')):
-                        cm = hud.cycle_tile_mode()
-                        add_log(f"Context tile: {cm.upper()}")
-                    elif key in (ord('v'), ord('V')) and not is_ctrl:
-                        hud.HUD_MODE = "chat_log" if hud.HUD_MODE == "visor" else "visor"
-                    elif key in (ord('o'), ord('O')):
-                        hud.HUD_MODE = "ops"
-                        _ops_screen.open_panel()  # land on the DASH tab
-                        _ops.refresh_all()
-                        add_log("OPS command center.")
-                        agent.LAST_ACTIVITY = time.time()
                     elif key in (ord('w'), ord('W')):
                         on = toggle_whisper_mode()
                         speech.speak(f"Whisper mode {'on' if on else 'off'}.")
                     elif key in (ord('h'), ord('H')):
                         hud.SHOW_COMMANDS = not hud.SHOW_COMMANDS
                     elif key in (ord('j'), ord('J')) or is_down:
-                        hud.CHAT_SCROLL = max(0, hud.CHAT_SCROLL - 1)
+                        _frame.scroll_activity(-3)
                     elif key in (ord('k'), ord('K')) or is_up:
-                        hud.CHAT_SCROLL = hud.CHAT_SCROLL + 1
+                        _frame.scroll_activity(3)
 
     except KeyboardInterrupt:
         pass

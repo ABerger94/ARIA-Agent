@@ -184,43 +184,4 @@ def test_usertools_import_safety():
         elif isinstance(node, ast.ImportFrom):
             assert (node.module or '').split('.')[0] in allowed, node.module
 
-def test_ops_day_no_platform_strftime():
-    src = open(os.path.join(PKG, 'ops_screen.py'), encoding='utf-8').read()
-    bad = re.findall('strftime\\([^)]*%[-#][^)]*\\)', src)
-    assert not bad, f'platform-specific strftime: {bad}'
 
-def test_ops_routine_rows():
-    src = open(os.path.join(PKG, 'ops_screen.py'), encoding='utf-8').read()
-    tree = ast.parse(src)
-    fn_src = next((ast.get_source_segment(src, n) for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == '_routine_rows'), None)
-    assert fn_src, 'missing _routine_rows'
-    assert '_draw_routines_section' in src and '"ROUTINES"' in src, 'section not wired'
-    tmp = tempfile.mkdtemp(prefix='aria_home_')
-    rdir = os.path.join(tmp, 'ARIA', 'routines')
-    os.makedirs(rdir)
-    with open(os.path.join(rdir, 'morning.json'), 'w', encoding='utf-8') as f:
-        json.dump({'name': 'morning', 'created': '2026-10-06T00:00:00', 'steps': [{'tool': 'a', 'args': {}}, {'tool': 'b', 'args': {}}], 'trusted': True}, f)
-    with open(os.path.join(rdir, 'junk.txt'), 'w', encoding='utf-8') as f:
-        f.write('not a routine')
-    old_home = os.environ.get('HOME')
-    os.environ['HOME'] = tmp
-    try:
-        ns = {'os': os, 'json': json}
-        exec(compile(fn_src, '<test>', 'exec'), ns)
-        rows = ns['_routine_rows']()
-        assert rows == [{'name': 'morning', 'steps': 2, 'trusted': True}], rows
-    finally:
-        if old_home is None:
-            del os.environ['HOME']
-        else:
-            os.environ['HOME'] = old_home
-    os.environ['HOME'] = tempfile.mkdtemp(prefix='aria_empty_')
-    try:
-        ns2 = {'os': os, 'json': json}
-        exec(compile(fn_src, '<test>', 'exec'), ns2)
-        assert ns2['_routine_rows']() == []
-    finally:
-        if old_home is None:
-            del os.environ['HOME']
-        else:
-            os.environ['HOME'] = old_home

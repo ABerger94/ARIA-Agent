@@ -378,6 +378,10 @@ def build_system_instruction(user_prompt: str) -> str:
         "Routines: named multi-step automations. routine_record_start(name) begins capturing your subsequent tool calls "
         "as replayable steps ('watch me do this, save it as X'); routine_record_stop() saves it. run_routine(name, params_json) "
         "replays with {{param}} substitution. Only suggest trust_routine when the user explicitly wants unattended replays. "
+        "Delegated tasks: delegate_task(goal) hands a multi-step job to the background task queue (planned in at most "
+        "5 steps, executed step by step, outcome announced aloud when done) — use it ONLY when the user explicitly "
+        "asks you to handle something in the background or as a delegated task; never delegate on your own initiative. "
+        "task_status(task_id) reports a delegated task; task_cancel(task_id) stops one. "
         "Approval flow: under confirm-risky/confirm-all modes, destructive calls return [AWAITING_APPROVAL token=...] instead of "
         "executing. Summarize the pending action in plain words, ask the user once, then call approve(token) or deny(token). "
         "Never approve your own pending actions without the user saying yes. "
@@ -392,10 +396,10 @@ def build_system_instruction(user_prompt: str) -> str:
         f"{_persona_block}"
         "You can call multiple independent tools in one turn — do it. "
         "Keep vocal responses concise, refined, and intelligent (1-2 sentences). "
-        "The OPS command center is the tabbed overlay opened with the O key "
-        "(Log/Tasks/Sensors/Controls/Notes/HUB/Day), rendered by aria/ops_screen.py. "
-        "When the user says 'OPS screen' they mean that overlay or its code — "
-        "never the main HUD. "
+        "Your window is a three-column mission-control frame (aria/frame.py): "
+        "system strip + Spotify on the left, your face and waveform center, "
+        "conversation and activity log on the right, command bar below. "
+        "The old OPS tabbed overlay was removed in the Phase 4 merger. "
         "Self-repair: when a tool call fails you get a diagnosis and up to 2 "
         "repair attempts — use them to fix your approach, never by repeating "
         "the identical call; when the budget is exhausted, report the failure "
@@ -607,6 +611,15 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
 
                 hud.set_hud_subtitle(final_text)
                 log_conversation("A.R.I.A.", final_text)
+                # Merger Phase 2 (blueprint SS2.3): post-turn memory
+                # extraction runs on a background thread through the
+                # background pool — the conversation path keeps Fork
+                # A's behaviour and pays nothing for it.
+                try:
+                    from aria.agent.memextract import maybe_extract_async
+                    maybe_extract_async(user_prompt, final_text)
+                except Exception as _e_silent:
+                    _config_silent.log_silent("memextract_hook", _e_silent)
                 add_log(f"Speech: {final_text[:28]}...")
 
                 if not silent:
@@ -700,6 +713,15 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
             hud.draw_hud()
 
     except Exception as e:
+        # Merger Phase 1 (blueprint SS3.2): an exception escaping the
+        # whole agent loop is a classified abort in the failure
+        # record, not just a log line.
+        try:
+            from aria.agent.failures import surface_failure
+            surface_failure("brain.run_agent", e, critical=True,
+                            decision="abort")
+        except Exception:
+            pass
         add_log(f"Agent Error: {e}")
         say(f"Protocol error: {e}")
         return f"Error: {e}"
@@ -708,3 +730,14 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
         hud.set_hud_state("idle")
         hud.draw_hud()
         _maybe_restart_after_self_edit(say)
+
+
+def run_headless(prompt: str) -> str:
+    """Headless agent-loop entry (Merger Phase 3, blueprint SS3.3):
+    runs a full conversational turn with output captured in a sink
+    instead of spoken, for background/autonomous callers that need
+    the whole brain. Delegated multi-step tasks normally run through
+    aria.agent.taskexec.run_delegated instead (plan + caps); this is
+    the entry for one-shot headless turns."""
+    sink: List[str] = []
+    return run_agent(prompt, silent=True, reply_sink=sink)

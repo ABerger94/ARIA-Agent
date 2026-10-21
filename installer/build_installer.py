@@ -41,7 +41,7 @@ HIDDEN_IMPORTS = [
     "aria.first_run",
     "aria.tools.usertools",
     "aria.mcp",
-    "aria.ops_screen",
+    "aria.frame",
     "aria.inbox",
     "aria.ical",
 ]

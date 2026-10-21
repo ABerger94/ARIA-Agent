@@ -8,7 +8,6 @@ lazy inside functions; on non-Windows platforms the tools degrade gracefully
 and NEVER crash.
 """
 
-import fnmatch
 import os
 import sys
 from typing import Optional

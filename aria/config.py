@@ -215,6 +215,26 @@ def lan_ip() -> str:
 MAX_TOOL_OUTPUT = 2000
 HISTORY_TURNS = 10
 AGENT_LOOP_TIME_BUDGET_S = 1800
+
+# ---------------------------------------------------------------- merger (Phases 1-3)
+# Feature flags + caps for the Mark-XXXIX-OR merger organs (blueprint:
+# ~/workspace/aria-audit/MERGER-BLUEPRINT.md SS3.2/SS3.3). The flags are
+# env-overridable rollback switches, read dynamically by their consumers.
+# The caps are the contract (blueprint SS3.3): planner/executor/queue
+# read them from here, never from literals at call sites.
+FAILURE_SURFACING = os.environ.get(
+    "ARIA_FAILURE_SURFACING", "1").strip().lower() not in ("0", "false", "no")
+ORPOOL_ENABLED = os.environ.get(
+    "ARIA_ORPOOL", "1").strip().lower() not in ("0", "false", "no")
+MEMORY_EXTRACT_ASYNC = os.environ.get(
+    "ARIA_MEMORY_EXTRACT_ASYNC", "1").strip().lower() not in ("0", "false", "no")
+
+PLAN_MAX_STEPS = 5                 # SS3.3: a plan is at most 5 steps
+STEP_MAX_ATTEMPTS = 3              # SS3.3: per-step attempts <= 3
+MAX_REPLAN_ATTEMPTS = 2            # SS3.3: replans per task <= 2
+ERROR_USER_MESSAGE_MAX_WORDS = 15  # SS3.2/SS3.3: spoken failure text cap
+TASK_QUEUE_MAX_CONCURRENT = 1      # SS3.3: queue concurrency is 1
+DELEGATED_TASK_BUDGET_S = 600      # SS3.3: whole-task wall-clock budget
 CHAT_PRUNE_DAYS = 30
 VISION_SCREEN_SIZE = (1280, 720)
 VISION_CAM_SIZE = (640, 480)
@@ -263,6 +283,15 @@ def add_log(msg: str, level: str = None, meta: dict = None):
         _EVENT_RING.append((ts, lvl, redacted[:400], dict(meta or {})))
     except Exception as _e_silent:
         log_silent("add_log", _e_silent)
+        # Merger Phase 1: the ring is one of the two failure stores — if
+        # IT is the thing that failed, count it via the sink-failure
+        # hook (incident DB only, never the ring: no recursion). Lazy
+        # import + full guard: add_log must survive anything.
+        try:
+            from aria.agent.failures import note_sink_failure
+            note_sink_failure("add_log", _e_silent)
+        except Exception:
+            pass
     for listener in _LOG_LISTENERS:
         try:
             listener(redacted)

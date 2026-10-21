@@ -621,24 +621,8 @@ def _load_classify_ops_intent():
             return ns['_classify_ops_intent']
     raise AssertionError('_classify_ops_intent not found in main.py')
 
-def test_ops_intent_visual():
-    fn = _load_classify_ops_intent()
-    assert fn('look at the ops screen') == 'visual'
-    assert fn('show me the ops overlay') == 'visual'
-    assert fn('open ops') == 'visual'
-    assert fn('what do you see on the ops display') == 'visual'
 
-def test_ops_intent_code():
-    fn = _load_classify_ops_intent()
-    assert fn('review the ops screen') == 'code'
-    assert fn('redesign the ops screen') == 'code'
-    assert fn('fix the ops code') == 'code'
 
-def test_ops_intent_none():
-    fn = _load_classify_ops_intent()
-    assert fn('what time is it') is None
-    assert fn('look at my screen') is None
-    assert fn('ops') is None
 
 def _extract_fn(path, name, namespace=None):
     """AST-extract a single function from a source file without importing the

@@ -380,14 +380,35 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
         'parameters': {'properties': {'name': {'type': 'STRING'}}, 'type': 'OBJECT'}},
     {'description': 'Lists available persona overlays.', 'name': 'list_personas'},
     {'description': 'Reports the currently active persona overlay.', 'name': 'get_persona'},
-    {'description': 'Runs one price-watch check pass now (alerts on drops at/below target).', 'name': 'check_price_watches'}]
+    {'description': 'Runs one price-watch check pass now (alerts on drops at/below target).', 'name': 'check_price_watches'},
+    {   'description': 'Delegates a multi-step task to the background task queue: it is planned (at most 5 steps), '
+                       'executed step by step, and the outcome is announced aloud when it finishes. ONLY call this '
+                       'when the user explicitly asks you to handle something in the background or as a delegated '
+                       'task — never delegate on your own initiative.',
+        'name': 'delegate_task',
+        'parameters': {   'properties': {   'goal': {'type': 'STRING'},
+                                            'priority': {'type': 'STRING'}},
+                          'required': ['goal'],
+                          'type': 'OBJECT'}},
+    {   'description': 'Reports the status (pending/running/completed/failed/cancelled) and result of a delegated '
+                       'background task by its task_id.',
+        'name': 'task_status',
+        'parameters': {   'properties': {'task_id': {'type': 'STRING'}},
+                          'required': ['task_id'],
+                          'type': 'OBJECT'}},
+    {   'description': 'Cancels a pending or running delegated background task by its task_id.',
+        'name': 'task_cancel',
+        'parameters': {   'properties': {'task_id': {'type': 'STRING'}},
+                          'required': ['task_id'],
+                          'type': 'OBJECT'}}]
 
 TOOLS_DECLARATION = [
     {"function_declarations": ALL_FUNCTION_DECLARATIONS}
 ]
 
-TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persistent background jobs, system health audit, self-healing diagnostics',
-                 'tools': ['manage_autonomous_goal', 'manage_background_job', 'system_health_audit', 'self_heal_diagnose']},
+TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persistent background jobs, system health audit, self-healing diagnostics, delegated background tasks',
+                 'tools': ['manage_autonomous_goal', 'manage_background_job', 'system_health_audit', 'self_heal_diagnose',
+                           'delegate_task', 'task_status', 'task_cancel']},
     'admin': {   'summary': 'API keys, bridge token, command guide, volume, approval controls, personas, user tools',
                  'tools': ['bridge_token', 'show_commands', 'hide_commands', 'volume',
                            'approve', 'deny', 'list_pending_approvals', 'set_approval_mode', 'get_approval_mode',

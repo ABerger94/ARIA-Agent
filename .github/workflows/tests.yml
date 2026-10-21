@@ -15,10 +15,13 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install lint deps
-        run: pip install ruff pytest
+        run: pip install ruff pytest numpy
       - name: Ruff — no unused imports
         run: python -m ruff check aria/ --select F401 --exclude '__init__.py'
       - name: Test suites (pytest)
+        # Each suite file stubs sys.modules at import time; run each in its
+        # own process so stubs cannot leak across files (same convention as
+        # tests/_run_suite.py). A failure in any file still fails the job.
         run: |
-          python -m pytest tests/test_ops.py tests/test_headless.py tests/test_providers.py -q
-          python -m pytest tests/test_ultimate_a.py tests/test_ultimate_b.py tests/test_ultimate_c.py tests/test_ultimate_d.py tests/test_ultimate_e.py -q
+          python -m pytest tests/test_headless.py tests/test_providers.py -q
+          for f in tests/test_failures.py tests/test_orpool.py tests/test_memextract.py tests/test_tasks.py tests/test_frame.py tests/test_ultimate_a.py tests/test_ultimate_b.py tests/test_ultimate_c.py tests/test_ultimate_d.py tests/test_ultimate_e.py; do python -m pytest "$f" -q || exit 1; done

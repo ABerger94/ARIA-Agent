@@ -11,8 +11,7 @@ from typing import Dict, List, Optional, Set, Tuple, Callable, Any
 from aria.config import MAX_TOOL_OUTPUT, BRIDGE_TOKEN, GITHUB_USERNAME, redact
 from aria.memory import spine_append as default_spine_append, add_log as default_add_log
 from aria.tools.schemas import (
-    TOOLKITS, LOAD_TOOLKIT_DECLARATION, get_tool_decls_by_name,
-    get_toolkit_declarations, get_toolkits_prompt_block
+    TOOLKITS, get_toolkit_declarations, get_toolkits_prompt_block
 )
 from aria.tools.sandbox import (
     RISKY_TOOLS, call_signature, missing_required_args,
@@ -108,7 +107,7 @@ KEYWORD_TOOLKIT_MAP: Dict[str, List[str]] = {
     "comms": [r"\bemai(?:ls?)\b", r"\bgmail\b", r"\bmail\b", r"\binbox\b"],
     "admin": [r"\bvolume\b", r"\bmute\b", r"\bunmute\b", r"\bbridge\b", r"\btokens?\b", r"\bkeys?\b"],
     "github": [r"\bgithub\b", r"\bgit\b", r"\brepos?(?:itory)?\b", r"\bcommit\b", r"\bpush\b"],
-    "autonomy": [r"\bgoals?\b", r"\bautonom\w*", r"\bbackground\s*(?:task|job)?\b", r"\bworkers?\b", r"\bself[- ]heal\w*", r"\bdaemon\b", r"\bheartbeat\b", r"\bincidents?\b", r"\bhealth\s*(?:audit|check)?\b"],
+    "autonomy": [r"\bgoals?\b", r"\bautonom\w*", r"\bbackground\s*(?:task|job)?\b", r"\bworkers?\b", r"\bself[- ]heal\w*", r"\bdaemon\b", r"\bheartbeat\b", r"\bincidents?\b", r"\bhealth\s*(?:audit|check)?\b", r"\bdelegate\w*\b", r"\btask\s+(?:status|cancel)\b"],
     "routines": [r"\broutine\b", r"\bautomate\b", r"\bevery time i\b"],
     "files": [r"\bduplicates?\b", r"\bdisk\s*(?:usage|space)\b", r"\borganiz\w+\s+(?:my\s+)?(?:downl|docum|pict|phot|file|fold)"],
     "monitor": [r"\bscreen\s*watch\b", r"\bwatch\b.{0,20}\bscreen\b"],
@@ -222,6 +221,15 @@ def _repair_or_exhaust(fn_name: str, args: dict, err_str: str) -> str:
         suggestion = diag.get("recommended_action", "")
     except Exception:
         diagnosis, suggestion = "", ""
+    # Merger Phase 1 (blueprint SS3.2): every tool failure also lands
+    # in the classified failure record (event ring + incident DB) —
+    # before this, a failure existed only inside this turn's prompt.
+    try:
+        from aria.agent.failures import surface_failure
+        surface_failure(f"tool:{fn_name}", err_str, attempts=n,
+                        max_attempts=_REPAIR_BUDGET + 1)
+    except Exception:
+        pass
     if n <= _REPAIR_BUDGET:
         parts = [f"[Tool Error: {err_short}]"]
         if diagnosis:
@@ -338,8 +346,20 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
                     r = _REGISTRY[match](args or {})
                     r = f"{r}\n[Self-Heal: '{fn_name}' is not a tool; ran '{match}' instead]"
                 except Exception as e2:
+                    try:
+                        from aria.agent.failures import surface_failure
+                        surface_failure(f"tool:{fn_name}", e2, unknown_tool=True)
+                    except Exception:
+                        pass
                     r = f"Unknown tool: {fn_name} (closest match '{match}' also failed: {e2})"
             else:
+                try:
+                    from aria.agent.failures import surface_failure
+                    surface_failure(f"tool:{fn_name}",
+                                    f"Unknown tool: {fn_name}",
+                                    unknown_tool=True)
+                except Exception:
+                    pass
                 r = f"Unknown tool: {fn_name}"
     except Exception as e:
         try:
@@ -385,6 +405,62 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
         except Exception as _e_silent:
             _config_mod.log_silent("execute_tool", _e_silent)
     return r, False
+
+
+# --- Delegated background tasks (Merger Phase 3, blueprint SS2.1) ---
+# EXPLICIT delegation only: these tools exist so the brain can hand a
+# multi-step job to the queue when the user asks. Nothing here runs
+# unless the model calls it in response to such a request.
+
+def _tool_delegate_task(args: dict) -> str:
+    from aria.agent import taskqueue
+    goal = str((args or {}).get("goal", "") or "").strip()
+    if not goal:
+        return "[Argument error: delegate_task requires a goal.]"
+    prio = str((args or {}).get("priority", "normal") or "normal").lower()
+    priority = {"low": taskqueue.TaskPriority.LOW,
+                "high": taskqueue.TaskPriority.HIGH}.get(
+                    prio, taskqueue.TaskPriority.NORMAL)
+
+    def _announce(text: str) -> None:
+        # Delegated-task outcomes are the ONE failure/success class
+        # announced by voice (blueprint SS3.2 loudness rule). Best
+        # effort: the outcome is also in the event ring + registry.
+        try:
+            import aria.speech as _speech_mod
+            _speech_mod.speak(text)
+        except Exception:
+            pass
+
+    tid = taskqueue.get_queue().submit(goal, priority=priority,
+                                       speak=_announce)
+    return (f"Delegated as task {tid}: {goal} — it runs in the "
+            f"background and I'll announce the outcome when it finishes.")
+
+
+def _tool_task_status(args: dict) -> str:
+    from aria.agent import taskqueue
+    tid = str((args or {}).get("task_id", "") or "").strip()
+    st = taskqueue.get_queue().get_status(tid) if tid else None
+    if not st:
+        return f"No delegated task with id '{tid}'."
+    out = f"Task {st['task_id']}: {st['status']} — {st['goal']}"
+    if st["status"] == "running":
+        out += f" (running {st['elapsed_s']}s of {st['budget_s']}s budget)"
+    if st.get("result"):
+        out += f"\nResult: {st['result']}"
+    if st.get("error"):
+        out += f"\nError: {st['error']}"
+    return out
+
+
+def _tool_task_cancel(args: dict) -> str:
+    from aria.agent import taskqueue
+    tid = str((args or {}).get("task_id", "") or "").strip()
+    if tid and taskqueue.get_queue().cancel(tid):
+        return f"Cancellation requested for task {tid}."
+    return (f"Task '{tid}' can't be cancelled "
+            f"(unknown id or already finished).")
 
 
 # ---------------- Initialize Default Built-in Tool Registry ----------------
@@ -472,6 +548,9 @@ def _init_default_registry():
         action=a.get("action", "list"), command=a.get("command", ""), name=a.get("name", ""), job_id=int(a.get("job_id", 0))
     )
     _REGISTRY["system_health_audit"] = lambda a: builtins.tool_system_health_audit()
+    _REGISTRY["delegate_task"] = lambda a: _tool_delegate_task(a)
+    _REGISTRY["task_status"] = lambda a: _tool_task_status(a)
+    _REGISTRY["task_cancel"] = lambda a: _tool_task_cancel(a)
     _REGISTRY["self_heal_diagnose"] = lambda a: builtins.tool_self_heal_diagnose(
         error_text=a.get("error_text", ""), context=a.get("context", "")
     )

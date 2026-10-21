@@ -366,6 +366,19 @@ def get_fw_model(workspace_dir: str = WORKSPACE_DIR, on_log: Optional[Callable[[
         return _FW_MODEL
 
 
+def _surface_fw_pcm(exc):
+    """Merger Phase 1 (blueprint SS3.2): a PCM conversion failure is a
+    classified SKIP in the failure record — transcription continues on
+    the unconverted audio — not a silent-log line. Throttled inside
+    surface_failure (this runs per utterance)."""
+    try:
+        from aria.agent.failures import surface_failure
+        surface_failure("speech.fw_pcm", exc, decision="skip",
+                        user_message="Audio conversion hiccup; transcription continued anyway.")
+    except Exception:
+        _config_silent.log_silent("fw_pcm", exc)
+
+
 def fw_pcm(audio: sr.AudioData) -> np.ndarray:
     """sr.AudioData -> float32 mono PCM at 16000Hz in [-1, 1] for faster-whisper."""
     raw = audio.get_raw_data()
@@ -376,13 +389,13 @@ def fw_pcm(audio: sr.AudioData) -> np.ndarray:
         try:
             raw = audioop.lin2lin(raw, sample_width, 2)
         except Exception as _e_silent:
-            _config_silent.log_silent("fw_pcm", _e_silent)
+            _surface_fw_pcm(_e_silent)
 
     if sample_rate != 16000 and sample_rate > 0:
         try:
             raw, _ = audioop.ratecv(raw, 2, 1, sample_rate, 16000, None)
         except Exception as _e_silent:
-            _config_silent.log_silent("fw_pcm", _e_silent)
+            _surface_fw_pcm(_e_silent)
 
     return (np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0)
 

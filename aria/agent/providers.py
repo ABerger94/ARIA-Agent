@@ -34,6 +34,7 @@ from aria.config import (
     quarantine_key, key_is_quarantined, key_mask, add_log,
 )
 from aria import config as _config_silent
+from aria.agent.cooldown import CooldownRegistry
 
 ACTIVE_PROVIDER = PROVIDER_CHAIN[0] if PROVIDER_CHAIN else "ollama_cloud"
 
@@ -570,6 +571,20 @@ def _note_role_model_failed(tag: Optional[str]) -> None:
         if tag:
             _ROLE_MODEL_COOLDOWN[tag] = time.time() + ROLE_MODEL_COOLDOWN_S
             add_log(f"role model '{tag}' parked for {ROLE_MODEL_COOLDOWN_S // 60} min after failure")
+            # Merger Phase 1 (blueprint SS3.2): parking a role model
+            # is a classified SKIP in the failure record — the role
+            # is skipped and the default model serves — not just a
+            # log line (audit SS1D census: this failure never used
+            # to surface anywhere durable).
+            try:
+                from aria.agent.failures import surface_failure
+                surface_failure(
+                    f"providers.role_model:{tag}",
+                    f"role model '{tag}' failed and was parked",
+                    decision="skip",
+                    user_message="A specialist model failed; the default model is serving.")
+            except Exception:
+                pass
     except Exception as _e_silent:
         _config_silent.log_silent("_note_role_model_failed", _e_silent)
 
@@ -583,7 +598,8 @@ def clear_role_model_cooldown() -> None:
         _config_silent.log_silent("clear_role_model_cooldown", _e_silent)
 
 
-# --- Provider cooldown registry (A5) ---
+# --- Provider cooldown registry (A5; mechanism extracted in Merger
+# Phase 2, blueprint SS3.1) ---
 # Pattern reimplemented from Mark-XXXIX-OR's or_client.py (FatihMakes,
 # CC BY-NC 4.0) — credit for the pattern: a provider that just failed
 # is skipped for a cooldown window instead of being re-walked at full
@@ -591,12 +607,16 @@ def clear_role_model_cooldown() -> None:
 # complementary to aria.memory's per-KEY quarantine: it also covers
 # failures that never quarantine a key (5xx, network drops, empty
 # results), which previously cost a full leg every single turn.
-_PROVIDER_COOLDOWN: Dict[str, float] = {}
+# The registry MECHANISM now lives in aria.agent.cooldown and is
+# shared with the background pool (orpool) — one mechanism, two
+# scopes. The wrappers below keep A5's exact behaviour, including
+# the HTTP-400 carve-out.
 PROVIDER_COOLDOWN_S = 60
+_PROVIDER_COOLDOWN = CooldownRegistry(PROVIDER_COOLDOWN_S)
 
 
 def _provider_in_cooldown(name: str) -> bool:
-    return _PROVIDER_COOLDOWN.get(name, 0) > time.time()
+    return _PROVIDER_COOLDOWN.in_cooldown(name)
 
 
 def _note_provider_failed(name: str, last_error: Optional[str] = None) -> None:
@@ -606,11 +626,11 @@ def _note_provider_failed(name: str, last_error: Optional[str] = None) -> None:
     # 400 in OpenAICompatProvider.call.)
     if last_error and last_error.startswith("HTTP 400"):
         return
-    _PROVIDER_COOLDOWN[name] = time.time() + PROVIDER_COOLDOWN_S
+    _PROVIDER_COOLDOWN.mark_failed(name)
 
 
 def _note_provider_ok(name: str) -> None:
-    _PROVIDER_COOLDOWN.pop(name, None)
+    _PROVIDER_COOLDOWN.mark_ok(name)
 
 
 def clear_provider_cooldown() -> None:
