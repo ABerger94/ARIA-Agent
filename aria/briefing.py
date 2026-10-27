@@ -135,11 +135,15 @@ def email_section(now):
         subject = str(row.get('subject', '')).strip()
         if 'security alert' in subject.casefold() and 'google' in (sender + ' ' + str(row.get('address', ''))).casefold():
             continue                    # LVI: Google's own alerts are noise
-        notable.append((email_priority(row), sender, subject))
-    notable.sort(key=lambda item: -item[0])
+        notable.append((sender, subject))
+    # LVI names the first actionable unread in INBOX (recency)
+    # order. This build used to re-sort by its priority regex,
+    # which is exactly what headlined 'Declined transaction'
+    # notices over personal mail in the greeting Alek rejected —
+    # the regex now only decides automated-or-not, never order.
     head = f'On email: {count} unread' if isinstance(count, int) else 'On email'
     if notable:
-        named = '; '.join(f"{sender} regarding '{subject}'" for _p, sender, subject in notable[:2])
+        named = '; '.join(f"{sender} regarding '{subject}'" for sender, subject in notable[:2])
         rest = f' and {len(notable) - 2} other(s)' if len(notable) > 2 else ''
         return section(f'{head} — notable: {named}{rest}.')
     if sample:
