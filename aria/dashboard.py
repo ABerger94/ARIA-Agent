@@ -527,9 +527,18 @@ def create_dashboard(callbacks):
         def draft_command(self, text):
             self.entry.setText(text); self.entry.setFocus()
 
+        def run_command(self, text):
+            # Clicking a command RUNS it (Alek, 2026-10-27) — the
+            # catalog used to only draft the example into the
+            # command bar, so a click looked like nothing happened.
+            # Same path as typing it and pressing Enter.
+            text = (text or '').strip()
+            if text:
+                self.tabs.setCurrentIndex(0); callbacks.submit(text)
+
         def commands(self):
             from aria.ui_panels import create_commands_dialog
-            create_commands_dialog(self, self.draft_command).exec()
+            create_commands_dialog(self, self.run_command).exec()
 
         def settings(self):
             from aria.ui_panels import create_settings_dialog

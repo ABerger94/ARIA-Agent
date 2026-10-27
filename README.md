@@ -92,8 +92,8 @@ restart. Settings are saved atomically.
 
 **Commands** (`Ctrl+K`) lists tools from the live registry, including
 connected MCP tools. Search names, descriptions and examples, or filter by
-category. Selecting an example drafts it in the command bar; Send executes
-your request.
+category. Clicking a command runs it immediately — the same path as typing
+it in the command bar and pressing Enter.
 
 ## Media: the NOW PLAYING panel
 

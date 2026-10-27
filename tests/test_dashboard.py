@@ -73,6 +73,10 @@ def test_dashboard_routes_controls_and_refreshes(monkeypatch, tmp_path):
     assert not window.face.grab().isNull()
     window.entry.setText('  hello ARIA  '); window.entry.returnPressed.emit()
     assert 'hello ARIA' in calls and window.entry.text() == ''
+    # Clicking a catalog command RUNS it (Alek, 2026-10-27) — same
+    # submit path as typing + Enter, not a draft in the entry box.
+    window.run_command('Show my unread email')
+    assert 'Show my unread email' in calls and window.entry.text() == ''
     window.mic.pressed.emit(); window.mic.released.emit(); window.voice.click()
     assert all(c in calls for c in ['press', 'release', 'voice'])
     window.panel_finished('Inbox', '<script>untrusted mail</script>')
