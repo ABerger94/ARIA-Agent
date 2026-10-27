@@ -396,7 +396,16 @@ def settings_save(d: dict):
     try:
         os.makedirs(WORKSPACE_DIR, exist_ok=True)
         import tempfile
-        fd, tmp = tempfile.mkstemp(prefix='.settings-', dir=WORKSPACE_DIR)
+        # The temp file must live in the DESTINATION's directory:
+        # os.replace() cannot cross filesystems, and SETTINGS_FILE is
+        # not guaranteed to sit under WORKSPACE_DIR (tests relocate
+        # it to the OS temp dir; on the CI runner that is a different
+        # device, which silently killed every save — the 2026-10-27
+        # main CI failure: MCP servers reported 'saved' but never
+        # persisted). Same-dir temp + replace stays atomic.
+        dest_dir = os.path.dirname(os.path.abspath(SETTINGS_FILE))
+        os.makedirs(dest_dir, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix='.settings-', dir=dest_dir)
         try:
             with os.fdopen(fd, 'w', encoding='utf-8') as f:
                 json.dump(d, f, indent=2)

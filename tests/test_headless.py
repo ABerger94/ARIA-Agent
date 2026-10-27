@@ -541,3 +541,21 @@ def test_watched_scope():
         assert f.startswith(pkg_prefix) or f in allowed, f'unexpected watched file: {f}'
     assert not any((f.startswith(os.path.join(repo_dir, 'tests') + os.sep) and f != os.path.abspath(sys.argv[0]) for f in files)), 'top-level tests/ must not be watched (except the running script itself)'
     assert not any((f.startswith(os.path.join(repo_dir, 'tools') + os.sep) for f in files)), 'top-level tools/ must not be watched'
+
+
+def test_settings_save_relocated_file():
+    # Regression (2026-10-27 main CI failure): settings_save staged its
+    # temp file under WORKSPACE_DIR and os.replace()d it onto
+    # SETTINGS_FILE — a cross-device move whenever SETTINGS_FILE lives
+    # elsewhere (tests relocate it to the OS temp dir), so every save
+    # silently failed and MCP add_server reported 'saved' for nothing.
+    import tempfile as _tf
+    orig = config.SETTINGS_FILE
+    tmp = _tf.NamedTemporaryFile(delete=False, suffix='.json')
+    tmp.close()
+    config.SETTINGS_FILE = tmp.name
+    try:
+        assert config.set_setting('relocated_probe', 42)
+        assert config.get_setting('relocated_probe') == 42
+    finally:
+        config.SETTINGS_FILE = orig
