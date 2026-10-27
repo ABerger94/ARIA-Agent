@@ -1008,6 +1008,22 @@ def set_speech_state_hook(fn):
     """Wire HUD state updates (speaking/idle) from the speech playback worker."""
     _DEFAULT_SPEECH_MANAGER.on_state = fn
 
+def set_speech_log_hook(fn):
+    """Wire the speech subsystem's log into the app log (Activity).
+
+    The default manager is constructed with on_log=None and nothing
+    ever set it, so EVERY speech log line — the Edge probe's verdict
+    ('Voice: Edge TTS (...)' / 'Voice: system fallback (...)'),
+    synthesis errors, fallback drops — was silently discarded (Alek,
+    2026-10-27: 'there is no voice line in activity'). The manager
+    and its SAPI fallback voice hold separate on_log attributes;
+    set both."""
+    _DEFAULT_SPEECH_MANAGER.on_log = fn
+    try:
+        _DEFAULT_SPEECH_MANAGER._sapi.on_log = fn
+    except Exception:
+        pass
+
 def transcribe_local_or_cloud(audio: sr.AudioData, recognizer_inst: Optional[sr.Recognizer] = None) -> str:
     r = recognizer_inst if recognizer_inst is not None else sr.Recognizer()
     return transcribe(audio, r, use_local_stt=fw_is_available())

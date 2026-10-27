@@ -127,6 +127,24 @@ def test_probe_all_voices_fail_logs_every_reason(sp, monkeypatch,
         assert v in joined
 
 
+def test_speech_log_hook_wires_the_default_manager(sp):
+    # Regression (Alek, 2026-10-27: 'there is no voice line in
+    # activity'): the default SpeechManager was built with
+    # on_log=None and nothing wired it, so the probe's verdict —
+    # and every other speech log — went nowhere.
+    logs = []
+
+    def hook(msg):
+        logs.append(msg)
+
+    assert sp._DEFAULT_SPEECH_MANAGER.on_log is None
+    sp.set_speech_log_hook(hook)
+    assert sp._DEFAULT_SPEECH_MANAGER.on_log is hook
+    assert sp._DEFAULT_SPEECH_MANAGER._sapi.on_log is hook
+    sp._DEFAULT_SPEECH_MANAGER.log('Voice: test line')
+    assert logs == ['Voice: test line']
+
+
 def test_synthesis_uses_session_voice(sp, monkeypatch):
     captured = {}
 
