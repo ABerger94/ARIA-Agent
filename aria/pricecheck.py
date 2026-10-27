@@ -106,6 +106,14 @@ def ensure_pricecheck_task() -> bool:
 
     try:
         with sqlite3.connect(PRICE_WATCH_DB) as db:
+            # Same lazy-create contract as check_price_watches: on a
+            # fresh install the table doesn't exist until the first
+            # watch is added — that is "no watches", not a setup
+            # failure (startup log, 2026-10-27: 'Pricecheck task
+            # setup failed: no such table: price_watches').
+            db.execute("""CREATE TABLE IF NOT EXISTS price_watches(
+                id INTEGER PRIMARY KEY, url TEXT, target REAL, label TEXT,
+                last_price REAL, alerted INTEGER DEFAULT 0, created TEXT)""")
             n_watches = db.execute("SELECT COUNT(*) FROM price_watches").fetchone()[0]
         if not n_watches:
             return False
