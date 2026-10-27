@@ -55,6 +55,7 @@ _EXCLUDED_TOOLS = frozenset({
     "describe_routine",
     "trust_routine",
     "untrust_routine",
+    "restart_program",
     "approve",
     "deny",
     "set_approval_mode",

@@ -73,13 +73,17 @@ def _cap(name: str, default: int) -> int:
 
 
 def _default_tool_runner(name: str, args: dict) -> str:
-    from aria.tools.dispatch import execute_tool, reset_turn_state
+    from aria.tools.dispatch import (
+        delegated_scope, execute_tool, reset_turn_state)
     # Each attempt gets a fresh dispatch turn context: the
     # dispatcher's per-turn duplicate suppression and repair budgets
     # are per-turn by design, and a delegated task's legitimate retry
-    # of the same call must not be eaten by them.
+    # of the same call must not be eaten by them. The delegated_scope
+    # wrap is what lets host-lifecycle tools (restart_program,
+    # run_shell_command) refuse to run for a background worker.
     reset_turn_state()
-    return execute_tool(name, args or {})[0]
+    with delegated_scope():
+        return execute_tool(name, args or {})[0]
 
 
 def _default_summarizer(goal: str, completed: List[dict]) -> str:

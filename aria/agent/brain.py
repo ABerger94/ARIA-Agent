@@ -145,17 +145,25 @@ _BOOT_HASH_SOUL = _file_sha256(SOUL_PATH)
 _RESTART_TIMER: Optional[threading.Timer] = None
 
 
-def _restart_process():
+def _restart_process() -> bool:
+    """Relaunch this process: same interpreter, same script, same
+    args, then exit so the new process owns the machine. Returns
+    True once the new process is spawned (the os._exit means the
+    caller never sees it on the success path); False — logged,
+    never silent — when there is nothing to relaunch or the spawn
+    failed."""
     if not _RUNNING_SCRIPT:
-        return
+        add_log("Self-restart failed: no running script to relaunch.")
+        return False
     add_log("Self-restart: relaunching with updated code...")
     try:
         py_exe = sys.executable
         subprocess.Popen([py_exe, _RUNNING_SCRIPT] + sys.argv[1:])
     except Exception as e:
         add_log(f"Self-restart relaunch failed: {e}")
-        return
+        return False
     os._exit(0)
+    return True
 
 
 def _restore_last_committed(path: str, repo_dir: Optional[str] = None) -> Optional[str]:
@@ -307,6 +315,59 @@ def _maybe_restart_after_self_edit(say_fn: Callable[[str], None]):
     _RESTART_TIMER.start()
 
 
+# ── Program restart on request (the restart_program tool) ─────────────
+# The Mark-LVI restart_program port (2026-10-27). The gap this closes:
+# ARIA-Agent's only restart path was the self-edit watcher above,
+# which fires solely when a watched .py file changed since boot —
+# so when the user said "restart" and no code had changed, she had
+# no tool to call and nothing relaunched: she answered as if she
+# would restart and the program kept running. This rides the same
+# machinery (bounded speech drain, then _restart_process) behind a
+# one-shot arbiter so it can never race or double a self-edit
+# restart, and it never touches the computer's power.
+_PROGRAM_RESTART_LOCK = threading.Lock()
+_PROGRAM_RESTART_ARMED = False
+
+
+def request_program_restart() -> str:
+    """Arm a relaunch of this program at the user's direct request.
+
+    Availability is checked BEFORE anything is armed or announced:
+    with no running script there is nothing to relaunch, so refuse
+    in her voice — never an announced restart that doesn't happen.
+    NOT confirm-gated: the user's direct command is the
+    authorisation, and the spoken reply is the notice."""
+    global _PROGRAM_RESTART_ARMED
+    if not _RUNNING_SCRIPT or not os.path.isfile(_RUNNING_SCRIPT):
+        return ("I can't restart my program from here — there's no "
+                "running program for me to relaunch. Start me again "
+                "from the desktop shortcut or the terminal instead.")
+    with _PROGRAM_RESTART_LOCK:
+        if _PROGRAM_RESTART_ARMED or _RESTART_TIMER is not None:
+            return ("A restart is already on its way — give it a "
+                    "moment and I'll be back.")
+        _PROGRAM_RESTART_ARMED = True
+    add_log("Program restart requested by user.")
+    threading.Thread(target=_wait_and_restart_program, daemon=True,
+                     name="program-restart").start()
+    return "Restarting my program now."
+
+
+def _wait_and_restart_program() -> None:
+    """The self-edit waiter, mirrored: let speech drain (bounded),
+    settle briefly, then relaunch. Runs on its own thread — the
+    turn that asked is over — and is NOT the shared _RESTART_TIMER,
+    so the per-turn timer cancel in run_agent cannot drop it."""
+    global _PROGRAM_RESTART_ARMED
+    deadline = time.time() + 120
+    while (speech._SPEECH_QUEUE.unfinished_tasks > 0 or speech._AUDIO_PLAY_QUEUE.unfinished_tasks > 0) and time.time() < deadline:
+        time.sleep(0.5)
+    time.sleep(2.0)
+    if not _restart_process():
+        with _PROGRAM_RESTART_LOCK:
+            _PROGRAM_RESTART_ARMED = False
+
+
 def _vision_prepass(user_prompt: str, image_bytes: bytes, is_screen: bool) -> str:
     """Describe image bytes via native Ollama /api/chat and fold the
     description into the prompt text. Returns the augmented prompt.
@@ -352,6 +413,8 @@ def build_system_instruction(user_prompt: str) -> str:
         "You are also an embodied autonomous desktop AI Agent OS running on the user's laptop. "
         "If you edit your own program file (the running Python script) or soul.md, I automatically "
         "restart the Python process when your turn completes so the new code loads — never ask the user to restart you. "
+        "\"Restart your program\", \"restart yourself\", \"restart the app\" mean restart_program — your own "
+        "program relaunching, never the computer: call restart_program for those, never just say you will restart. "
         "Self-editing: use edit_own_code(path, content) to rewrite one of your source files whole, or "
         "patch_own_code(path, old_text, new_text) for one exact-match change — they are the ONLY tools that "
         "can modify your code (aria/ package .py files, the aria.py launcher, soul.md); write_file saves to "

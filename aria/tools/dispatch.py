@@ -4,6 +4,7 @@ Coordinates tool invocation, argument repair, duplicate call suppression,
 risky tool audit logging, HUD feedback transitions, and progressive schema payloads.
 """
 
+import contextlib
 import time
 import re
 from typing import Dict, List, Optional, Set, Tuple, Callable, Any
@@ -31,6 +32,27 @@ def in_preauthorized_scope() -> bool:
     delegated task). Tools whose effects cannot be pre-described
     — phone control — refuse in this scope."""
     return bool(getattr(_SCOPE, "preauthorized", False))
+
+
+def in_delegated_scope() -> bool:
+    """True while this thread runs a tool for a delegated background
+    task (aria/agent/taskexec.py wraps its runner in
+    delegated_scope()). Host-lifecycle tools — restart_program,
+    run_shell_command — refuse here: a background worker must not
+    restart or shell out of the process it lives inside."""
+    return bool(getattr(_SCOPE, "delegated", False))
+
+
+@contextlib.contextmanager
+def delegated_scope():
+    """Mark tool execution on this thread as delegated-task work
+    for the duration of the block (see in_delegated_scope)."""
+    prev = getattr(_SCOPE, "delegated", False)
+    _SCOPE.delegated = True
+    try:
+        yield
+    finally:
+        _SCOPE.delegated = prev
 
 # Progressive Toolkit State
 _LOADED_TOOLKITS: Set[str] = {"core"}
@@ -580,6 +602,26 @@ from aria.tools import triage as triage_mod
 from aria.tools import usertools as usertools_mod
 
 
+def _tool_restart_program(args: dict) -> str:
+    """restart_program: the user told her to restart her program
+    ("restart your program" / "restart yourself" / "restart the
+    app"). Direct commands only: a routine replay rides
+    preauthorized scope, a delegated worker rides delegated scope,
+    and neither may relaunch the host process. The brain owns the
+    relaunch itself (availability check, arbiter, speech drain) —
+    lazy import: brain imports dispatch, never the reverse at
+    module load."""
+    if in_preauthorized_scope():
+        return ("[restart_program refused: a restart is a direct command "
+                "only — never inside a routine or an approved replay. "
+                "Ask me directly and I will restart.]")
+    if in_delegated_scope():
+        return ("[restart_program refused: a delegated task cannot "
+                "restart the program it is running inside.]")
+    from aria.agent import brain as _brain_mod
+    return _brain_mod.request_program_restart()
+
+
 def _init_default_registry():
     _REGISTRY["web_search"] = lambda a: builtins.tool_web_search(a.get("query", ""))
     _REGISTRY["run_python_code"] = lambda a: tool_run_python(
@@ -651,6 +693,7 @@ def _init_default_registry():
     _REGISTRY["task_status"] = lambda a: _tool_task_status(a)
     _REGISTRY["task_resume"] = lambda a: _tool_task_resume(a)
     _REGISTRY["task_cancel"] = lambda a: _tool_task_cancel(a)
+    _REGISTRY["restart_program"] = lambda a: _tool_restart_program(a)
     _REGISTRY["self_heal_diagnose"] = lambda a: builtins.tool_self_heal_diagnose(
         error_text=a.get("error_text", ""), context=a.get("context", "")
     )

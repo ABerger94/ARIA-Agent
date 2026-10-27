@@ -489,7 +489,13 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
         'name': 'task_cancel',
         'parameters': {   'properties': {'task_id': {'type': 'STRING'}},
                           'required': ['task_id'],
-                          'type': 'OBJECT'}}]
+                          'type': 'OBJECT'}},
+    {   'description': 'Relaunches your own program — same interpreter, same script — when the user says '
+                       '"restart your program", "restart yourself", or "restart the app". Never restarts the '
+                       'computer. The relaunch happens once your spoken reply finishes. Direct user commands '
+                       'only: it refuses inside routines and delegated tasks.',
+        'name': 'restart_program',
+        'parameters': {'properties': {}, 'type': 'OBJECT'}}]
 
 TOOLS_DECLARATION = [
     {"function_declarations": ALL_FUNCTION_DECLARATIONS}
@@ -538,6 +544,7 @@ TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persiste
                              'list_workspace',
                              'edit_own_code',
                              'patch_own_code',
+                             'restart_program',
                              'inbox_list',
                              'inbox_describe',
                              'inbox_read',
@@ -656,6 +663,7 @@ COMMAND_GUIDE = [   ('Memory', 'save_memory', 'remember my Doja playlist is spot
     ('Watch', 'watch_screen', 'watch the screen and tell me when the build finishes'),
     ('Watch', 'list_screen_watches', 'what screens am I watching?'),
     ('Prices', 'check_price_watches', 'check my price watches now'),
+    ('System', 'restart_program', 'restart your program'),
     ('Custom', 'reload_user_tools', 'reload my custom tools'),
     ('Persona', 'set_persona', 'be concise'),
     ('Persona', 'get_persona', 'what persona are you using?')]
