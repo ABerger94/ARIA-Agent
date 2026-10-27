@@ -54,6 +54,43 @@ def test_html_message_is_plain_text_and_does_not_load_images():
     assert 'bad' not in text and 'https://' not in text and '<' not in text
 
 
+def _hdr(sender, subject, date):
+    return (f'Date: {date}\r\nFrom: {sender}\r\n'
+            f'Subject: {subject}\r\n\r\n').encode()
+
+
+class BatchIMAP:
+    """A server that answers a UID-set FETCH with per-message tuples
+    carrying UID tokens — the shape real IMAP servers return."""
+    def __init__(self): self.fetch_calls = []
+    def select(self, name, readonly=False): return 'OK', []
+    def uid(self, operation, *args):
+        if operation == 'SEARCH': return 'OK', [b'101 102']
+        assert operation == 'FETCH'
+        self.fetch_calls.append(args)
+        return 'OK', [
+            (b'2 (UID 102 FLAGS () BODY[HEADER.FIELDS (DATE FROM SUBJECT)] {120}',
+             _hdr('Sam <sam@example.com>', 'Dinner Thursday?', 'Tue, 27 Oct 2026 09:00:00 +0000')),
+            b')',
+            (b'1 (UID 101 FLAGS (\\Seen) BODY[HEADER.FIELDS (DATE FROM SUBJECT)] {118}',
+             _hdr('Bank <noreply@bank.example>', 'Statement ready', 'Mon, 26 Oct 2026 09:00:00 +0000')),
+            b')']
+    def status(self, *args): return 'OK', [b'INBOX (UNSEEN 1)']
+    def logout(self): pass
+
+
+def test_fetch_messages_batches_one_fetch():
+    client = BatchIMAP()
+    result = m.fetch_messages(limit=30, connect=lambda: (client, None))
+    assert result['ok'] and result['unread_total'] == 1
+    assert len(client.fetch_calls) == 1                 # one round-trip
+    assert client.fetch_calls[0][0] == b'102,101'       # the whole set
+    rows = result['messages']
+    assert [r['uid'] for r in rows] == ['102', '101']    # newest first
+    assert rows[0]['subject'] == 'Dinner Thursday?' and rows[0]['unread']
+    assert rows[1]['subject'] == 'Statement ready' and not rows[1]['unread']
+
+
 def test_imap_error_closes_connection():
     client = IMAP()
     client.uid = lambda *args: ('NO', [])

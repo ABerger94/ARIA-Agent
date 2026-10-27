@@ -1,8 +1,9 @@
 """One source-backed daily briefing for startup, scheduler, desktop and phone.
 
 The text is composed from observed data, without a model inventing plans or
-headlines. Sources run concurrently under one deadline; missing sources are
-reported separately from sources that returned an empty result.
+headlines. Sources run concurrently, each under its own deadline;
+missing sources are reported separately from sources that returned
+an empty result.
 
 The spoken composition follows Mark-LVI's morning briefing (Alek's
 call, 2026-10-27 — 'that briefing is still better'): 'You've got:
@@ -32,6 +33,19 @@ _CACHE_LOCK = threading.Lock()
 _BUILD_LOCK = threading.Lock()
 _TITLES = {'schedule': 'Today’s schedule', 'email': 'Important email',
            'weather': 'Local weather', 'local_news': 'Local news', 'world_news': 'World news'}
+# Per-section bounds, Mark-LVI style: sections run concurrently and
+# each is abandoned at its OWN bound (a slow inbox no longer shares
+# one deadline with everything else), landing its timeout note in
+# the greeting instead of stalling or vanishing.
+_SECTION_TIMEOUTS = {'schedule': 8.0, 'email': 12.0, 'weather': 10.0,
+                     'local_news': 10.0, 'world_news': 10.0}
+_TIMEOUT_NOTES = {
+    'schedule': "Your calendar is taking too long to check, so I've skipped it this time.",
+    'email': "Your email is taking too long to check, so I've skipped it this time.",
+    'weather': "The weather is taking too long to load, so I've skipped it this time.",
+    'local_news': "The news is taking too long to load, so I've skipped it this time.",
+    'world_news': "The news is taking too long to load, so I've skipped it this time.",
+}
 
 
 def section(text, status='ok', sources=None):
@@ -155,7 +169,7 @@ def weather_section(city):
     data = json.loads(_get('https://wttr.in/' + urllib.parse.quote(city) + '?format=j1'))
     cur = data['current_condition'][0]; today = data['weather'][0]
     name = city.split(',')[0]
-    desc = (cur.get('weatherDesc') or [{}])[0].get('value', '')
+    desc = (cur.get('weatherDesc') or [{}])[0].get('value', '').strip()
     cond = f' and {desc}' if desc else ''
     return section(f"In {name} it's {cur['temp_F']} degrees{cond}, with a high of {today['maxtempF']} and a low of {today['mintempF']}.",
                    sources=[{'title': 'Weather', 'url': 'https://wttr.in/' + urllib.parse.quote(city)}])
@@ -166,6 +180,16 @@ def parse_headlines(xml, now, limit=3):
     results = []; seen = set()
     for item in root.findall('.//item'):
         title = ' '.join((item.findtext('title') or '').split())
+        # Google News titles arrive as 'Headline - Publisher'
+        # ('… - WBAL-TV', '… - Reuters'). Alek (2026-10-27):
+        # headlines only, no source names in the briefing. Strip
+        # the LAST ' - ' tail only when it is short and
+        # sentence-free, so a dash inside a real headline survives.
+        if ' - ' in title:
+            head, _, tail = title.rpartition(' - ')
+            if (head and '.' not in tail and len(tail.split()) <= 6
+                    and (tail[0].isupper() or tail.isupper())):
+                title = head
         link = (item.findtext('link') or '').strip()
         try:
             published = parsedate_to_datetime(item.findtext('pubDate') or '')
@@ -216,21 +240,30 @@ def compose(now, sources, name='Alek', timeout=14):
         completed.put((key, value))
     for key, fn in sources.items():
         threading.Thread(target=run, args=(key, fn), daemon=True).start()
-    results = {}; deadline = time.monotonic() + timeout
-    while len(results) < len(sources):
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
+    # `timeout` caps every section's own bound (tests pass a small
+    # cap to exercise the timeout path quickly).
+    bounds = {key: min(_SECTION_TIMEOUTS.get(key, timeout), timeout)
+              for key in sources}
+    results = {}
+    pending = set(sources)
+    started = time.monotonic()
+    while pending:
+        elapsed = time.monotonic() - started
+        pending = {k for k in pending if elapsed < bounds[k]}
+        if not pending:
             break
+        wait = min(bounds[k] for k in pending) - elapsed
         try:
-            key, value = completed.get(timeout=remaining)
+            key, value = completed.get(timeout=max(0.01, wait))
             results[key] = value
+            pending.discard(key)
         except queue.Empty:
-            break
+            pass
     part = 'morning' if now.hour < 12 else 'afternoon' if now.hour < 18 else 'evening'
     intro = f"Good {part}, {name}. Today is {now.strftime('%A, %B')} {now.day}."
     sections = []
     for key, title in _TITLES.items():
-        value = results.get(key, section(title + ' is taking too long to load; I skipped it for now.', 'timeout'))
+        value = results.get(key, section(_TIMEOUT_NOTES[key], 'timeout'))
         sections.append({'key': key, 'title': title, **value})
     # The SPOKEN text follows Mark-LVI's composition: calendar,
     # email, weather, then ONE 'In the news:' line of headline

@@ -130,6 +130,22 @@ def test_news_rejects_old_undated_and_duplicate_headlines():
     assert rows[0]['url'].startswith('https://')
 
 
+def test_news_titles_drop_the_publisher_suffix():
+    def item(title):
+        return (f'<item><title>{title}</title><link>https://news.example/x</link>'
+                '<pubDate>Tue, 27 Oct 2026 07:00:00 +0000</pubDate></item>')
+    xml = ('<rss><channel>'
+           + item('Florist to close after 115 years - WBAL-TV')
+           + item('Fashion AI era arrives - Reuters')
+           + item('A well-known shop - a history in flowers')
+           + '</channel></rss>')
+    titles = [r['title'] for r in b.parse_headlines(xml, NOW)]
+    assert 'Florist to close after 115 years' in titles
+    assert 'Fashion AI era arrives' in titles
+    # A lowercase dash tail is part of the headline, not a publisher.
+    assert 'A well-known shop - a history in flowers' in titles
+
+
 def test_weather_uses_observed_values(monkeypatch):
     monkeypatch.setattr(b, '_get', lambda url: b'{"current_condition":[{"temp_F":"59","weatherDesc":[{"value":"Clear"}]}],"weather":[{"maxtempF":"66","mintempF":"54"}]}')
     result = b.weather_section('Dundalk, Maryland')

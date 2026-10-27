@@ -106,15 +106,50 @@ def fetch_messages(limit=15, unread_only=False, connect=None):
             raise RuntimeError('Could not load the inbox.')
         ids = (data[0] or b'').split()[-max(1, min(50, int(limit))):][::-1]
         messages = []
-        for uid in ids:
-            typ, data = client.uid('FETCH', uid, '(FLAGS BODY.PEEK[HEADER.FIELDS (DATE FROM SUBJECT)])')
-            raw = _raw(data)
-            if typ != 'OK' or not raw:
-                continue
-            row = header_data(email.message_from_bytes(raw))
-            flags = b' '.join(part[0] for part in data if isinstance(part, tuple))
-            row.update(uid=uid.decode('ascii'), unread=b'\\Seen' not in flags)
-            messages.append(row)
+        if ids:
+            # ONE batched header fetch for the whole UID set. The
+            # old loop made one IMAP round-trip per message — 30
+            # serial round-trips regularly overran the briefing's
+            # deadline and the email section timed out of the
+            # greeting (Alek's log, 2026-10-27).
+            typ, data = client.uid('FETCH', b','.join(ids),
+                                   '(FLAGS BODY.PEEK[HEADER.FIELDS (DATE FROM SUBJECT)])')
+            if typ == 'OK':
+                order = {u.decode('ascii'): i for i, u in enumerate(ids)}
+                for part in data or []:
+                    if not (isinstance(part, tuple)
+                            and isinstance(part[1], bytes)):
+                        continue
+                    meta = part[0] if isinstance(part[0], bytes) else b''
+                    m = re.search(rb'UID\s+(\d+)', meta)
+                    uid = m.group(1).decode('ascii') if m else ''
+                    if not uid or uid not in order:
+                        # Unattributable tuple: the per-UID fallback
+                        # below fetches anything the batch response
+                        # didn't clearly cover.
+                        continue
+                    row = header_data(email.message_from_bytes(part[1]))
+                    row.update(uid=uid, unread=b'\\Seen' not in meta)
+                    messages.append(row)
+                messages.sort(key=lambda r: order.get(r['uid'], len(order)))
+            covered = {r['uid'] for r in messages if r['uid']}
+            missing = [u for u in ids if u.decode('ascii') not in covered]
+            if missing:
+                # The batch response didn't cover every requested
+                # UID (quirky server): fetch just the missing ones
+                # the old per-message way rather than reporting a
+                # shorter inbox than the real one.
+                for uid in missing:
+                    typ, data = client.uid('FETCH', uid, '(FLAGS BODY.PEEK[HEADER.FIELDS (DATE FROM SUBJECT)])')
+                    raw = _raw(data)
+                    if typ != 'OK' or not raw:
+                        continue
+                    row = header_data(email.message_from_bytes(raw))
+                    flags = b' '.join(part[0] for part in data if isinstance(part, tuple))
+                    row.update(uid=uid.decode('ascii'), unread=b'\\Seen' not in flags)
+                    messages.append(row)
+                order = {u.decode('ascii'): i for i, u in enumerate(ids)}
+                messages.sort(key=lambda r: order.get(r['uid'], len(order)))
         unread_total = None
         try:
             typ, data = client.status('INBOX', '(UNSEEN)')
