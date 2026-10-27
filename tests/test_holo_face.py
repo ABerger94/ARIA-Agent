@@ -136,6 +136,9 @@ def test_dashboard_centerpiece_swap_and_persist(monkeypatch):
     assert window.holo is not None
     assert not hasattr(window, 'centerpiece_btn')
     assert not hasattr(window, 'whisper')
+    # The live speech subtitle under the state line is gone too
+    # (Alek, 2026-10-27 — the Conversation log carries her words).
+    assert not hasattr(window, 'subtitle')
     assert window.face.isVisible() and not window.holo.isVisible()
     window.set_centerpiece('holo')
     assert window.holo.isVisible() and not window.face.isVisible()

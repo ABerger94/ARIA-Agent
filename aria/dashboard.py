@@ -431,7 +431,7 @@ def create_dashboard(callbacks):
             # centre CARD's background, not just the stack's:
             # extended 07:58 at his word to run the whole card —
             # top to bottom, behind the title, the centrepiece,
-            # the IDLE state line, the subtitle and the hold-to-
+            # the IDLE state line and the hold-to-
             # talk buttons. Sizing is synced in render_once /
             # resizeEvent (_sync_neural_geometry).
             # The BLACK backdrop the centrepiece has always sat
@@ -472,7 +472,11 @@ def create_dashboard(callbacks):
             cl.addWidget(self.center_stack, 1)
             self._last_orb_publish = 0.0
             self.state = QLabel('IDLE'); self.state.setAlignment(Qt.AlignmentFlag.AlignCenter); self.state.setObjectName('brand'); cl.addWidget(self.state)
-            self.subtitle = QLabel(); self.subtitle.setTextFormat(Qt.TextFormat.PlainText); self.subtitle.setWordWrap(True); self.subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter); cl.addWidget(self.subtitle)
+            # No live speech subtitle under the state line
+            # (Alek, 2026-10-27): the words she is saying used to
+            # pop up here — removed at his word; the Conversation
+            # log carries her text. hud.SUBTITLE_TEXT still
+            # exists for the phone frame's strip.
             controls = QHBoxLayout()
             self.mic = QPushButton('Hold to talk'); self.mic.pressed.connect(callbacks.ptt_press); self.mic.released.connect(callbacks.ptt_release); controls.addWidget(self.mic)
             self.voice = QPushButton('Voice on'); self.voice.clicked.connect(frame.toggle_voice); controls.addWidget(self.voice)
@@ -1205,7 +1209,7 @@ def create_dashboard(callbacks):
                 self.views['Briefing'].setPlainText(report_text(briefing)); self.brief_speak.setEnabled(True)
             data = frame.strip_data()
             self.clock.setText(datetime.now().strftime('%H:%M  |  %a %d %b'))
-            self.state.setText(str(hud.CURRENT_STATE).upper()); self.subtitle.setText(str(hud.SUBTITLE_TEXT))
+            self.state.setText(str(hud.CURRENT_STATE).upper())
             self.cpu.set_value(int(data['cpu']), f"{int(data['cpu'])}%")
             self.mem.set_value(int(data['mem']), f"{int(data['mem'])}%")
             net_kbs = float(data.get('net_down_kbs', 0) or 0) + float(data.get('net_up_kbs', 0) or 0)
