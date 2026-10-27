@@ -56,6 +56,9 @@ def create_dashboard(callbacks):
             self._last_chat = None
             self._last_activity = None
             self._last_refresh = 0.0
+            self._confirm_banner = None
+            self._confirm_token = None
+            self._confirm_busy = False
             root = QWidget(); self.setCentralWidget(root)
             layout = QVBoxLayout(root); layout.setContentsMargins(20, 16, 20, 16); layout.setSpacing(16)
             head = QHBoxLayout()
@@ -285,6 +288,86 @@ def create_dashboard(callbacks):
             timer = QTimer(dialog); timer.timeout.connect(connection_tick); timer.start(1000)
             dialog.exec()
 
+        def _poll_approvals(self):
+            """Show the confirm banner for the oldest pending approval.
+
+            Polls aria/approval.py's store on the refresh cadence. The
+            banner's answer goes straight to approve_token / deny_token —
+            the same execution path the voice tools use — so a click and
+            a spoken "yes" can never diverge. Fail-open: a broken poll
+            logs silently and the voice flow still works.
+            """
+            try:
+                from aria import approval as _approval
+                entries = _approval.pending_entries()
+            except Exception as exc:
+                config.log_silent('dashboard.approvals', exc)
+                return
+            if self._confirm_busy:
+                return
+            if self._confirm_banner is not None:
+                if any(e['token'] == self._confirm_token for e in entries):
+                    self._place_confirm_banner()
+                    return
+                # Resolved elsewhere (voice approve/deny) or expired.
+                self._hide_confirm_banner()
+            if not entries:
+                return
+            entry = entries[0]
+            try:
+                from aria.confirm_banner import ConfirmBanner
+                banner = ConfirmBanner(
+                    f"Approve {entry['tool']}?",
+                    f"{entry['desc']}\n\n"
+                    f"token {entry['token']} · waiting {entry['age_s']}s · "
+                    f"expires 10 min after the request",
+                    self)
+            except Exception as exc:
+                config.log_silent('dashboard.confirm_banner', exc)
+                return
+            banner.answered.connect(self._on_confirm_answered)
+            self._confirm_banner = banner
+            self._confirm_token = entry['token']
+            self._place_confirm_banner()
+            banner.show()
+
+        def _place_confirm_banner(self):
+            banner = self._confirm_banner
+            if banner is None:
+                return
+            banner.move(max(16, (self.width() - banner.width()) // 2), 84)
+            banner.raise_()
+
+        def _hide_confirm_banner(self):
+            banner, self._confirm_banner = self._confirm_banner, None
+            self._confirm_token = None
+            if banner is not None:
+                banner.hide()
+                banner.deleteLater()
+
+        def _on_confirm_answered(self, ok):
+            token = self._confirm_token
+            self._hide_confirm_banner()
+            if token is None:
+                return
+            from aria import approval as _approval
+            if not ok:
+                _approval.deny_token(token)
+                return
+            # approve_token EXECUTES the stashed call, which can take
+            # seconds — never on the UI thread.
+            self._confirm_busy = True
+
+            def work():
+                try:
+                    _approval.approve_token(token)
+                except Exception as exc:
+                    config.log_silent('dashboard.approve', exc)
+                finally:
+                    self._confirm_busy = False
+
+            threading.Thread(target=work, daemon=True).start()
+
         def render_once(self):
             if not callbacks.is_running(): self.close(); return
             callbacks.housekeeping()
@@ -336,6 +419,7 @@ def create_dashboard(callbacks):
                 self.views['Tasks'].setPlainText((text or 'No delegated tasks.') + '\n\nSCHEDULED\n' + (scheduled or 'No scheduled tasks.'))
             except Exception as exc:
                 self.views['Tasks'].setPlainText('Task status unavailable: ' + str(exc))
+            self._poll_approvals()
 
         def closeEvent(self, event):
             callbacks.ptt_release(); callbacks.request_stop(); super().closeEvent(event)
