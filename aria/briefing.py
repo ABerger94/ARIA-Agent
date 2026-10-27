@@ -296,6 +296,13 @@ def report_text(report):
     blocks = ['DAILY BRIEFING  ·  ' + report['generated_at'], report['text'].split('. ', 2)[0] + '.']
     for item in report['sections']:
         blocks.append(item['title'].upper() + '\n' + item['text'])
+        if item['key'] in ('local_news', 'world_news'):
+            # Alek (2026-10-27): no source listings in the
+            # briefing — the headlines are the content; repeating
+            # each one as a title+URL block under its section is
+            # noise. (The weather section keeps its single source
+            # link; the news sections' sources ARE the headlines.)
+            continue
         for source in item['sources']:
             blocks.append(source['title'] + '\n' + source['url'])
     return '\n\n'.join(blocks)

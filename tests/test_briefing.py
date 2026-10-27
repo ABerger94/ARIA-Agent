@@ -92,6 +92,18 @@ def test_email_lvi_rules(monkeypatch):
     assert b.email_section(NOW)['text'] == 'Inbox is clear.'
 
 
+def test_report_text_lists_headlines_not_news_sources():
+    funcs = sources()
+    funcs['local_news'] = lambda: b.section(
+        'Local headlines: Local one; Local two.',
+        sources=[{'title': 'Local one', 'url': 'https://news.example/1'},
+                 {'title': 'Local two', 'url': 'https://news.example/2'}])
+    report = b.compose(NOW, funcs)
+    text = b.report_text(report)
+    assert 'Local one' in text and 'Local two' in text
+    assert 'news.example' not in text          # no source URL blocks
+
+
 def test_spoken_text_merges_news_into_one_line():
     funcs = sources()
     funcs['local_news'] = lambda: b.section(
