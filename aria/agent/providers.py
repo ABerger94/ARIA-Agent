@@ -28,7 +28,7 @@ from aria.config import (
     GROQ_API_KEY, GROQ_MODEL,
     OPENROUTER_API_KEY, OPENROUTER_MODEL, MISTRAL_API_KEY, MISTRAL_MODEL,
     OLLAMA_CLOUD_API_KEY, OLLAMA_CLOUD_MODEL,
-    GEMINI_API_KEY, GEMINI_MODEL,
+    GEMINI_API_KEY, GEMINI_API_KEYS, GEMINI_MODEL,
     OLLAMA_VISION_MODEL, OLLAMA_CODE_MODEL,
     PROVIDER_CHAIN, KEY_QUARANTINE_DURATION_S,
     quarantine_key, key_is_quarantined, key_mask, add_log,
@@ -505,6 +505,27 @@ class OpenAICompatProvider(Provider):
             add_log(f"{self.name}: error: {e}")
             return None
 
+def _gemini_providers() -> List[Provider]:
+    """One provider per pooled Gemini key (Alek, 2026-10-27).
+    The first keeps the name 'gemini'; the rest are 'gemini_2',
+    'gemini_3', ... — distinct names give each key its own
+    failure cooldowns on both axes, and the OPS log shows WHICH
+    key is serving or failing. The chain walk itself is the
+    rotation: a key that 429s, 503s or quarantines hands the
+    turn to the next key. With a single key this is exactly the
+    old single provider."""
+    keys = [k for k in (GEMINI_API_KEYS or []) if k]
+    if not keys and GEMINI_API_KEY:
+        keys = [GEMINI_API_KEY]
+    out: List[Provider] = []
+    for i, k in enumerate(keys):
+        name = "gemini" if i == 0 else f"gemini_{i + 1}"
+        out.append(OpenAICompatProvider(
+            name, "https://generativelanguage.googleapis.com/v1beta/openai",
+            k, GEMINI_MODEL))
+    return out
+
+
 def _build_chain() -> List[Provider]:
     """Providers in configured order. Phase 2/3 entries plug in here."""
     registry: Dict[str, Provider] = {
@@ -520,11 +541,14 @@ def _build_chain() -> List[Provider]:
         "ollama_cloud": OpenAICompatProvider(
             "ollama_cloud", "https://ollama.com/v1",
             OLLAMA_CLOUD_API_KEY, OLLAMA_CLOUD_MODEL),
-        "gemini": OpenAICompatProvider(
-            "gemini", "https://generativelanguage.googleapis.com/v1beta/openai",
-            GEMINI_API_KEY, GEMINI_MODEL),
     }
-    return [registry[n] for n in PROVIDER_CHAIN if n in registry]
+    chain: List[Provider] = []
+    for n in PROVIDER_CHAIN:
+        if n == "gemini":
+            chain.extend(_gemini_providers())
+        elif n in registry:
+            chain.append(registry[n])
+    return chain
 
 
 def get_active_provider() -> str:

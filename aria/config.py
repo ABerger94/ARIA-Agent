@@ -93,6 +93,44 @@ OLLAMA_CLOUD_API_KEY, _OLLAMA_CLOUD_SOURCE = key_get("OLLAMA_API_KEY")
 # (v1's original provider — kept so existing GEMINI_API_KEY setups work).
 GEMINI_API_KEY, _GEMINI_SOURCE = key_get("GEMINI_API_KEY")
 
+
+def _load_gemini_keys():
+    """The Gemini key POOL (Alek, 2026-10-27). aria_keys.json may
+    carry GEMINI_API_KEYS as a JSON list:
+
+        "GEMINI_API_KEYS": ["key-one", "key-two", "key-three"]
+
+    (a comma-separated string also works, e.g. from an env var).
+    The pool is exactly that list when it holds at least one
+    usable key; otherwise it falls back to the single
+    GEMINI_API_KEY, so existing setups are untouched. Deduped,
+    order preserved. NOTE: free-tier quota is per Google Cloud
+    PROJECT, not per key — pool keys only add capacity when
+    minted in separate projects."""
+    raw, _src = key_get("GEMINI_API_KEYS", "")
+    if isinstance(raw, list):
+        keys = [str(k).strip() for k in raw]
+    elif isinstance(raw, str):
+        keys = [k.strip() for k in raw.split(",")]
+    else:
+        keys = []
+    keys = [k for k in keys if k and k != "INSERT"]
+    if not keys and GEMINI_API_KEY and GEMINI_API_KEY != "INSERT":
+        keys = [GEMINI_API_KEY]
+    pool, seen = [], set()
+    for k in keys:
+        if k not in seen:
+            seen.add(k)
+            pool.append(k)
+    return pool
+
+
+GEMINI_API_KEYS = _load_gemini_keys()
+if GEMINI_API_KEYS:
+    # Singular consumers (Gemini Live, memory embeddings) ride
+    # the pool's first key.
+    GEMINI_API_KEY = GEMINI_API_KEYS[0]
+
 GROQ_MODEL, _ = key_get("GROQ_MODEL", "openai/gpt-oss-120b")
 OPENROUTER_MODEL, _ = key_get("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free")
 MISTRAL_MODEL, _ = key_get("MISTRAL_MODEL", "mistral-small-latest")
