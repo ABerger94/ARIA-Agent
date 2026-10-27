@@ -11,6 +11,27 @@ routines one keypress away.
 
 Built by Alek Berger. Not a framework, not a demo — a finished companion.
 
+## Native desktop command center
+
+The default Qt window now uses native resizable panels: a system and Spotify
+sidebar, ARIA's live avatar in the center, and Conversation / Inbox / Calendar /
+Tasks / Activity tabs. Type Unicode text directly in the command bar. Voice,
+push-to-talk, interruption, whisper, volume, file browsing, and file drops use
+the existing backend. Inbox and Calendar load on Refresh in background threads;
+missing connections display the existing setup instructions.
+
+Click **REMOTE CONTROL** in the sidebar to connect a phone on the same Wi-Fi.
+Scan the QR code or copy its link. It works once, expires in five minutes, and
+Refresh replaces it. The phone retains the existing face, camera, voice, command
+reference and upload pages. A first-time HTTPS certificate warning may appear;
+Windows Firewall and Wi-Fi client isolation can prevent LAN access. This is
+local-network access, not an internet tunnel. Already paired phones keep the
+existing bridge authentication behavior; expiring the QR does not sign them out.
+
+Install updated dependencies with `py -3.12 -m pip install -r requirements.txt`.
+For the previous canvas layout, set `ARIA_UI_LAYOUT=classic` before launching.
+`ARIA_UI_HOST=cv2` still selects the classic fallback host.
+
 ## Features
 
 - **Animated HUD Face & Full-Body Pixel Avatar** (OpenCV) — expressive

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import base64
 import hmac
+import secrets
+import threading
 import io
 import wave
 import json
@@ -38,6 +40,34 @@ BRIDGE_KEY: Optional[str] = None
 _BRIDGE_PROCESS_CALL: Optional[Callable[[str, bool], str]] = None
 _CHAT_LOG_CALL: Optional[Callable[[], Any]] = None
 _BRIDGE_SERVER: Optional[ThreadingHTTPServer] = None
+_BRIDGE_ACTUAL_SCHEME = None
+_PAIR_LOCK = threading.Lock()
+_PAIR_TOKEN = ""
+_PAIR_EXPIRES = 0.0
+
+
+def create_pairing_url():
+    """Create one short-lived, single-use pairing link from the desktop UI."""
+    global _PAIR_TOKEN, _PAIR_EXPIRES
+    if _BRIDGE_SERVER is None:
+        raise RuntimeError("The phone bridge is not running.")
+    with _PAIR_LOCK:
+        _PAIR_TOKEN = secrets.token_urlsafe(24)
+        _PAIR_EXPIRES = time.monotonic() + 300
+        base = get_bridge_url().split("?", 1)[0]
+        return base + "?pair=" + _PAIR_TOKEN
+
+
+def _consume_pairing(token):
+    global _PAIR_TOKEN, _PAIR_EXPIRES
+    with _PAIR_LOCK:
+        if not token or not _PAIR_TOKEN or time.monotonic() >= _PAIR_EXPIRES:
+            return False
+        if not hmac.compare_digest(token, _PAIR_TOKEN):
+            return False
+        _PAIR_TOKEN, _PAIR_EXPIRES = "", 0.0
+        return True
+
 
 def _generate_silent_wav() -> bytes:
     buf = io.BytesIO()
@@ -446,7 +476,8 @@ def _advertised_url(host: str, port: int,
 
 
 def get_bridge_url() -> str:
-    return _advertised_url(_bridge_bind_host(), PHONE_BRIDGE_PORT)
+    port = _BRIDGE_SERVER.server_port if _BRIDGE_SERVER else PHONE_BRIDGE_PORT
+    return _advertised_url(_bridge_bind_host(), port, scheme=_BRIDGE_ACTUAL_SCHEME)
 
 
 
@@ -1219,7 +1250,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def _bridge_cookie(self) -> str:
         cookie = ("aria_bridge_token=" + urllib.parse.quote(BRIDGE_TOKEN or "", safe="")
                   + "; HttpOnly; Path=/; SameSite=Strict")
-        if BRIDGE_SCHEME == "https":
+        if (_BRIDGE_ACTUAL_SCHEME or BRIDGE_SCHEME) == "https":
             cookie += "; Secure"
         return cookie
 
@@ -1333,6 +1364,18 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
         path = self.path.split("?", 1)[0]
         if path == "/":
+            pair = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("pair", [""])[0]
+            if pair:
+                if not _consume_pairing(pair):
+                    self._send(401, b'{"error":"Pairing code expired or already used. Refresh Remote Control on the laptop."}')
+                    return
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.send_header("Set-Cookie", self._bridge_cookie())
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.end_headers()
+                return
             # One-time upgrade FIRST: a valid ?token= becomes a cookie and
             # redirects to the clean URL, so the page's API calls (cookie /
             # header auth only) stay authed. Must run before _authed() because
@@ -1528,14 +1571,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
 
 def start_bridge_server(port: int = PHONE_BRIDGE_PORT) -> ThreadingHTTPServer:
-    global _BRIDGE_SERVER
+    global _BRIDGE_SERVER, _BRIDGE_ACTUAL_SCHEME
     ensure_bridge_cert()
     # Bind host: 0.0.0.0 by default (the phone must be able to reach
     # it; every route requires the bridge token regardless). The
     # "phone_bridge_host" setting overrides in either direction.
     host = _bridge_bind_host()
     srv = ThreadingHTTPServer((host, port), BridgeHandler)
-    _BRIDGE_SERVER = srv
     online_scheme = BRIDGE_SCHEME
     if BRIDGE_SCHEME == "https" and BRIDGE_CERT and BRIDGE_KEY:
         try:
@@ -1546,6 +1588,8 @@ def start_bridge_server(port: int = PHONE_BRIDGE_PORT) -> ThreadingHTTPServer:
             add_log(f"Bridge TLS wrap failed: {e}")
             print(f"[ARIA] Bridge TLS wrap failed: {e}", flush=True)
             online_scheme = "http"  # the socket stayed plain
+    _BRIDGE_ACTUAL_SCHEME = online_scheme
+    _BRIDGE_SERVER = srv
     # Advertise the address ACTUALLY bound, in its phone-ready
     # (token-carrying) form — never a LAN URL for a localhost bind.
     url = _advertised_url(host, port, scheme=online_scheme)
