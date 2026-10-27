@@ -537,6 +537,20 @@ def test_center_composite_is_opaque_and_layered(monkeypatch, tmp_path):
     centre = img.pixelColor(img.width() // 2, img.height() // 2)
     assert (centre.red(), centre.green(), centre.blue()) != (
         corner.red(), corner.green(), corner.blue())
+    # The neural field spans the WHOLE centre card (Alek,
+    # 2026-10-27: 'extended down past the IDLE ... to the top
+    # or the hold to talk buttons'): card-sized, and it reaches
+    # below the stack — past the state label and the controls.
+    from PyQt6.QtCore import QPoint
+    assert window.neural.parent() is window._center_card
+    assert window.neural.size() == window._center_card.size()
+    assert window.neural.height() > window.center_stack.height()
+    state_bottom = (window.state.mapTo(window._center_card, QPoint(0, 0)).y()
+                    + window.state.height())
+    mic_bottom = (window.mic.mapTo(window._center_card, QPoint(0, 0)).y()
+                  + window.mic.height())
+    assert state_bottom < window.neural.height()
+    assert mic_bottom < window.neural.height()
     window.close()
 
 

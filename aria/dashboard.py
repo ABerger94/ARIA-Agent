@@ -302,15 +302,20 @@ def create_dashboard(callbacks):
             ll.addStretch()
             body.addWidget(left)
             center, cl = self.card('ARIA / LIVE')
+            self._center_card = center
             # The neuron field (Mark-LVI's HudCanvas layer, ported
-            # to aria/neural_field.py — Alek, 2026-10-27) sits in a
-            # grid stack UNDER the centrepiece; the orb / holo head
-            # run with transparent backgrounds over it, exactly as
-            # they already do on the desktop pet.
+            # to aria/neural_field.py — Alek, 2026-10-27) is the
+            # centre CARD's background, not just the stack's:
+            # extended 07:58 at his word to run the whole card —
+            # top to bottom, behind the title, the centrepiece,
+            # the IDLE state line, the subtitle and the hold-to-
+            # talk buttons. Sizing is synced in render_once /
+            # resizeEvent (_sync_neural_geometry).
+            self.neural = NeuralField(center)
+            self.neural.lower()
             self.center_stack = QWidget()
             _stack = QGridLayout(self.center_stack)
             _stack.setContentsMargins(0, 0, 0, 0)
-            self.neural = NeuralField(); _stack.addWidget(self.neural, 0, 0)
             self.face = ResonanceOrb(transparent_background=True); _stack.addWidget(self.face, 0, 0)
             self.video = VideoPanel() if _HAVE_VIDEO else None
             if self.video is not None:
@@ -410,6 +415,21 @@ def create_dashboard(callbacks):
             path, _ = QFileDialog.getOpenFileName(self, 'Send a file to ARIA')
             if path:
                 frame.receive_file(path)
+
+        def _sync_neural_geometry(self):
+            # The neural field is the centre card's background:
+            # keep it exactly card-sized (top to the buttons).
+            try:
+                rect = self._center_card.rect()
+                if self.neural.size() != rect.size():
+                    self.neural.setGeometry(rect)
+            except Exception:
+                pass
+
+        def resizeEvent(self, event):
+            super().resizeEvent(event)
+            if hasattr(self, 'neural'):
+                self._sync_neural_geometry()
 
         def dragEnterEvent(self, event):
             if event.mimeData().hasUrls(): event.acceptProposedAction()
@@ -840,7 +860,13 @@ def create_dashboard(callbacks):
             base.fill(QColor('#0d1520'))
             p = QPainter(base)
             if self.neural.isVisible():
-                p.drawPixmap(0, 0, self.neural.grab())
+                # The field now spans the whole centre card; the
+                # phone still gets just the stack's region of it.
+                from PyQt6.QtCore import QPoint, QRect
+                _origin = self.center_stack.mapTo(self._center_card,
+                                                  QPoint(0, 0))
+                p.drawPixmap(0, 0, self.neural.grab(
+                    QRect(_origin, self.center_stack.size())))
             p.drawPixmap(0, 0, center.grab())
             p.end()
             return base.toImage().convertToFormat(
@@ -947,6 +973,7 @@ def create_dashboard(callbacks):
                 self.holo.advance(state, level, _muted, viseme=_vis)
             else:
                 self.face.advance(state, level, _muted)
+            self._sync_neural_geometry()
             self.neural.setVisible(self.video is None
                                    or not self.video.isVisible())
             if self.neural.isVisible():
