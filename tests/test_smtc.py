@@ -219,6 +219,20 @@ def test_set_playing_cooperative_and_already(monkeypatch):
     assert smtc.set_playing(True) is None
 
 
+def test_playing_session_outranks_a_paused_current_one(monkeypatch):
+    # Alek, 2026-10-27: a movie playing in Media Player while a
+    # paused Spotify sits as Windows' "current" session — the
+    # controls must aim at the MOVIE.
+    spotify = _Session('Spotify', status=5)
+    movie = _Session('Microsoft.Media.Player_8wekyb3d8bbwe',
+                     _Props('Some Movie', '', ''), status=4)
+    _install(monkeypatch, _Manager([spotify, movie], current=spotify))
+    data = smtc._read_all()['active']
+    assert data['app'] == 'Media Player' and data['playing'] is True
+    assert smtc.control_active('pause') is True
+    assert movie.calls == ['pause'] and spotify.calls == []
+
+
 def test_app_labels():
     assert smtc.app_label('SpotifyAB.SpotifyMusic_1.0') == 'Spotify'
     assert smtc.app_label('Microsoft.ZuneVideo_8wekyb3d8bbwe') == 'Movies & TV'

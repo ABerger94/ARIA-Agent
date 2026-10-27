@@ -62,8 +62,20 @@ def _manager():
         return _MANAGER
     try:
         _MANAGER = _load_manager()
-    except Exception:
+    except Exception as exc:
         _MANAGER_FAILED = True
+        # Say it ONCE, where Alek can see it (the Activity tab):
+        # a silently-dead backend is how "nothing playing" shipped
+        # while Spotify played. The window fallback keeps working.
+        try:
+            from aria import config as _config
+            _config.add_log(
+                f"Media sessions (SMTC) unavailable ({exc.__class__.__name__}) "
+                f"— media readout is on the window fallback. If winsdk "
+                f"was meant to be installed, the install did not take.",
+                level="warn")
+        except Exception:
+            pass
     return _MANAGER
 
 
@@ -93,7 +105,8 @@ def _spotify_session(manager):
 _APP_LABELS = (
     ("spotify", "Spotify"),
     ("zunevideo", "Movies & TV"),
-    ("microsoft.media.player", "Movies & TV"),
+    ("microsoft.media.player", "Media Player"),
+    ("mediaplayer", "Media Player"),
     ("wmplayer", "Windows Media Player"),
     ("msedge", "Edge"),
     ("chrome", "Chrome"),
@@ -148,14 +161,12 @@ def _session_info(session) -> Optional[dict]:
 
 
 def _active_session(manager):
-    """The session Windows considers current; failing that, a
-    playing one; failing that, the first with a title."""
-    try:
-        current = manager.get_current_session()
-    except Exception:
-        current = None
-    if current is not None:
-        return current
+    """The session that matters: a PLAYING one first — Windows'
+    "current" session can be a paused Spotify sitting in front
+    of a movie that is actually playing, and aiming transport
+    at the paused one is how movie controls "didn't work"
+    (Alek, 2026-10-27). Then the current session, then the
+    first with a title."""
     infos = []
     for session in _sessions(manager):
         info = _session_info(session)
@@ -164,6 +175,12 @@ def _active_session(manager):
     for session, info in infos:
         if info["playing"]:
             return session
+    try:
+        current = manager.get_current_session()
+    except Exception:
+        current = None
+    if current is not None:
+        return current
     for session, info in infos:
         if info["track"]:
             return session

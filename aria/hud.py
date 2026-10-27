@@ -146,44 +146,88 @@ def _get_spotify_telemetry() -> Dict[str, Any]:
             return info
     except Exception:
         pass
+    title = None
     try:
-        import ctypes
-
-        def enum_cb(hwnd, extra):
-            if ctypes.windll.user32.IsWindowVisible(hwnd):
-                length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
-                if length > 0:
-                    buff = ctypes.create_unicode_buffer(length + 1)
-                    ctypes.windll.user32.GetWindowTextW(hwnd, buff, length + 1)
-                    txt = buff.value.strip()
-                    if "spotify" in txt.lower():
-                        info["running"] = True
-                        if txt in ("Spotify", "Spotify Free", "Spotify Premium"):
-                            info["playing"] = False
-                            info["status"] = "open"
-                            info["title"] = txt
-                        elif " - " in txt:
-                            # Best guess only — the title cannot
-                            # distinguish paused from playing.
-                            info["playing"] = True
-                            info["status"] = "playing"
-                            parts = txt.split(" - ", 1)
-                            info["artist"] = parts[0].strip()
-                            info["track"] = parts[1].strip()
-                            info["title"] = txt
-                        else:
-                            info["playing"] = True
-                            info["status"] = "playing"
-                            info["title"] = txt
-            return True
-
-        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
-        ctypes.windll.user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
+        title = _spotify_window_title()
     except Exception as _e_silent:
         _config_silent.log_silent("_get_spotify_telemetry", _e_silent)
+    parsed = _parse_spotify_title(title)
+    if parsed:
+        info.update(parsed)
 
     _SPOTIFY_CACHE = info
     return info
+
+
+def _parse_spotify_title(title):
+    """Spotify window title → telemetry fields. Pure and testable.
+    None / empty title → None (Spotify has no window: not running).
+    The bare app titles mean open-but-idle; 'Artist - Track' is a
+    loaded track (playing is a GUESS — a paused Spotify keeps the
+    track in its title; only SMTC knows for sure)."""
+    if not title:
+        return None
+    txt = str(title).strip()
+    if not txt:
+        return None
+    if txt in ("Spotify", "Spotify Free", "Spotify Premium"):
+        return {"running": True, "playing": False, "status": "open",
+                "title": txt, "artist": "", "track": ""}
+    if " - " in txt:
+        artist, track = txt.split(" - ", 1)
+        return {"running": True, "playing": True, "status": "playing",
+                "title": txt, "artist": artist.strip(),
+                "track": track.strip()}
+    return {"running": True, "playing": True, "status": "playing",
+            "title": txt, "artist": "", "track": ""}
+
+
+def _spotify_window_title():
+    """The title of Spotify's main window, found by PROCESS, not
+    by title text. The old matcher searched titles for the word
+    'spotify' — but a PLAYING Spotify's window title IS the track
+    ('Artist - Track', no 'spotify' anywhere), so the scrape only
+    ever matched the idle window and reported standby / not
+    running while music played (Alek's witness, 2026-10-27:
+    'nothing playing but Spotify is playing', and every
+    telemetry-gated play/pause path refused as 'not running').
+    Windows-only; returns None off Windows or when Spotify has
+    no window."""
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    found = []
+
+    def enum_cb(hwnd, _extra):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        handle = kernel32.OpenProcess(0x1000, False, pid.value)
+        if not handle:
+            return True
+        try:
+            buf = ctypes.create_unicode_buffer(32768)
+            size = wintypes.DWORD(len(buf))
+            if kernel32.QueryFullProcessImageNameW(
+                    handle, 0, buf, ctypes.byref(size)):
+                if buf.value.lower().endswith("spotify.exe"):
+                    length = user32.GetWindowTextLengthW(hwnd)
+                    if length > 0:
+                        tbuf = ctypes.create_unicode_buffer(length + 1)
+                        user32.GetWindowTextW(hwnd, tbuf, length + 1)
+                        found.append(tbuf.value.strip())
+        finally:
+            kernel32.CloseHandle(handle)
+        return True
+
+    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
+    user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
+    for title in found:
+        if " - " in title:
+            return title
+    return found[0] if found else None
 
 
 def _get_volume_client():
@@ -538,12 +582,15 @@ def _dispatch_media_action(action: str):
             if smtc.control_active(action):
                 add_hud_log(f"Media: {action}.")
                 return
-            if action in ("play", "pause", "play_pause"):
-                from aria import spotify
-                add_hud_log(spotify.tool_spotify(action))
-            else:
-                from aria.tools.builtins import tool_media_key
-                add_hud_log(tool_media_key(action))
+            # No SMTC session answered: the global media key is
+            # the right fallback for a MEDIA-WIDE control — it
+            # lands on whatever session Windows is driving. (This
+            # used to route play/pause through the Spotify tool,
+            # which refuses when Spotify is closed — so a movie's
+            # Pause button silently did nothing. Alek, 2026-10-27.)
+            from aria.tools.builtins import tool_media_key
+            add_hud_log(tool_media_key(
+                "play_pause" if action in ("play", "pause") else action))
         except Exception as e:
             add_hud_log(f"Media action error: {e}")
     threading.Thread(target=_run, daemon=True).start()
