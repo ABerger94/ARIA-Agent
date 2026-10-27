@@ -53,6 +53,45 @@ Install updated dependencies with `py -3.12 -m pip install -r requirements.txt`.
 For the previous canvas layout, set `ARIA_UI_LAYOUT=classic` before launching.
 `ARIA_UI_HOST=cv2` still selects the classic fallback host.
 
+## Settings and commands
+
+**Settings** is visible in the window header (`Ctrl+,`). General settings cover
+startup briefings, safe mode, action approval mode, and the UI accent. Voice &
+Audio covers the voice gate, whisper, volume, and Edge voice. Daily Briefing sets
+your name, local area, timezone, and optional world topics. Connections configures
+Gmail, calendar and provider credentials without placing secrets into the chat.
+Blank password/key fields retain existing values; provider changes require a
+restart. General settings are saved atomically.
+
+**Commands** (`Ctrl+K`) lists tools from the live registry, including connected
+MCP tools. Search names, descriptions and examples, or filter by category.
+Selecting an example drafts it in the command bar; Send executes your request.
+
+## Source-backed daily briefings
+
+ARIA's startup greeting and `morning_briefing` now use the same daily report:
+today's calendar (including recurring shifts), a short tomorrow preview, important
+recent email subjects, local weather, Dundalk/Baltimore County headlines, and world
+headlines. Email importance is a conservative header-based ranking, not a claim
+that ARIA read every message body; promotions and social digests are deprioritized.
+The recent sample is capped at 30 messages from the last 48 hours. When available,
+the unread count comes from the mailbox status rather than the size of that sample.
+
+News is drawn from dated RSS items published within 48 hours. The report includes
+links to its sources in the new desktop and phone **Briefing** views. Slow sources
+are skipped after a shared 14-second budget; disconnected or failed sources are
+identified instead of being described as empty. The startup greeting is logged to
+the conversation and spoken directly, without a model inventing extra plans or
+rephrasing away important sections. Refresh and Read aloud are separate controls.
+
+Optional settings in `workspace/settings.json` (via the existing settings
+store) are `briefing_name` (default Alek), `briefing_city` (Dundalk, Maryland),
+`briefing_timezone` (America/New_York), `briefing_world_topics` (a list of optional
+world-news search topics), and `startup_briefing` (true). Local and world news are
+always separate. Ordinary daily/weekly/monthly/yearly calendar recurrence,
+exceptions and explicit moved/cancelled occurrences are supported; high-frequency
+sub-day recurrence reports an error instead of expanding without a bound.
+
 ## Features
 
 - **Animated HUD Face & Full-Body Pixel Avatar** (OpenCV) — expressive

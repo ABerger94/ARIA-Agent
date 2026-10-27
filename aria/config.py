@@ -393,10 +393,20 @@ def settings_load() -> dict:
 def settings_save(d: dict):
     try:
         os.makedirs(WORKSPACE_DIR, exist_ok=True)
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(d, f, indent=2)
+        import tempfile
+        fd, tmp = tempfile.mkstemp(prefix='.settings-', dir=WORKSPACE_DIR)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(d, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, SETTINGS_FILE)
+        finally:
+            if os.path.exists(tmp): os.unlink(tmp)
+        return True
     except Exception as _e_silent:
         log_silent("settings_save", _e_silent)
+        return False
 
 def get_setting(key: str, default=None):
     return settings_load().get(key, default)
@@ -404,7 +414,7 @@ def get_setting(key: str, default=None):
 def set_setting(key: str, value):
     d = settings_load()
     d[key] = value
-    settings_save(d)
+    return settings_save(d)
 
 
 # ---------------------------------------------------------------- safe mode

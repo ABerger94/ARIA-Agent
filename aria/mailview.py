@@ -115,7 +115,14 @@ def fetch_messages(limit=15, unread_only=False, connect=None):
             flags = b' '.join(part[0] for part in data if isinstance(part, tuple))
             row.update(uid=uid.decode('ascii'), unread=b'\\Seen' not in flags)
             messages.append(row)
-        return {'ok': True, 'messages': messages}
+        unread_total = None
+        try:
+            typ, data = client.status('INBOX', '(UNSEEN)')
+            match = re.search(rb'UNSEEN\s+(\d+)', b' '.join(data or [])) if typ == 'OK' else None
+            if match: unread_total = int(match.group(1))
+        except Exception:
+            pass
+        return {'ok': True, 'messages': messages, 'unread_total': unread_total}
     except Exception as exc:
         return {'ok': False, 'error': 'Could not read Gmail: ' + str(exc), 'messages': []}
     finally:

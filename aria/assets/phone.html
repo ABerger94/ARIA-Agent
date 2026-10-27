@@ -27,9 +27,10 @@ body.facemode #app>*:not([data-panel="vision"]){display:none!important}body.face
 <header class="topbar"><div><div class="wordmark">A.R.I.A.</div><div class="eyebrow">Phone companion</div></div><div class="topbtns"><span id="connection" class="offline" role="status">Connecting…</span><button id="logbtn" class="icon-btn">Conversation</button><button id="cog" class="icon-btn">Settings</button><button id="flipcam" class="icon-btn" style="display:none">Flip camera</button></div></header>
 <div class="eyebrow">Your assistant, within reach</div><h1>Remote control</h1><p class="muted">Talk to ARIA. Check your inbox. Pick up where you left off.</p>
 <div class="stats"><div class="stat"><small>ARIA is</small><strong id="state">Connecting</strong></div><div class="stat"><small>Active engine</small><strong id="provider">Checking connection</strong></div></div>
-<nav aria-label="Companion sections"><button data-tab="control" class="selected" aria-selected="true">Control</button><button data-tab="chat">Conversation</button><button data-tab="inbox">Inbox</button><button data-tab="vision">Orb &amp; camera</button><button data-tab="settings">Settings</button></nav>
+<nav aria-label="Companion sections"><button data-tab="control" class="selected" aria-selected="true">Control</button><button data-tab="chat">Conversation</button><button data-tab="inbox">Inbox</button><button data-tab="briefing">Briefing</button><button data-tab="vision">Orb &amp; camera</button><button data-tab="settings">Settings</button></nav>
 <section data-panel="control" class="grid"><div class="panel"><div class="eyebrow">Voice connection</div><h2>What can I help with?</h2><p class="muted">Hold while you speak, or tap once to start and again to finish.</p><div class="talk-row"><button id="talk">Hold to talk</button><button id="ptt" type="button">Tap to talk</button></div><span id="astat" role="status">Audio: ready</span><button id="stop-speech" class="secondary" style="margin-top:16px">Stop speaking</button></div><div class="stack"><div class="panel"><div class="eyebrow">Latest from ARIA</div><p id="recent-reply">Your latest reply will appear here.</p></div><div class="panel"><h2>Start here</h2><div class="shortcuts"><button data-prompt="Give me my morning briefing">Daily briefing</button><button data-prompt="What tasks are running?">My tasks</button><button data-prompt="Check my calendar for today">Today's calendar</button></div></div><div class="tools"><a href="/upload">Send a file</a><a href="/commands">Command reference</a></div></div></section>
 <section data-panel="chat" hidden><div class="section-head"><h2>Conversation</h2><span class="muted">Synced with your laptop</span></div><div id="log"></div></section>
+<section data-panel="briefing" hidden><div class="section-head"><div><h2>Daily briefing</h2><span id="brief-stamp" class="muted">Today, at a glance</span></div><button id="brief-refresh" class="secondary">Refresh</button></div><button id="brief-listen" class="secondary" disabled>Read aloud</button><div id="brief-report" class="stack" style="margin-top:16px">Your startup briefing will appear here. Select Refresh to generate one.</div></section>
 <section data-panel="inbox" hidden><div class="section-head"><div><h2>Inbox</h2><span id="mail-status">Refresh to load your email</span></div><button id="mail-refresh" class="secondary">Refresh</button></div><input id="mail-search" aria-label="Filter inbox" placeholder="Filter sender or subject…"><div id="mail-list" class="muted">Your messages appear here. Opening a message does not mark it read.</div><article id="mail-detail" class="panel" hidden><div class="section-head"><h2 id="mail-subject"></h2><button id="mail-close" class="secondary">Close</button></div><p id="mail-from"></p><div id="mail-body"></div></article></section>
 <section data-panel="vision" hidden><main id="stage"><img id="face" alt="ARIA waveform orb"><img id="eyes" alt="Phone camera" style="display:none"><div id="caption"></div></main><div class="modes"><button id="mode-face" class="mode-btn active">Waveform orb</button><button id="mode-eyes" class="mode-btn">Camera</button><button id="mode-full" class="mode-btn">Full screen</button></div><button id="lookbtn" type="button" style="display:none">Describe what you see</button></section>
 <section data-panel="settings" hidden><div id="settings" class="panel"><h2>Phone settings</h2><button id="spk" class="row-btn">Speak replies: ON</button><button id="testspk" class="row-btn">Test audio</button><button id="cam" class="row-btn">Camera: OFF</button><p class="muted">Your browser asks before microphone or camera access. On first use, tap a voice control to allow audio playback.</p><span id="transport"></span><button id="signout" class="row-btn danger">Disconnect this phone</button><p class="muted">This phone is remembered for 30 days. You can disconnect all remembered phones from Remote Control on the laptop.</p></div></section>
@@ -561,7 +562,9 @@ document.getElementById('stop-speech').onclick=async()=>{
   stopVoicePlayback();
   try{await api('/api/interrupt',{method:'POST'});}catch(e){}
 };
+let briefPlayGeneration=0;
 function stopVoicePlayback(){
+  briefPlayGeneration++;
   try{document.getElementById('aria-audio').pause();if(curSrc)curSrc.stop();}catch(e){}
 }
 document.getElementById('signout').onclick=async()=>{
@@ -600,6 +603,35 @@ async function openMail(m){
     document.getElementById('mail-body').textContent=d.message.body+(d.message.truncated?'\n\n[Large message: preview truncated]':'');
   }catch(e){if(request===mailRequest)document.getElementById('mail-body').textContent=e.message;}
 }
+let currentBriefing=null;
+function showBriefing(report){
+  if(!report)return;currentBriefing=report;document.getElementById('brief-listen').disabled=false;
+  document.getElementById('brief-stamp').textContent='Updated '+new Date(report.generated_at).toLocaleString();
+  const host=document.getElementById('brief-report');host.replaceChildren();
+  report.sections.forEach(section=>{
+    const card=document.createElement('article');card.className='panel';
+    const heading=document.createElement('h2');heading.textContent=section.title;
+    const text=document.createElement('p');text.textContent=section.text;card.append(heading,text);
+    section.sources.forEach(source=>{if(!/^https?:\/\//.test(source.url))return;
+      const link=document.createElement('a');link.href=source.url;link.target='_blank';link.rel='noopener noreferrer';link.textContent=source.title;
+      link.style.cssText='display:block;color:var(--acc);font-size:12px;margin-top:8px';card.append(link);
+    });host.append(card);
+  });
+}
+async function loadBriefing(refresh=false){
+  const b=document.getElementById('brief-refresh');b.disabled=true;
+  try{const r=await api('/api/briefing',refresh?{method:'POST'}:{});const d=await r.json();if(!r.ok)throw Error(d.error||'Briefing unavailable');showBriefing(d.report);}
+  catch(e){document.getElementById('brief-stamp').textContent=e.message;}finally{b.disabled=false;}
+}
+document.getElementById('brief-refresh').onclick=()=>loadBriefing(true);
+document.getElementById('brief-listen').onclick=async()=>{
+  if(!currentBriefing)return;unlockAudio();const generation=++briefPlayGeneration;
+  const words=currentBriefing.text.split(/\s+/);let chunk='';
+  for(const word of words){if(generation!==briefPlayGeneration)return;
+    if((chunk+' '+word).length>450){await playReply(chunk);chunk='';}chunk+=(chunk?' ':'')+word;
+  }if(chunk&&generation===briefPlayGeneration)await playReply(chunk);
+};
+loadBriefing();
 document.getElementById('mail-refresh').onclick=loadMail;
 document.getElementById('mail-search').oninput=renderMail;
 document.getElementById('mail-close').onclick=()=>{mailRequest++;document.getElementById('mail-detail').hidden=true;};

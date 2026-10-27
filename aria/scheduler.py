@@ -222,30 +222,10 @@ def _email_brief_section() -> str:
 
 
 def tool_briefing() -> str:
-    now = datetime.now()
-    day = now.strftime("%A, %B %d")
-    live_entries, is_live = _live_entries(2)
-    if is_live:
-        today_s = now.strftime("%Y-%m-%d")
-        tmrw_s = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-        entries = [e for e in live_entries if e.get("date") == today_s]
-        t_entries = [e for e in live_entries if e.get("date") == tmrw_s]
-    else:
-        entries = _today_entries()
-        tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-        t_entries = sorted([e for e in _load_schedule() if e.get("date") == tomorrow],
-                           key=lambda e: e.get("start", ""))
-    sched = f"You've got: {_entries_line(entries)}." if entries else "Nothing on the schedule today."
-    tmrw = f" Tomorrow: {_entries_line(t_entries)}." if t_entries else ""
-    ebit = _email_brief_section()
-    wf = _weather_full()
-    if wf and wf.get("temp_F"):
-        cond = f" and {wf['desc']}" if wf.get("desc") else ""
-        wxbit = f" In Dundalk it's {wf['temp_F']} degrees{cond}, with a high of {wf['high_F']} and a low of {wf['low_F']}."
-    else:
-        wn = _weather_now()
-        wxbit = f" In Dundalk it's {wn}." if wn else ""
-    return f"Good morning, Alek. Today is {day}. {sched}{tmrw}{ebit}{wxbit}"
+    """The same observed-source daily briefing used by the startup greeting."""
+    from aria.briefing import build_briefing
+    return build_briefing()['text']
+
 
 
 def sched_add(kind: str, prompt: str, delay_s: int = 0, interval_s: int = 0) -> int:
@@ -353,6 +333,8 @@ def _fire_brief(tid: int, interval_s: int, is_busy_fn: Optional[Callable[[], boo
         conn.close()
     text = tool_briefing()
     add_log(f"Morning brief spoken (#{tid})")
+    from aria.memory import log_conversation
+    log_conversation('A.R.I.A.', text)
     busy = is_busy_fn() if is_busy_fn else False
     if not busy:
         speech.speak(text)

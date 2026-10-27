@@ -733,6 +733,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if not self._authed():
                 self._send(401, b'{"error":"bad or missing bridge token"}')
                 return
+            if self.path.split('?', 1)[0] == '/api/briefing':
+                from aria.briefing import latest_briefing
+                self._send(200, json.dumps({'report': latest_briefing()}).encode('utf-8'))
+                return
             if self.path.split('?', 1)[0] == '/api/status':
                 from aria import hud
                 from aria.agent import providers
@@ -904,6 +908,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self._send(404, b'{"error":"not found"}')
 
     def do_POST(self):
+        if self.path == '/api/briefing':
+            if not self._authed():
+                self._send(401, b'{"error":"not connected"}')
+                return
+            from aria.briefing import build_briefing
+            self._send(200, json.dumps({'report': build_briefing()}).encode('utf-8'))
+            return
         if self.path == '/api/interrupt':
             if not self._authed():
                 self._send(401, b'{"error":"not connected"}')

@@ -96,3 +96,7 @@ av==19.0.2
 
 # Native dashboard phone pairing QR (pure Python, Pillow already required).
 qrcode==8.2
+
+# Calendar recurrence and Windows IANA timezone database for daily briefings.
+python-dateutil>=2.8,<3
+tzdata>=2025.1

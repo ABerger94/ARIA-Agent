@@ -1,6 +1,6 @@
 """Native Qt command center for ARIA's existing agent and desktop services.
 
-No Mark source is copied. Qt stays lazy so the classic host remains available.
+Qt stays lazy so the classic host remains available. The orb adapter retains its own attribution.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ QSlider::handle:horizontal { background: #66dbe7; width: 12px; margin: -5px 0; b
 
 def create_dashboard(callbacks):
     from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
-    from PyQt6.QtGui import QImage, QPixmap
+    from PyQt6.QtGui import QImage, QPixmap, QColor, QShortcut, QKeySequence
     from PyQt6.QtWidgets import (QMainWindow, QWidget, QFrame, QLabel, QPushButton,
                                 QVBoxLayout, QHBoxLayout, QSplitter, QTabWidget,
                                 QTextBrowser, QLineEdit, QProgressBar, QSlider,
@@ -49,7 +49,7 @@ def create_dashboard(callbacks):
             self.setWindowTitle('A.R.I.A. | Command Center')
             self.resize(1440, 900)
             self.setMinimumSize(1080, 720)
-            self.setStyleSheet(STYLE)
+            self.apply_accent(config.get_setting("ui_accent", "#54d9e8"))
             self.setAcceptDrops(True)
             self._loading = set()
             self._email_request = 0
@@ -62,7 +62,9 @@ def create_dashboard(callbacks):
             brand = QLabel('A.R.I.A.'); brand.setObjectName('brand'); head.addWidget(brand)
             head.addWidget(QLabel('ADAPTIVE ROBOTIC INTELLIGENCE AGENT')); head.addStretch()
             self.status = QLabel('Connecting to services'); self.status.setFixedWidth(200); head.addWidget(self.status)
-            self.clock = QLabel(); self.clock.setFixedWidth(190); head.addWidget(self.clock); layout.addLayout(head)
+            self.clock = QLabel(); self.clock.setFixedWidth(190); head.addWidget(self.clock)
+            self.settings_button = QPushButton('Settings'); self.settings_button.clicked.connect(self.settings); head.addWidget(self.settings_button)
+            layout.addLayout(head)
             body = QSplitter(Qt.Orientation.Horizontal); layout.addWidget(body, 1)
             left, ll = self.card('SYSTEM MONITOR'); left.setMinimumWidth(220); left.setMaximumWidth(290)
             self.cpu = self.meter(ll, 'PROCESSOR'); self.mem = self.meter(ll, 'MEMORY')
@@ -94,7 +96,7 @@ def create_dashboard(callbacks):
             body.addWidget(center)
             right, rl = self.card('WORKSPACE'); right.setMinimumWidth(340)
             self.tabs = QTabWidget(); self.views = {}
-            for name in ('Conversation', 'Inbox', 'Calendar', 'Tasks', 'Activity'):
+            for name in ('Conversation', 'Inbox', 'Calendar', 'Tasks', 'Activity', 'Briefing'):
                 page = QWidget(); pl = QVBoxLayout(page)
                 view = QTextBrowser(); view.setOpenExternalLinks(False); self.views[name] = view
                 if name == 'Inbox':
@@ -110,6 +112,12 @@ def create_dashboard(callbacks):
                     view.setPlainText('Refresh your inbox, then select a message to read it. Messages stay unread until you mark them read in your mail app.')
                     self.tabs.addTab(page, name)
                     continue
+                if name == 'Briefing':
+                    controls = QHBoxLayout()
+                    refresh = QPushButton('Refresh briefing'); refresh.clicked.connect(lambda: self.load_panel('Briefing')); controls.addWidget(refresh)
+                    self.brief_speak = QPushButton('Read aloud'); self.brief_speak.clicked.connect(self.read_briefing); controls.addWidget(self.brief_speak)
+                    self.brief_speak.setEnabled(False); pl.addLayout(controls)
+                    view.setPlainText('Your daily briefing will appear here after startup. Select Refresh to generate one.')
                 if name == 'Calendar':
                     btn = QPushButton('Refresh ' + name.lower()); btn.clicked.connect(lambda checked=False, n=name: self.load_panel(n)); pl.addWidget(btn)
                     view.setPlainText('Select Refresh to load your connected ' + name.lower() + '.')
@@ -127,6 +135,10 @@ def create_dashboard(callbacks):
             self.panel_result.connect(self.panel_finished)
             self.email_result.connect(self.mail_finished)
             self.entry.setFocus()
+            self._settings_shortcut = QShortcut(QKeySequence('Ctrl+,'), self)
+            self._settings_shortcut.activated.connect(self.settings)
+            self._commands_shortcut = QShortcut(QKeySequence('Ctrl+K'), self)
+            self._commands_shortcut.activated.connect(self.commands)
 
         def card(self, title):
             card = QFrame(); card.setObjectName('card'); lay = QVBoxLayout(card); lay.setContentsMargins(16, 16, 16, 16); lay.setSpacing(14)
@@ -165,7 +177,10 @@ def create_dashboard(callbacks):
                 self.views[name].setPlainText('Loading…')
             def load():
                 try:
-                    if name == 'Inbox':
+                    if name == 'Briefing':
+                        from aria.briefing import build_briefing
+                        result = build_briefing(force=True)
+                    elif name == 'Inbox':
                         from aria.mailview import fetch_messages
                         result = fetch_messages(limit=30)
                     else:
@@ -178,6 +193,11 @@ def create_dashboard(callbacks):
 
         def panel_finished(self, name, result):
             self._loading.discard(name)
+            if name == 'Briefing' and isinstance(result, dict):
+                from aria.briefing import report_text
+                self.views[name].setPlainText(report_text(result))
+                self.brief_speak.setEnabled(True)
+                return
             if name != 'Inbox' or not isinstance(result, dict):
                 self.views[name].setPlainText(str(result))
                 if name == 'Inbox': self.mail_refresh.setEnabled(True)
@@ -199,6 +219,11 @@ def create_dashboard(callbacks):
             self.mail_summary.setText(f"{len(rows)} messages · {sum(bool(r.get('unread')) for r in rows)} unread in this list")
             self.views[name].setPlainText('Select a message to read it.' if rows else 'Your inbox is empty.')
             self.filter_mail(self.mail_search.text())
+
+        def read_briefing(self):
+            from aria.briefing import latest_briefing
+            report = latest_briefing()
+            if report: callbacks.speak(report['text'])
 
         def mail_date(self, value):
             try:
@@ -236,14 +261,24 @@ def create_dashboard(callbacks):
             if row.get('truncated'): text += '\n\n[Large message: preview truncated]'
             self.views['Inbox'].setPlainText(text)
 
+        def apply_accent(self, color):
+            from aria.resonance import C
+            accent = QColor(str(color))
+            if not accent.isValid(): accent = QColor('#54d9e8')
+            C.PRI = accent.name(); C.PRI_DIM = accent.darker(180).name()
+            sheet = STYLE.replace('#54d9e8', accent.name()).replace('#77e7ef', accent.lighter(115).name()).replace('#42c9da', accent.name()).replace('#66dbe7', accent.name())
+            self.setStyleSheet(sheet)
+
+        def draft_command(self, text):
+            self.entry.setText(text); self.entry.setFocus()
+
         def commands(self):
-            from aria.tools.schemas import COMMAND_GUIDE
-            dialog = QDialog(self); dialog.setWindowTitle('ARIA commands'); dialog.resize(700, 600)
-            lay = QVBoxLayout(dialog); search = QLineEdit(); search.setPlaceholderText('Search commands…'); lay.addWidget(search)
-            view = QTextBrowser(); lay.addWidget(view)
-            def show(query=''):
-                view.setPlainText('\n\n'.join(f'{category} / {tool}\nSay: {example}' for category, tool, example in COMMAND_GUIDE if query.lower() in f'{category} {tool} {example}'.lower()))
-            search.textChanged.connect(show); show(); dialog.exec()
+            from aria.ui_panels import create_commands_dialog
+            create_commands_dialog(self, self.draft_command).exec()
+
+        def settings(self):
+            from aria.ui_panels import create_settings_dialog
+            create_settings_dialog(self, callbacks).exec()
 
         def open_remote(self):
             from aria import bridge
@@ -308,6 +343,11 @@ def create_dashboard(callbacks):
                     config.log_silent('dashboard.orb_publish', exc)
             if time.monotonic() - self._last_refresh < 0.8: return
             self._last_refresh = time.monotonic()
+            from aria.briefing import latest_briefing, report_text
+            briefing = latest_briefing()
+            if briefing and briefing['generated_at'] != getattr(self, '_brief_stamp', None):
+                self._brief_stamp = briefing['generated_at']
+                self.views['Briefing'].setPlainText(report_text(briefing)); self.brief_speak.setEnabled(True)
             data = frame.strip_data()
             self.clock.setText(datetime.now().strftime('%H:%M  |  %a %d %b'))
             self.state.setText(str(hud.CURRENT_STATE).upper()); self.subtitle.setText(str(hud.SUBTITLE_TEXT))

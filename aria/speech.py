@@ -733,7 +733,7 @@ def _edge_tts_bytes_strict(text: str, whisper_mode: bool = False) -> bytes:
 
     async def _gen():
         chunks = []
-        async for chunk in edge_tts.Communicate(text, EDGE_TTS_VOICE, **kwargs).stream():
+        async for chunk in edge_tts.Communicate(text, _config_silent.get_setting("tts_voice", EDGE_TTS_VOICE), **kwargs).stream():
             if chunk.get("type") == "audio":
                 chunks.append(chunk["data"])
         return b"".join(chunks)
@@ -888,7 +888,7 @@ _AUDIO_PLAY_QUEUE = _DEFAULT_SPEECH_MANAGER.audio_play_queue
 _SPEECH_STOP = _DEFAULT_SPEECH_MANAGER.speech_stop
 
 # OPS Controls tab: master voice on/off (output + wake-word input).
-VOICE_ENABLED = True
+VOICE_ENABLED = bool(_config_silent.get_setting("voice_enabled", True))
 
 def voice_ready() -> bool:
     """True once the Edge voice probe has succeeded (greeting uses her real voice)."""

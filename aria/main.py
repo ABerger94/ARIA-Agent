@@ -33,7 +33,6 @@ import aria.frame as _frame
 import aria.pixel_avatar as pixel_avatar
 import aria.bridge as bridge
 import aria.agent as agent
-from aria.agent.providers import provider_text
 from aria.tools.dispatch import (
     set_log_hook, set_hud_hook, set_history_hook, set_spine_hook,
 )
@@ -606,40 +605,9 @@ def _greeting_text():
 
 
 def _unique_greeting():
-    """Startup greeting, written fresh by the model every boot.
-
-    Soul-aware, schedule-aware, and told not to repeat the previous greeting
-    (stored as a system memory). Falls back to the template greeting offline.
-    """
-    fallback = _greeting_text()
-    try:
-        entries, _is_live = scheduler.today_entries_prefer_live()
-        sched = scheduler._entries_line(entries) if entries else "nothing on the schedule"
-        h = datetime.now().hour
-        part = "morning" if h < 12 else "afternoon" if h < 18 else "evening"
-        last = memory.memory_get("system", "_last_greeting")
-        mood = agent.mood_word()
-        greeting_prompt = (f"It's {part}. Today's schedule: {sched}. "
-                           f"Previous greeting (do not repeat): {last or 'none yet'}.")
-        text = provider_text(
-            "You write A.R.I.A.'s spoken startup greeting for Alek. One or two "
-            "sentences, warm, direct, a little playful - in her voice. Vary the "
-            "opening; don't always start with 'Good morning/afternoon/evening'. "
-            f"Her current mood is '{mood}' - let it flavor the greeting "
-            "lightly (never theatrical; it changes nothing factual). "
-            "Make it different from her previous greeting, quoted below. Reply "
-            "with ONLY the greeting text, no quotes.",
-            greeting_prompt)
-        text = (text or "").strip().strip('"').strip()
-        if text and len(text) < 400 and not text.startswith("["):
-            try:
-                memory.memory_save("system", "_last_greeting", text[:300])
-            except Exception as e:
-                add_log(f"Greeting generated but not stored: {e}")
-            return text
-    except Exception as e:
-        add_log(f"Unique greeting failed, using template: {e}")
-    return fallback
+    """A daily briefing composed from current sources, never improvised plans."""
+    from aria.briefing import build_briefing
+    return build_briefing()['text']
 
 
 def start_all():
@@ -714,8 +682,8 @@ def start_all():
     # 6b. Wake-word listener — always-on mic, "Aria" + command.
     threading.Thread(target=continuous_voice_listener, daemon=True).start()
 
-    # 7. Spoken greeting — unique every boot. Runs in a background thread so
-    # the model call and the voice-ready wait never block startup.
+    # 7. Source-backed daily briefing. Collection and voice initialization
+    # run in the background so the desktop remains responsive.
     def _greet_when_ready():
         try:
             # A6 (audit §3B-8): wait for the Edge probe to COMPLETE —
@@ -727,7 +695,10 @@ def start_all():
             # (3 attempts x 30s synth timeout + retry sleeps, ~96s)
             # bounds the wait; 120s here is just a safety net.
             speech.wait_for_voice_probe(timeout=120.0)
+            if not _config_silent.get_setting('startup_briefing', True):
+                return
             greeting = _unique_greeting()
+            memory.log_conversation('A.R.I.A.', greeting)
             add_log(f"Greeting: {greeting}")
             speech.speak(greeting)
         except Exception as e:
@@ -902,6 +873,7 @@ def _qt_callbacks():
         is_running=lambda: RUNNING,
         request_stop=request_shutdown,
         submit=_submit_typed,
+        speak=speech.speak,
         ptt_press=_ptt_rising_edge,
         ptt_release=_ptt_falling_edge,
         toggle_whisper=toggle_whisper_mode,

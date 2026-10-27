@@ -1,0 +1,151 @@
+"""Native settings and live command catalog, built for ARIA's own services."""
+from __future__ import annotations
+
+import os
+
+
+def command_rows():
+    from aria.tools.dispatch import get_registered_tools
+    from aria.tools.schemas import ALL_FUNCTION_DECLARATIONS, COMMAND_GUIDE, TOOL_TO_TOOLKIT
+    registered = get_registered_tools()
+    descriptions = {d['name']: d.get('description', '') for d in ALL_FUNCTION_DECLARATIONS}
+    examples = {name: (category, example) for category, name, example in COMMAND_GUIDE}
+    return [{'name': name, 'description': descriptions.get(name, 'Tool provided by a connected extension.'),
+             'category': examples.get(name, (TOOL_TO_TOOLKIT.get(name, 'Other'), ''))[0],
+             'example': examples.get(name, ('', ''))[1],
+             'source': 'MCP' if name.startswith('mcp_') else 'ARIA'}
+            for name in sorted(registered)]
+
+
+def create_commands_dialog(parent, choose, rows=None):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+                                QLineEdit, QComboBox, QScrollArea, QWidget,
+                                QFrame, QPushButton)
+    rows = command_rows() if rows is None else rows
+    dialog = QDialog(parent); dialog.setWindowTitle('ARIA | Commands'); dialog.resize(720, 680)
+    layout = QVBoxLayout(dialog); layout.setContentsMargins(24, 24, 24, 24); layout.setSpacing(14)
+    title = QLabel('COMMANDS'); title.setObjectName('title'); layout.addWidget(title)
+    count = QLabel(f'{len(rows)} tools available in this session. Choose an example to draft a directive.'); count.setWordWrap(True); layout.addWidget(count)
+    filters = QHBoxLayout()
+    dialog.search = QLineEdit(); dialog.search.setPlaceholderText('Search by command, capability, or example…'); filters.addWidget(dialog.search, 1)
+    dialog.category = QComboBox(); dialog.category.addItems(['All categories'] + sorted({r['category'] for r in rows})); filters.addWidget(dialog.category); layout.addLayout(filters)
+    area = QScrollArea(); area.setWidgetResizable(True); content = QWidget(); cards = QVBoxLayout(content); cards.setSpacing(12)
+    dialog.rows = []
+    for row in rows:
+        card = QFrame(); card.setObjectName('card'); lay = QVBoxLayout(card); lay.setContentsMargins(16, 14, 16, 14)
+        head = QHBoxLayout(); name = QLabel(row['name']); name.setTextFormat(Qt.TextFormat.PlainText); name.setObjectName('title'); head.addWidget(name, 1)
+        source = QLabel(row['source'] + ' / ' + row['category']); source.setTextFormat(Qt.TextFormat.PlainText); head.addWidget(source); lay.addLayout(head)
+        desc = QLabel(row['description']); desc.setTextFormat(Qt.TextFormat.PlainText); desc.setWordWrap(True); lay.addWidget(desc)
+        if row['example']:
+            example = QPushButton('Try: ' + row['example']); example.setStyleSheet('text-align:left;'); example.setToolTip('Draft this example in the command bar; nothing runs until you send it.')
+            example.clicked.connect(lambda checked=False, text=row['example']: (choose(text), dialog.accept())); lay.addWidget(example)
+        cards.addWidget(card)
+        dialog.rows.append((card, row['category'], ' '.join(str(v) for v in row.values()).casefold()))
+    cards.addStretch(); area.setWidget(content); layout.addWidget(area, 1)
+    dialog.empty = QLabel('No commands match this filter.'); dialog.empty.hide(); layout.addWidget(dialog.empty)
+    close = QPushButton('Close'); close.clicked.connect(dialog.reject); layout.addWidget(close)
+    def apply_filter():
+        query = dialog.search.text().strip().casefold(); category = dialog.category.currentText(); visible = 0
+        for card, group, haystack in dialog.rows:
+            show = query in haystack and (category == 'All categories' or category == group)
+            card.setVisible(show); visible += show
+        dialog.empty.setVisible(visible == 0)
+        count.setText(f'{visible} of {len(rows)} available tools · examples are drafts')
+    dialog.search.textChanged.connect(apply_filter); dialog.category.currentTextChanged.connect(apply_filter)
+    return dialog
+
+
+def create_settings_dialog(parent, callbacks):
+    from zoneinfo import ZoneInfo
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
+                                QTabWidget, QWidget, QLabel, QLineEdit, QCheckBox,
+                                QComboBox, QSlider, QPushButton, QScrollArea)
+    from aria import config, speech, hud, approval
+    dialog = QDialog(parent); dialog.setWindowTitle('ARIA | Settings'); dialog.resize(740, 660)
+    layout = QVBoxLayout(dialog); layout.setContentsMargins(24, 24, 24, 24); layout.setSpacing(16)
+    title = QLabel('SETTINGS'); title.setObjectName('title'); layout.addWidget(title)
+    tabs = QTabWidget(); layout.addWidget(tabs, 1)
+    def page(name):
+        w = QWidget(); form = QFormLayout(w); form.setContentsMargins(18, 22, 18, 22); form.setSpacing(18)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(w); tabs.addTab(scroll, name); return form
+    general = page('General')
+    dialog.startup = QCheckBox('Read a daily briefing when ARIA starts'); dialog.startup.setChecked(bool(config.get_setting('startup_briefing', True))); general.addRow(dialog.startup)
+    dialog.safe = QCheckBox('Safe mode — block shell, GUI control, email sending, and robot motion'); dialog.safe.setChecked(config.is_safe_mode()); general.addRow(dialog.safe)
+    if os.environ.get('ARIA_SAFE_MODE', '').lower() in ('1', 'true', 'yes'):
+        dialog.safe.setEnabled(False); dialog.safe.setToolTip('Safe mode is forced by the ARIA_SAFE_MODE environment variable.')
+    dialog.approval = QComboBox(); dialog.approval.addItems(list(approval.MODES)); dialog.approval.setCurrentText(approval.get_mode()); general.addRow('Action approvals', dialog.approval)
+    dialog.accent = QComboBox()
+    for label, color in [('Cyan', '#54d9e8'), ('Blue', '#58a6ff'), ('Violet', '#bd93f9'), ('Amber', '#edbc65')]: dialog.accent.addItem(label, color)
+    for i in range(dialog.accent.count()):
+        if dialog.accent.itemData(i) == config.get_setting('ui_accent', '#54d9e8'): dialog.accent.setCurrentIndex(i)
+    general.addRow('Interface accent', dialog.accent)
+    audio = page('Voice / audio')
+    dialog.voice = QCheckBox('Voice and wake-word listening enabled'); dialog.voice.setChecked(bool(speech.VOICE_ENABLED)); audio.addRow(dialog.voice)
+    dialog.whisper = QCheckBox('Whisper mode'); dialog.whisper.setChecked(bool(hud.WHISPER_MODE)); audio.addRow(dialog.whisper)
+    dialog.volume = QSlider(Qt.Orientation.Horizontal); dialog.volume.setRange(0, 100); dialog.volume.setValue(int(hud.get_hud_volume() * 100)); audio.addRow('System volume', dialog.volume)
+    dialog.tts = QComboBox()
+    for name in ('en-US-AriaNeural', 'en-US-JennyNeural', 'en-US-GuyNeural', 'en-GB-SoniaNeural', 'en-GB-RyanNeural'): dialog.tts.addItem(name)
+    dialog.tts.setCurrentText(config.get_setting('tts_voice', 'en-US-AriaNeural')); audio.addRow('Edge voice', dialog.tts)
+    test_voice = QPushButton('Test saved voice'); test_voice.clicked.connect(lambda: callbacks.speak('ARIA is connected. Your voice settings are ready.')); audio.addRow(test_voice)
+    brief = page('Daily briefing')
+    dialog.name = QLineEdit(str(config.get_setting('briefing_name', 'Alek'))); brief.addRow('Your name', dialog.name)
+    dialog.city = QLineEdit(str(config.get_setting('briefing_city', 'Dundalk, Maryland'))); brief.addRow('Local news & weather', dialog.city)
+    dialog.zone = QLineEdit(str(config.get_setting('briefing_timezone', 'America/New_York'))); brief.addRow('Time zone', dialog.zone)
+    topics = config.get_setting('briefing_world_topics', []); topics = topics if isinstance(topics, list) else []
+    dialog.topics = QLineEdit(', '.join(topics)); dialog.topics.setPlaceholderText('Optional: science, technology, world economy'); brief.addRow('World topics', dialog.topics)
+    info = QLabel('Today’s schedule, important recent mail, local weather, and dated local/world headlines. Calendar and Gmail connections are configured in Connections.'); info.setWordWrap(True); brief.addRow(info)
+    connections = page('Connections')
+    connection_fields = {}
+    for key, label, secret in [('GMAIL_USER', 'Gmail address', False), ('GMAIL_APP_PASSWORD', 'Gmail app password', True), ('ICAL_URL', 'Calendar iCal URL', True), ('OLLAMA_API_KEY', 'Ollama Cloud key', True), ('GROQ_API_KEY', 'Groq key', True), ('OPENROUTER_API_KEY', 'OpenRouter key', True), ('MISTRAL_API_KEY', 'Mistral key', True), ('GEMINI_API_KEY', 'Gemini key', True)]:
+        value, origin = config.key_get(key, '')
+        field = QLineEdit(); connection_fields[key] = field
+        if secret:
+            field.setEchoMode(QLineEdit.EchoMode.Password)
+            field.setPlaceholderText('Configured · leave blank to keep' if value and value != 'INSERT' else 'Not connected')
+        else:
+            field.setText(value if value != 'INSERT' else '')
+        if origin.startswith('env var'):
+            field.setEnabled(False); field.setPlaceholderText('Managed by environment variable')
+        connections.addRow(label, field)
+    dialog.connection_fields = connection_fields
+    notice = QLabel('Blank secret fields keep existing values. Gmail uses an app password. Calendar requires a private iCal URL. Provider key changes apply after restarting ARIA.'); notice.setWordWrap(True); connections.addRow(notice)
+    remote = QPushButton('Open Remote Control'); remote.clicked.connect(parent.open_remote); connections.addRow(remote)
+    dialog.message = QLabel(''); dialog.message.setWordWrap(True); layout.addWidget(dialog.message)
+    actions = QHBoxLayout(); actions.addStretch()
+    cancel = QPushButton('Close'); cancel.clicked.connect(dialog.reject); actions.addWidget(cancel)
+    dialog.save = QPushButton('Apply settings'); dialog.save.setObjectName('primary'); actions.addWidget(dialog.save); layout.addLayout(actions)
+    def save():
+        try:
+            ZoneInfo(dialog.zone.text().strip())
+            if not dialog.name.text().strip() or not dialog.city.text().strip():
+                raise ValueError('Your name and location cannot be empty.')
+            updates = {key: field.text().strip() for key, field in connection_fields.items() if field.isEnabled() and field.text().strip()}
+            if 'ICAL_URL' in updates and not updates['ICAL_URL'].startswith(('https://', 'http://')):
+                raise ValueError('Calendar URL must start with https:// or http://.')
+            if updates:
+                previous = dict(config._KEYS); config._KEYS.update(updates)
+                if not config.save_keys():
+                    config._KEYS.clear(); config._KEYS.update(previous)
+                    raise OSError('Connection settings could not be saved.')
+            values = config.settings_load()
+            values.update(startup_briefing=dialog.startup.isChecked(), safe_mode=dialog.safe.isChecked(),
+                          voice_enabled=dialog.voice.isChecked(), ui_accent=dialog.accent.currentData(),
+                          tts_voice=dialog.tts.currentText(), briefing_name=dialog.name.text().strip(),
+                          briefing_city=dialog.city.text().strip(), briefing_timezone=dialog.zone.text().strip(),
+                          briefing_world_topics=[t.strip() for t in dialog.topics.text().split(',') if t.strip()][:4])
+            if not config.settings_save(values): raise OSError('Settings could not be saved.')
+            approval.set_mode(dialog.approval.currentText())
+            speech.VOICE_ENABLED = dialog.voice.isChecked()
+            speech.EDGE_TTS_VOICE = dialog.tts.currentText()
+            if hud.WHISPER_MODE != dialog.whisper.isChecked(): callbacks.toggle_whisper()
+            hud.set_hud_volume(dialog.volume.value() / 100)
+            parent.apply_accent(dialog.accent.currentData())
+            for key, field in connection_fields.items():
+                if key != 'GMAIL_USER': field.clear()
+            dialog.message.setText('Settings saved. Provider key changes apply after restarting ARIA.' if any(k.endswith('_API_KEY') for k in updates) else 'Settings saved and applied.')
+        except Exception as exc:
+            dialog.message.setText(str(exc))
+    dialog.save.clicked.connect(save)
+    return dialog

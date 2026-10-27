@@ -32,7 +32,7 @@ def test_dashboard_routes_controls_and_refreshes(monkeypatch, tmp_path):
     hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = 'Ready'; hud.WHISPER_MODE = False
     hud._dispatch_spotify_action = calls.append
     hud.set_hud_volume = calls.append
-    config = types.ModuleType('aria.config'); config.redact = str; config.log_silent = lambda *args: None
+    config = types.ModuleType('aria.config'); config.redact = str; config.log_silent = lambda *args: None; config.get_setting = lambda key, default=None: default
     for name, mod in [('aria.frame', frame), ('aria.hud', hud), ('aria.config', config)]:
         monkeypatch.setitem(sys.modules, name, mod)
         monkeypatch.setattr(sys.modules['aria'], name.rsplit('.', 1)[1], mod, raising=False)
@@ -59,7 +59,7 @@ def test_dashboard_routes_controls_and_refreshes(monkeypatch, tmp_path):
     callbacks.render_frame = render
     window = create_dashboard(callbacks)
     window.show(); app.processEvents(); window.render_once()
-    assert window.tabs.count() == 5
+    assert window.tabs.count() == 6
     assert window.cpu[1].value() == 25
     assert '<b>literal text</b>' in window.views['Conversation'].toPlainText()
     assert not window.face.grab().isNull()

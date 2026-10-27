@@ -39,6 +39,12 @@ def test_qr_mobile_controls_inbox_and_reopen(monkeypatch, tmp_path):
     row = {'uid': '11', 'sender': 'Example Team', 'address': 'hello@example.com', 'subject': 'See what’s trending', 'date': '2026-10-27T07:26:04+00:00', 'unread': True}
     monkeypatch.setattr(mail, 'fetch_messages', lambda **kw: {'ok': True, 'messages': [row]})
     monkeypatch.setattr(mail, 'fetch_message', lambda uid: {'ok': True, 'message': dict(row, body='<script>not executable</script> Message body.')})
+    import aria.briefing as briefing
+    report = {'generated_at': '2026-10-27T09:00:00+00:00', 'text': 'Good morning, Alek. Your briefing.', 'sections': [
+        {'title': 'Today’s schedule', 'text': 'Work from 4 PM to 10 PM.', 'sources': []},
+        {'title': 'Local news', 'text': 'A local headline.', 'sources': [{'title': 'Local source', 'url': 'https://news.example/story'}]}]}
+    monkeypatch.setattr(briefing, 'latest_briefing', lambda: report)
+    monkeypatch.setattr(briefing, 'build_briefing', lambda: report)
     bridge.set_chat_log_provider(lambda: [('12:00', 'ALEK', 'Hello'), ('12:01', 'A.R.I.A.', 'Ready to help.')])
     server = ThreadingHTTPServer(('127.0.0.1', 0), bridge.BridgeHandler)
     monkeypatch.setattr(bridge, '_BRIDGE_SERVER', server)
@@ -82,6 +88,9 @@ def test_qr_mobile_controls_inbox_and_reopen(monkeypatch, tmp_path):
         assert evaluate("document.getElementById('mail-body').textContent.includes('<script>')")
         assert not evaluate("!!document.querySelector('#mail-body script')")
         view.grab().save(str(tmp_path / 'phone-inbox.png'))
+        evaluate("switchTab('briefing')")
+        wait("document.getElementById('brief-report').textContent.includes('Work from 4 PM')")
+        assert evaluate("document.querySelector('#brief-report a').href") == 'https://news.example/story'
         # A new navigation with the saved cookie opens the controls automatically.
         view.load(QUrl(base + '/'))
         wait("document.getElementById('connection')?.textContent === 'Connected'")

@@ -2,7 +2,7 @@
 
 Covers what Google Calendar's secret iCal URL serves: VEVENTs with
 DTSTART/DTEND in UTC (...Z), floating local, TZID, or date-only (all-day)
-forms. Recurring (RRULE) events are not expanded.
+forms. Recurring RRULE/RDATE/EXDATE events and explicit occurrence overrides are expanded in upcoming().
 """
 
 from __future__ import annotations
@@ -90,8 +90,16 @@ def _build_event(props: Dict[str, Tuple[str, str]]) -> Optional[Dict]:
     loc = txt("LOCATION")
     if loc:
         summary = f"{summary} @ {loc}"
+    def dates(name):
+        entry = props.get(name)
+        return [dt for value in entry[1].split(',') if (dt := _parse_dt(value, entry[0]))] if entry else []
+    recurrence = props.get('RECURRENCE-ID')
     return {"summary": summary, "description": txt("DESCRIPTION"),
-            "start": start, "end": end, "all_day": all_day}
+            "start": start, "end": end, "all_day": all_day,
+            "uid": txt('UID'), "rrule": txt('RRULE'),
+            "rdates": dates('RDATE'), "exdates": dates('EXDATE'),
+            "recurrence_id": _parse_dt(recurrence[1], recurrence[0]) if recurrence else None,
+            "cancelled": txt('STATUS').upper() == 'CANCELLED'}
 
 
 def parse_ical(text: str) -> List[Dict]:
@@ -111,7 +119,10 @@ def parse_ical(text: str) -> List[Dict]:
         elif in_event and ":" in line:
             prop, _, val = line.partition(":")
             name = prop.split(";")[0].strip().upper()
-            props[name] = (prop[len(name):], val)
+            if name in ('RDATE', 'EXDATE') and name in props:
+                props[name] = (props[name][0], props[name][1] + ',' + val)
+            else:
+                props[name] = (prop[len(name):], val)
     return events
 
 
@@ -125,13 +136,42 @@ def upcoming(events: List[Dict], days: int = 1,
              now: Optional[datetime] = None) -> List[Dict]:
     """Events overlapping [local today 00:00, +days), times as naive local."""
     now = now or datetime.now()
-    local_tz = now.astimezone().tzinfo
-    start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    local_tz = now.tzinfo
+    start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
     window_end = start_of_today + timedelta(days=max(1, days))
     out = []
+    def occurrence_key(event, dt):
+        from datetime import timezone
+        stamp = dt.astimezone(timezone.utc).isoformat() if dt.tzinfo else dt.isoformat()
+        return event.get('uid', ''), stamp
+    overrides = {occurrence_key(e, e['recurrence_id']) for e in events
+                 if e.get('uid') and e.get('recurrence_id')}
     for e in events:
-        s = _as_local_naive(e["start"], local_tz)
-        en = _as_local_naive(e["end"], local_tz)
-        if s < window_end and en > start_of_today:
-            out.append({**e, "start": s, "end": en})
+        if e.get('cancelled'):
+            continue
+        starts = [e['start']]
+        duration = e['end'] - e['start']
+        if not e.get('recurrence_id') and (e.get('rrule') or e.get('rdates')):
+            from dateutil.rrule import rruleset, rrulestr
+            rules = rruleset()
+            if e.get('rrule'):
+                if re.search(r'FREQ=(SECONDLY|MINUTELY|HOURLY)|BYSECOND=|BYMINUTE=', e['rrule'], re.I):
+                    raise ValueError('High-frequency calendar recurrence is not supported.')
+                rules.rrule(rrulestr(e['rrule'], dtstart=e['start']))
+            else:
+                rules.rdate(e['start'])
+            for dt in e.get('rdates', []): rules.rdate(dt)
+            for dt in e.get('exdates', []): rules.exdate(dt)
+            lower, upper = start_of_today - duration, window_end
+            if e['start'].tzinfo is not None:
+                lower = lower.replace(tzinfo=local_tz).astimezone(e['start'].tzinfo) if local_tz else lower.astimezone(e['start'].tzinfo)
+                upper = upper.replace(tzinfo=local_tz).astimezone(e['start'].tzinfo) if local_tz else upper.astimezone(e['start'].tzinfo)
+            starts = rules.between(lower, upper, inc=True)
+        for occurrence in starts:
+            if not e.get('recurrence_id') and occurrence_key(e, occurrence) in overrides:
+                continue
+            s = _as_local_naive(occurrence, local_tz)
+            en = _as_local_naive(occurrence + duration, local_tz)
+            if s < window_end and en > start_of_today:
+                out.append({**e, "start": s, "end": en})
     return sorted(out, key=lambda e: e["start"])
