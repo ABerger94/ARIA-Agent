@@ -71,11 +71,15 @@ class _Session:
 
 
 class _Manager:
-    def __init__(self, sessions):
+    def __init__(self, sessions, current=None):
         self._sessions = sessions
+        self._current = current
 
     def get_sessions(self):
         return list(self._sessions)
+
+    def get_current_session(self):
+        return self._current
 
 
 def _install(monkeypatch, manager):
@@ -144,3 +148,28 @@ def test_now_playing_cache_refreshes_in_background(monkeypatch):
             break
         _time.sleep(0.02)
     assert data is not None and data['track'] == 'The Song'
+
+
+def test_active_session_is_whatever_is_playing(monkeypatch):
+    # Alek, 2026-10-27: NOW PLAYING covers movies and browsers,
+    # not just Spotify — the active read follows the session
+    # Windows calls current, and labels the app.
+    edge = _Session('MSEdge', _Props('Big Buck Bunny (2008)', '', ''), status=4)
+    spotify = _Session('Spotify', status=5)
+    _install(monkeypatch, _Manager([spotify, edge], current=edge))
+    data = smtc._read_all()['active']
+    assert data['app'] == 'Edge' and data['is_spotify'] is False
+    assert data['track'] == 'Big Buck Bunny (2008)'
+    assert data['playing'] is True
+    # The Spotify-specific read still targets Spotify.
+    assert smtc._read_all()['spotify']['status'] == 'paused'
+    # And transport aims at the active session, not Spotify.
+    assert smtc.control_active('pause') is True
+    assert edge.calls == ['pause'] and spotify.calls == []
+
+
+def test_app_labels():
+    assert smtc.app_label('SpotifyAB.SpotifyMusic_1.0') == 'Spotify'
+    assert smtc.app_label('Microsoft.ZuneVideo_8wekyb3d8bbwe') == 'Movies & TV'
+    assert smtc.app_label('org.videolan.vlc') == 'VLC'
+    assert smtc.app_label('Some.Random.Player_x') == 'Player'

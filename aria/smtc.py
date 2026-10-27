@@ -71,14 +71,17 @@ def available() -> bool:
     return _manager() is not None
 
 
+def _sessions(manager):
+    try:
+        return list(manager.get_sessions() or [])
+    except Exception:
+        return []
+
+
 def _spotify_session(manager):
     """The Spotify session specifically — never just "the current
     session", which might be a browser video."""
-    try:
-        sessions = list(manager.get_sessions() or [])
-    except Exception:
-        return None
-    for session in sessions:
+    for session in _sessions(manager):
         try:
             if "spotify" in (session.source_app_user_model_id or "").lower():
                 return session
@@ -87,23 +90,45 @@ def _spotify_session(manager):
     return None
 
 
-def _read_now_playing() -> Optional[dict]:
-    """One synchronous SMTC read. None when there is no backend
-    or no Spotify session."""
-    manager = _manager()
-    if manager is None:
-        return None
-    session = _spotify_session(manager)
-    if session is None:
-        return None
+_APP_LABELS = (
+    ("spotify", "Spotify"),
+    ("zunevideo", "Movies & TV"),
+    ("microsoft.media.player", "Movies & TV"),
+    ("wmplayer", "Windows Media Player"),
+    ("msedge", "Edge"),
+    ("chrome", "Chrome"),
+    ("firefox", "Firefox"),
+    ("vlc", "VLC"),
+    ("netflix", "Netflix"),
+    ("plex", "Plex"),
+    ("itunes", "iTunes"),
+    ("applemusic", "Apple Music"),
+    ("tidal", "TIDAL"),
+    ("deezer", "Deezer"),
+    ("youtube", "YouTube Music"),
+)
+
+
+def app_label(app_id: str) -> str:
+    """A human name for a session's source app id."""
+    raw = str(app_id or "")
+    low = raw.lower()
+    for needle, label in _APP_LABELS:
+        if needle in low:
+            return label
+    tail = raw.split("_", 1)[0].split(".")[-1].strip()
+    return tail or "Media"
+
+
+def _session_info(session) -> Optional[dict]:
     try:
         props = session.try_get_media_properties_async().get()
         info = session.get_playback_info()
-        raw_status = info.playback_status
-        status = _STATUS.get(int(raw_status), "open")
+        status = _STATUS.get(int(info.playback_status), "open")
         track = (props.title or "").strip()
         artist = (props.artist or "").strip()
         album = (props.album_title or "").strip()
+        app_id = session.source_app_user_model_id or ""
     except Exception:
         return None
     title = f"{artist} - {track}" if artist and track else track
@@ -116,13 +141,58 @@ def _read_now_playing() -> Optional[dict]:
         "track": track,
         "artist": artist,
         "album": album,
+        "app": app_label(app_id),
+        "app_id": app_id,
+        "is_spotify": "spotify" in str(app_id).lower(),
     }
+
+
+def _active_session(manager):
+    """The session Windows considers current; failing that, a
+    playing one; failing that, the first with a title."""
+    try:
+        current = manager.get_current_session()
+    except Exception:
+        current = None
+    if current is not None:
+        return current
+    infos = []
+    for session in _sessions(manager):
+        info = _session_info(session)
+        if info:
+            infos.append((session, info))
+    for session, info in infos:
+        if info["playing"]:
+            return session
+    for session, info in infos:
+        if info["track"]:
+            return session
+    return infos[0][0] if infos else None
+
+
+def _read_all() -> dict:
+    """One manager pass → {'spotify': info|None, 'active': info|None}."""
+    manager = _manager()
+    if manager is None:
+        return {"spotify": None, "active": None}
+    spotify = _spotify_session(manager)
+    active = _active_session(manager)
+    return {
+        "spotify": _session_info(spotify) if spotify is not None else None,
+        "active": _session_info(active) if active is not None else None,
+    }
+
+
+def _read_now_playing() -> Optional[dict]:
+    """One synchronous SMTC read of the Spotify session. None
+    when there is no backend or no Spotify session."""
+    return _read_all()["spotify"]
 
 
 def _refresh():
     global _REFRESHING
     try:
-        data = _read_now_playing()
+        data = _read_all()
         with _LOCK:
             _CACHE["time"] = time.time()
             _CACHE["data"] = data
@@ -131,9 +201,7 @@ def _refresh():
             _REFRESHING = False
 
 
-def now_playing() -> Optional[dict]:
-    """The cached Spotify now-playing dict, refreshed in the
-    background when stale — never blocks the caller."""
+def _cached() -> dict:
     global _REFRESHING
     now = time.time()
     with _LOCK:
@@ -144,24 +212,47 @@ def now_playing() -> Optional[dict]:
             _REFRESHING = True
     if start:
         threading.Thread(target=_refresh, daemon=True).start()
-    return data
+    return data or {"spotify": None, "active": None}
 
 
-def control(action: str) -> bool:
-    """An explicit transport call on the Spotify session:
-    play / pause / play_pause / next / previous / stop. True only
-    when SMTC accepted the call. Synchronous — call it from a
-    worker thread, never the UI thread."""
+def now_playing() -> Optional[dict]:
+    """The cached SPOTIFY now-playing dict, refreshed in the
+    background when stale — never blocks the caller."""
+    return _cached()["spotify"]
+
+
+def now_playing_any() -> Optional[dict]:
+    """The cached now-playing dict for whatever session is
+    active — a movie in Movies & TV / VLC, a browser video,
+    Spotify, anything SMTC can see (Alek, 2026-10-27)."""
+    return _cached()["active"]
+
+
+def _control_on(session, action: str) -> bool:
     method = _ACTIONS.get(str(action or "").lower().strip())
-    if method is None:
-        return False
-    manager = _manager()
-    if manager is None:
-        return False
-    session = _spotify_session(manager)
-    if session is None:
+    if method is None or session is None:
         return False
     try:
         return bool(getattr(session, method)().get())
     except Exception:
         return False
+
+
+def control(action: str) -> bool:
+    """An explicit transport call on the SPOTIFY session:
+    play / pause / play_pause / next / previous / stop. True only
+    when SMTC accepted the call. Synchronous — call it from a
+    worker thread, never the UI thread."""
+    manager = _manager()
+    if manager is None:
+        return False
+    return _control_on(_spotify_session(manager), action)
+
+
+def control_active(action: str) -> bool:
+    """The same explicit call, aimed at the ACTIVE session —
+    whatever is actually playing (movie, browser, Spotify)."""
+    manager = _manager()
+    if manager is None:
+        return False
+    return _control_on(_active_session(manager), action)

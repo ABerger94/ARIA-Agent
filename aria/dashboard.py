@@ -260,7 +260,7 @@ def create_dashboard(callbacks):
             self._subsystem_rows = []
             ll.addWidget(self.subsystems)
             self.now_playing_title = QLabel('NOW PLAYING'); self.now_playing_title.setObjectName('title'); ll.addWidget(self.now_playing_title)
-            self.track = QLabel('Spotify is not running'); self.track.setWordWrap(True)
+            self.track = QLabel('Nothing playing'); self.track.setWordWrap(True)
             # Two lines, ever (Alek, 2026-10-27: a long Spotify title
             # wrapped unbounded, the column overflowed, and the NOW
             # PLAYING text overran the subsystems). The refresh elides
@@ -268,16 +268,28 @@ def create_dashboard(callbacks):
             self.track.setMaximumHeight(
                 self.track.fontMetrics().lineSpacing() * 2 + 6)
             ll.addWidget(self.track)
+            # Real progress, only when a source reports exact
+            # position/duration (the HUD video panel does; SMTC
+            # positions go stale, so no bar is fabricated for
+            # those). Hidden unless media_data() carries a duration.
+            from PyQt6.QtWidgets import QProgressBar
+            self.media_progress = QProgressBar()
+            self.media_progress.setRange(0, 1000)
+            self.media_progress.setTextVisible(False)
+            self.media_progress.setFixedHeight(4)
+            self.media_progress.hide()
+            ll.addWidget(self.media_progress)
             media = QHBoxLayout()
             # Explicit Play AND Pause (Alek, 2026-10-27): one
             # toggle button labelled "Play" that paused a playing
-            # track was a bug, not a control. These dispatch the
-            # explicit actions — SMTC aims them at the Spotify
-            # session (see aria/smtc.py).
+            # track was a bug, not a control. And the panel is not
+            # Spotify-only anymore: these dispatch to WHATEVER is
+            # playing (hud._dispatch_media_action — HUD panel,
+            # else the active SMTC session, else media keys).
             self.media_buttons = {}
             for name, action in [('Prev', 'previous'), ('Play', 'play'),
                                  ('Pause', 'pause'), ('Next', 'next')]:
-                b = QPushButton(name); b.clicked.connect(lambda checked=False, a=action: hud._dispatch_spotify_action(a)); media.addWidget(b)
+                b = QPushButton(name); b.clicked.connect(lambda checked=False, a=action: hud._dispatch_media_action(a)); media.addWidget(b)
                 self.media_buttons[action] = b
             ll.addLayout(media)
             _vol = QHBoxLayout(); _vol.addWidget(QLabel('SYSTEM VOLUME'))
@@ -988,7 +1000,7 @@ def create_dashboard(callbacks):
             self.voice.setText('Voice on' if data['voice_enabled'] else 'Voice off')
             self.whisper.setText('Whisper on' if hud.WHISPER_MODE else 'Whisper off')
             if not self.volume.isSliderDown(): self.volume.setValue(int(data['volume'] * 100))
-            music = frame.spotify_data(); _track_full = music.get('title') or music.get('track') or 'Spotify is not running'
+            music = frame.media_data(); _track_full = music.get('title') or music.get('track') or 'Nothing playing'
             self.track.setToolTip(_track_full)
             # NOW PLAYING panel: track on one line, artist under it
             # — still inside the label's two-line cap. Telemetry
@@ -1000,26 +1012,43 @@ def create_dashboard(callbacks):
             # no progress bar is fabricated.
             _fm = self.track.fontMetrics()
             _w = max(self.track.width(), 180)
-            _trk, _art = music.get('track') or '', music.get('artist') or ''
-            if _trk and _art:
+            _trk = music.get('track') or ''
+            _app = music.get('app') or ''
+            # Second line: the artist when there is one; otherwise
+            # the app it is playing in (a movie's "artist" is its
+            # player). Spotify keeps the clean two-line look.
+            _second = music.get('artist') or (
+                _app if _app and _app != 'Spotify' else '')
+            if _trk and _second:
                 self.track.setText(
                     _fm.elidedText(_trk, Qt.TextElideMode.ElideRight, _w)
-                    + '\n' + _fm.elidedText(_art, Qt.TextElideMode.ElideRight, _w))
+                    + '\n' + _fm.elidedText(_second, Qt.TextElideMode.ElideRight, _w))
+            elif _trk:
+                self.track.setText(_fm.elidedText(
+                    _trk, Qt.TextElideMode.ElideRight, _w * 2))
             else:
                 self.track.setText(_fm.elidedText(
                     _track_full, Qt.TextElideMode.ElideRight, _w * 2))
+            _suffix = f' · {_app.upper()}' if _app and _app != 'Spotify' else ''
             if music.get('playing'):
-                self.now_playing_title.setText('● NOW PLAYING')
+                self.now_playing_title.setText(f'● NOW PLAYING{_suffix}')
                 self.now_playing_title.setStyleSheet('color: #2ee6a8;')
             elif music.get('status') == 'paused':
-                self.now_playing_title.setText('❚❚ PAUSED')
+                self.now_playing_title.setText(f'❚❚ PAUSED{_suffix}')
                 self.now_playing_title.setStyleSheet('color: #ffb84d;')
             elif music.get('running'):
-                self.now_playing_title.setText('● NOW PLAYING')
+                self.now_playing_title.setText(f'● NOW PLAYING{_suffix}')
                 self.now_playing_title.setStyleSheet('color: #ffb84d;')
             else:
                 self.now_playing_title.setText('NOW PLAYING')
                 self.now_playing_title.setStyleSheet('')
+            _dur = music.get('duration_ms') or 0
+            if _dur > 0:
+                self.media_progress.setValue(
+                    int(1000 * min(1.0, (music.get('position_ms') or 0) / _dur)))
+                self.media_progress.show()
+            else:
+                self.media_progress.hide()
             _entries = frame.chat_entries(100)
             chat = '\n\n'.join(f'{ts}  {sender}\n{text}' for ts, sender, text in _entries)
             if chat != self._last_chat:

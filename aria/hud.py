@@ -504,6 +504,37 @@ def set_hud_subtitle(text: str):
 
 
 
+def _dispatch_media_action(action: str):
+    """Dashboard transport for WHATEVER is playing (Alek,
+    2026-10-27): ARIA's own video panel when it has media, else
+    the active SMTC session, else the global media keys (with
+    the Spotify path's state-aware play/pause). Async, like the
+    Spotify dispatch."""
+    def _run():
+        try:
+            from aria import media_control
+            snap = media_control.panel_snapshot()
+            if snap and snap.get("loaded"):
+                res = media_control.control(
+                    "prev" if action == "previous" else action,
+                    target="auto")
+                add_hud_log(res)
+                return
+            from aria import smtc
+            if smtc.control_active(action):
+                add_hud_log(f"Media: {action}.")
+                return
+            if action in ("play", "pause", "play_pause"):
+                from aria import spotify
+                add_hud_log(spotify.tool_spotify(action))
+            else:
+                from aria.tools.builtins import tool_media_key
+                add_hud_log(tool_media_key(action))
+        except Exception as e:
+            add_hud_log(f"Media action error: {e}")
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def _dispatch_spotify_action(action: str):
     """Trigger Spotify action asynchronously in background thread."""
     def _run():

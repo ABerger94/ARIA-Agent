@@ -70,6 +70,18 @@ def _panel():
         return _PANEL
 
 
+def panel_snapshot() -> Optional[dict]:
+    """The registered HUD panel's plain-data snapshot, or None
+    when no panel is registered / it cannot report."""
+    p = _panel()
+    if p is None:
+        return None
+    try:
+        return p.snapshot()
+    except Exception:
+        return None
+
+
 # ------------------------------------------------------- system seams
 def _system_key(action: str) -> str:
     from aria.tools.builtins import tool_media_key

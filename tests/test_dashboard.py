@@ -24,6 +24,7 @@ def test_dashboard_routes_controls_and_refreshes(monkeypatch, tmp_path):
     frame.strip_data = lambda: data
     frame._fmt_uptime = lambda seconds: '10m'
     frame.spotify_data = lambda: {'title': 'Test track'}
+    frame.media_data = lambda: {'title': 'Test track'}
     frame.chat_entries = lambda n: [('12:00', 'ALEK', '<b>literal text</b>')]
     frame.activity_events = lambda n: [('12:00', 'INFO', 'Ready', {})]
     frame.toggle_voice = lambda: calls.append('voice')
@@ -31,6 +32,7 @@ def test_dashboard_routes_controls_and_refreshes(monkeypatch, tmp_path):
     hud = types.ModuleType('aria.hud')
     hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = 'Ready'; hud.WHISPER_MODE = False
     hud._dispatch_spotify_action = calls.append
+    hud._dispatch_media_action = calls.append
     hud.set_hud_volume = calls.append
     config = types.ModuleType('aria.config'); config.redact = str; config.log_silent = lambda *args: None; config.get_setting = lambda key, default=None: default
     for name, mod in [('aria.frame', frame), ('aria.hud', hud), ('aria.config', config)]:
@@ -135,6 +137,7 @@ def test_subsystems_all_rows_visible_in_scroll_area(monkeypatch, tmp_path):
     frame.strip_data = lambda: data
     frame._fmt_uptime = lambda seconds: '10m'
     frame.spotify_data = lambda: {'title': 'Test track'}
+    frame.media_data = lambda: {'title': 'Test track'}
     frame.chat_entries = lambda n: []
     frame.activity_events = lambda n: []
     frame.toggle_voice = lambda: calls.append('voice')
@@ -142,6 +145,7 @@ def test_subsystems_all_rows_visible_in_scroll_area(monkeypatch, tmp_path):
     hud = types.ModuleType('aria.hud')
     hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = 'Ready'; hud.WHISPER_MODE = False
     hud._dispatch_spotify_action = calls.append
+    hud._dispatch_media_action = calls.append
     hud.set_hud_volume = calls.append
     config = types.ModuleType('aria.config'); config.redact = str; config.log_silent = lambda *args: None; config.get_setting = lambda key, default=None: default
     for name, mod in [('aria.frame', frame), ('aria.hud', hud), ('aria.config', config)]:
@@ -212,6 +216,7 @@ def test_now_playing_capped_and_panel_buttons_moved_to_settings(monkeypatch):
     frame.strip_data = lambda: data
     frame._fmt_uptime = lambda seconds: '10m'
     frame.spotify_data = lambda: {'title': long_title}
+    frame.media_data = lambda: {'title': long_title}
     frame.chat_entries = lambda n: []
     frame.activity_events = lambda n: []
     frame.toggle_voice = lambda: calls.append('voice')
@@ -219,6 +224,7 @@ def test_now_playing_capped_and_panel_buttons_moved_to_settings(monkeypatch):
     hud = types.ModuleType('aria.hud')
     hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = 'Ready'; hud.WHISPER_MODE = False
     hud._dispatch_spotify_action = calls.append
+    hud._dispatch_media_action = calls.append
     hud.set_hud_volume = calls.append
     config = types.ModuleType('aria.config'); config.redact = str; config.log_silent = lambda *args: None; config.get_setting = lambda key, default=None: default
     for name, mod in [('aria.frame', frame), ('aria.hud', hud), ('aria.config', config)]:
@@ -323,6 +329,7 @@ def test_pet_mode_hides_the_dashboard(monkeypatch, tmp_path):
     frame.strip_data = lambda: data
     frame._fmt_uptime = lambda seconds: '10m'
     frame.spotify_data = lambda: {'title': ''}
+    frame.media_data = lambda: {'title': ''}
     frame.chat_entries = lambda n: []
     frame.activity_events = lambda n: []
     frame.toggle_voice = lambda: None
@@ -330,6 +337,7 @@ def test_pet_mode_hides_the_dashboard(monkeypatch, tmp_path):
     hud = types.ModuleType('aria.hud')
     hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = ''; hud.WHISPER_MODE = False
     hud._dispatch_spotify_action = lambda a: None
+    hud._dispatch_media_action = lambda a: None
     hud.set_hud_volume = lambda v: None
     config = types.ModuleType('aria.config'); config.redact = str
     config.log_silent = lambda *args: None
@@ -385,10 +393,11 @@ def test_now_playing_panel(monkeypatch, tmp_path):
     frame = types.ModuleType('aria.frame')
     frame.strip_data = lambda: data
     frame._fmt_uptime = lambda seconds: '10m'
-    frame.spotify_data = lambda: {'running': True, 'playing': True,
-                                  'status': 'playing', 'source': 'smtc',
-                                  'title': 'The Artist - The Song',
-                                  'artist': 'The Artist', 'track': 'The Song'}
+    frame.media_data = lambda: {'running': True, 'playing': True,
+                                'status': 'playing', 'source': 'smtc',
+                                'app': 'Spotify',
+                                'title': 'The Artist - The Song',
+                                'artist': 'The Artist', 'track': 'The Song'}
     frame.chat_entries = lambda n: []
     frame.activity_events = lambda n: []
     frame.toggle_voice = lambda: None
@@ -396,7 +405,9 @@ def test_now_playing_panel(monkeypatch, tmp_path):
     hud = types.ModuleType('aria.hud')
     hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = ''; hud.WHISPER_MODE = False
     spotify_calls = []
+    hud._dispatch_media_action = spotify_calls.append
     hud._dispatch_spotify_action = spotify_calls.append
+    hud._dispatch_media_action = spotify_calls.append
     hud.set_hud_volume = lambda v: None
     config = types.ModuleType('aria.config'); config.redact = str
     config.log_silent = lambda *args: None
@@ -431,14 +442,37 @@ def test_now_playing_panel(monkeypatch, tmp_path):
     assert spotify_calls == ['pause', 'play']
     # Paused (SMTC status) shows PAUSED — and still shows the
     # actual track, not a standby placeholder.
-    frame.spotify_data = lambda: {'running': True, 'playing': False,
-                                  'status': 'paused', 'source': 'smtc',
-                                  'title': 'The Artist - The Song',
-                                  'artist': 'The Artist', 'track': 'The Song'}
+    frame.media_data = lambda: {'running': True, 'playing': False,
+                                'status': 'paused', 'source': 'smtc',
+                                'app': 'Spotify',
+                                'title': 'The Artist - The Song',
+                                'artist': 'The Artist', 'track': 'The Song'}
     window._last_refresh = 0   # age past render_once's 0.8s panel throttle
     window.render_once(); app.processEvents()
     assert window.now_playing_title.text() == '❚❚ PAUSED'
     assert window.track.text() == 'The Song\nThe Artist'
+    assert window.media_progress.isHidden()
+    # A MOVIE in another app (Alek, 2026-10-27 — the panel is
+    # not Spotify-only): header names the app, second line is
+    # the player since a movie has no artist.
+    frame.media_data = lambda: {'running': True, 'playing': False,
+                                'status': 'paused', 'source': 'smtc',
+                                'app': 'VLC', 'title': 'Some Movie.mkv',
+                                'artist': '', 'track': 'Some Movie.mkv'}
+    window._last_refresh = 0
+    window.render_once(); app.processEvents()
+    assert window.now_playing_title.text() == '❚❚ PAUSED · VLC'
+    assert window.track.text() == 'Some Movie.mkv\nVLC'
+    # ARIA's own player: real position/duration drives the bar.
+    frame.media_data = lambda: {'running': True, 'playing': True,
+                                'status': 'playing', 'source': 'hud',
+                                'app': 'ARIA player', 'title': 'Clip.mp4',
+                                'artist': '', 'track': 'Clip.mp4',
+                                'position_ms': 30000, 'duration_ms': 60000}
+    window._last_refresh = 0
+    window.render_once(); app.processEvents()
+    assert not window.media_progress.isHidden()
+    assert window.media_progress.value() == 500
     window.close()
 
 
@@ -457,6 +491,7 @@ def test_center_composite_is_opaque_and_layered(monkeypatch, tmp_path):
     frame.strip_data = lambda: data
     frame._fmt_uptime = lambda seconds: '10m'
     frame.spotify_data = lambda: {'title': ''}
+    frame.media_data = lambda: {'title': ''}
     frame.chat_entries = lambda n: []
     frame.activity_events = lambda n: []
     frame.toggle_voice = lambda: None
@@ -464,6 +499,7 @@ def test_center_composite_is_opaque_and_layered(monkeypatch, tmp_path):
     hud = types.ModuleType('aria.hud')
     hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = ''; hud.WHISPER_MODE = False
     hud._dispatch_spotify_action = lambda a: None
+    hud._dispatch_media_action = lambda a: None
     hud.set_hud_volume = lambda v: None
     config = types.ModuleType('aria.config'); config.redact = str
     config.log_silent = lambda *args: None
@@ -514,6 +550,7 @@ def test_no_customize_or_extensions_buttons_on_dashboard(monkeypatch, tmp_path):
     frame.strip_data = lambda: data
     frame._fmt_uptime = lambda seconds: '10m'
     frame.spotify_data = lambda: {'title': ''}
+    frame.media_data = lambda: {'title': ''}
     frame.chat_entries = lambda n: []
     frame.activity_events = lambda n: []
     frame.toggle_voice = lambda: None
@@ -521,6 +558,7 @@ def test_no_customize_or_extensions_buttons_on_dashboard(monkeypatch, tmp_path):
     hud = types.ModuleType('aria.hud')
     hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = ''; hud.WHISPER_MODE = False
     hud._dispatch_spotify_action = lambda a: None
+    hud._dispatch_media_action = lambda a: None
     hud.set_hud_volume = lambda v: None
     config = types.ModuleType('aria.config'); config.redact = str
     config.log_silent = lambda *args: None
@@ -573,6 +611,7 @@ def test_orb_publish_falls_back_when_composite_fails(monkeypatch, tmp_path):
     frame.strip_data = lambda: data
     frame._fmt_uptime = lambda seconds: '10m'
     frame.spotify_data = lambda: {'title': ''}
+    frame.media_data = lambda: {'title': ''}
     frame.chat_entries = lambda n: []
     frame.activity_events = lambda n: []
     frame.toggle_voice = lambda: None
@@ -580,6 +619,7 @@ def test_orb_publish_falls_back_when_composite_fails(monkeypatch, tmp_path):
     hud = types.ModuleType('aria.hud')
     hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = ''; hud.WHISPER_MODE = False
     hud._dispatch_spotify_action = lambda a: None
+    hud._dispatch_media_action = lambda a: None
     hud.set_hud_volume = lambda v: None
     config = types.ModuleType('aria.config'); config.redact = str
     config.log_silent = lambda *args: None

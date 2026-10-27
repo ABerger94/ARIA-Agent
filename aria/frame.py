@@ -424,6 +424,40 @@ def spotify_data() -> Dict[str, Any]:
                 "artist": "", "track": ""}
 
 
+def media_data() -> Dict[str, Any]:
+    """Whatever media is ACTUALLY playing, for the dashboard's
+    NOW PLAYING panel (Alek, 2026-10-27 — not just Spotify):
+    1. ARIA's own video panel, when it has media loaded (its
+       snapshot carries the exact position/duration);
+    2. the active Windows media session via SMTC — a movie in
+       Movies & TV / VLC, a browser video, Spotify, anything;
+    3. the Spotify window-title telemetry as last resort.
+    Same dict shape as spotify_data(), plus 'app' / 'source'."""
+    try:
+        from aria import media_control as _mc
+        snap = _mc.panel_snapshot()
+        if snap and snap.get("loaded"):
+            title = snap.get("title") or "Video"
+            return {"running": True, "playing": bool(snap.get("playing")),
+                    "status": "playing" if snap.get("playing") else "paused",
+                    "source": "hud", "app": "ARIA player",
+                    "title": title, "track": title, "artist": "",
+                    "position_ms": snap.get("position_ms", 0),
+                    "duration_ms": snap.get("duration_ms", 0)}
+    except Exception:
+        pass
+    try:
+        from aria import smtc as _smtc
+        live = _smtc.now_playing_any()
+        if live:
+            return dict(live)
+    except Exception:
+        pass
+    data = spotify_data()
+    data.setdefault("app", "Spotify")
+    return data
+
+
 # ---------------------------------------------------------------- actions
 def toggle_voice() -> bool:
     """The rehoused OPS Controls gate: speech.VOICE_ENABLED, same flag,
