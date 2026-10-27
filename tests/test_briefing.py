@@ -55,9 +55,58 @@ def test_recent_important_email_precedes_promotions(monkeypatch):
         row('Old alert', 'person@example.com', 'Security alert', 80)]}
     monkeypatch.setitem(sys.modules, 'aria.mailview', mail)
     result = b.email_section(NOW)
-    assert '10 unread' in result['text']
-    assert 'Declined transaction' in result['text'] and 'Interview confirmation' in result['text']
+    assert 'On email: 10 unread — notable:' in result['text']
+    assert "Bank regarding 'Declined transaction'" in result['text']
+    assert "Recruiter regarding 'Interview confirmation'" in result['text']
     assert 'Plex' not in result['text'] and 'LinkedIn' not in result['text'] and 'Old alert' not in result['text']
+
+
+def _mail_stub(monkeypatch, rows, unread_total):
+    pkg = types.ModuleType('aria'); pkg.__path__ = [str(ROOT / 'aria')]
+    monkeypatch.setitem(sys.modules, 'aria', pkg)
+    mail = types.ModuleType('aria.mailview')
+    mail.fetch_messages = lambda **kw: {'ok': True, 'unread_total': unread_total, 'messages': rows}
+    monkeypatch.setitem(sys.modules, 'aria.mailview', mail)
+
+
+def _row(sender, address, subject, age=1):
+    return dict(sender=sender, address=address, subject=subject, unread=True,
+                date=(NOW - timedelta(hours=age)).isoformat())
+
+
+def test_email_lvi_rules(monkeypatch):
+    # Google's own security alerts are skipped; a personal sender is
+    # named in LVI form.
+    _mail_stub(monkeypatch, [
+        _row('Google', 'no-reply@accounts.google.com', 'Security alert'),
+        _row('Sam', 'sam@example.com', 'Dinner Thursday?')], 2)
+    text = b.email_section(NOW)['text']
+    assert "Sam regarding 'Dinner Thursday?'" in text
+    assert 'Security alert' not in text
+    # An all-automated sample is said to be one.
+    _mail_stub(monkeypatch, [
+        _row('Plex', 'hello@plex.example', 'See what’s trending this week')], 1)
+    assert 'mostly automated alerts' in b.email_section(NOW)['text']
+    # Zero unread is the only 'Inbox is clear.'
+    _mail_stub(monkeypatch, [], 0)
+    assert b.email_section(NOW)['text'] == 'Inbox is clear.'
+
+
+def test_spoken_text_merges_news_into_one_line():
+    funcs = sources()
+    funcs['local_news'] = lambda: b.section(
+        'Local headlines: A; B.',
+        sources=[{'title': 'Local one', 'url': 'https://x/1'},
+                 {'title': 'Local two', 'url': 'https://x/2'}])
+    funcs['world_news'] = lambda: b.section(
+        'World headlines: C; D.',
+        sources=[{'title': 'World one', 'url': 'https://x/3'},
+                 {'title': 'World two', 'url': 'https://x/4'}])
+    report = b.compose(NOW, funcs)
+    assert 'In the news: Local one. Local two. World one.' in report['text']
+    assert 'Local headlines:' not in report['text']
+    by_key = {s['key']: s for s in report['sections']}
+    assert by_key['local_news']['text'] == 'Local headlines: A; B.'
 
 
 def test_news_rejects_old_undated_and_duplicate_headlines():

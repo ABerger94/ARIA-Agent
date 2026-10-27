@@ -3,6 +3,16 @@
 The text is composed from observed data, without a model inventing plans or
 headlines. Sources run concurrently under one deadline; missing sources are
 reported separately from sources that returned an empty result.
+
+The spoken composition follows Mark-LVI's morning briefing (Alek's
+call, 2026-10-27 — 'that briefing is still better'): 'You've got:
+Dentist (3 PM to 4 PM).' for the calendar, 'On email: N unread —
+notable: Sender regarding 'Subject'' for the inbox (automated
+senders counted, never named; Google's own security alerts
+skipped), 'In Dundalk it's 61 degrees and clear, with a high of…'
+for the weather, and a single 'In the news:' line of headline
+titles instead of both news sections read aloud. The full
+per-section texts remain in the report for the Briefing tab.
 """
 from __future__ import annotations
 
@@ -46,23 +56,28 @@ def calendar_section(now):
         saved = [row for row in scheduler._load_schedule() if row.get('date') == now.strftime('%Y-%m-%d')]
         if saved:
             return section('Your live calendar is not connected. On your saved schedule today: ' + scheduler._entries_line(saved) + '.', 'partial')
-        return section('Your calendar is not connected yet.', 'unconfigured')
+        return section("Your calendar isn't connected yet.", 'unconfigured')
     events = upcoming(parse_ical(fetch_ical(url, timeout=7)), days=2, now=now)
     today = now.date(); tomorrow = today + timedelta(days=1)
     def describe(event):
+        # Mark-LVI spoken form: 'Dentist (3 PM to 4 PM)' — the time
+        # rides in parentheses instead of a 'from X to Y' clause.
         if event['all_day']:
-            return event['summary'] + ' (all day)'
+            return event['summary']
         if event['start'].date() < today:
-            return f"{event['summary']}, continuing until {_time(event['end'])}"
-        return f"{event['summary']} from {_time(event['start'])} to {_time(event['end'])}"
+            return f"{event['summary']} (until {_time(event['end'])})"
+        return f"{event['summary']} ({_time(event['start'])} to {_time(event['end'])})"
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
     todays = [e for e in events if e['start'] < day_start + timedelta(days=1) and e['end'] > day_start]
     tomorrows = [e for e in events if e['start'].date() == tomorrow]
-    text = 'Today: ' + '; '.join(describe(e) for e in todays[:6]) + '.' if todays else 'Nothing is on your connected calendar today.'
-    if len(todays) > 6:
-        text += f' Plus {len(todays) - 6} more events.'
+    if todays:
+        text = "You've got: " + ', '.join(describe(e) for e in todays[:6]) + '.'
+        if len(todays) > 6:
+            text += f' Plus {len(todays) - 6} more.'
+    else:
+        text = 'Nothing on the schedule today.'
     if tomorrows:
-        text += ' Tomorrow: ' + '; '.join(describe(e) for e in tomorrows[:2]) + '.'
+        text += ' Tomorrow: ' + ', '.join(describe(e) for e in tomorrows[:2]) + '.'
     # Never put the secret iCal URL into the briefing or its sources.
     return section(text)
 
@@ -81,37 +96,55 @@ def email_priority(row):
 
 
 def email_section(now):
+    """Mark-LVI spoken form over this build's mailview rows:
+    'On email: N unread — notable: Sender regarding 'Subject'; …'
+    with this build's noise filter kept (automated senders never
+    get named) and LVI's own rules on top: Google's security alerts
+    are skipped, an all-automated sample is said to be one, and an
+    empty inbox is 'Inbox is clear.' — a claim only made when the
+    unread count actually is zero."""
     from aria.mailview import fetch_messages
     result = fetch_messages(limit=30)
     if not result.get('ok'):
         error = result.get('error', '')
         if "isn't set up" in error or 'not connected' in error:
-            return section('Email is not connected yet.', 'unconfigured')
-        return section('I could not check your email just now.', 'unavailable')
-    recent = []
+            return section("Email isn't connected yet.", 'unconfigured')
+        return section("I couldn't check your email just now.", 'unavailable')
+    count = result.get('unread_total')
+    if count == 0:
+        return section('Inbox is clear.')
+    sample = []
     for row in result['messages']:
+        if not row.get('unread'):
+            continue
         try:
             stamp = datetime.fromisoformat(row['date'])
             stamp = stamp.replace(tzinfo=timezone.utc) if stamp.tzinfo is None else stamp
             age = now.astimezone(timezone.utc) - stamp.astimezone(timezone.utc)
         except (KeyError, ValueError, TypeError):
             continue
-        if timedelta(0) <= age <= timedelta(hours=48) and email_priority(row):
-            recent.append(row)
-    recent.sort(key=lambda row: (email_priority(row), bool(row.get('unread')), row.get('date', '')), reverse=True)
-    count = result.get('unread_total')
-    text = f'You have {count} unread emails. ' if isinstance(count, int) else ''
-    urgent = [r for r in recent if email_priority(r) == 3]
-    possible = [r for r in recent if email_priority(r) == 1 and r.get('unread')]
-    if urgent:
-        text += 'Important recent subjects: ' + '; '.join(f"{r['sender']}: {r['subject']}" for r in urgent[:3]) + '.'
-    elif possible:
-        text += 'Recent unread mail worth reviewing: ' + '; '.join(f"{r['sender']}: {r['subject']}" for r in possible[:2]) + '.'
-    else:
-        text += 'No important subjects stood out in the most recent 30 messages from the last 48 hours.'
-    if len(urgent) > 3:
-        text += f' There are {len(urgent) - 3} more important subjects in that recent sample.'
-    return section(text)
+        if timedelta(0) <= age <= timedelta(hours=48):
+            sample.append(row)
+    sample.sort(key=lambda row: row.get('date', ''), reverse=True)
+    sample = sample[:10]
+    notable = []
+    for row in sample:
+        if not email_priority(row):
+            continue                    # automated: counted, never named
+        sender = str(row.get('sender', '')).strip().strip('"')
+        subject = str(row.get('subject', '')).strip()
+        if 'security alert' in subject.casefold() and 'google' in (sender + ' ' + str(row.get('address', ''))).casefold():
+            continue                    # LVI: Google's own alerts are noise
+        notable.append((email_priority(row), sender, subject))
+    notable.sort(key=lambda item: -item[0])
+    head = f'On email: {count} unread' if isinstance(count, int) else 'On email'
+    if notable:
+        named = '; '.join(f"{sender} regarding '{subject}'" for _p, sender, subject in notable[:2])
+        rest = f' and {len(notable) - 2} other(s)' if len(notable) > 2 else ''
+        return section(f'{head} — notable: {named}{rest}.')
+    if sample:
+        return section(f'{head}, mostly automated alerts.')
+    return section(head + '.')
 
 
 def weather_section(city):
@@ -119,7 +152,8 @@ def weather_section(city):
     cur = data['current_condition'][0]; today = data['weather'][0]
     name = city.split(',')[0]
     desc = (cur.get('weatherDesc') or [{}])[0].get('value', '')
-    return section(f"In {name}, it is {cur['temp_F']} degrees Fahrenheit and {desc.lower()}, with a high of {today['maxtempF']} and a low of {today['mintempF']}.",
+    cond = f' and {desc}' if desc else ''
+    return section(f"In {name} it's {cur['temp_F']} degrees{cond}, with a high of {today['maxtempF']} and a low of {today['mintempF']}.",
                    sources=[{'title': 'Weather', 'url': 'https://wttr.in/' + urllib.parse.quote(city)}])
 
 
@@ -194,7 +228,29 @@ def compose(now, sources, name='Alek', timeout=14):
     for key, title in _TITLES.items():
         value = results.get(key, section(title + ' is taking too long to load; I skipped it for now.', 'timeout'))
         sections.append({'key': key, 'title': title, **value})
-    return {'generated_at': now.isoformat(), 'text': intro + ' ' + ' '.join(s['text'] for s in sections), 'sections': sections}
+    # The SPOKEN text follows Mark-LVI's composition: calendar,
+    # email, weather, then ONE 'In the news:' line of headline
+    # titles (local first, three total). The full local/world
+    # sections stay in 'sections' for the Briefing tab — speaking
+    # both blocks verbatim made the greeting a five-part report.
+    by = {s['key']: s for s in sections}
+    spoken = [by[k]['text'] for k in ('schedule', 'email', 'weather')]
+    titles = []
+    for key in ('local_news', 'world_news'):
+        for item in by[key].get('sources', []):
+            t = str(item.get('title', '')).strip()
+            if t and t not in titles:
+                titles.append(t)
+    if titles:
+        spoken.append('In the news: ' + '. '.join(titles[:3]) + '.')
+    else:
+        ok_texts = [by[k]['text'] for k in ('local_news', 'world_news')
+                    if by[k]['status'] == 'ok' and by[k]['text']]
+        if ok_texts:
+            spoken.extend(ok_texts)
+        elif any(by[k]['status'] != 'ok' for k in ('local_news', 'world_news')):
+            spoken.append("I couldn't fetch the news right now.")
+    return {'generated_at': now.isoformat(), 'text': intro + ' ' + ' '.join(spoken), 'sections': sections}
 
 
 def latest_briefing():
