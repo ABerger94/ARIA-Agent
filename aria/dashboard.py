@@ -91,10 +91,11 @@ def create_dashboard(callbacks):
     from PyQt6.QtGui import QImage, QPixmap, QColor, QShortcut, QKeySequence
     from PyQt6.QtWidgets import (QMainWindow, QWidget, QFrame, QLabel, QPushButton,
                                 QVBoxLayout, QHBoxLayout, QSplitter, QTabWidget,
-                                QTextBrowser, QLineEdit, QSlider,
+                                QTextBrowser, QLineEdit, QSlider, QGridLayout,
                                 QFileDialog, QDialog, QApplication, QListWidget, QListWidgetItem)
     from aria import frame, hud, config
     from aria.resonance import ResonanceOrb
+    from aria.neural_field import NeuralField
     from aria.metric_bar import MetricBar, StatusPlaque
     from aria.video_panel import VideoPanel, HAVE_VIDEO as _HAVE_VIDEO
     try:
@@ -210,10 +211,19 @@ def create_dashboard(callbacks):
             ll.addStretch()
             body.addWidget(left)
             center, cl = self.card('ARIA / LIVE')
-            self.face = ResonanceOrb(); cl.addWidget(self.face, 1)
+            # The neuron field (Mark-LVI's HudCanvas layer, ported
+            # to aria/neural_field.py — Alek, 2026-10-27) sits in a
+            # grid stack UNDER the centrepiece; the orb / holo head
+            # run with transparent backgrounds over it, exactly as
+            # they already do on the desktop pet.
+            self.center_stack = QWidget()
+            _stack = QGridLayout(self.center_stack)
+            _stack.setContentsMargins(0, 0, 0, 0)
+            self.neural = NeuralField(); _stack.addWidget(self.neural, 0, 0)
+            self.face = ResonanceOrb(transparent_background=True); _stack.addWidget(self.face, 0, 0)
             self.video = VideoPanel() if _HAVE_VIDEO else None
             if self.video is not None:
-                self.video.hide(); cl.addWidget(self.video, 1)
+                self.video.hide(); _stack.addWidget(self.video, 0, 0)
                 self.video.closed.connect(self._on_video_closed)
                 # Gap fill 6: let the media_control tool reach the
                 # built-in player (via its command signal).
@@ -222,10 +232,11 @@ def create_dashboard(callbacks):
                     _mc.register_panel(self.video)
                 except Exception:
                     pass
-            self.holo = HoloFace() if HoloFace is not None else None
+            self.holo = HoloFace(transparent_background=True) if HoloFace is not None else None
             self._centerpiece = _centerpiece0 if self.holo is not None else 'orb'
             if self.holo is not None:
-                self.holo.hide(); cl.addWidget(self.holo, 1)
+                self.holo.hide(); _stack.addWidget(self.holo, 0, 0)
+            cl.addWidget(self.center_stack, 1)
             self._last_orb_publish = 0.0
             self.state = QLabel('IDLE'); self.state.setAlignment(Qt.AlignmentFlag.AlignCenter); self.state.setObjectName('brand'); cl.addWidget(self.state)
             self.subtitle = QLabel(); self.subtitle.setTextFormat(Qt.TextFormat.PlainText); self.subtitle.setWordWrap(True); self.subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter); cl.addWidget(self.subtitle)
@@ -786,6 +797,10 @@ def create_dashboard(callbacks):
                 self.holo.advance(state, level, _muted)
             else:
                 self.face.advance(state, level, _muted)
+            self.neural.setVisible(self.video is None
+                                   or not self.video.isVisible())
+            if self.neural.isVisible():
+                self.neural.advance(state, _muted)
             # Publish the active centerpiece to the phone; the old pixel
             # renderer is not run in the native dashboard. Limit JPEG
             # production to 8 Hz. While a video owns the center card both
