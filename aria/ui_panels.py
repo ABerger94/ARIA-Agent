@@ -185,6 +185,35 @@ def create_settings_dialog(parent, callbacks):
     except Exception:
         dialog.customize_wheel = None
         cust_lay.addWidget(QLabel('Customize wheel unavailable — use the accent presets on the General tab.'))
+    # Centerpiece (Alek, 2026-10-27: the dashboard's Centerpiece
+    # button moved here, under Customize). Applies immediately,
+    # like the Pet form combo: persist via ui_prefs, then swap
+    # the running dashboard's face through the parent's hook
+    # when it offers one.
+    cust_cp_note = QLabel('Centerpiece — the face in the middle of the dashboard. Applies immediately.'); cust_cp_note.setWordWrap(True); cust_lay.addWidget(cust_cp_note)
+    centerpiece_row = QHBoxLayout(); centerpiece_row.addWidget(QLabel('Centerpiece'))
+    dialog.centerpiece = QComboBox(); dialog.centerpiece.addItem('Waveform orb', 'orb'); dialog.centerpiece.addItem('Character', 'holo')
+    try:
+        from aria import ui_prefs as _up_cp
+        _cur_cp = _up_cp.get_centerpiece()
+    except Exception:
+        _cur_cp = 'orb'
+    dialog.centerpiece.setCurrentIndex(1 if _cur_cp == 'holo' else 0)
+    def _centerpiece_changed(idx):
+        form = dialog.centerpiece.itemData(idx)
+        try:
+            from aria import ui_prefs as _up_cp2
+            _up_cp2.set_centerpiece(form)
+        except Exception:
+            pass
+        _apply_cp = getattr(parent, 'set_centerpiece', None)
+        if callable(_apply_cp):
+            try:
+                _apply_cp(form)
+            except Exception:
+                pass
+    dialog.centerpiece.currentIndexChanged.connect(_centerpiece_changed)
+    centerpiece_row.addWidget(dialog.centerpiece, 1); cust_lay.addLayout(centerpiece_row)
     cust_lay.addStretch()
     pet_lay = vpage('Pet')
     pet_note = QLabel('Desktop pet — the floating mini-ARIA. The same controls as the dashboard’s Pet button and the pet’s right-click menu.'); pet_note.setWordWrap(True); pet_lay.addWidget(pet_note)

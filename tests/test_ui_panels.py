@@ -89,6 +89,7 @@ def test_settings_hosts_providers_audio_customize_pet(monkeypatch, tmp_path):
         def apply_accent(self, value): calls.append(('accent', value))
         def open_remote(self): calls.append('remote')
         def toggle_pet(self): calls.append('pet')
+        def set_centerpiece(self, name): calls.append(('cp', name))
     parent = Parent(); parent.setStyleSheet(STYLE)
     callbacks = types.SimpleNamespace(speak=calls.append, toggle_whisper=lambda: calls.append('whisper'))
     dialog = create_settings_dialog(parent, callbacks); dialog.show(); app.processEvents()
@@ -97,6 +98,15 @@ def test_settings_hosts_providers_audio_customize_pet(monkeypatch, tmp_path):
     titles = [tabs.tabText(i) for i in range(tabs.count())]
     for wanted in ('Providers', 'Extensions', 'Customize', 'Pet'):
         assert wanted in titles, titles
+    # Customize hosts the centerpiece choice (Alek, 2026-10-27:
+    # the dashboard button moved here): it persists via ui_prefs
+    # and reaches the host window immediately.
+    dialog.centerpiece.setCurrentIndex(1)
+    assert ui_prefs.get_centerpiece() == 'holo'
+    assert ('cp', 'holo') in calls
+    dialog.centerpiece.setCurrentIndex(0)
+    assert ui_prefs.get_centerpiece() == 'orb'
+    assert ('cp', 'orb') in calls
     # Extensions (Alek, 2026-10-27): the read-only MCP/tool
     # readout that used to float over the dashboard now lives
     # here as a Settings tab.

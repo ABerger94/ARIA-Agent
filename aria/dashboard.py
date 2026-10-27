@@ -413,9 +413,10 @@ def create_dashboard(callbacks):
             self.mic = QPushButton('Hold to talk'); self.mic.pressed.connect(callbacks.ptt_press); self.mic.released.connect(callbacks.ptt_release); controls.addWidget(self.mic)
             self.voice = QPushButton('Voice on'); self.voice.clicked.connect(frame.toggle_voice); controls.addWidget(self.voice)
             stop = QPushButton('Stop speaking'); stop.clicked.connect(callbacks.interrupt); controls.addWidget(stop); cl.addLayout(controls)
-            self.whisper = QPushButton('Whisper off'); self.whisper.clicked.connect(callbacks.toggle_whisper); cl.addWidget(self.whisper)
-            self.centerpiece_btn = QPushButton('Centerpiece: Orb'); self.centerpiece_btn.clicked.connect(self._toggle_centerpiece); cl.addWidget(self.centerpiece_btn)
-            if self.holo is None: self.centerpiece_btn.setEnabled(False)
+            # Whisper and centerpiece buttons used to live here
+            # (Alek, 2026-10-27): whisper is the Voice / audio
+            # Settings checkbox, the centerpiece is Settings →
+            # Customize — the dashboard keeps neither button.
             body.addWidget(center)
             right, rl = self.card('WORKSPACE'); right.setMinimumWidth(340)
             self.tabs = QTabWidget(); self.views = {}
@@ -873,8 +874,14 @@ def create_dashboard(callbacks):
 
             build_customize_dialog(self, start, preview, commit).exec()
 
-        def _toggle_centerpiece(self):
-            self._centerpiece = 'holo' if self._centerpiece == 'orb' else 'orb'
+        def set_centerpiece(self, name):
+            """Apply a centerpiece choice from Settings → Customize
+            (the dashboard's own Centerpiece button is gone, Alek
+            2026-10-27): persist it and swap the visible face.
+            'holo' without a holo widget falls back to the orb,
+            matching the boot-time rule."""
+            self._centerpiece = ('holo' if name == 'holo'
+                                 and self.holo is not None else 'orb')
             try:
                 from aria import ui_prefs
                 ui_prefs.set_centerpiece(self._centerpiece)
@@ -885,9 +892,6 @@ def create_dashboard(callbacks):
         def _show_centerpiece(self):
             """Make the stored centerpiece the visible one (unless a
             video owns the center card right now)."""
-            self.centerpiece_btn.setText(
-                'Centerpiece: ' + ('Holo' if self._centerpiece == 'holo'
-                                   else 'Orb'))
             if self.video is not None and self.video.isVisible():
                 return
             if self._centerpiece == 'holo' and self.holo is not None:
@@ -1122,7 +1126,6 @@ def create_dashboard(callbacks):
             self._last_subsystems = list(data.get('subsystems') or [])
             self.status.setText(_services_status_text(data.get('subsystems')))
             self.voice.setText('Voice on' if data['voice_enabled'] else 'Voice off')
-            self.whisper.setText('Whisper on' if hud.WHISPER_MODE else 'Whisper off')
             if not self.volume.isSliderDown(): self.volume.setValue(int(data['volume'] * 100))
             music = frame.media_data(); _track_full = music.get('title') or music.get('track') or 'Nothing playing'
             self.track.setToolTip(_track_full)

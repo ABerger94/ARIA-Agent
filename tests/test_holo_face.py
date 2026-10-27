@@ -124,17 +124,23 @@ def _dashboard_stubs(monkeypatch, centerpiece='orb'):
 
 
 def test_dashboard_centerpiece_swap_and_persist(monkeypatch):
+    # The dashboard's Centerpiece button is gone (Alek,
+    # 2026-10-27): the choice lives in Settings → Customize,
+    # which calls window.set_centerpiece — the swap and the
+    # persistence it drives are what pin here now.
     app = _app()
     callbacks, calls = _dashboard_stubs(monkeypatch, centerpiece='orb')
     from aria.dashboard import create_dashboard
     window = create_dashboard(callbacks)
     window.show(); app.processEvents()
     assert window.holo is not None
+    assert not hasattr(window, 'centerpiece_btn')
+    assert not hasattr(window, 'whisper')
     assert window.face.isVisible() and not window.holo.isVisible()
-    window.centerpiece_btn.click()
+    window.set_centerpiece('holo')
     assert window.holo.isVisible() and not window.face.isVisible()
     assert ('cp', 'holo') in calls
-    window.centerpiece_btn.click()
+    window.set_centerpiece('orb')
     assert window.face.isVisible() and not window.holo.isVisible()
     assert ('cp', 'orb') in calls
     window.close(); app.processEvents()
