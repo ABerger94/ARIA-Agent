@@ -143,10 +143,13 @@ def _workspace_dir() -> Path:
 SUBS_PATH = _workspace_dir() / "push_subscriptions.json"
 QUEUE_PATH = _workspace_dir() / "notify_queue.json"
 
-# The subject claim on every VAPID JWT: who is sending. A URL claim,
-# per the Web Push spec's mailto:/https: choice — this one names the
-# project, not a person.
-VAPID_SUBJECT = "https://github.com/ABerger94/ARIA-Agent"
+# The subject claim on every VAPID JWT: who is sending. A bare
+# https origin — py_vapid's _check_sub accepts mailto: or a bare
+# origin ONLY; a URL with a path (this used to be the repo URL)
+# makes sign() raise "Missing 'sub'" and every push dies even
+# with a good key. Second stacked bug in the push path, found
+# 2026-10-27 while fixing the key format.
+VAPID_SUBJECT = "https://github.com"
 
 QUEUE_CAP = 50
 DEDUPE_WINDOW_S = 3600.0        # identical (title, body): once an hour
@@ -255,6 +258,41 @@ def webpush_available() -> bool:
     return _webpush_send is not None
 
 
+def _b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _scalar_form(private_key) -> str:
+    """The VAPID private key in the ONLY form pywebpush accepts:
+    it hands the string to py_vapid's Vapid.from_string, which
+    wants the base64url raw EC scalar — not a PEM. This module's
+    first cut stored PEM text, and every push died before any
+    network traffic with OpenSSL's 'Could not deserialize key
+    data ... header too long' (Alek's log, 2026-10-27)."""
+    return _b64url(private_key.private_numbers().private_value
+                   .to_bytes(32, "big"))
+
+
+def _stored_private_sendable(priv: str):
+    """A stored private key -> its sendable scalar form, or None
+    when it cannot be read at all. A PEM value (written by the
+    first cut) is CONVERTED, not replaced — the keypair does not
+    change, so subscriptions made under the stored public key
+    stay valid."""
+    priv = (priv or "").strip()
+    if not priv:
+        return None
+    if not priv.startswith("-----BEGIN"):
+        return priv  # already the scalar form
+    try:
+        from cryptography.hazmat.primitives.serialization import (
+            load_pem_private_key)
+        key = load_pem_private_key(priv.encode("ascii"), password=None)
+        return _scalar_form(key)
+    except Exception:
+        return None
+
+
 def ensure_vapid() -> tuple:
     """(public, private) VAPID keys — generated once, on first use,
     stored through the config funnel, and reused forever after: a
@@ -263,7 +301,14 @@ def ensure_vapid() -> tuple:
     pub = _get_setting("vapid_public_key", "") or ""
     priv = _get_setting("vapid_private_key", "") or ""
     if pub and priv:
-        return pub, priv
+        sendable = _stored_private_sendable(priv)
+        if sendable is not None:
+            if sendable != priv:
+                # Self-healing migration of a first-cut PEM store.
+                _set_setting("vapid_private_key", sendable)
+            return pub, sendable
+        # An unreadable stored key: fall through and regenerate
+        # the pair together (the only case that orphans subs).
     if _Vapid is None:
         return "", ""
     try:
@@ -275,12 +320,8 @@ def ensure_vapid() -> tuple:
         raw = vapid.public_key.public_bytes(
             encoding=serialization.Encoding.X962,
             format=serialization.PublicFormat.UncompressedPoint)
-        pub = base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
-        priv = vapid.private_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        ).decode("ascii")
+        pub = _b64url(raw)
+        priv = _scalar_form(vapid.private_key)
     except Exception as e:
         print(f"[Notify] VAPID key generation failed: {e}")
         return "", ""

@@ -350,3 +350,48 @@ def test_tool_zero_pushes_with_subscription_reports_push_failure(
     out = notify.tool_notify_phone({'body': 'hello'})
     assert outcome.kind_of(out) == 'failed'
     assert 'every push attempt' in out
+
+
+# ── VAPID private form: pywebpush eats the scalar, not PEM ─────
+# Alek's log, 2026-10-27: every push died with OpenSSL's "Could
+# not deserialize key data ... header too long" because the
+# first cut stored the private key as PEM text while pywebpush
+# hands the string to Vapid.from_string (base64url raw scalar).
+
+def test_vapid_private_is_stored_in_pywebpushs_form(isolated):
+    if notify._Vapid is None:
+        pytest.skip('py_vapid not installed in this environment')
+    import time as _time
+    from py_vapid import Vapid
+    pub, priv = notify.ensure_vapid()
+    assert not priv.startswith('-----BEGIN')
+    vv = Vapid.from_string(private_key=priv)   # pywebpush's own loader
+    # sign() with the module's REAL claims — this also pins the
+    # subject: py_vapid rejects a pathed URL as 'sub' outright.
+    headers = vv.sign({'sub': notify.VAPID_SUBJECT,
+                       'aud': 'https://push.example',
+                       'exp': int(_time.time()) + 3600})
+    assert headers
+
+
+def test_vapid_pem_store_is_migrated_same_keypair(isolated):
+    if notify._Vapid is None:
+        pytest.skip('py_vapid not installed in this environment')
+    from cryptography.hazmat.primitives import serialization
+    from py_vapid import Vapid
+    v = Vapid(); v.generate_keys()
+    raw = v.public_key.public_bytes(
+        encoding=serialization.Encoding.X962,
+        format=serialization.PublicFormat.UncompressedPoint)
+    pub = notify._b64url(raw)
+    pem = v.private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()).decode('ascii')
+    isolated['vapid_public_key'] = pub
+    isolated['vapid_private_key'] = pem        # the first-cut store
+    pub2, priv2 = notify.ensure_vapid()
+    assert pub2 == pub                          # keypair unchanged
+    assert not priv2.startswith('-----BEGIN')
+    assert isolated['vapid_private_key'] == priv2   # converted in place
+    Vapid.from_string(private_key=priv2)        # and loadable by pywebpush
