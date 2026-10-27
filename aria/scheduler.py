@@ -336,7 +336,14 @@ def _fire_brief(tid: int, interval_s: int, is_busy_fn: Optional[Callable[[], boo
     from aria.memory import log_conversation
     log_conversation('A.R.I.A.', text)
     busy = is_busy_fn() if is_busy_fn else False
-    if not busy:
+    try:
+        from aria import presence as _presence
+        present = _presence.is_present()
+    except Exception:
+        present = True
+    if not present:
+        add_log(f"Morning brief held (#{tid}): Alek is away")
+    elif not busy:
         speech.speak(text)
     else:
         speech._SPEECH_QUEUE.put(text)

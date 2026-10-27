@@ -622,6 +622,77 @@ def _unique_greeting():
     return build_briefing()['text']
 
 
+# ---------------------------------------------------------------- presence
+_PRESENCE_MONITOR = None
+
+
+def _presence_on_return(away_s, greet):
+    add_log(f"Presence: Alek returned after {int(away_s)}s away")
+    if not greet:
+        return
+    try:
+        from aria import presence as _presence
+        from datetime import datetime as _dt
+        text = _presence.greeting_for(_dt.now().hour, away_s,
+                                      _presence.today_index())
+        speech.speak(text)
+    except Exception as e:
+        add_log(f"Presence greeting failed: {e}")
+
+
+def _start_presence():
+    """Build + register the presence monitor (aria/presence.py) and
+    drive it on a 5s daemon loop. Presence only ever SILENCES
+    unprompted speech — it never gates a typed or spoken command,
+    and every failure leaves ARIA exactly as she was without it
+    (fail-open, the module's own hard rule)."""
+    global _PRESENCE_MONITOR
+    try:
+        if not _config_silent.get_setting('presence_enabled', True):
+            return
+        from aria import presence as _presence
+        monitor = _presence.PresenceMonitor(
+            idle_signal=_presence.idle_seconds,
+            locked_signal=_presence.locked,
+            busy_probe=lambda: speech.is_speaking() or agent.BUSY_PROCESSING,
+            idle_after_s=float(
+                _config_silent.get_setting('presence_idle_s', 600) or 600),
+            on_away=lambda reason: add_log(f"Presence: away ({reason})"),
+            on_return=_presence_on_return)
+        _presence.set_monitor(monitor)
+        _PRESENCE_MONITOR = monitor
+
+        def _loop():
+            while True:
+                try:
+                    monitor.tick()
+                except Exception:
+                    pass
+                time.sleep(5)
+
+        threading.Thread(target=_loop, daemon=True).start()
+        add_log("Presence monitor started")
+    except Exception as e:
+        add_log(f"Presence monitor unavailable: {e}")
+
+
+def presence_allows_speech() -> bool:
+    """Fail-open consult for unprompted-speech paths."""
+    try:
+        from aria import presence as _presence
+        return bool(_presence.is_present())
+    except Exception:
+        return True
+
+
+def _proactive_speak(text):
+    """The proactive heartbeat's voice: held while Alek is away.
+    The heartbeat's background work itself is NOT gated — only
+    its speech is, per the presence contract."""
+    if presence_allows_speech():
+        speech.speak(text)
+
+
 def start_all():
     """Initialize and boot all ARIA agent subsystems."""
     global _PTT_AVAILABLE
@@ -654,9 +725,11 @@ def start_all():
                      daemon=True).start()
 
     threading.Thread(target=agent.proactive_heartbeat_loop,
-                     args=(speech.speak, lambda: agent.BUSY_PROCESSING, lambda: WHISPER_MODE,
+                     args=(_proactive_speak, lambda: agent.BUSY_PROCESSING, lambda: WHISPER_MODE,
                            lambda: agent.LAST_ACTIVITY, lambda mode, prompt: handle_action(mode=mode, typed_prompt=prompt, silent=True)),
                      daemon=True).start()
+
+    _start_presence()
 
     # 4c. Persistent autonomous workers (jobs supervisor, downloads watcher, system resource monitor)
     agent.workers.start_all_workers()
