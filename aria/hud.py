@@ -105,14 +105,23 @@ _SPOTIFY_CACHE: Dict[str, Any] = {
     "time": 0.0,
     "running": False,
     "playing": False,
-    "title": "Spotify Standby",
+    "status": "off",
+    "source": "none",
+    "title": "",
     "artist": "",
     "track": ""
 }
 
 
 def _get_spotify_telemetry() -> Dict[str, Any]:
-    """Detect Spotify window status and track title without lag."""
+    """What's actually playing, without lag. Primary source is
+    SMTC (aria/smtc.py) — the OS's own per-app now-playing: real
+    track / artist and real playing-vs-paused status. The old
+    window-title scrape remains as fallback; it cannot tell
+    paused from playing (a paused Spotify keeps the track in its
+    title), and there is no more "Spotify Standby" placeholder —
+    an empty title means nothing to show, and the surfaces say
+    so honestly."""
     global _SPOTIFY_CACHE
     now = time.time()
     if now - _SPOTIFY_CACHE["time"] < 0.6:
@@ -122,10 +131,21 @@ def _get_spotify_telemetry() -> Dict[str, Any]:
         "time": now,
         "running": False,
         "playing": False,
-        "title": "Spotify Standby",
+        "status": "off",
+        "source": "title",
+        "title": "",
         "artist": "",
         "track": ""
     }
+    try:
+        from aria import smtc
+        live = smtc.now_playing()
+        if live:
+            info.update(live)
+            _SPOTIFY_CACHE = info
+            return info
+    except Exception:
+        pass
     try:
         import ctypes
 
@@ -140,15 +160,20 @@ def _get_spotify_telemetry() -> Dict[str, Any]:
                         info["running"] = True
                         if txt in ("Spotify", "Spotify Free", "Spotify Premium"):
                             info["playing"] = False
+                            info["status"] = "open"
                             info["title"] = txt
                         elif " - " in txt:
+                            # Best guess only — the title cannot
+                            # distinguish paused from playing.
                             info["playing"] = True
+                            info["status"] = "playing"
                             parts = txt.split(" - ", 1)
                             info["artist"] = parts[0].strip()
                             info["track"] = parts[1].strip()
                             info["title"] = txt
                         else:
                             info["playing"] = True
+                            info["status"] = "playing"
                             info["title"] = txt
             return True
 
@@ -484,7 +509,7 @@ def _dispatch_spotify_action(action: str):
     def _run():
         try:
             from aria import spotify
-            if action in ("play_pause", "previous", "next"):
+            if action in ("play_pause", "play", "pause", "previous", "next"):
                 res = spotify.tool_spotify(action)
                 add_hud_log(res)
             elif action == "dj":

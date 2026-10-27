@@ -372,6 +372,7 @@ def test_now_playing_panel(monkeypatch, tmp_path):
     frame.strip_data = lambda: data
     frame._fmt_uptime = lambda seconds: '10m'
     frame.spotify_data = lambda: {'running': True, 'playing': True,
+                                  'status': 'playing', 'source': 'smtc',
                                   'title': 'The Artist - The Song',
                                   'artist': 'The Artist', 'track': 'The Song'}
     frame.chat_entries = lambda n: []
@@ -380,7 +381,8 @@ def test_now_playing_panel(monkeypatch, tmp_path):
     frame.receive_file = lambda p: None
     hud = types.ModuleType('aria.hud')
     hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = ''; hud.WHISPER_MODE = False
-    hud._dispatch_spotify_action = lambda a: None
+    spotify_calls = []
+    hud._dispatch_spotify_action = spotify_calls.append
     hud.set_hud_volume = lambda v: None
     config = types.ModuleType('aria.config'); config.redact = str
     config.log_silent = lambda *args: None
@@ -407,6 +409,22 @@ def test_now_playing_panel(monkeypatch, tmp_path):
     assert window.track.text() == 'The Song\nThe Artist'
     assert '#2ee6a8' in window.now_playing_title.styleSheet()
     assert not hasattr(window, 'cam_tile')   # PiP removed (Alek)
+    # Explicit Play AND Pause buttons dispatch the explicit
+    # actions (Alek, 2026-10-27 — no blind toggle labelled Play).
+    assert set(window.media_buttons) == {'previous', 'play', 'pause', 'next'}
+    window.media_buttons['pause'].click(); app.processEvents()
+    window.media_buttons['play'].click(); app.processEvents()
+    assert spotify_calls == ['pause', 'play']
+    # Paused (SMTC status) shows PAUSED — and still shows the
+    # actual track, not a standby placeholder.
+    frame.spotify_data = lambda: {'running': True, 'playing': False,
+                                  'status': 'paused', 'source': 'smtc',
+                                  'title': 'The Artist - The Song',
+                                  'artist': 'The Artist', 'track': 'The Song'}
+    window._last_refresh = 0   # age past render_once's 0.8s panel throttle
+    window.render_once(); app.processEvents()
+    assert window.now_playing_title.text() == '❚❚ PAUSED'
+    assert window.track.text() == 'The Song\nThe Artist'
     window.close()
 
 

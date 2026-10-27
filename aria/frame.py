@@ -615,10 +615,12 @@ def _draw_spotify_card(canvas) -> None:
     spot = spotify_data()
     if spot.get("playing"):
         label, col = "PLAYING", OK
-    elif spot.get("running"):
+    elif spot.get("status") == "paused":
         label, col = "PAUSED", WARN
+    elif spot.get("running"):
+        label, col = "OPEN", WARN
     else:
-        label, col = "STANDBY", FAINT
+        label, col = "OFFLINE", FAINT
     _pill(canvas, x0 + 12, top, label, col, filled=bool(spot.get("playing")))
     title = spot.get("title") or "Spotify Offline"
     _txt(canvas, title[:34], x0 + 12, top + 28, 13, TEXT, True)

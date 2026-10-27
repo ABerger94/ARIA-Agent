@@ -222,8 +222,16 @@ def create_dashboard(callbacks):
                 self.track.fontMetrics().lineSpacing() * 2 + 6)
             ll.addWidget(self.track)
             media = QHBoxLayout()
-            for name, action in [('Prev', 'previous'), ('Play', 'play_pause'), ('Next', 'next')]:
+            # Explicit Play AND Pause (Alek, 2026-10-27): one
+            # toggle button labelled "Play" that paused a playing
+            # track was a bug, not a control. These dispatch the
+            # explicit actions — SMTC aims them at the Spotify
+            # session (see aria/smtc.py).
+            self.media_buttons = {}
+            for name, action in [('Prev', 'previous'), ('Play', 'play'),
+                                 ('Pause', 'pause'), ('Next', 'next')]:
                 b = QPushButton(name); b.clicked.connect(lambda checked=False, a=action: hud._dispatch_spotify_action(a)); media.addWidget(b)
+                self.media_buttons[action] = b
             ll.addLayout(media)
             _vol = QHBoxLayout(); _vol.addWidget(QLabel('SYSTEM VOLUME'))
             self.volume = QSlider(Qt.Orientation.Horizontal); self.volume.setRange(0, 100)
@@ -936,12 +944,13 @@ def create_dashboard(callbacks):
             music = frame.spotify_data(); _track_full = music.get('title') or music.get('track') or 'Spotify is not running'
             self.track.setToolTip(_track_full)
             # NOW PLAYING panel: track on one line, artist under it
-            # (the telemetry parses both from the window title) —
-            # still inside the label's two-line cap. The header dot
-            # carries the state: green playing, amber open-but-
-            # paused, plain when Spotify is closed. (No art or
-            # progress: the window-title source has neither, and a
-            # fabricated bar would be a lie.)
+            # — still inside the label's two-line cap. Telemetry
+            # is SMTC-first (aria/smtc.py): real track/artist and
+            # real playing-vs-paused status; the window title is
+            # the fallback. The header carries the state: green
+            # NOW PLAYING, amber PAUSED, plain when Spotify is
+            # closed. No album art shown (not wired to the panel);
+            # no progress bar is fabricated.
             _fm = self.track.fontMetrics()
             _w = max(self.track.width(), 180)
             _trk, _art = music.get('track') or '', music.get('artist') or ''
@@ -955,6 +964,9 @@ def create_dashboard(callbacks):
             if music.get('playing'):
                 self.now_playing_title.setText('● NOW PLAYING')
                 self.now_playing_title.setStyleSheet('color: #2ee6a8;')
+            elif music.get('status') == 'paused':
+                self.now_playing_title.setText('❚❚ PAUSED')
+                self.now_playing_title.setStyleSheet('color: #ffb84d;')
             elif music.get('running'):
                 self.now_playing_title.setText('● NOW PLAYING')
                 self.now_playing_title.setStyleSheet('color: #ffb84d;')

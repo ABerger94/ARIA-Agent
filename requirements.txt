@@ -66,6 +66,11 @@ pycaw==20230407; sys_platform == "win32"
 # process isolation (aria/comhost.py is the only COM consumer).
 comtypes==1.2.0; sys_platform == "win32"
 pywin32==306; sys_platform == "win32"
+# SMTC now-playing + explicit Spotify play/pause (aria/smtc.py):
+# winsdk's cp312/win_amd64 wheel verified against PyPI 2026-10-27.
+# Optional at runtime — without it, telemetry falls back to the
+# window title and transport to the media-key toggle.
+winsdk==1.0.0b10; sys_platform == "win32"
 # Mic capture (Fork A, Step 2): sounddevice replaces PyAudio/sr.Microphone.
 # ABI-independent wheel with PortAudio bundled — no per-Python wheel trap.
 sounddevice==0.5.6

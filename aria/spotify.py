@@ -146,8 +146,56 @@ def tool_spotify(action: str = "play_pause", query: str = "") -> str:
         except Exception as e:
             return f"[Could not open Spotify search: {e}]"
 
+    # 3a. Explicit play / pause (Alek, 2026-10-27): the media key
+    # is a blind toggle, so a "Play" button that pauses a playing
+    # track is a bug, not a control. SMTC aims the explicit call
+    # at the Spotify session itself (no focus steal). Fallback:
+    # tap the toggle ONLY when telemetry says the direction is
+    # actually needed; when the state is already right, say so
+    # and tap nothing.
+    if a in ("play", "pause") and not q:
+        try:
+            from aria import smtc
+            if smtc.control(a):
+                return f"Spotify: {a}."
+        except Exception:
+            pass
+        playing = None
+        running = False
+        trusted = False
+        try:
+            from aria import hud as _hud
+            _t = _hud._get_spotify_telemetry()
+            playing = _t.get("playing")
+            running = bool(_t.get("running"))
+            # Only SMTC knows paused-vs-playing for sure; the
+            # window title guesses "playing" for a paused track,
+            # so the no-op shortcut trusts SMTC state only.
+            trusted = _t.get("source") == "smtc"
+        except Exception:
+            pass
+        if trusted and a == "play" and playing:
+            return "Spotify: already playing."
+        if trusted and a == "pause" and running and not playing:
+            return "Spotify: already paused."
+        if not running:
+            return "[Spotify is not running — say 'open Spotify' first.]"
+        tool_focus_window("Spotify")
+        ok = _tap_media_vk(VK_MEDIA_MAP["play_pause"])
+        return (f"Spotify: sent {a} command." if ok
+                else "[Media key dispatch failed.]")
+
     # 3. Media key actions (when no query or pure transport actions)
     if a in VK_MEDIA_MAP:
+        # SMTC first for the session-targeted transports — the
+        # global media key goes to whatever session Windows picks.
+        if a in ("play_pause", "next", "previous", "stop"):
+            try:
+                from aria import smtc
+                if smtc.control(a):
+                    return f"Spotify: sent {a} command."
+            except Exception:
+                pass
         # Focus Spotify if running before sending media key
         tool_focus_window("Spotify")
         ok = _tap_media_vk(VK_MEDIA_MAP[a])
