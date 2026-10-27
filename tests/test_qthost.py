@@ -220,3 +220,15 @@ def test_qt_window_drop_key_and_blit():
         window.close()
         app.processEvents()
     print("ok qt_window_drop_key_and_blit")
+
+
+def test_qt_host_opens_dashboard_maximized():
+    # Alek, 2026-10-27: she opens FULL WINDOW — run_qt_host must
+    # showMaximized the dashboard on cold start and self-restart
+    # alike (a plain show() left her small/minimized). Source pin
+    # in the LVI style: run_qt_host blocks on app.exec(), so the
+    # wiring itself is what pins here; the dashboard's own F11 /
+    # maximized behaviour is pinned live in test_holo_face.
+    import inspect
+    src = inspect.getsource(qthost.run_qt_host)
+    assert 'showMaximized' in src

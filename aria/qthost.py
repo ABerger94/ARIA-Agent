@@ -299,11 +299,19 @@ def run_qt_host(callbacks) -> int:
         app = QApplication.instance() or QApplication([])
         app.setApplicationName("A.R.I.A.")
         from aria.dashboard import create_dashboard, dashboard_enabled
-        window = create_dashboard(callbacks) if dashboard_enabled() else create_window(callbacks)
+        is_dashboard = dashboard_enabled()
+        window = create_dashboard(callbacks) if is_dashboard else create_window(callbacks)
         timer = QTimer(window)
         timer.timeout.connect(window.render_once)
         timer.start(TICK_MS)
-        window.show()
+        if is_dashboard:
+            # Alek, 2026-10-27: she opens FULL WINDOW — maximized
+            # from the first frame, on a cold start and on every
+            # self-restart alike (a plain show() left her small /
+            # minimized and he had to maximize her by hand).
+            window.showMaximized()
+        else:
+            window.show()
         window.raise_()
         window.activateWindow()
         return int(app.exec())

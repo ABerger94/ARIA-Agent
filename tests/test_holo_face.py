@@ -146,6 +146,25 @@ def test_dashboard_centerpiece_swap_and_persist(monkeypatch):
     window.close(); app.processEvents()
 
 
+def test_dashboard_f11_fullscreen_toggle(monkeypatch):
+    # Alek, 2026-10-27, Mark-LVI style: F11 is a QShortcut on
+    # the window — first press true full screen, second press
+    # back to maximized (her normal full-window state, never a
+    # floating window).
+    app = _app()
+    callbacks, _calls = _dashboard_stubs(monkeypatch, centerpiece='orb')
+    from aria.dashboard import create_dashboard
+    window = create_dashboard(callbacks)
+    window.showMaximized(); app.processEvents()
+    assert window.isMaximized() and not window.isFullScreen()
+    assert window._fullscreen_shortcut.key().toString() == 'F11'
+    window._toggle_fullscreen()
+    assert window.isFullScreen()
+    window._toggle_fullscreen()
+    assert not window.isFullScreen() and window.isMaximized()
+    window.close(); app.processEvents()
+
+
 def test_dashboard_starts_on_saved_holo(monkeypatch):
     app = _app()
     callbacks, _calls = _dashboard_stubs(monkeypatch, centerpiece='holo')

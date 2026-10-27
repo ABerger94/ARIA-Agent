@@ -467,6 +467,18 @@ def create_dashboard(callbacks):
             self._settings_shortcut.activated.connect(self.settings)
             self._commands_shortcut = QShortcut(QKeySequence('Ctrl+K'), self)
             self._commands_shortcut.activated.connect(self.commands)
+            self._fullscreen_shortcut = QShortcut(QKeySequence('F11'), self)
+            self._fullscreen_shortcut.activated.connect(self._toggle_fullscreen)
+
+        def _toggle_fullscreen(self):
+            """F11, Mark-LVI style (Alek, 2026-10-27): true full
+            screen on the first press; the second press returns
+            to her normal state — the maximized full window, not
+            a floating one."""
+            if self.isFullScreen():
+                self.showMaximized()
+            else:
+                self.showFullScreen()
 
         def card(self, title):
             card = QFrame(); card.setObjectName('card'); lay = QVBoxLayout(card); lay.setContentsMargins(16, 16, 16, 16); lay.setSpacing(14)
