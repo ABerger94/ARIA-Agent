@@ -63,7 +63,7 @@ def _apply_painted_accent(accent):
     Each module guards itself; a failure here is cosmetic and must
     never break the window."""
     import importlib
-    for mod_name in ('aria.resonance', 'aria.metric_bar'):
+    for mod_name in ('aria.resonance', 'aria.metric_bar', 'aria.holo_face'):
         try:
             importlib.import_module(mod_name).apply_accent(accent)
         except Exception:
@@ -84,9 +84,15 @@ def create_dashboard(callbacks):
     try:
         from aria import ui_prefs as _ui_prefs
         _accent0 = _ui_prefs.get_accent()
+        _centerpiece0 = _ui_prefs.get_centerpiece()
     except Exception:
         _accent0 = None
+        _centerpiece0 = 'orb'
     _apply_painted_accent(_accent0)
+    try:
+        from aria.holo_face import HoloFace
+    except Exception:
+        HoloFace = None
 
     class Dashboard(QMainWindow):
         panel_result = pyqtSignal(str, object)
@@ -141,6 +147,10 @@ def create_dashboard(callbacks):
             if self.video is not None:
                 self.video.hide(); cl.addWidget(self.video, 1)
                 self.video.closed.connect(self._on_video_closed)
+            self.holo = HoloFace() if HoloFace is not None else None
+            self._centerpiece = _centerpiece0 if self.holo is not None else 'orb'
+            if self.holo is not None:
+                self.holo.hide(); cl.addWidget(self.holo, 1)
             self._last_orb_publish = 0.0
             self.state = QLabel('IDLE'); self.state.setAlignment(Qt.AlignmentFlag.AlignCenter); self.state.setObjectName('brand'); cl.addWidget(self.state)
             self.subtitle = QLabel(); self.subtitle.setTextFormat(Qt.TextFormat.PlainText); self.subtitle.setWordWrap(True); self.subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter); cl.addWidget(self.subtitle)
@@ -149,6 +159,8 @@ def create_dashboard(callbacks):
             self.voice = QPushButton('Voice on'); self.voice.clicked.connect(frame.toggle_voice); controls.addWidget(self.voice)
             stop = QPushButton('Stop speaking'); stop.clicked.connect(callbacks.interrupt); controls.addWidget(stop); cl.addLayout(controls)
             self.whisper = QPushButton('Whisper off'); self.whisper.clicked.connect(callbacks.toggle_whisper); cl.addWidget(self.whisper)
+            self.centerpiece_btn = QPushButton('Centerpiece: Orb'); self.centerpiece_btn.clicked.connect(self._toggle_centerpiece); cl.addWidget(self.centerpiece_btn)
+            if self.holo is None: self.centerpiece_btn.setEnabled(False)
             body.addWidget(center)
             right, rl = self.card('WORKSPACE'); right.setMinimumWidth(340)
             self.tabs = QTabWidget(); self.views = {}
@@ -185,6 +197,7 @@ def create_dashboard(callbacks):
             self.panel_result.connect(self.panel_finished)
             self.email_result.connect(self.mail_finished)
             self.entry.setFocus()
+            self._show_centerpiece()
 
         def card(self, title):
             card = QFrame(); card.setObjectName('card'); lay = QVBoxLayout(card); lay.setContentsMargins(16, 16, 16, 16); lay.setSpacing(14)
@@ -361,6 +374,30 @@ def create_dashboard(callbacks):
 
             build_customize_dialog(self, start, preview, commit).exec()
 
+        def _toggle_centerpiece(self):
+            self._centerpiece = 'holo' if self._centerpiece == 'orb' else 'orb'
+            try:
+                from aria import ui_prefs
+                ui_prefs.set_centerpiece(self._centerpiece)
+            except Exception:
+                pass
+            self._show_centerpiece()
+
+        def _show_centerpiece(self):
+            """Make the stored centerpiece the visible one (unless a
+            video owns the center card right now)."""
+            self.centerpiece_btn.setText(
+                'Centerpiece: ' + ('Holo' if self._centerpiece == 'holo'
+                                   else 'Orb'))
+            if self.video is not None and self.video.isVisible():
+                return
+            if self._centerpiece == 'holo' and self.holo is not None:
+                self.face.hide(); self.holo.show()
+            else:
+                if self.holo is not None:
+                    self.holo.hide()
+                self.face.show()
+
         def show_video(self, source, title='', muted=False):
             """Play a file/direct URL in the center card, orb swapped out.
 
@@ -372,7 +409,10 @@ def create_dashboard(callbacks):
                 return False
             if not self.video.show_video(source, title, muted):
                 return False
-            self.face.hide(); self.video.show()
+            self.face.hide()
+            if self.holo is not None:
+                self.holo.hide()
+            self.video.show()
             return True
 
         def stop_video(self):
@@ -384,7 +424,7 @@ def create_dashboard(callbacks):
             if self.video is not None:
                 self.video.stop_video()
                 self.video.hide()
-            self.face.show()
+            self._show_centerpiece()
 
         def _poll_approvals(self):
             """Show the confirm banner for the oldest pending approval.
@@ -473,17 +513,25 @@ def create_dashboard(callbacks):
             state = str(hud.CURRENT_STATE)
             mic = getattr(hud, 'MIC_LEVEL', 0.0) if time.time() - getattr(hud, 'MIC_LEVEL_AT', 0.0) < .3 else 0.0
             level = audio_levels.current() if state == 'speaking' else mic
-            self.face.advance(state, level, not getattr(speech, 'VOICE_ENABLED', True))
-            # Publish the same orb to the phone; the old pixel renderer is not
-            # run in the native dashboard. Limit JPEG production to 8 Hz.
-            # While a video owns the center card the orb is hidden — do
-            # not publish a frame nobody can see.
-            if self.face.isVisible() and time.monotonic() - self._last_orb_publish >= .125:
+            _muted = not getattr(speech, 'VOICE_ENABLED', True)
+            if self.holo is not None and self.holo.isVisible():
+                self.holo.advance(state, level, _muted)
+            else:
+                self.face.advance(state, level, _muted)
+            # Publish the active centerpiece to the phone; the old pixel
+            # renderer is not run in the native dashboard. Limit JPEG
+            # production to 8 Hz. While a video owns the center card both
+            # centerpieces are hidden — do not publish a frame nobody
+            # can see.
+            _center = self.face if self.face.isVisible() else (
+                self.holo if self.holo is not None
+                and self.holo.isVisible() else None)
+            if _center is not None and time.monotonic() - self._last_orb_publish >= .125:
                 self._last_orb_publish = time.monotonic()
                 try:
                     import numpy as np
                     from aria.vision import publish_face_frame
-                    image = self.face.grab().toImage().convertToFormat(QImage.Format.Format_BGR888)
+                    image = _center.grab().toImage().convertToFormat(QImage.Format.Format_BGR888)
                     ptr = image.bits(); ptr.setsize(image.sizeInBytes())
                     pixels = np.frombuffer(ptr, dtype=np.uint8).reshape(image.height(), image.bytesPerLine())[:, :image.width() * 3].reshape(image.height(), image.width(), 3).copy()
                     publish_face_frame(pixels, (0, 0, image.width(), image.height()))

@@ -48,5 +48,6 @@ jobs:
           python -m pytest tests/test_video_panel.py -q
           python -m pytest tests/test_panels.py -q
           python -m pytest tests/test_customize.py -q
+          python -m pytest tests/test_holo_face.py -q
           python -c "from PyQt6.QtWebEngineWidgets import QWebEngineView"
           QT_QPA_PLATFORM=xcb xvfb-run -a python -m pytest tests/test_phone_browser.py -q -s
