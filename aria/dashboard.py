@@ -4,6 +4,7 @@ Qt stays lazy so the classic host remains available. The orb adapter retains its
 """
 from __future__ import annotations
 
+import html
 import os
 import threading
 import time
@@ -218,7 +219,8 @@ def create_dashboard(callbacks):
     from PyQt6.QtWidgets import (QMainWindow, QWidget, QFrame, QLabel, QPushButton,
                                 QVBoxLayout, QHBoxLayout, QSplitter, QTabWidget,
                                 QTextBrowser, QLineEdit, QSlider, QGridLayout,
-                                QFileDialog, QDialog, QApplication, QListWidget, QListWidgetItem)
+                                QFileDialog, QDialog, QApplication, QListWidget, QListWidgetItem,
+                                QScrollArea)
     from aria import frame, hud, config
     from aria.resonance import ResonanceOrb
     from aria.neural_field import NeuralField
@@ -488,7 +490,7 @@ def create_dashboard(callbacks):
             body.addWidget(center)
             right, rl = self.card('WORKSPACE'); right.setMinimumWidth(340)
             self.tabs = QTabWidget(); self.views = {}
-            for name in ('Conversation', 'Inbox', 'Calendar', 'Tasks', 'Activity', 'Briefing', 'News'):
+            for name in ('Conversation', 'Inbox', 'Calendar', 'Tasks', 'Activity', 'Briefing', 'News', 'Memory'):
                 page = QWidget(); pl = QVBoxLayout(page)
                 view = QTextBrowser(); view.setOpenExternalLinks(False); self.views[name] = view
                 if name == 'Inbox':
@@ -517,6 +519,22 @@ def create_dashboard(callbacks):
                     btn = QPushButton('Refresh headlines'); btn.clicked.connect(lambda: self.load_news(force=True)); pl.addWidget(btn)
                     view.setOpenExternalLinks(True)
                     view.setPlainText('Open the News tab to load top headlines.')
+                if name == 'Memory':
+                    # What she remembers (Alek, 2026-10-27, his
+                    # pick over the LVI overlay): a real tab of
+                    # fact rows built by _rebuild_memory_tab —
+                    # no QTextBrowser view for this one.
+                    toolbar = QHBoxLayout()
+                    self.mem_count = QLabel(''); toolbar.addWidget(self.mem_count, 1)
+                    mem_refresh = QPushButton('Refresh'); mem_refresh.clicked.connect(self._rebuild_memory_tab); toolbar.addWidget(mem_refresh)
+                    pl.addLayout(toolbar)
+                    self.mem_scroll = QScrollArea(); self.mem_scroll.setWidgetResizable(True)
+                    self.mem_rows = QWidget(); self.mem_rows.setStyleSheet('background: transparent;')
+                    self._mem_layout = QVBoxLayout(self.mem_rows); self._mem_layout.setContentsMargins(6, 6, 6, 6); self._mem_layout.setSpacing(4)
+                    self.mem_scroll.setWidget(self.mem_rows); pl.addWidget(self.mem_scroll, 1)
+                    self.tabs.addTab(page, name)
+                    self._rebuild_memory_tab()
+                    continue
                 pl.addWidget(view); self.tabs.addTab(page, name)
             rl.addWidget(self.tabs, 1)
             self._news_loaded_at = 0.0; self._news_loading = False
@@ -827,6 +845,67 @@ def create_dashboard(callbacks):
         def _on_tab_changed(self, index):
             if self.tabs.tabText(index) == 'News':
                 self.load_news()
+            if self.tabs.tabText(index) == 'Memory':
+                self._rebuild_memory_tab()
+
+        def _rebuild_memory_tab(self):
+            """Memory tab rows (Alek, 2026-10-27, Mark-LVI
+            parity): every fact she has stored, newest first —
+            **key** — value, category · date, and a ✕ per row
+            that forgets exactly that fact. Rebuilt when the
+            tab is opened, on Refresh, and after a forget: her
+            store changes while she runs, so rows never cache."""
+            try:
+                from aria import memory as _mem
+                rows = _mem.memory_rows_for_ui()
+            except Exception:
+                rows = []
+            self.mem_count.setText(
+                f"{len(rows)} stored facts — newest first. They "
+                "live in her memory database on this machine.")
+            lay = self._mem_layout
+            while lay.count():
+                item = lay.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.hide(); w.deleteLater()
+                    continue
+                sub = item.layout()
+                if sub is not None:
+                    while sub.count():
+                        sw = sub.takeAt(0).widget()
+                        if sw is not None:
+                            sw.hide(); sw.deleteLater()
+                    sub.deleteLater()
+            if not rows:
+                lay.addWidget(QLabel('Nothing stored yet.'))
+            for r in rows:
+                row = QHBoxLayout(); row.setSpacing(6)
+                txt = QLabel(f"<b>{html.escape(str(r['key']))}</b> — "
+                             f"{html.escape(str(r['value']))}")
+                txt.setTextFormat(Qt.TextFormat.RichText)
+                txt.setWordWrap(True)
+                row.addWidget(txt, 1)
+                meta = QLabel(f"{r['category']} · {r['updated']}")
+                meta.setStyleSheet('color: #829aaf;')
+                row.addWidget(meta)
+                rm = QPushButton('✕'); rm.setFixedSize(22, 22)
+                rm.setToolTip('Forget this')
+                rm.clicked.connect(
+                    lambda checked=False, k=r['key']: self._forget_memory(k))
+                row.addWidget(rm)
+                lay.addLayout(row)
+            lay.addStretch()
+
+        def _forget_memory(self, key):
+            """The Memory tab's per-row ✕: forget exactly that
+            fact, then show the store as it now stands."""
+            try:
+                from aria import memory as _mem
+                _mem.memory_forget_key(key)
+            except Exception:
+                pass
+            self._rebuild_memory_tab()
 
         def load_news(self, force=False):
             """Fetch top headlines off-thread into the News tab.

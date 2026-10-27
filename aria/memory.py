@@ -356,6 +356,43 @@ def memory_get_all() -> str:
     return "\n".join(f"• [{c}] {k}: {v}" for c, k, v in rows)
 
 
+def memory_rows_for_ui() -> List[Dict[str, str]]:
+    """Every displayable stored fact for the dashboard Memory tab
+    (Alek, 2026-10-27, Mark-LVI parity): category, key, value and
+    the date learned, newest first. Same visibility rule as
+    memory_get_all (keys starting '_' stay hidden) but no
+    15-row cap — the tab is the whole store, inspectable. An
+    unreadable store reads as empty, never as an exception."""
+    try:
+        with DB_LOCK:
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            cur.execute("SELECT category, key, value, updated_at FROM memory "
+                        "WHERE key NOT LIKE '\\_%' ESCAPE '\\' "
+                        "ORDER BY updated_at DESC LIMIT 500")
+            rows = cur.fetchall()
+            conn.close()
+    except Exception:
+        return []
+    return [{"category": c or "", "key": k, "value": v or "",
+             "updated": (u or "")[:10]} for c, k, v, u in rows]
+
+
+def memory_forget_key(key: str) -> bool:
+    """Forget exactly one stored fact by key (the Memory tab's
+    per-row ✕). True when a row was actually removed."""
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("DELETE FROM memory WHERE key=?", (key,))
+        gone = cur.rowcount
+        conn.commit()
+        conn.close()
+    if gone:
+        add_log(f"Memory forgotten: [{key}]")
+    return bool(gone)
+
+
 def build_prompt_memories(query: str = "", top_k: int = 6) -> str:
     """Build a compact, highly relevant memory block for LLM system prompt.
     Always includes core identity facts, dynamic semantic search matches,

@@ -149,6 +149,46 @@ def test_dashboard_centerpiece_swap_and_persist(monkeypatch):
     window.close(); app.processEvents()
 
 
+def test_dashboard_memory_tab_lists_and_forgets(monkeypatch):
+    # Alek, 2026-10-27 (his pick: a tab, not the LVI overlay):
+    # the Workspace gains a Memory tab listing every stored
+    # fact from aria.memory's UI rows, and each row's ✕ forgets
+    # exactly that fact and re-renders the store as it stands.
+    from PyQt6.QtWidgets import QPushButton
+    app = _app()
+    callbacks, calls = _dashboard_stubs(monkeypatch)
+    fake_mem = types.ModuleType('aria.memory')
+    store = [
+        {'category': 'user', 'key': 'fav_color', 'value': 'blue',
+         'updated': '2026-10-20'},
+        {'category': 'fact', 'key': 'job', 'value': 'Little Caesars',
+         'updated': '2026-10-26'},
+    ]
+    fake_mem.memory_rows_for_ui = lambda: list(store)
+
+    def _forget(key):
+        before = len(store)
+        store[:] = [r for r in store if r['key'] != key]
+        return len(store) != before
+    fake_mem.memory_forget_key = _forget
+    monkeypatch.setitem(sys.modules, 'aria.memory', fake_mem)
+    monkeypatch.setattr(sys.modules['aria'], 'memory', fake_mem,
+                        raising=False)
+    from aria.dashboard import create_dashboard
+    window = create_dashboard(callbacks)
+    window.show(); app.processEvents()
+    names = [window.tabs.tabText(i) for i in range(window.tabs.count())]
+    assert 'Memory' in names
+    assert window.mem_count.text().startswith('2 stored facts')
+    rms = [b for b in window.mem_rows.findChildren(QPushButton)
+           if b.text() == '✕']
+    assert len(rms) == 2
+    rms[0].click(); app.processEvents()
+    assert [r['key'] for r in store] == ['job']   # first row forgotten
+    assert window.mem_count.text().startswith('1 stored facts')
+    window.close(); app.processEvents()
+
+
 def test_dashboard_f11_fullscreen_toggle(monkeypatch):
     # Alek, 2026-10-27, Mark-LVI style: F11 is a QShortcut on
     # the window — first press true full screen, second press
