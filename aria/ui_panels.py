@@ -56,6 +56,42 @@ def create_commands_dialog(parent, choose, rows=None):
     return dialog
 
 
+def build_extensions_widget(parent=None):
+    """The plugin surface this build actually has: MCP servers
+    (aria/mcp.py) over the built-in tool catalog. Read-only —
+    management stays with ARIA's mcp_* tools. (Moved here from
+    the dashboard overlay at Alek's word, 2026-10-27: Extensions
+    belongs in Settings; the header buttons are gone.)"""
+    from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
+    w = QWidget(parent)
+    lay = QVBoxLayout(w)
+    try:
+        from aria import mcp
+        servers = mcp.get_servers()
+    except Exception:
+        servers = {}
+    if servers:
+        for name, cfg in sorted(servers.items()):
+            kind = cfg.get('transport', 'stdio')
+            target = cfg.get('url') or cfg.get('command', '')
+            lay.addWidget(QLabel(f'● {name} — {kind} — {target}'))
+    else:
+        lay.addWidget(QLabel('No MCP servers configured.'))
+    try:
+        from aria.tools import dispatch as _dispatch
+        lay.addWidget(QLabel(
+            f'{len(_dispatch.tool_names())} built-in tools registered.'))
+    except Exception:
+        pass
+    hint = QLabel('Manage servers by asking ARIA — '
+                  '"connect the filesystem MCP server", '
+                  '"list MCP servers", "remove the X server".')
+    hint.setWordWrap(True)
+    lay.addWidget(hint)
+    lay.addStretch()
+    return w
+
+
 def create_settings_dialog(parent, callbacks):
     from zoneinfo import ZoneInfo
     from PyQt6.QtCore import Qt
@@ -111,6 +147,14 @@ def create_settings_dialog(parent, callbacks):
     except Exception:
         dialog.providers_widget = None
         prov_lay.addWidget(QLabel('Provider chain unavailable.'))
+    ext_lay = vpage('Extensions')
+    ext_note = QLabel('What extends ARIA: configured MCP servers over the built-in tool catalog. Read-only here — manage servers by asking ARIA.'); ext_note.setWordWrap(True); ext_lay.addWidget(ext_note)
+    try:
+        dialog.extensions_widget = build_extensions_widget(dialog)
+        ext_lay.addWidget(dialog.extensions_widget, 1)
+    except Exception:
+        dialog.extensions_widget = None
+        ext_lay.addWidget(QLabel('Extensions unavailable.'))
     cust_lay = vpage('Customize')
     cust_note = QLabel('UI accent — one colour re-derives the whole family (hue shift). Picking previews live; Apply settings saves it. The General tab’s preset combo sets the same accent.'); cust_note.setWordWrap(True); cust_lay.addWidget(cust_note)
     dialog._customize_hex = None

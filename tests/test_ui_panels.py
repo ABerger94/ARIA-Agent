@@ -73,6 +73,16 @@ def test_settings_hosts_providers_audio_customize_pet(monkeypatch, tmp_path):
     approval.get_mode = lambda: 'confirm-risky'; approval.set_mode = calls.append
     for name, mod in [('config', config), ('speech', speech), ('hud', hud), ('approval', approval)]:
         monkeypatch.setitem(sys.modules, 'aria.' + name, mod); monkeypatch.setattr(pkg, name, mod, raising=False)
+    mcp = types.ModuleType('aria.mcp')
+    mcp.get_servers = lambda: {'fs': {'transport': 'stdio', 'command': 'npx fs'}}
+    monkeypatch.setitem(sys.modules, 'aria.mcp', mcp); monkeypatch.setattr(pkg, 'mcp', mcp, raising=False)
+    tools_pkg = types.ModuleType('aria.tools'); tools_pkg.__path__ = []
+    dispatch = types.ModuleType('aria.tools.dispatch')
+    dispatch.tool_names = lambda: ['alpha', 'beta']
+    tools_pkg.dispatch = dispatch
+    monkeypatch.setitem(sys.modules, 'aria.tools', tools_pkg)
+    monkeypatch.setitem(sys.modules, 'aria.tools.dispatch', dispatch)
+    monkeypatch.setattr(pkg, 'tools', tools_pkg, raising=False)
     import aria.ui_prefs as ui_prefs
     monkeypatch.setattr(ui_prefs, '_ui_file', lambda: str(tmp_path / 'ui.json'))
     class Parent(QMainWindow):
@@ -85,8 +95,16 @@ def test_settings_hosts_providers_audio_customize_pet(monkeypatch, tmp_path):
     from PyQt6.QtWidgets import QTabWidget
     tabs = dialog.findChild(QTabWidget)
     titles = [tabs.tabText(i) for i in range(tabs.count())]
-    for wanted in ('Providers', 'Customize', 'Pet'):
+    for wanted in ('Providers', 'Extensions', 'Customize', 'Pet'):
         assert wanted in titles, titles
+    # Extensions (Alek, 2026-10-27): the read-only MCP/tool
+    # readout that used to float over the dashboard now lives
+    # here as a Settings tab.
+    assert dialog.extensions_widget is not None
+    from PyQt6.QtWidgets import QLabel
+    ext_texts = [lbl.text() for lbl in dialog.extensions_widget.findChildren(QLabel)]
+    assert any('fs — stdio — npx fs' in t for t in ext_texts), ext_texts
+    assert any('2 built-in tools registered' in t for t in ext_texts), ext_texts
     # Audio: the shared device widget is embedded in Voice/audio.
     assert dialog.audio_widget is not None
     assert dialog.audio_widget._inputs.count() >= 1

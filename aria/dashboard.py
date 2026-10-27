@@ -169,8 +169,6 @@ def create_dashboard(callbacks):
             self.status = QPushButton('Connecting to services'); self.status.setFixedWidth(200); self.status.setFlat(True); self.status.setCursor(Qt.CursorShape.PointingHandCursor); self.status.setToolTip('Click for service details'); self.status.setStyleSheet('QPushButton { text-align: right; border: none; background: transparent; } QPushButton:hover { text-decoration: underline; }'); self.status.clicked.connect(self.show_services_dialog); head.addWidget(self.status)
             self.clock = QLabel(); self.clock.setFixedWidth(190); head.addWidget(self.clock)
             self.settings_button = QPushButton('Settings'); self.settings_button.clicked.connect(self.settings); head.addWidget(self.settings_button)
-            self.customize_button = QPushButton('Customize'); self.customize_button.clicked.connect(self.open_customize_overlay); head.addWidget(self.customize_button)
-            self.extensions_button = QPushButton('Extensions'); self.extensions_button.clicked.connect(self.open_extensions_overlay); head.addWidget(self.extensions_button)
             layout.addLayout(head)
             body = QSplitter(Qt.Orientation.Horizontal); layout.addWidget(body, 1)
             left, ll = self.card('SYSTEM MONITOR'); left.setMinimumWidth(220); left.setMaximumWidth(290)
@@ -264,8 +262,6 @@ def create_dashboard(callbacks):
                 self.holo.hide(); _stack.addWidget(self.holo, 0, 0)
             cl.addWidget(self.center_stack, 1)
             self._last_orb_publish = 0.0
-            self._overlay = None
-            self._overlay_card = None
             self.state = QLabel('IDLE'); self.state.setAlignment(Qt.AlignmentFlag.AlignCenter); self.state.setObjectName('brand'); cl.addWidget(self.state)
             self.subtitle = QLabel(); self.subtitle.setTextFormat(Qt.TextFormat.PlainText); self.subtitle.setWordWrap(True); self.subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter); cl.addWidget(self.subtitle)
             controls = QHBoxLayout()
@@ -692,122 +688,6 @@ def create_dashboard(callbacks):
                 self.setStyleSheet(style_for_accent(hex_))
 
             build_customize_dialog(self, start, preview, commit).exec()
-
-        # ── in-window overlays (Mark-LVI floated its panels over
-        # the HUD; Alek, 2026-10-27 — 'I want it all') ────────────
-        def _show_overlay(self, title, content):
-            self._close_overlay()
-            overlay = QWidget(self)
-            overlay.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-            overlay.setStyleSheet('background: rgba(2, 8, 14, 190);')
-            lay = QVBoxLayout(overlay)
-            lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            card = QFrame()
-            card.setObjectName('card')
-            cl = QVBoxLayout(card)
-            head = QHBoxLayout()
-            t = QLabel(title)
-            t.setObjectName('title')
-            head.addWidget(t, 1)
-            x = QPushButton('✕')
-            x.setFixedWidth(40)
-            x.clicked.connect(self._close_overlay)
-            head.addWidget(x)
-            cl.addLayout(head)
-            cl.addWidget(content)
-            lay.addWidget(card)
-            overlay.setGeometry(self.rect())
-            overlay.show()
-            overlay.raise_()
-            overlay.installEventFilter(self)
-            self._overlay = overlay
-            self._overlay_card = card
-            return overlay
-
-        def _close_overlay(self):
-            ov = getattr(self, '_overlay', None)
-            if ov is not None:
-                ov.hide()
-                ov.deleteLater()
-                self._overlay = None
-                self._overlay_card = None
-
-        def eventFilter(self, obj, event):
-            if obj is getattr(self, '_overlay', None) \
-                    and event.type() == event.Type.MouseButtonPress:
-                self._close_overlay()
-                return True
-            return super().eventFilter(obj, event)
-
-        def resizeEvent(self, event):
-            super().resizeEvent(event)
-            ov = getattr(self, '_overlay', None)
-            if ov is not None:
-                ov.setGeometry(self.rect())
-
-        def keyPressEvent(self, event):
-            if event.key() == Qt.Key.Key_Escape \
-                    and getattr(self, '_overlay', None) is not None:
-                self._close_overlay()
-                return
-            super().keyPressEvent(event)
-
-        def open_customize_overlay(self):
-            if getattr(self, '_overlay', None) is not None:
-                self._close_overlay()
-                return
-            from aria import ui_prefs
-            from aria.customize_panel import build_customize_widget
-            start = ui_prefs.get_accent()
-
-            def preview(hex_):
-                _apply_painted_accent(hex_)
-
-            def commit(hex_):
-                ui_prefs.set_accent(hex_)
-                _apply_painted_accent(hex_)
-                self.setStyleSheet(style_for_accent(hex_))
-
-            w = build_customize_widget(self, start, preview, commit,
-                                       self._close_overlay)
-            self._show_overlay('CUSTOMIZE — UI ACCENT', w)
-
-        def open_extensions_overlay(self):
-            if getattr(self, '_overlay', None) is not None:
-                self._close_overlay()
-                return
-            self._show_overlay('EXTENSIONS', self._extensions_widget())
-
-        def _extensions_widget(self):
-            """The plugin surface this build actually has: MCP
-            servers (aria/mcp.py) over the built-in tool catalog.
-            Read-only — management stays with ARIA's mcp_* tools."""
-            w = QWidget()
-            lay = QVBoxLayout(w)
-            try:
-                from aria import mcp
-                servers = mcp.get_servers()
-            except Exception:
-                servers = {}
-            if servers:
-                for name, cfg in sorted(servers.items()):
-                    kind = cfg.get('transport', 'stdio')
-                    target = cfg.get('url') or cfg.get('command', '')
-                    lay.addWidget(QLabel(f'● {name} — {kind} — {target}'))
-            else:
-                lay.addWidget(QLabel('No MCP servers configured.'))
-            try:
-                from aria.tools import dispatch as _dispatch
-                lay.addWidget(QLabel(
-                    f'{len(_dispatch.tool_names())} built-in tools registered.'))
-            except Exception:
-                pass
-            hint = QLabel('Manage servers by asking ARIA — '
-                          '"connect the filesystem MCP server", '
-                          '"list MCP servers", "remove the X server".')
-            hint.setWordWrap(True)
-            lay.addWidget(hint)
-            return w
 
         def _toggle_centerpiece(self):
             self._centerpiece = 'holo' if self._centerpiece == 'orb' else 'orb'

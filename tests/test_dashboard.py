@@ -468,10 +468,11 @@ def test_center_composite_is_opaque_and_layered(monkeypatch, tmp_path):
     window.close()
 
 
-def test_overlays_open_and_close(monkeypatch, tmp_path):
-    # Batch E (Alek, 2026-10-27): Customize and Extensions float
-    # OVER the dashboard as overlays (Mark-LVI style), instead of
-    # only living in Settings windows. Esc / backdrop / ✕ close.
+def test_no_customize_or_extensions_buttons_on_dashboard(monkeypatch, tmp_path):
+    # Alek, 2026-10-27 (later): the header Customize / Extensions
+    # overlay buttons are REMOVED — Extensions lives as a tab in
+    # Settings, Customize was already there. The header keeps
+    # Settings only.
     app = QApplication.instance() or QApplication([])
     calls = []
     data = dict(cpu=25, mem=40, battery='80%', uptime_s=600,
@@ -516,21 +517,13 @@ def test_overlays_open_and_close(monkeypatch, tmp_path):
         render_frame=lambda: np.zeros((800, 1280, 3), dtype=np.uint8))
     window = create_dashboard(callbacks)
     window.show(); app.processEvents()
-    window.open_customize_overlay(); app.processEvents()
-    assert window._overlay is not None and window._overlay.isVisible()
-    from PyQt6.QtCore import QEvent, Qt
-    from PyQt6.QtGui import QKeyEvent
-    window.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress,
-                                   Qt.Key.Key_Escape,
-                                   Qt.KeyboardModifier.NoModifier))
-    app.processEvents()
-    assert window._overlay is None
-    window.open_extensions_overlay(); app.processEvents()
-    assert window._overlay is not None and window._overlay.isVisible()
-    texts = [lbl.text() for lbl in window._overlay.findChildren(QLabel)]
-    assert any('fs — stdio — npx fs' in t for t in texts), texts
-    window._close_overlay(); app.processEvents()
-    assert window._overlay is None
+    assert not hasattr(window, 'customize_button')
+    assert not hasattr(window, 'extensions_button')
+    assert not hasattr(window, '_overlay')
+    from PyQt6.QtWidgets import QPushButton
+    texts = [b.text() for b in window.findChildren(QPushButton)]
+    assert 'Customize' not in texts and 'Extensions' not in texts, texts
+    assert 'Settings' in texts
     window.close()
 
 
