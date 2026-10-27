@@ -544,6 +544,10 @@ def test_center_composite_is_opaque_and_layered(monkeypatch, tmp_path):
     from PyQt6.QtCore import QPoint
     assert window.neural.parent() is window._center_card
     assert window.neural.size() == window._center_card.size()
+    # The black backdrop spans the same space as the neurons
+    # (Alek, 2026-10-27) — card-sized, like the field.
+    assert window.center_bg.size() == window._center_card.size()
+    assert window.center_bg.size() == window.neural.size()
     assert window.neural.height() > window.center_stack.height()
     state_bottom = (window.state.mapTo(window._center_card, QPoint(0, 0)).y()
                     + window.state.height())

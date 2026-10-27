@@ -311,9 +311,23 @@ def create_dashboard(callbacks):
             # the IDLE state line, the subtitle and the hold-to-
             # talk buttons. Sizing is synced in render_once /
             # resizeEvent (_sync_neural_geometry).
+            # The BLACK backdrop the centrepiece has always sat
+            # on (#080d14) is a layer in its own right, spanning
+            # the SAME space as the neurons — the whole card —
+            # UNDER the field (Alek, 2026-10-27: the stack-sized
+            # black background sat OVER the neurons; it must
+            # span what the neurons span, behind them).
+            self.center_bg = QWidget(center)
+            self.center_bg.setStyleSheet('background: #080d14;')
+            self.center_bg.lower()
             self.neural = NeuralField(center)
-            self.neural.lower()
             self.center_stack = QWidget()
+            # The app stylesheet paints every QWidget's background;
+            # the stack MUST be transparent or it slabs over the
+            # card-wide neural field (first cut of the extension
+            # rendered exactly that black box — Alek: 'Nothing
+            # changed', 2026-10-27).
+            self.center_stack.setStyleSheet('background: transparent;')
             _stack = QGridLayout(self.center_stack)
             _stack.setContentsMargins(0, 0, 0, 0)
             self.face = ResonanceOrb(transparent_background=True); _stack.addWidget(self.face, 0, 0)
@@ -418,11 +432,14 @@ def create_dashboard(callbacks):
 
         def _sync_neural_geometry(self):
             # The neural field is the centre card's background:
-            # keep it exactly card-sized (top to the buttons).
+            # keep it exactly card-sized (top to the buttons) —
+            # and its black backdrop layer with it, same space.
             try:
                 rect = self._center_card.rect()
                 if self.neural.size() != rect.size():
                     self.neural.setGeometry(rect)
+                if self.center_bg.size() != rect.size():
+                    self.center_bg.setGeometry(rect)
             except Exception:
                 pass
 
