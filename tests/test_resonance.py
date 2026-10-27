@@ -35,23 +35,28 @@ def test_measured_level_expires(monkeypatch):
     assert audio_levels.mp3_envelope(b'bad data', None) == []
 
 
-def test_orb_name_is_dark_ink_on_the_core():
-    # Alek, 2026-10-27: the A.R.I.A. name in the orb's centre
-    # is black / dark grey, not white — it sits on the bright
-    # core and the white washed out. Render the real orb and
-    # measure the glyph band: plenty of near-black pixels where
-    # the name is drawn, in the middle of a bright core.
-    app = QApplication.instance() or QApplication([])
-    orb = ResonanceOrb(); orb.resize(800, 800)
-    for _ in range(60):
-        orb.advance('idle', 0.0)
+def _name_band_dark_count(orb):
     img = orb.grab().toImage()
-    cx, cy = 400, 400
     dark = 0
-    for x in range(cx - 90, cx + 90, 2):
-        for y in range(cy - 16, cy + 16, 2):
+    for x in range(400 - 90, 400 + 90, 2):
+        for y in range(400 - 16, 400 + 16, 2):
             c = img.pixelColor(x, y)
             if c.red() < 45 and c.green() < 45 and c.blue() < 45:
                 dark += 1
-    assert dark > 40, dark
-    orb.close(); app.processEvents()
+    return dark
+
+
+def test_orb_name_ink_is_per_surface():
+    # Alek, 2026-10-27 (corrected same morning): the PET's orb
+    # name is dark ink; the DASHBOARD's orb name stays white.
+    # dark_name is the pet-only switch — render both and
+    # measure the glyph band over the bright core.
+    app = QApplication.instance() or QApplication([])
+    dash = ResonanceOrb(); dash.resize(800, 800)
+    pet = ResonanceOrb(dark_name=True); pet.resize(800, 800)
+    for _ in range(60):
+        dash.advance('idle', 0.0)
+        pet.advance('idle', 0.0)
+    assert _name_band_dark_count(pet) > 40
+    assert _name_band_dark_count(dash) < 15
+    dash.close(); pet.close(); app.processEvents()

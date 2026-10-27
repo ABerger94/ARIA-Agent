@@ -135,13 +135,13 @@ class PetWindow(QWidget):
                 from aria.resonance import ResonanceOrb
                 self._face = ResonanceOrb(
                     self, transparent_background=True,
-                    core_scale=_PET_ORB_SCALE)
+                    core_scale=_PET_ORB_SCALE, dark_name=True)
                 form = 'orb'
         else:
             from aria.resonance import ResonanceOrb
             self._face = ResonanceOrb(
                 self, transparent_background=True,
-                core_scale=_PET_ORB_SCALE)
+                core_scale=_PET_ORB_SCALE, dark_name=True)
         self._form = form
         self.layout().addWidget(self._face)
 
