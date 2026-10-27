@@ -24,7 +24,7 @@ jobs:
         # tests/_run_suite.py). A failure in any file still fails the job.
         run: |
           python -m pytest tests/test_headless.py tests/test_providers.py -q
-          for f in tests/test_briefing.py tests/test_calendar_recurrence.py tests/test_phone_sessions.py tests/test_mailview.py tests/test_failures.py tests/test_orpool.py tests/test_memextract.py tests/test_tasks.py tests/test_taskstore.py tests/test_frame.py tests/test_qthost.py tests/test_fileproc.py tests/test_vision_look.py tests/test_comhost.py tests/test_comclient.py tests/test_isolation.py tests/test_selfedit.py tests/test_bridge.py tests/test_registry.py tests/test_commands_pages.py tests/test_ultimate_a.py tests/test_ultimate_b.py tests/test_ultimate_c.py tests/test_ultimate_d.py tests/test_ultimate_e.py tests/test_ical.py tests/test_presence.py tests/test_live.py; do python -m pytest "$f" -q || exit 1; done
+          for f in tests/test_briefing.py tests/test_calendar_recurrence.py tests/test_phone_sessions.py tests/test_mailview.py tests/test_failures.py tests/test_orpool.py tests/test_memextract.py tests/test_tasks.py tests/test_taskstore.py tests/test_consolidation.py tests/test_frame.py tests/test_qthost.py tests/test_fileproc.py tests/test_vision_look.py tests/test_comhost.py tests/test_comclient.py tests/test_isolation.py tests/test_selfedit.py tests/test_bridge.py tests/test_registry.py tests/test_commands_pages.py tests/test_ultimate_a.py tests/test_ultimate_b.py tests/test_ultimate_c.py tests/test_ultimate_d.py tests/test_ultimate_e.py tests/test_ical.py tests/test_presence.py tests/test_live.py; do python -m pytest "$f" -q || exit 1; done
 
   native-dashboard:
     runs-on: ubuntu-latest

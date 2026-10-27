@@ -17,7 +17,7 @@ import psutil
 
 from aria.config import WORKSPACE_DIR, add_log
 from aria.memory import (
-    DB_LOCK, DB_PATH, spine_append, spine_tail, spine_digest, memory_save,
+    DB_LOCK, DB_PATH, spine_append, spine_tail, spine_digest,
     goal_db_create, goal_db_list, goal_db_get_due, goal_db_update, goal_db_delete
 )
 import aria.agent.workers as workers
@@ -463,21 +463,30 @@ def idle_consolidation_loop(is_busy_fn: Callable[[], bool],
             text = provider_text(system_instruction, _parts_text(contents))
 
             last_id = rows[-1][0]
-            _set_consolidation_watermark(last_id)
 
             if text.strip().upper() == "NONE":
+                _set_consolidation_watermark(last_id)
                 add_log("Idle consolidation: no durable memories found.")
                 continue
 
-            count = 0
+            facts = []
             for line in text.splitlines():
                 if ":" in line:
                     k, v = line.split(":", 1)
                     k, v = k.strip().lower().replace(" ", "_"), v.strip()
                     if k and v:
-                        memory_save("consolidated", k, v)
-                        count += 1
-            if count:
-                add_log(f"Idle consolidation: distilled {count} durable memories.")
+                        facts.append((k, v))
+            # Reconcile, never blind-save (Gap fill 4): dupes are
+            # skipped, contradictions QUEUE for the user instead
+            # of silently overwriting the stored fact. The
+            # watermark advances only after reconciliation has
+            # actually consumed these rows.
+            from aria.agent import consolidation
+            counts = consolidation.reconcile(facts)
+            _set_consolidation_watermark(last_id)
+            if counts["saved"] or counts["contradictions"]:
+                add_log(f"Idle consolidation: {counts['saved']} new, "
+                        f"{counts['dupes']} dupes skipped, "
+                        f"{counts['contradictions']} contradiction(s) queued.")
         except Exception as e:
             add_log(f"Consolidation err: {e}")

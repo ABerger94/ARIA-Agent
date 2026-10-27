@@ -22,6 +22,15 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
     {   'description': 'Searches persistent memory by meaning for past notes, projects, or user facts.',
         'name': 'search_memory',
         'parameters': {'properties': {'query': {'type': 'STRING'}}, 'required': ['query'], 'type': 'OBJECT'}},
+    {   'description': 'Reviews queued memory contradictions — facts consolidation distilled that '
+                       'conflict with stored memory. With no arguments, lists them. With '
+                       'contradiction_id and keep ("new" or "old"), settles one: the losing value '
+                       'is archived to the retired list, never deleted outright.',
+        'name': 'memory_review',
+        'parameters': {   'properties': {   'contradiction_id': {'type': 'STRING'},
+                                            'keep': {'type': 'STRING'}},
+                          'required': [],
+                          'type': 'OBJECT'}},
     {   'description': 'Deletes persistent memories whose key or value matches a keyword. Use when the user says '
                        "'forget X'.",
         'name': 'forget_memory',
@@ -480,6 +489,7 @@ TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persiste
                              'gui_type',
                              'save_memory',
                              'search_memory',
+                             'memory_review',
                              'take_screenshot',
                              'read_screen',
                              'fetch_url',

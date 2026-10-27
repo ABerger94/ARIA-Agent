@@ -465,6 +465,35 @@ def _tool_task_status(args: dict) -> str:
     return out
 
 
+def _tool_memory_review(args: dict) -> str:
+    """List or settle queued memory contradictions (Gap fill 4).
+    Consolidation never overwrites a stored fact on a conflict —
+    it queues the claim here for the user to settle."""
+    from aria.agent import consolidation
+    args = args or {}
+    cid = str(args.get("contradiction_id", "") or "").strip()
+    keep = str(args.get("keep", "") or "").strip().lower()
+    if not cid:
+        pending = consolidation.pending_contradictions()
+        if not pending:
+            return "No memory contradictions are waiting for review."
+        lines = ["Memory contradictions waiting for your call:"]
+        for e in pending:
+            lines.append(
+                f"- [{e['id']}] {e['key']}: stored = "
+                f"\"{e['old_value']}\" vs new claim = \"{e['new_value']}\" "
+                f"(say keep new or keep old with the id)")
+        return "\n".join(lines)
+    if keep not in ("new", "old"):
+        return "Tell me which to keep: 'new' (the distilled claim) or 'old' (the stored fact)."
+    entry = consolidation.resolve_contradiction(cid, keep)
+    if entry is None:
+        return f"No contradiction with id '{cid}'."
+    kept = entry["new_value"] if keep == "new" else entry["old_value"]
+    return (f"Settled '{entry['key']}': keeping \"{kept}\". "
+            "The other value was archived to the retired list.")
+
+
 def _tool_task_resume(args: dict) -> str:
     """Resume a blocked/failed delegated task from its journal
     checkpoint (Gap fill 3): finished steps are skipped, the
@@ -585,6 +614,7 @@ def _init_default_registry():
     )
     _REGISTRY["system_health_audit"] = lambda a: builtins.tool_system_health_audit()
     _REGISTRY["delegate_task"] = lambda a: _tool_delegate_task(a)
+    _REGISTRY["memory_review"] = lambda a: _tool_memory_review(a)
     _REGISTRY["task_status"] = lambda a: _tool_task_status(a)
     _REGISTRY["task_resume"] = lambda a: _tool_task_resume(a)
     _REGISTRY["task_cancel"] = lambda a: _tool_task_cancel(a)
