@@ -29,33 +29,91 @@ QSlider::groove:horizontal { height: 4px; background: #21374b; }
 QSlider::handle:horizontal { background: #66dbe7; width: 12px; margin: -5px 0; border-radius: 6px; }
 """
 
+# The stylesheet's colour family (Port 5, Customize): every hex here is
+# hue-linked — one accent re-derives all of them, S/V ratios preserved
+# (aria/hue_wheel.shift_palette). #dce6ef (body text) is deliberately
+# NOT linked: text stays readable under any accent.
+_STYLE_LINKED = ('#080d14', '#0d1520', '#0a111b', '#1b3042', '#274257',
+                 '#54d9e8', '#77e7ef', '#111e2c', '#193044', '#24516a',
+                 '#174452', '#319aab', '#a5f5fa', '#42c9da', '#172434',
+                 '#21374b', '#66dbe7', '#829aaf')
+_STYLE_BASE = '#54d9e8'
+
+
+def style_for_accent(accent):
+    """STYLE with its colour family hue-shifted to `accent`.
+
+    None or an invalid accent returns STYLE unchanged — a bad stored
+    preference can never cost the window its theme."""
+    if not accent:
+        return STYLE
+    from aria.hue_wheel import shift_palette
+    shifted = shift_palette({h: h for h in _STYLE_LINKED},
+                            _STYLE_BASE, accent)
+    if shifted is None:
+        return STYLE
+    import re
+    return re.sub('|'.join(re.escape(h) for h in _STYLE_LINKED),
+                  lambda m: shifted[m.group(0)], STYLE)
+
+
+def _apply_painted_accent(accent):
+    """Push an accent into the painted widgets' palettes (orb, bars).
+
+    Each module guards itself; a failure here is cosmetic and must
+    never break the window."""
+    import importlib
+    for mod_name in ('aria.resonance', 'aria.metric_bar', 'aria.holo_face'):
+        try:
+            importlib.import_module(mod_name).apply_accent(accent)
+        except Exception:
+            pass
+
 
 def create_dashboard(callbacks):
     from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
     from PyQt6.QtGui import QImage, QPixmap, QColor, QShortcut, QKeySequence
     from PyQt6.QtWidgets import (QMainWindow, QWidget, QFrame, QLabel, QPushButton,
                                 QVBoxLayout, QHBoxLayout, QSplitter, QTabWidget,
-                                QTextBrowser, QLineEdit, QProgressBar, QSlider,
+                                QTextBrowser, QLineEdit, QSlider,
                                 QFileDialog, QDialog, QApplication, QListWidget, QListWidgetItem)
     from aria import frame, hud, config
     from aria.resonance import ResonanceOrb
+    from aria.metric_bar import MetricBar, StatusPlaque
+    from aria.video_panel import VideoPanel, HAVE_VIDEO as _HAVE_VIDEO
+    try:
+        from aria import ui_prefs as _ui_prefs
+        _accent0 = _ui_prefs.get_accent()
+        _centerpiece0 = _ui_prefs.get_centerpiece()
+    except Exception:
+        _accent0 = None
+        _centerpiece0 = 'orb'
+    _apply_painted_accent(_accent0)
+    try:
+        from aria.holo_face import HoloFace
+    except Exception:
+        HoloFace = None
 
     class Dashboard(QMainWindow):
         panel_result = pyqtSignal(str, object)
         email_result = pyqtSignal(int, object)
+        news_result = pyqtSignal(str)
 
         def __init__(self):
             super().__init__()
             self.setWindowTitle('A.R.I.A. | Command Center')
             self.resize(1440, 900)
             self.setMinimumSize(1080, 720)
-            self.apply_accent(config.get_setting("ui_accent", "#54d9e8"))
+            self.apply_accent(_accent0 or config.get_setting("ui_accent", "#54d9e8"))
             self.setAcceptDrops(True)
             self._loading = set()
             self._email_request = 0
             self._last_chat = None
             self._last_activity = None
             self._last_refresh = 0.0
+            self._confirm_banner = None
+            self._confirm_token = None
+            self._confirm_busy = False
             root = QWidget(); self.setCentralWidget(root)
             layout = QVBoxLayout(root); layout.setContentsMargins(20, 16, 20, 16); layout.setSpacing(16)
             head = QHBoxLayout()
@@ -67,9 +125,13 @@ def create_dashboard(callbacks):
             layout.addLayout(head)
             body = QSplitter(Qt.Orientation.Horizontal); layout.addWidget(body, 1)
             left, ll = self.card('SYSTEM MONITOR'); left.setMinimumWidth(220); left.setMaximumWidth(290)
-            self.cpu = self.meter(ll, 'PROCESSOR'); self.mem = self.meter(ll, 'MEMORY')
+            self.plaque_engine = StatusPlaque('ENGINE'); ll.addWidget(self.plaque_engine)
+            self.plaque_state = StatusPlaque('STATE'); ll.addWidget(self.plaque_state)
+            self.plaque_tasks = StatusPlaque('TASKS'); ll.addWidget(self.plaque_tasks)
+            self.cpu = MetricBar('CPU'); ll.addWidget(self.cpu)
+            self.mem = MetricBar('MEM'); ll.addWidget(self.mem)
+            self.net = MetricBar('NET'); ll.addWidget(self.net)
             self.power = QLabel(); ll.addWidget(self.power)
-            self.engine = QLabel(); self.engine.setMinimumHeight(50); self.engine.setWordWrap(True); ll.addWidget(self.engine)
             self.subsystems = QLabel(); self.subsystems.setWordWrap(True); ll.addWidget(self.subsystems)
             ll.addStretch()
             title = QLabel('NOW PLAYING'); title.setObjectName('title'); ll.addWidget(title)
@@ -85,6 +147,14 @@ def create_dashboard(callbacks):
             body.addWidget(left)
             center, cl = self.card('ARIA / LIVE')
             self.face = ResonanceOrb(); cl.addWidget(self.face, 1)
+            self.video = VideoPanel() if _HAVE_VIDEO else None
+            if self.video is not None:
+                self.video.hide(); cl.addWidget(self.video, 1)
+                self.video.closed.connect(self._on_video_closed)
+            self.holo = HoloFace() if HoloFace is not None else None
+            self._centerpiece = _centerpiece0 if self.holo is not None else 'orb'
+            if self.holo is not None:
+                self.holo.hide(); cl.addWidget(self.holo, 1)
             self._last_orb_publish = 0.0
             self.state = QLabel('IDLE'); self.state.setAlignment(Qt.AlignmentFlag.AlignCenter); self.state.setObjectName('brand'); cl.addWidget(self.state)
             self.subtitle = QLabel(); self.subtitle.setTextFormat(Qt.TextFormat.PlainText); self.subtitle.setWordWrap(True); self.subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter); cl.addWidget(self.subtitle)
@@ -93,10 +163,12 @@ def create_dashboard(callbacks):
             self.voice = QPushButton('Voice on'); self.voice.clicked.connect(frame.toggle_voice); controls.addWidget(self.voice)
             stop = QPushButton('Stop speaking'); stop.clicked.connect(callbacks.interrupt); controls.addWidget(stop); cl.addLayout(controls)
             self.whisper = QPushButton('Whisper off'); self.whisper.clicked.connect(callbacks.toggle_whisper); cl.addWidget(self.whisper)
+            self.centerpiece_btn = QPushButton('Centerpiece: Orb'); self.centerpiece_btn.clicked.connect(self._toggle_centerpiece); cl.addWidget(self.centerpiece_btn)
+            if self.holo is None: self.centerpiece_btn.setEnabled(False)
             body.addWidget(center)
             right, rl = self.card('WORKSPACE'); right.setMinimumWidth(340)
             self.tabs = QTabWidget(); self.views = {}
-            for name in ('Conversation', 'Inbox', 'Calendar', 'Tasks', 'Activity', 'Briefing'):
+            for name in ('Conversation', 'Inbox', 'Calendar', 'Tasks', 'Activity', 'Briefing', 'News'):
                 page = QWidget(); pl = QVBoxLayout(page)
                 view = QTextBrowser(); view.setOpenExternalLinks(False); self.views[name] = view
                 if name == 'Inbox':
@@ -121,10 +193,17 @@ def create_dashboard(callbacks):
                 if name == 'Calendar':
                     btn = QPushButton('Refresh ' + name.lower()); btn.clicked.connect(lambda checked=False, n=name: self.load_panel(n)); pl.addWidget(btn)
                     view.setPlainText('Select Refresh to load your connected ' + name.lower() + '.')
+                if name == 'News':
+                    btn = QPushButton('Refresh headlines'); btn.clicked.connect(lambda: self.load_news(force=True)); pl.addWidget(btn)
+                    view.setOpenExternalLinks(True)
+                    view.setPlainText('Open the News tab to load top headlines.')
                 pl.addWidget(view); self.tabs.addTab(page, name)
             rl.addWidget(self.tabs, 1)
+            self._news_loaded_at = 0.0; self._news_loading = False
+            self.news_result.connect(self._on_news_result)
+            self.tabs.currentChanged.connect(self._on_tab_changed)
             row = QHBoxLayout()
-            for text, fn in [('Commands', self.commands), ('Add file', self.browse_file)]:
+            for text, fn in [('Commands', self.commands), ('Add file', self.browse_file), ('Providers', self.open_providers), ('Audio', self.open_audio), ('Customize', self.open_customize), ('Pet', self.toggle_pet)]:
                 b = QPushButton(text); b.clicked.connect(fn); row.addWidget(b)
             rl.addLayout(row); body.addWidget(right); body.setSizes([250, 560, 550])
             command = QHBoxLayout()
@@ -135,6 +214,7 @@ def create_dashboard(callbacks):
             self.panel_result.connect(self.panel_finished)
             self.email_result.connect(self.mail_finished)
             self.entry.setFocus()
+            self._show_centerpiece()
             self._settings_shortcut = QShortcut(QKeySequence('Ctrl+,'), self)
             self._settings_shortcut.activated.connect(self.settings)
             self._commands_shortcut = QShortcut(QKeySequence('Ctrl+K'), self)
@@ -144,11 +224,6 @@ def create_dashboard(callbacks):
             card = QFrame(); card.setObjectName('card'); lay = QVBoxLayout(card); lay.setContentsMargins(16, 16, 16, 16); lay.setSpacing(14)
             label = QLabel(title); label.setObjectName('title'); lay.addWidget(label)
             return card, lay
-
-        def meter(self, layout, name):
-            label = QLabel(name); layout.addWidget(label)
-            bar = QProgressBar(); bar.setRange(0, 100); bar.setTextVisible(False); layout.addWidget(bar)
-            return label, bar
 
         def submit(self):
             text = self.entry.text().strip()
@@ -262,12 +337,16 @@ def create_dashboard(callbacks):
             self.views['Inbox'].setPlainText(text)
 
         def apply_accent(self, color):
-            from aria.resonance import C
+            # One accent path for both the Settings dialog (main) and
+            # the Customize wheel (Port 5): the stylesheet's whole
+            # colour family hue-shifts via style_for_accent, and the
+            # painted widgets (orb, bars, holo face) follow through
+            # _apply_painted_accent. Persistence stays with the
+            # caller (config 'ui_accent' / ui_prefs respectively).
             accent = QColor(str(color))
             if not accent.isValid(): accent = QColor('#54d9e8')
-            C.PRI = accent.name(); C.PRI_DIM = accent.darker(180).name()
-            sheet = STYLE.replace('#54d9e8', accent.name()).replace('#77e7ef', accent.lighter(115).name()).replace('#42c9da', accent.name()).replace('#66dbe7', accent.name())
-            self.setStyleSheet(sheet)
+            self.setStyleSheet(style_for_accent(accent.name()))
+            _apply_painted_accent(accent.name())
 
         def draft_command(self, text):
             self.entry.setText(text); self.entry.setFocus()
@@ -320,22 +399,259 @@ def create_dashboard(callbacks):
             timer = QTimer(dialog); timer.timeout.connect(connection_tick); timer.start(1000)
             dialog.exec()
 
-        def render_once(self):
-            if not callbacks.is_running(): self.close(); return
-            callbacks.housekeeping()
+        def open_providers(self):
+            from aria.providers_panel import build_providers_dialog
+            build_providers_dialog(self).exec()
+
+        def open_audio(self):
+            from aria.audio_panel import build_audio_dialog
+            build_audio_dialog(self).exec()
+
+        def _on_tab_changed(self, index):
+            if self.tabs.tabText(index) == 'News':
+                self.load_news()
+
+        def load_news(self, force=False):
+            """Fetch top headlines off-thread into the News tab.
+
+            Lazy: opening the tab loads once, then only when stale
+            (>30 min) or Refresh forces it. Failure renders the feed's
+            honest empty state, never stale headlines presented as new."""
+            if self._news_loading:
+                return
+            if (not force and self._news_loaded_at
+                    and time.monotonic() - self._news_loaded_at < 1800):
+                return
+            self._news_loading = True
+            self.views['News'].setPlainText('Loading headlines…')
+
+            def work():
+                try:
+                    from aria.news_feed import (fetch_headlines,
+                                                format_headlines_html)
+                    self.news_result.emit(
+                        format_headlines_html(fetch_headlines()))
+                except Exception as exc:
+                    config.log_silent('dashboard.news', exc)
+                    self.news_result.emit(
+                        "<p style='color:#829aaf'>Could not load "
+                        "headlines.</p>")
+
+            threading.Thread(target=work, daemon=True).start()
+
+        def _on_news_result(self, html_text):
+            self._news_loading = False
+            # A failed load must not count as fresh: the next tab visit
+            # retries instead of sitting on the error for 30 minutes.
+            self._news_loaded_at = (time.monotonic()
+                                    if 'Could not load' not in html_text
+                                    else 0.0)
+            self.views['News'].setHtml(html_text)
+
+        def toggle_pet(self):
+            """Show/hide the desktop pet (Port 7). Created lazily; the
+            pet mirrors the dashboard's voice state and follows the
+            saved centerpiece as its starting form."""
+            if getattr(self, '_pet', None) is None:
+                from aria.pet_window import PetWindow
+                self._pet = PetWindow(
+                    None, provider=self._voice_state,
+                    on_raise=self._raise_from_pet,
+                    on_exit=self._raise_from_pet)
+            if self._pet.isVisible():
+                self._pet.hide()
+            else:
+                self._pet.show_at_saved_pos()
+
+        def _raise_from_pet(self):
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+        def closeEvent(self, event):
+            pet = getattr(self, '_pet', None)
+            if pet is not None:
+                pet.hide()
+            super().closeEvent(event)
+
+        def open_customize(self):
+            from aria import ui_prefs
+            from aria.customize_panel import build_customize_dialog
+            start = ui_prefs.get_accent()
+
+            def preview(hex_):
+                _apply_painted_accent(hex_)
+
+            def commit(hex_):
+                ui_prefs.set_accent(hex_)
+                _apply_painted_accent(hex_)
+                self.setStyleSheet(style_for_accent(hex_))
+
+            build_customize_dialog(self, start, preview, commit).exec()
+
+        def _toggle_centerpiece(self):
+            self._centerpiece = 'holo' if self._centerpiece == 'orb' else 'orb'
+            try:
+                from aria import ui_prefs
+                ui_prefs.set_centerpiece(self._centerpiece)
+            except Exception:
+                pass
+            self._show_centerpiece()
+
+        def _show_centerpiece(self):
+            """Make the stored centerpiece the visible one (unless a
+            video owns the center card right now)."""
+            self.centerpiece_btn.setText(
+                'Centerpiece: ' + ('Holo' if self._centerpiece == 'holo'
+                                   else 'Orb'))
+            if self.video is not None and self.video.isVisible():
+                return
+            if self._centerpiece == 'holo' and self.holo is not None:
+                self.face.hide(); self.holo.show()
+            else:
+                if self.holo is not None:
+                    self.holo.hide()
+                self.face.show()
+
+        def show_video(self, source, title='', muted=False):
+            """Play a file/direct URL in the center card, orb swapped out.
+
+            Returns False (and changes nothing) when QtMultimedia is
+            unavailable or the source is unusable — the caller reports
+            that honestly instead of the window pretending to play.
+            """
+            if self.video is None:
+                return False
+            if not self.video.show_video(source, title, muted):
+                return False
+            self.face.hide()
+            if self.holo is not None:
+                self.holo.hide()
+            self.video.show()
+            return True
+
+        def stop_video(self):
+            if self.video is not None:
+                self.video.stop_video()
+            self._on_video_closed()
+
+        def _on_video_closed(self):
+            if self.video is not None:
+                self.video.stop_video()
+                self.video.hide()
+            self._show_centerpiece()
+
+        def _poll_approvals(self):
+            """Show the confirm banner for the oldest pending approval.
+
+            Polls aria/approval.py's store on the refresh cadence. The
+            banner's answer goes straight to approve_token / deny_token —
+            the same execution path the voice tools use — so a click and
+            a spoken "yes" can never diverge. Fail-open: a broken poll
+            logs silently and the voice flow still works.
+            """
+            try:
+                from aria import approval as _approval
+                entries = _approval.pending_entries()
+            except Exception as exc:
+                config.log_silent('dashboard.approvals', exc)
+                return
+            if self._confirm_busy:
+                return
+            if self._confirm_banner is not None:
+                if any(e['token'] == self._confirm_token for e in entries):
+                    self._place_confirm_banner()
+                    return
+                # Resolved elsewhere (voice approve/deny) or expired.
+                self._hide_confirm_banner()
+            if not entries:
+                return
+            entry = entries[0]
+            try:
+                from aria.confirm_banner import ConfirmBanner
+                banner = ConfirmBanner(
+                    f"Approve {entry['tool']}?",
+                    f"{entry['desc']}\n\n"
+                    f"token {entry['token']} · waiting {entry['age_s']}s · "
+                    f"expires 10 min after the request",
+                    self)
+            except Exception as exc:
+                config.log_silent('dashboard.confirm_banner', exc)
+                return
+            banner.answered.connect(self._on_confirm_answered)
+            self._confirm_banner = banner
+            self._confirm_token = entry['token']
+            self._place_confirm_banner()
+            banner.show()
+
+        def _place_confirm_banner(self):
+            banner = self._confirm_banner
+            if banner is None:
+                return
+            banner.move(max(16, (self.width() - banner.width()) // 2), 84)
+            banner.raise_()
+
+        def _hide_confirm_banner(self):
+            banner, self._confirm_banner = self._confirm_banner, None
+            self._confirm_token = None
+            if banner is not None:
+                banner.hide()
+                banner.deleteLater()
+
+        def _on_confirm_answered(self, ok):
+            token = self._confirm_token
+            self._hide_confirm_banner()
+            if token is None:
+                return
+            from aria import approval as _approval
+            if not ok:
+                _approval.deny_token(token)
+                return
+            # approve_token EXECUTES the stashed call, which can take
+            # seconds — never on the UI thread.
+            self._confirm_busy = True
+
+            def work():
+                try:
+                    _approval.approve_token(token)
+                except Exception as exc:
+                    config.log_silent('dashboard.approve', exc)
+                finally:
+                    self._confirm_busy = False
+
+            threading.Thread(target=work, daemon=True).start()
+
+        def _voice_state(self):
+            """(state, level, muted) — the render loop's triple, shared
+            with the desktop pet so both show the same ARIA."""
             from aria import audio_levels, speech
             state = str(hud.CURRENT_STATE)
             mic = getattr(hud, 'MIC_LEVEL', 0.0) if time.time() - getattr(hud, 'MIC_LEVEL_AT', 0.0) < .3 else 0.0
             level = audio_levels.current() if state == 'speaking' else mic
-            self.face.advance(state, level, not getattr(speech, 'VOICE_ENABLED', True))
-            # Publish the same orb to the phone; the old pixel renderer is not
-            # run in the native dashboard. Limit JPEG production to 8 Hz.
-            if time.monotonic() - self._last_orb_publish >= .125:
+            return state, level, not getattr(speech, 'VOICE_ENABLED', True)
+
+        def render_once(self):
+            if not callbacks.is_running(): self.close(); return
+            callbacks.housekeeping()
+            state, level, _muted = self._voice_state()
+            if self.holo is not None and self.holo.isVisible():
+                self.holo.advance(state, level, _muted)
+            else:
+                self.face.advance(state, level, _muted)
+            # Publish the active centerpiece to the phone; the old pixel
+            # renderer is not run in the native dashboard. Limit JPEG
+            # production to 8 Hz. While a video owns the center card both
+            # centerpieces are hidden — do not publish a frame nobody
+            # can see.
+            _center = self.face if self.face.isVisible() else (
+                self.holo if self.holo is not None
+                and self.holo.isVisible() else None)
+            if _center is not None and time.monotonic() - self._last_orb_publish >= .125:
                 self._last_orb_publish = time.monotonic()
                 try:
                     import numpy as np
                     from aria.vision import publish_face_frame
-                    image = self.face.grab().toImage().convertToFormat(QImage.Format.Format_BGR888)
+                    image = _center.grab().toImage().convertToFormat(QImage.Format.Format_BGR888)
                     ptr = image.bits(); ptr.setsize(image.sizeInBytes())
                     pixels = np.frombuffer(ptr, dtype=np.uint8).reshape(image.height(), image.bytesPerLine())[:, :image.width() * 3].reshape(image.height(), image.width(), 3).copy()
                     publish_face_frame(pixels, (0, 0, image.width(), image.height()))
@@ -351,12 +667,16 @@ def create_dashboard(callbacks):
             data = frame.strip_data()
             self.clock.setText(datetime.now().strftime('%H:%M  |  %a %d %b'))
             self.state.setText(str(hud.CURRENT_STATE).upper()); self.subtitle.setText(str(hud.SUBTITLE_TEXT))
-            for key, meter in [('cpu', self.cpu), ('mem', self.mem)]:
-                value = int(data[key]); meter[0].setText(('PROCESSOR' if key == 'cpu' else 'MEMORY') + f'   {value}%'); meter[1].setValue(value)
+            self.cpu.set_value(int(data['cpu']), f"{int(data['cpu'])}%")
+            self.mem.set_value(int(data['mem']), f"{int(data['mem'])}%")
+            net_kbs = float(data.get('net_down_kbs', 0) or 0) + float(data.get('net_up_kbs', 0) or 0)
+            net_text = f'{net_kbs:.0f} KB/s' if net_kbs < 1024 else f'{net_kbs / 1024:.1f} MB/s'
+            self.net.set_value(min(100.0, net_kbs / 102.4), net_text)
             self.power.setText(f"POWER  {data['battery']}   /   UPTIME {frame._fmt_uptime(data['uptime_s'])}")
-            self.engine.setText('ENGINE\n' + (data['active_provider'] or 'Waiting for first response'))
+            self.plaque_engine.set_value(data['active_provider'] or 'Waiting')
+            self.plaque_state.set_value(str(hud.CURRENT_STATE).upper())
+            self.plaque_tasks.set_value(f"{data.get('task_active', 0)} run / {data.get('task_pending', 0)} wait")
             self.subsystems.setText('\n'.join(f'{name}   {status}' for name, status, ok in data['subsystems']))
-            self.status.setText(f"{data['task_active']} active / {data['scheduled']} scheduled")
             self.voice.setText('Voice on' if data['voice_enabled'] else 'Voice off')
             self.whisper.setText('Whisper on' if hud.WHISPER_MODE else 'Whisper off')
             if not self.volume.isSliderDown(): self.volume.setValue(int(data['volume'] * 100))
@@ -376,6 +696,7 @@ def create_dashboard(callbacks):
                 self.views['Tasks'].setPlainText((text or 'No delegated tasks.') + '\n\nSCHEDULED\n' + (scheduled or 'No scheduled tasks.'))
             except Exception as exc:
                 self.views['Tasks'].setPlainText('Task status unavailable: ' + str(exc))
+            self._poll_approvals()
 
         def closeEvent(self, event):
             callbacks.ptt_release(); callbacks.request_stop(); super().closeEvent(event)

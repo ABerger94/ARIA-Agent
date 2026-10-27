@@ -260,6 +260,24 @@ def deny_token(token: str) -> str:
     return f"Denied and dropped: {entry['desc']} (token={t}). It was not executed."
 
 
+def pending_entries() -> list:
+    """Snapshot of open approvals for UI surfaces, oldest first.
+
+    Each entry: {token, tool, desc, age_s}. Expired entries are purged
+    first, so a UI polling this never shows a request that can no longer
+    be resolved. Read-only: resolving still goes through approve_token /
+    deny_token, so every surface shares one execution path.
+    """
+    purge_expired()
+    now = time.time()
+    return [
+        {"token": e["token"], "tool": e["tool"], "desc": e["desc"],
+         "age_s": int(now - e.get("created_ts", now))}
+        for _t, e in sorted(_PENDING.items(),
+                            key=lambda kv: kv[1].get("created_ts", 0))
+    ]
+
+
 def list_pending() -> str:
     """Human-readable list of open approval requests."""
     purge_expired()

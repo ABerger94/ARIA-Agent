@@ -105,13 +105,15 @@ OLLAMA_CODE_MODEL, _ = key_get("OLLAMA_CODE_MODEL", "qwen3-coder:480b-cloud")
 OLLAMA_HOST, _ = key_get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL, _ = key_get("OLLAMA_MODEL", "qwen2.5:7b")
 
-# Chain: ollama_cloud -> groq -> openrouter -> mistral -> gemini. Reorder any time via
-# PROVIDER_CHAIN override, e.g. PROVIDER_CHAIN="groq,ollama_cloud,mistral,openrouter".
+# Chain: gemini -> ollama_cloud -> groq -> openrouter -> mistral (Gemini
+# promoted to primary 2026-10-27, Alek's call — the old fallbacks were
+# the weak path). Reorder any time via the PROVIDER_CHAIN override,
+# e.g. PROVIDER_CHAIN="groq,ollama_cloud,mistral,openrouter".
 _PROVIDER_CHAIN_RAW, _ = key_get("PROVIDER_CHAIN", "")
 if _PROVIDER_CHAIN_RAW and _PROVIDER_CHAIN_RAW != "INSERT":
     PROVIDER_CHAIN = [p.strip().lower() for p in _PROVIDER_CHAIN_RAW.split(",") if p.strip()]
 else:
-    PROVIDER_CHAIN = ["ollama_cloud", "groq", "openrouter", "mistral", "gemini"]
+    PROVIDER_CHAIN = ["gemini", "ollama_cloud", "groq", "openrouter", "mistral"]
 
 # Ollama safe mode (Phase 3): local model gets read-only tools only.
 OLLAMA_SAFE_MODE = True
