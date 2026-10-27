@@ -900,6 +900,11 @@ def _qt_callbacks():
         mouse_wheel=_hud_mouse_wheel,
         is_running=lambda: RUNNING,
         request_stop=request_shutdown,
+        submit=_submit_typed,
+        ptt_press=_ptt_rising_edge,
+        ptt_release=_ptt_falling_edge,
+        toggle_whisper=toggle_whisper_mode,
+        interrupt=speech.interrupt_speech,
     )
 
 

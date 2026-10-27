@@ -298,7 +298,8 @@ def run_qt_host(callbacks) -> int:
     try:
         app = QApplication.instance() or QApplication([])
         app.setApplicationName("A.R.I.A.")
-        window = create_window(callbacks)
+        from aria.dashboard import create_dashboard, dashboard_enabled
+        window = create_dashboard(callbacks) if dashboard_enabled() else create_window(callbacks)
         timer = QTimer(window)
         timer.timeout.connect(window.render_once)
         timer.start(TICK_MS)

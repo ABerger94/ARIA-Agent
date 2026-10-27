@@ -301,3 +301,50 @@ def test_e_server_auth_flow():
             bridge._BRIDGE_SERVER.server_close()
             bridge._BRIDGE_SERVER = None
     print("ok server_auth_flow")
+
+
+def test_pairing_single_use_expiry_and_rotation(monkeypatch):
+    _setup_bridge()
+    monkeypatch.setattr(bridge, '_BRIDGE_SERVER', types.SimpleNamespace(server_port=8777))
+    monkeypatch.setattr(bridge, '_BRIDGE_ACTUAL_SCHEME', 'https')
+    link = bridge.create_pairing_url()
+    assert '?pair=' in link and _TOKEN not in link
+    token = link.split('?pair=')[1]
+    assert not bridge._consume_pairing('wrong')
+    assert bridge._consume_pairing(token)
+    assert not bridge._consume_pairing(token)
+    old = bridge.create_pairing_url().split('?pair=')[1]
+    new = bridge.create_pairing_url().split('?pair=')[1]
+    assert not bridge._consume_pairing(old)
+    bridge._PAIR_EXPIRES = time.monotonic() - 1
+    assert not bridge._consume_pairing(new)
+
+
+def test_pairing_requires_running_server(monkeypatch):
+    import pytest
+    monkeypatch.setattr(bridge, '_BRIDGE_SERVER', None)
+    with pytest.raises(RuntimeError):
+        bridge.create_pairing_url()
+
+
+def test_pairing_http_cookie_exchange(monkeypatch):
+    from http.server import ThreadingHTTPServer
+    _setup_bridge()
+    server = ThreadingHTTPServer(('127.0.0.1', 0), bridge.BridgeHandler)
+    monkeypatch.setattr(bridge, '_BRIDGE_SERVER', server)
+    monkeypatch.setattr(bridge, '_BRIDGE_ACTUAL_SCHEME', 'http')
+    path = '/?pair=' + bridge.create_pairing_url().split('?pair=')[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+    conn = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=3)
+    try:
+        conn.request('GET', path); response = conn.getresponse()
+        assert response.status == 302
+        cookie = response.getheader('Set-Cookie').split(';', 1)[0]
+        assert response.getheader('Cache-Control') == 'no-store'
+        response.read()
+        conn.request('GET', '/api/log', headers={'Cookie': cookie})
+        response = conn.getresponse(); assert response.status == 200; response.read()
+        conn.request('GET', path); response = conn.getresponse()
+        assert response.status == 401; response.read()
+    finally:
+        conn.close(); server.shutdown(); server.server_close(); thread.join(timeout=2)
