@@ -223,7 +223,8 @@ def test_now_playing_capped_and_panel_buttons_moved_to_settings(monkeypatch):
     # (2) buttons: the four are gone; Commands / Add file remain.
     from PyQt6.QtWidgets import QPushButton
     texts = {b.text() for b in window.findChildren(QPushButton)}
-    for gone in ('Providers', 'Audio', 'Customize', 'Pet'):
+    for gone in ('Providers', 'Audio', 'Customize', 'Pet',
+                 'REMOTE CONTROL'):
         assert gone not in texts, gone
     assert 'Commands' in texts and 'Add file' in texts
     # (1) the track label is capped at two lines, full title kept.
@@ -239,7 +240,7 @@ def test_now_playing_capped_and_panel_buttons_moved_to_settings(monkeypatch):
                window.plaque_tasks, window.cpu, window.mem, window.net,
                window.power, window.subsystems,
                window.now_playing_title, window.track,
-               window.remote_button]
+               window.volume]
     card = window.left_card
     rects = [QRect(w.mapTo(card, QPoint(0, 0)), w.size())
              for w in widgets]

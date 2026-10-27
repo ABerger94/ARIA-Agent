@@ -192,7 +192,9 @@ def create_dashboard(callbacks):
             ll.addWidget(QLabel('SYSTEM VOLUME'))
             self.volume = QSlider(Qt.Orientation.Horizontal); self.volume.setRange(0, 100)
             self.volume.sliderMoved.connect(lambda value: hud.set_hud_volume(value / 100)); ll.addWidget(self.volume)
-            self.remote_button = QPushButton('REMOTE CONTROL'); self.remote_button.setObjectName('primary'); self.remote_button.clicked.connect(self.open_remote); ll.addWidget(self.remote_button)
+            # REMOTE CONTROL used to sit here; it lives in Settings
+            # (Connections tab, 'Open Remote Control') now (Alek,
+            # 2026-10-27). open_remote() stays for Settings' use.
             ll.addStretch()
             body.addWidget(left)
             center, cl = self.card('ARIA / LIVE')
