@@ -396,3 +396,16 @@ def test_legacy_signout_does_not_disconnect_other_phones(monkeypatch):
         assert bridge.phone_sessions().valid(token)
     finally:
         conn.close(); server.shutdown(); server.server_close(); thread.join(timeout=2)
+
+
+def test_bridge_pages_share_the_homepage_theme():
+    # Alek, 2026-10-27: the upload + commands pages (and login)
+    # still wore the old pink theme. Every bridge page carries
+    # the homepage's accent and none carries the pink.
+    from aria import bridge
+    for page in (bridge.UPLOAD_HTML, bridge.BRIDGE_LOGIN_HTML,
+                 bridge._commands_html()):
+        assert '#64d9e7' in page
+        assert '#ff5fa2' not in page
+    assert 'Send a file' in bridge.UPLOAD_HTML
+    assert 'Command reference' in bridge._commands_html()

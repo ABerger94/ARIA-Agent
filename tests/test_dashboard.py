@@ -244,9 +244,12 @@ def test_now_playing_capped_and_panel_buttons_moved_to_settings(monkeypatch):
     # (2) buttons: the four are gone; Commands / Add file remain.
     from PyQt6.QtWidgets import QPushButton
     texts = {b.text() for b in window.findChildren(QPushButton)}
-    for gone in ('Providers', 'Audio', 'Customize', 'Pet',
+    for gone in ('Providers', 'Audio', 'Pet',
                  'REMOTE CONTROL'):
         assert gone not in texts, gone
+    # 'Customize' exists exactly once: the header button that
+    # opens the in-window overlay (Batch E) — not the old
+    # bottom-row button this test originally pinned away.
     assert 'Commands' in texts and 'Add file' in texts
     # (1) the track label is capped at two lines, full title kept.
     assert window.track.toolTip() == long_title
@@ -470,4 +473,70 @@ def test_center_composite_is_opaque_and_layered(monkeypatch, tmp_path):
     centre = img.pixelColor(img.width() // 2, img.height() // 2)
     assert (centre.red(), centre.green(), centre.blue()) != (
         corner.red(), corner.green(), corner.blue())
+    window.close()
+
+
+def test_overlays_open_and_close(monkeypatch, tmp_path):
+    # Batch E (Alek, 2026-10-27): Customize and Extensions float
+    # OVER the dashboard as overlays (Mark-LVI style), instead of
+    # only living in Settings windows. Esc / backdrop / ✕ close.
+    app = QApplication.instance() or QApplication([])
+    calls = []
+    data = dict(cpu=25, mem=40, battery='80%', uptime_s=600,
+                active_provider='Ollama', subsystems=[],
+                task_active=0, scheduled=0, voice_enabled=True, volume=.5)
+    frame = types.ModuleType('aria.frame')
+    frame.strip_data = lambda: data
+    frame._fmt_uptime = lambda seconds: '10m'
+    frame.spotify_data = lambda: {'title': ''}
+    frame.chat_entries = lambda n: []
+    frame.activity_events = lambda n: []
+    frame.toggle_voice = lambda: None
+    frame.receive_file = lambda p: None
+    hud = types.ModuleType('aria.hud')
+    hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = ''; hud.WHISPER_MODE = False
+    hud._dispatch_spotify_action = lambda a: None
+    hud.set_hud_volume = lambda v: None
+    config = types.ModuleType('aria.config'); config.redact = str
+    config.log_silent = lambda *args: None
+    config.get_setting = lambda key, default=None: default
+    config.set_setting = lambda *a, **k: None
+    for name, mod in [('aria.frame', frame), ('aria.hud', hud), ('aria.config', config)]:
+        monkeypatch.setitem(sys.modules, name, mod)
+        monkeypatch.setattr(sys.modules['aria'], name.rsplit('.', 1)[1], mod, raising=False)
+    queue = types.ModuleType('aria.agent.taskqueue')
+    queue.get_queue = lambda: types.SimpleNamespace(get_all_statuses=lambda: [])
+    scheduler = types.ModuleType('aria.scheduler'); scheduler.sched_list = lambda: []
+    monkeypatch.setitem(sys.modules, 'aria.agent.taskqueue', queue)
+    monkeypatch.setitem(sys.modules, 'aria.scheduler', scheduler)
+    speech = types.ModuleType('aria.speech'); speech.VOICE_ENABLED = True
+    monkeypatch.setitem(sys.modules, 'aria.speech', speech)
+    monkeypatch.setattr(sys.modules['aria'], 'speech', speech, raising=False)
+    mcp = types.ModuleType('aria.mcp')
+    mcp.get_servers = lambda: {'fs': {'transport': 'stdio', 'command': 'npx fs'}}
+    monkeypatch.setitem(sys.modules, 'aria.mcp', mcp)
+    monkeypatch.setattr(sys.modules['aria'], 'mcp', mcp, raising=False)
+    callbacks = types.SimpleNamespace(
+        ptt_press=lambda: None, ptt_release=lambda: None,
+        interrupt=lambda: None, toggle_whisper=lambda: None,
+        submit=calls.append, request_stop=lambda: None,
+        is_running=lambda: True, housekeeping=lambda: None,
+        render_frame=lambda: np.zeros((800, 1280, 3), dtype=np.uint8))
+    window = create_dashboard(callbacks)
+    window.show(); app.processEvents()
+    window.open_customize_overlay(); app.processEvents()
+    assert window._overlay is not None and window._overlay.isVisible()
+    from PyQt6.QtCore import QEvent, Qt
+    from PyQt6.QtGui import QKeyEvent
+    window.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress,
+                                   Qt.Key.Key_Escape,
+                                   Qt.KeyboardModifier.NoModifier))
+    app.processEvents()
+    assert window._overlay is None
+    window.open_extensions_overlay(); app.processEvents()
+    assert window._overlay is not None and window._overlay.isVisible()
+    texts = [lbl.text() for lbl in window._overlay.findChildren(QLabel)]
+    assert any('fs — stdio — npx fs' in t for t in texts), texts
+    window._close_overlay(); app.processEvents()
+    assert window._overlay is None
     window.close()

@@ -199,7 +199,14 @@ class PetWindow(QWidget):
             state, level, muted = self._provider()
         except Exception:
             state, level, muted = 'idle', 0.0, False
-        self._face.advance(state, level, muted)
+        viseme = None
+        if state == 'speaking':
+            try:
+                from aria import audio_levels
+                viseme = audio_levels.viseme()
+            except Exception:
+                viseme = None
+        self._face.advance(state, level, muted, viseme=viseme)
 
     # ── interactions ────────────────────────────────────────────────
     def mousePressEvent(self, e):

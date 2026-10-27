@@ -7,8 +7,10 @@ live MJPEG cyber-face stream, and web dashboard over HTTP / TLS HTTPS.
 from __future__ import annotations
 
 import base64
+import hashlib
 import hmac
 import secrets
+import struct
 import threading
 import io
 import wave
@@ -89,6 +91,79 @@ def _consume_pairing(token):
             return False
         _PAIR_TOKEN, _PAIR_EXPIRES = "", 0.0
         return True
+
+
+# ── Phone node WebSocket (/node/ws) ─────────────────────────────
+# The ARIA Node Android app connects OUT here and speaks the
+# node protocol (hello / welcome / command / result / ping /
+# pong — aria/node_hub.py). The bridge server is a stdlib
+# BaseHTTPRequestHandler, so the WebSocket is a minimal RFC 6455
+# implementation: handshake + whole frames (client frames are
+# masked, fragments reassembled). One node per connection thread.
+_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+def _ws_accept(key: str) -> str:
+    digest = hashlib.sha1((key + _WS_GUID).encode("ascii")).digest()
+    return base64.b64encode(digest).decode("ascii")
+
+
+def _ws_frame(opcode: int, payload: bytes) -> bytes:
+    head = bytes([0x80 | opcode])
+    n = len(payload)
+    if n < 126:
+        head += bytes([n])
+    elif n < 65536:
+        head += bytes([126]) + struct.pack("!H", n)
+    else:
+        head += bytes([127]) + struct.pack("!Q", n)
+    return head + payload
+
+
+def _ws_read_frame(rfile):
+    """One whole frame: (opcode, payload). Raises on EOF."""
+    payload_all = b""
+    opcode0 = None
+    while True:
+        head = rfile.read(2)
+        if len(head) < 2:
+            raise ConnectionError("websocket closed")
+        fin = head[0] & 0x80
+        opcode = head[0] & 0x0F
+        masked = head[1] & 0x80
+        n = head[1] & 0x7F
+        if n == 126:
+            n = struct.unpack("!H", rfile.read(2))[0]
+        elif n == 127:
+            n = struct.unpack("!Q", rfile.read(8))[0]
+        mask = rfile.read(4) if masked else b""
+        data = rfile.read(n) if n else b""
+        if len(data) < n:
+            raise ConnectionError("websocket truncated")
+        if masked:
+            data = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+        if opcode0 is None:
+            opcode0 = opcode
+        payload_all += data
+        if fin:
+            return opcode0, payload_all
+
+
+def _node_key_ok(key: str) -> bool:
+    """A node hello's key must be one of the bridge's existing
+    credentials — never a second secret: the bridge token, a
+    remembered phone session token, or a fresh pairing token
+    (spent exactly as the browser pairing spends it)."""
+    if not key:
+        return False
+    if BRIDGE_TOKEN and hmac.compare_digest(key, BRIDGE_TOKEN):
+        return True
+    try:
+        if phone_sessions().valid(key):
+            return True
+    except Exception:
+        pass
+    return _consume_pairing(key)
 
 
 def _generate_silent_wav() -> bytes:
@@ -516,16 +591,26 @@ PAIR_EXPIRED_HTML = """<!doctype html><html lang="en"><meta name="viewport" cont
 
 BRIDGE_LOGIN_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport"
 content="width=device-width,initial-scale=1"><title>A.R.I.A. Bridge - Login</title>
-<style>body{background:#0b0e12;color:#e8f4ff;font-family:sans-serif;margin:0;padding:16px}
-h2{color:#ff5fa2}p{color:#9fb2c3;font-size:14px}
-form{display:flex;gap:8px;margin-top:24px}input{flex:1;padding:12px;border-radius:8px;border:1px
-solid #2a3138;background:#14181d;color:#fff;font-size:16px}
-button{padding:12px 18px;border-radius:8px;border:0;background:#ff5fa2;color:#fff;
-font-weight:bold;font-size:16px}</style></head><body>
-<h2>A.R.I.A. // Phone Bridge</h2>
+<style>
+:root{--acc:#64d9e7;--bg:#080d14;--card:#0e1823;--line:#213548;--txt:#e4edf6;--dim:#8ea3b6;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(ellipse at top,#102432,transparent 65%),var(--bg);color:var(--txt);font:15px/1.5 system-ui,sans-serif;padding:24px 16px}
+#app{max-width:560px;margin:0 auto}
+.eyebrow{font:11px ui-monospace,monospace;letter-spacing:2px;color:var(--acc);text-transform:uppercase}
+h1{font-size:28px;letter-spacing:-1px;margin:6px 0}
+p{color:var(--dim)}
+form{display:flex;gap:10px;margin-top:24px}
+input{flex:1;min-width:0;background:#101e2b;border:1px solid var(--line);color:var(--txt);border-radius:12px;padding:14px 16px;font-size:16px;outline:none}
+input:focus{border-color:var(--acc)}
+button{padding:14px 22px;border-radius:12px;border:0;background:var(--acc);color:#06212a;font-weight:700;font-size:16px;cursor:pointer}
+</style></head><body>
+<div id="app">
+<div class="eyebrow">A.R.I.A. Bridge</div>
+<h1>Connect this phone</h1>
 <p>Enter your bridge token to connect. Find it in the ARIA console, or ask ARIA for it.</p>
 <form onsubmit="login();return false"><input id="t" type="password" placeholder="Bridge token..."
 autocomplete="off"><button>Connect</button></form>
+</div>
 <script>
 async function login(){
   const t=document.getElementById('t').value;
@@ -551,18 +636,26 @@ def _commands_html() -> str:
         parts.append(f"<div class='cmd' data-t='{tool} {ex} {cat}'><b>{tool}</b><span>&quot;{ex}&quot;</span></div>")
     parts.append("</div>")
     return (
-        "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>A.R.I.A. Commands</title><style>"
-        "body{background:#0b0e12;color:#e8f4ff;font-family:sans-serif;margin:0;padding:16px}"
-        "h2{color:#ff5fa2}h3{color:#1edcff;margin:18px 0 6px}"
-        ".cmd{background:#14181d;border:1px solid #2a3138;border-radius:8px;padding:10px;margin-bottom:6px}"
-        ".cmd b{color:#1edcff;display:block}.cmd span{color:#9fb2c3;font-size:14px}"
-        "#q{width:100%;padding:12px;border-radius:8px;border:1px solid #2a3138;background:#14181d;color:#fff;font-size:16px;box-sizing:border-box}"
-        "a{color:#ff5fa2}</style></head><body>"
-        "<h2>A.R.I.A. // Commands</h2>"
+        ":root{--acc:#64d9e7;--bg:#080d14;--card:#0e1823;--line:#213548;--txt:#e4edf6;--dim:#8ea3b6;color-scheme:dark}"
+        "*{box-sizing:border-box}"
+        "body{margin:0;background:radial-gradient(ellipse at top,#102432,transparent 65%),var(--bg);color:var(--txt);font:15px/1.5 system-ui,sans-serif;padding:24px 16px}"
+        "#app{max-width:720px;margin:0 auto}"
+        ".eyebrow{font:11px ui-monospace,monospace;letter-spacing:2px;color:var(--acc);text-transform:uppercase}"
+        "h1{font-size:28px;letter-spacing:-1px;margin:6px 0 4px}"
+        "h3{font:11px ui-monospace,monospace;letter-spacing:2px;color:var(--acc);text-transform:uppercase;margin:24px 0 8px}"
+        ".cmd{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px}"
+        ".cmd b{color:var(--txt);display:block}.cmd span{color:var(--dim);font-size:14px}"
+        "#q{width:100%;background:#101e2b;border:1px solid var(--line);color:var(--txt);border-radius:12px;padding:14px 16px;font-size:16px;outline:none;margin:16px 0 4px}"
+        "#q:focus{border-color:var(--acc)}"
+        "a{color:var(--acc);text-decoration:none}</style></head><body>"
+        "<div id='app'>"
+        "<div class='eyebrow'>A.R.I.A. Bridge</div>"
+        "<h1>Command reference</h1>"
         "<input id='q' placeholder='Filter commands...' oninput='f()'>"
         f"<div id='list'>{''.join(parts)}</div>"
-        "<p><a href='/'>&larr; Bridge</a></p>"
+        "<p><a href='/'>&larr; Bridge</a></p></div>"
         "<script>function f(){var q=document.getElementById('q').value.toLowerCase();"
         "document.querySelectorAll('.cmd').forEach(function(e){"
         "e.style.display=e.getAttribute('data-t').toLowerCase().indexOf(q)>=0?'':'none';});}</script></body></html>"
@@ -573,25 +666,28 @@ UPLOAD_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="vi
 content="width=device-width,initial-scale=1">
 <title>A.R.I.A. Upload</title>
 <style>
-:root{--acc:#ff5fa2;--bg:#05070a;--card:#0d1117;--line:#1c232c;--txt:#eef4fa;--dim:#8ba2b5}
+:root{--acc:#64d9e7;--bg:#080d14;--card:#0e1823;--line:#213548;--txt:#e4edf6;--dim:#8ea3b6;color-scheme:dark}
 *{box-sizing:border-box}
-body{background:var(--bg);color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;margin:0;padding:16px}
+body{margin:0;background:radial-gradient(ellipse at top,#102432,transparent 65%),var(--bg);color:var(--txt);font:15px/1.5 system-ui,sans-serif;padding:24px 16px}
 #app{max-width:560px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
-h2{color:var(--acc);font-size:18px;letter-spacing:2px;margin:4px 0}
-.panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
+.eyebrow{font:11px ui-monospace,monospace;letter-spacing:2px;color:var(--acc);text-transform:uppercase}
+h1{font-size:28px;letter-spacing:-1px;margin:6px 0 0}
+h2{font-size:18px;margin:0 0 12px}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px}
 #drop{border:2px dashed var(--line);border-radius:14px;padding:28px 14px;text-align:center;color:var(--dim);cursor:pointer}
 #drop.over{border-color:var(--acc);color:var(--txt)}
 #file{position:absolute;left:-9999px}
-#upbtn{padding:13px;border-radius:12px;border:0;background:var(--acc);color:#fff;font-weight:700;font-size:16px;cursor:pointer;width:100%}
+#upbtn{padding:14px;border-radius:12px;border:0;background:var(--acc);color:#06212a;font-weight:700;font-size:16px;cursor:pointer;width:100%}
 #upbtn:disabled{opacity:.5}
 #status{font-size:14px;color:var(--dim);min-height:20px}
-#status.ok{color:#28f078}#status.err{color:#ff6b6b}
+#status.ok{color:#78deb5}#status.err{color:#ffa3a7}
 .item{font-size:14px;padding:8px 0;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px}
 .item span:last-child{color:var(--dim);font-size:12px;white-space:nowrap}
 a{color:var(--acc);text-decoration:none}
 </style></head><body>
 <div id="app">
-<h2>A.R.I.A. // UPLOAD</h2>
+<div class="eyebrow">A.R.I.A. Bridge</div>
+<h1>Send a file</h1>
 <div class="panel">
 <div id="drop">Tap to pick photos or files<br><small>multiple allowed, up to 50 MB each</small></div>
 <input id="file" type="file" multiple>
@@ -599,7 +695,7 @@ a{color:var(--acc);text-decoration:none}
 <button id="upbtn" type="button" disabled>Upload</button>
 <div id="status"></div>
 <div class="panel">
-<h2 style="font-size:14px">INBOX</h2>
+<h2>Received files</h2>
 <div id="list"><div class="item"><span>Loading...</span><span></span></div></div>
 </div>
 <p><a href="/">&larr; Bridge</a></p>
@@ -728,7 +824,107 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         add_log('Phone bridge: phone paired and connected automatically.')
 
+    def _handle_node_ws(self):
+        """The phone node's WebSocket: hello (pairing key) →
+        welcome → command/result pump into aria.node_hub.HUB.
+        A bad, missing or misshapen hello closes with 4401 — the
+        node's cue to ask for a fresh pairing."""
+        if self.headers.get("Upgrade", "").lower() != "websocket":
+            self._send(400, b'{"error":"websocket upgrade required"}')
+            return
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        if not key:
+            self._send(400, b'{"error":"missing Sec-WebSocket-Key"}')
+            return
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", _ws_accept(key))
+        self.end_headers()
+        self.close_connection = True
+        conn = self.connection
+        send_lock = threading.Lock()
+
+        def _send(obj):
+            frame = _ws_frame(0x1, json.dumps(obj).encode("utf-8"))
+            with send_lock:
+                conn.sendall(frame)
+
+        def _close():
+            try:
+                with send_lock:
+                    conn.sendall(_ws_frame(0x8, struct.pack("!H", 1000)))
+            except Exception:
+                pass
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        hub = None
+        name = ""
+        try:
+            conn.settimeout(30)
+            opcode, payload = _ws_read_frame(self.rfile)
+            hello = None
+            if opcode in (0x1, 0x2):
+                try:
+                    hello = json.loads(payload.decode("utf-8"))
+                except Exception:
+                    hello = None
+            ok = isinstance(hello, dict) and hello.get("type") == "hello"
+            if ok:
+                name = str(hello.get("node") or "").strip()
+                ok = bool(name) and _node_key_ok(str(hello.get("key") or ""))
+            if not ok:
+                try:
+                    conn.sendall(_ws_frame(0x8, struct.pack("!H", 4401)))
+                except Exception:
+                    pass
+                return
+            from aria import node_hub
+            hub = node_hub.HUB
+            hub.register(name, kind=str(hello.get("kind") or ""),
+                         capabilities=hello.get("capabilities") or [],
+                         send=_send, close=_close)
+            _send({"type": "welcome", "ok": True})
+            add_log(f"Phone bridge: phone node '{name}' connected.")
+            conn.settimeout(120)
+            while True:
+                opcode, payload = _ws_read_frame(self.rfile)
+                if opcode == 0x8:
+                    break
+                if opcode == 0x9:
+                    with send_lock:
+                        conn.sendall(_ws_frame(0xA, payload))
+                    continue
+                if opcode not in (0x1, 0x2):
+                    continue
+                try:
+                    msg = json.loads(payload.decode("utf-8"))
+                except Exception:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("type") == "result":
+                    hub.handle_result(msg)
+                elif msg.get("type") == "ping":
+                    _send({"type": "pong"})
+        except Exception:
+            pass
+        finally:
+            if hub is not None and name:
+                hub.unregister(name, send=_send)
+                add_log(f"Phone bridge: phone node '{name}' disconnected.")
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     def do_GET(self):
+        if self.path.split("?", 1)[0] == "/node/ws":
+            self._handle_node_ws()
+            return
         if self.path.startswith("/api/"):
             if not self._authed():
                 self._send(401, b'{"error":"bad or missing bridge token"}')

@@ -725,14 +725,29 @@ class SpeechManager:
                             audio_buf.seek(0)
                         from aria import audio_levels
                         levels = audio_levels.mp3_envelope(audio_buf.getvalue(), pygame)
+                        # Viseme schedule from the same audio
+                        # (Mark-LVI's formant read): the holo head
+                        # articulates real mouth shapes from it
+                        # instead of flapping on loudness. Empty
+                        # when undecodable — the envelope path below
+                        # is the fallback, unchanged.
+                        frames = audio_levels.mp3_visemes(audio_buf.getvalue(), pygame)
                         pygame.mixer.music.load(audio_buf)
                         pygame.mixer.music.play()
                         playback_started = time.monotonic()
                         deadline = time.time() + max(10, len(text) * 0.15)
                         while pygame.mixer.music.get_busy() and time.time() < deadline and not self.speech_stop.is_set():
-                            index = int((time.monotonic() - playback_started) / .04)
-                            audio_levels.publish(levels[index] if index < len(levels) else 0.0)
-                            time.sleep(0.04)
+                            if frames:
+                                index = int((time.monotonic() - playback_started) / .02)
+                                if index < len(frames):
+                                    audio_levels.publish_viseme(*frames[index])
+                                else:
+                                    audio_levels.publish(0.0)
+                                time.sleep(0.02)
+                            else:
+                                index = int((time.monotonic() - playback_started) / .04)
+                                audio_levels.publish(levels[index] if index < len(levels) else 0.0)
+                                time.sleep(0.04)
                     finally:
                         from aria import audio_levels
                         audio_levels.publish(0.0)

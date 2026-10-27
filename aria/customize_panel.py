@@ -87,3 +87,58 @@ def build_customize_dialog(parent, current_accent, on_preview, on_commit):
     dlg._wheel = wheel
     dlg._hex_label = hex_label
     return dlg
+
+
+def build_customize_widget(parent, current_accent, on_preview, on_commit,
+                           on_close):
+    """The Customize controls as a plain widget for the
+    dashboard's in-window overlay (Mark-LVI floated its Customize
+    OVER the HUD; the Settings dialog above remains for the
+    Settings window). Same contract as the dialog: preview while
+    picking, commit on Apply/Reset, restore on Cancel — closing
+    goes through on_close instead of accept/reject."""
+    from PyQt6.QtWidgets import (QHBoxLayout, QLabel, QPushButton,
+                                 QVBoxLayout, QWidget)
+    from aria.hue_wheel import DEFAULT_ACCENT, HueWheel
+
+    start = current_accent or DEFAULT_ACCENT
+    w = QWidget(parent)
+    lay = QVBoxLayout(w)
+    lay.addWidget(QLabel(
+        'One accent re-derives the whole colour family (hue shift — '
+        'brightness and contrast ratios stay as designed).'))
+    wheel = HueWheel(start)
+    lay.addWidget(wheel)
+    hex_label = QLabel(wheel.color())
+    lay.addWidget(hex_label)
+
+    def picked(hex_str):
+        hex_label.setText(hex_str)
+        on_preview(hex_str)
+
+    wheel.hue_picked.connect(picked)
+    presets = QHBoxLayout()
+    for name, hex_value in PRESETS:
+        btn = QPushButton(name)
+        btn.clicked.connect(
+            lambda checked=False, h=hex_value: (wheel.set_color(h),
+                                                picked(h)))
+        presets.addWidget(btn)
+    lay.addLayout(presets)
+
+    row = QHBoxLayout()
+    apply_btn = QPushButton('Apply')
+    apply_btn.setObjectName('primary')
+    apply_btn.clicked.connect(lambda: (on_commit(wheel.color()), on_close()))
+    row.addWidget(apply_btn)
+    reset_btn = QPushButton('Reset to default')
+    reset_btn.clicked.connect(lambda: (on_commit(None), on_close()))
+    row.addWidget(reset_btn)
+    cancel_btn = QPushButton('Cancel')
+    cancel_btn.clicked.connect(lambda: (on_preview(current_accent),
+                                        on_close()))
+    row.addWidget(cancel_btn)
+    lay.addLayout(row)
+    w._wheel = wheel
+    w._hex_label = hex_label
+    return w

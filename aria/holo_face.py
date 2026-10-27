@@ -44,14 +44,30 @@ class HoloFace(QWidget):
         self._last = time.monotonic()
         self.setMinimumSize(280, 280)
 
-    def advance(self, state, level, muted=False):
-        """One animation tick — same contract as ResonanceOrb.advance."""
+    def advance(self, state, level, muted=False, viseme=None):
+        """One animation tick — same contract as ResonanceOrb.advance.
+
+        `viseme` is an optional (level, openness, width) frame
+        from the playback path's formant read (aria.audio_levels):
+        when present while speaking, the avatar's mouth takes its
+        shape from the schedule — the renderer has supported it
+        since the port; this wires the feed. None (or a level-only
+        frame) keeps loudness articulation."""
         now = time.monotonic()
         dt = now - self._last
         self._last = now
-        self._avatar.step(dt, float(level or 0.0),
-                          speaking=(state == 'speaking'),
-                          muted=bool(muted), state=str(state))
+        if viseme is not None and state == 'speaking' \
+                and viseme[1] is not None:
+            self._avatar.step(dt, float(level or 0.0),
+                              speaking=True, muted=bool(muted),
+                              state=str(state),
+                              v_open=float(viseme[1]),
+                              v_wide=float(viseme[2] or 0.0),
+                              v_level=float(viseme[0]))
+        else:
+            self._avatar.step(dt, float(level or 0.0),
+                              speaking=(state == 'speaking'),
+                              muted=bool(muted), state=str(state))
         self.update()
 
     def glance(self, dx: float, dy: float, hold: float = 1.1) -> None:

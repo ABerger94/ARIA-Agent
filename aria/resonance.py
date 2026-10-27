@@ -56,7 +56,9 @@ class ResonanceOrb(QWidget):
         self._core_phase = 0.0
         self._last_tick = time.monotonic()
 
-    def advance(self, state='idle', level=0.0, muted=False):
+    def advance(self, state='idle', level=0.0, muted=False, viseme=None):
+        # `viseme` accepted for the shared face contract; the orb
+        # is a waveform and level is its native input.
         self.state = {'working': 'PROCESSING', 'coding': 'PROCESSING'}.get(state, state.upper())
         self.speaking = state == 'speaking'
         self.muted = muted

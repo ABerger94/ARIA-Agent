@@ -20,6 +20,17 @@ from aria.tools.sandbox import (
 )
 from aria.tools.skills import tool_run_skill
 import aria.tools.builtins as builtins
+import threading as _threading
+
+_SCOPE = _threading.local()
+
+
+def in_preauthorized_scope() -> bool:
+    """True while this thread executes a tool under
+    preauthorized=True (routine replay, approve-token replay,
+    delegated task). Tools whose effects cannot be pre-described
+    — phone control — refuse in this scope."""
+    return bool(getattr(_SCOPE, "preauthorized", False))
 
 # Progressive Toolkit State
 _LOADED_TOOLKITS: Set[str] = {"core"}
@@ -343,6 +354,7 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
     _LAST_TOOL_EXECUTED = (fn_name, time.time())
 
     # 6. Execute Handler
+    _SCOPE.preauthorized = bool(preauthorized)
     try:
         handler = _REGISTRY.get(fn_name)
         if handler:
@@ -383,6 +395,7 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
         except Exception:
             r = f"[Tool Error: {e}]"
     finally:
+        _SCOPE.preauthorized = False
         if _HUD_HOOK and prev_face:
             try:
                 _HUD_HOOK(prev_face)
@@ -537,6 +550,7 @@ from aria import hud
 # so these are cycle-safe here (same position as the scheduler/vision imports).
 from aria import approval as approval_mod
 from aria import routines as routines_mod
+from aria import phone_node as phone_mod
 from aria import screenwatch as screenwatch_mod
 from aria import persona as persona_mod
 from aria import pricecheck as pricecheck_mod
@@ -695,6 +709,17 @@ def _init_default_registry():
     _REGISTRY["untrust_routine"] = lambda a: routines_mod.tool_untrust_routine(a.get("name", ""))
     _REGISTRY["export_routine_pack"] = lambda a: routines_mod.tool_export_routine_pack(a.get("names_csv", ""), a.get("dest_path", ""))
     _REGISTRY["import_routine_pack"] = lambda a: routines_mod.tool_import_routine_pack(a.get("pack_path", ""))
+
+    # ---- Phone node (Batch F): the paired Android phone ----
+    _REGISTRY["phone_status"] = lambda a: phone_mod.tool_phone_status()
+    _REGISTRY["phone_list_apps"] = lambda a: phone_mod.tool_phone_list_apps()
+    _REGISTRY["phone_open_app"] = lambda a: phone_mod.tool_phone_open_app(a.get("label", ""), a.get("package", ""))
+    _REGISTRY["phone_read_screen"] = lambda a: phone_mod.tool_phone_read_screen()
+    _REGISTRY["phone_notifications"] = lambda a: phone_mod.tool_phone_notifications(a.get("limit", 10))
+    _REGISTRY["phone_tap"] = lambda a: phone_mod.tool_phone_tap(a.get("ref", ""), a.get("x"), a.get("y"))
+    _REGISTRY["phone_swipe"] = lambda a: phone_mod.tool_phone_swipe(a.get("x1"), a.get("y1"), a.get("x2"), a.get("y2"), a.get("duration_ms", ""))
+    _REGISTRY["phone_type"] = lambda a: phone_mod.tool_phone_type(a.get("text", ""), a.get("ref", ""))
+    _REGISTRY["phone_key"] = lambda a: phone_mod.tool_phone_key(a.get("key", ""))
 
     # ---- ARIA ULTIMATE (Module 2): file commander ----
     _REGISTRY["file_organize"] = lambda a: fileops_mod.tool_file_organize(
