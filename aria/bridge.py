@@ -916,7 +916,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if not self._authed():
                 self._send(401, b'{"error":"not connected"}')
                 return
-            phone_sessions().revoke(self._phone_session())
+            token = self._phone_session()
+            try:
+                if token:
+                    phone_sessions().revoke(token)
+            except OSError:
+                self._send(503, b'{"error":"Could not disconnect this phone. Try again."}')
+                return
             self.send_response(303)
             self.send_header('Set-Cookie', 'aria_phone_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0')
             self.send_header('Set-Cookie', 'aria_bridge_token=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0')

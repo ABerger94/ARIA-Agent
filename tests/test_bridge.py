@@ -381,3 +381,18 @@ def test_scan_opens_app_and_remembers_phone(monkeypatch):
         assert not bridge.phone_sessions().valid(cookie.value)
     finally:
         server.shutdown(); server.server_close(); thread.join(timeout=2)
+
+
+def test_legacy_signout_does_not_disconnect_other_phones(monkeypatch):
+    from http.server import ThreadingHTTPServer
+    _setup_bridge()
+    token = bridge.phone_sessions().issue()
+    server = ThreadingHTTPServer(('127.0.0.1', 0), bridge.BridgeHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+    conn = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=3)
+    try:
+        conn.request('POST', '/api/logout', headers={'X-Bridge-Token': _TOKEN})
+        response = conn.getresponse(); assert response.status == 303; response.read()
+        assert bridge.phone_sessions().valid(token)
+    finally:
+        conn.close(); server.shutdown(); server.server_close(); thread.join(timeout=2)

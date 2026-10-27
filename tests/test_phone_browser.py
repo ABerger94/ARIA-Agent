@@ -11,9 +11,10 @@ import types
 from pathlib import Path
 from http.server import ThreadingHTTPServer
 
-os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 os.environ['QTWEBENGINE_DISABLE_SANDBOX'] = '1'
-os.environ['QTWEBENGINE_CHROMIUM_FLAGS'] = '--disable-gpu --disable-dev-shm-usage'
+os.environ['QTWEBENGINE_CHROMIUM_FLAGS'] = '--no-sandbox --disable-gpu --disable-dev-shm-usage'
+os.environ.setdefault('QT_QUICK_BACKEND', 'software')
 import pytest
 pytest.importorskip('PyQt6.QtWebEngineWidgets', exc_type=ImportError)
 from PyQt6.QtCore import QUrl
@@ -43,7 +44,7 @@ def test_qr_mobile_controls_inbox_and_reopen(monkeypatch, tmp_path):
     monkeypatch.setattr(bridge, '_BRIDGE_SERVER', server)
     monkeypatch.setattr(bridge, '_BRIDGE_ACTUAL_SCHEME', 'http')
     thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
-    app = QApplication.instance() or QApplication([])
+    app = QApplication.instance() or QApplication(['aria-phone-test'])
     errors = []
     class Page(QWebEnginePage):
         def javaScriptConsoleMessage(self, level, message, line, source):
