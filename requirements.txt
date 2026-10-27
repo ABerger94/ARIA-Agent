@@ -105,3 +105,7 @@ qrcode==8.2
 # Windows IANA timezone database for daily briefings (python-dateutil
 # is pinned with the calendar deps above; one pin only).
 tzdata>=2025.1
+
+# Gemini Live voice mode (aria/live.py) — pure wheel; the pipeline
+# voice works without it, Live simply reports unavailable.
+google-genai>=2.8.0,<3

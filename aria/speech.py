@@ -22,7 +22,12 @@ import speech_recognition as sr
 from aria.config import WORKSPACE_DIR
 from aria import config as _config_silent
 
-EDGE_TTS_VOICE = "en-US-AriaNeural"
+# The pipeline's Edge voice. Since the Gemini Live port (aria/live.py)
+# her Live voice is Kore; MichelleNeural is Kore's closest Edge
+# stand-in, so the fallback pipeline no longer changes her voice
+# identity when Live is resting (Alek's pick, 2026-10-27). The
+# 'tts_voice' setting still overrides this per install.
+EDGE_TTS_VOICE = "en-US-MichelleNeural"
 WHISPER_EDGE_KWARGS = {"rate": "-10%", "pitch": "-8Hz", "volume": "-60%"}
 
 # A2: Edge availability supervision — re-probe cadence while Edge is

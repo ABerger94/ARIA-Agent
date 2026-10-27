@@ -693,6 +693,67 @@ def _proactive_speak(text):
         speech.speak(text)
 
 
+# ---------------------------------------------------------------- gemini live
+_LIVE_MANAGER = None
+
+
+def _start_live_if_configured() -> bool:
+    """Gemini Live voice mode (aria/live.py) when the 'voice_mode'
+    setting is 'live'. True only while Live is underway — the
+    caller then leaves the Whisper wake-word listener off, so she
+    has exactly one pair of ears. Any failure logs and returns
+    False: the pipeline carries on untouched (the port's contract).
+    If a Live session later ENDS mid-run, the wake-word listener
+    is armed once as the failover, Mark-LVI style."""
+    global _LIVE_MANAGER
+    try:
+        if str(_config_silent.get_setting(
+                'voice_mode', 'pipeline')).lower() != 'live':
+            return False
+        from aria import live as _live
+        from aria.tools import dispatch as _dispatch
+        from aria.tools.schemas import ALL_FUNCTION_DECLARATIONS
+        failover = {'armed': False}
+
+        def _on_state(state):
+            add_log(f"Gemini Live: {state}")
+            if state == 'ended' and not failover['armed']:
+                failover['armed'] = True
+                add_log("Gemini Live ended — wake-word pipeline re-armed")
+                threading.Thread(target=continuous_voice_listener,
+                                 daemon=True).start()
+
+        manager = _live.LiveManager(
+            api_key=_config_silent.GEMINI_API_KEY,
+            voice=str(_config_silent.get_setting(
+                'live_voice', _live.DEFAULT_VOICE) or _live.DEFAULT_VOICE),
+            system_instruction=(
+                _config_silent.ARIA_SOUL
+                + "\n\nYou are speaking aloud with Alek in real time. "
+                  "Keep answers short and conversational unless he "
+                  "asks for depth. When an action is needed, call "
+                  "your tools — they pass through the same approval "
+                  "flow as always."),
+            declarations=ALL_FUNCTION_DECLARATIONS,
+            tool_runner=lambda name, args: _dispatch.execute_tool(name, args),
+            mic_device=_mic_device(),
+            on_user_text=lambda t: log_conversation('Alek', t),
+            on_assistant_text=lambda t: log_conversation('A.R.I.A.', t),
+            on_state=_on_state,
+            log=add_log,
+            presence_check=presence_allows_speech)
+        if manager.start():
+            _LIVE_MANAGER = manager
+            add_log("Voice mode: Gemini Live (pipeline listener off)")
+            return True
+        add_log("Voice mode: live requested but unavailable — "
+                "using the pipeline")
+        return False
+    except Exception as e:
+        add_log(f"Gemini Live start failed, using pipeline: {e}")
+        return False
+
+
 def start_all():
     """Initialize and boot all ARIA agent subsystems."""
     global _PTT_AVAILABLE
@@ -765,7 +826,9 @@ def start_all():
         threading.Thread(target=_console_input_loop, daemon=True).start()
 
     # 6b. Wake-word listener — always-on mic, "Aria" + command.
-    threading.Thread(target=continuous_voice_listener, daemon=True).start()
+    # Skipped when Gemini Live owns the microphone (one pair of ears).
+    if not _start_live_if_configured():
+        threading.Thread(target=continuous_voice_listener, daemon=True).start()
 
     # 7. Source-backed daily briefing. Collection and voice initialization
     # run in the background so the desktop remains responsive.
