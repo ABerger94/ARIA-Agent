@@ -471,6 +471,23 @@ def transcribe(audio: sr.AudioData, recognizer: sr.Recognizer, use_local_stt: bo
         return ""
 
 
+def _ensure_mixer(on_log: Optional[Callable[[str], None]] = None) -> bool:
+    """Make sure pygame's mixer is initialized for playback; log and
+    return False when the audio device won't init. Called per
+    utterance from the play worker — a device that was asleep at
+    boot can still come back mid-session, which the old boot-time
+    probe gate made impossible."""
+    try:
+        import pygame
+        if not pygame.mixer.get_init():
+            pygame.mixer.init()
+        return bool(pygame.mixer.get_init())
+    except Exception as e:
+        if on_log:
+            on_log(f"Voice playback: mixer init failed: {e}")
+        return False
+
+
 # ---------------- SpeechManager ----------------
 
 class SpeechManager:
@@ -545,12 +562,17 @@ class SpeechManager:
                 self.log(f"Voice: system fallback (edge-tts import broken: {e})")
                 return False
 
-            try:
-                import pygame
-                pygame.mixer.init()
-            except Exception as e:
-                self.log(f"Voice: system fallback (mixer init failed: {e})")
-                return False
+            # NOTE: the mixer is deliberately NOT probed here. It
+            # used to be step 2 of this probe, and a mixer-init
+            # failure (audio device asleep/absent at boot) failed
+            # the WHOLE probe before a single synthesis was tried —
+            # Edge was declared dead for a playback-side reason and
+            # the session latched onto SAPI (the 2026-10-27
+            # "still fallback" witness, where standalone synthesis
+            # on the same laptop was known-good). Synthesis is the
+            # only question this probe answers now; playback ensures
+            # the mixer per utterance (_ensure_mixer) and falls back
+            # per utterance, never per session.
 
             # Walk the voice ladder: the configured voice gets the
             # historical 3 attempts; each ladder voice gets one. A
@@ -669,7 +691,14 @@ class SpeechManager:
                 if self.on_state:
                     self.on_state("speaking")
 
-                if is_edge and audio_buf:
+                use_edge = bool(is_edge and audio_buf)
+                if use_edge and not _ensure_mixer(self.log):
+                    # Synthesis produced Edge audio but the playback
+                    # device won't init: speak THIS utterance via the
+                    # SAPI path below instead of dropping it, and let
+                    # the next utterance try Edge again.
+                    use_edge = False
+                if use_edge:
                     import pygame
                     try:
                         if hasattr(audio_buf, "seek"):

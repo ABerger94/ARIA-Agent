@@ -110,8 +110,12 @@ def get_subsystem_statuses() -> List[Tuple[str, str, bool]]:
     v_stat = vision.get_vision_status()
     h_stat = hardware.get_hardware_status()
 
-    # 0. Voice Pathway
-    voice_entry = ("Voice Pathway", "ARMED" if VOICE_LISTENER_ONLINE else "OFFLINE", VOICE_LISTENER_ONLINE)
+    # 0. Voice Pathway — listener state AND the TTS engine state, so
+    # the dashboard's left column shows at a glance whether she is
+    # speaking with Edge or the fallback (2026-10-27: the fallback
+    # was invisible everywhere — no log line, no status surface).
+    _tts_state = "EDGE" if speech.voice_ready() else "FALLBACK"
+    voice_entry = ("Voice Pathway", f"{'ARMED' if VOICE_LISTENER_ONLINE else 'OFFLINE'} · {_tts_state}", VOICE_LISTENER_ONLINE)
 
     # 1. Vision
     v_ok = v_stat["vision_last"][0]

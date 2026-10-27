@@ -145,6 +145,44 @@ def test_speech_log_hook_wires_the_default_manager(sp):
     assert logs == ['Voice: test line']
 
 
+def test_probe_not_gated_on_mixer(sp, monkeypatch, tmp_path):
+    # The old probe init'd pygame's mixer BEFORE trying synthesis:
+    # an audio device asleep/absent at boot failed the whole probe
+    # and latched the session onto SAPI even though Edge synthesis
+    # itself was fine. Synthesis is the probe's only question now.
+    bad = types.ModuleType('pygame')
+
+    def _boom(*a, **k):
+        raise RuntimeError('No available audio device')
+
+    bad.mixer = types.SimpleNamespace(init=_boom, get_init=lambda: None)
+    monkeypatch.setitem(sys.modules, 'pygame', bad)
+    monkeypatch.setattr(sp, '_edge_tts_bytes_strict',
+                        lambda text, whisper_mode=False, voice=None: b'ID3')
+    logs = []
+    mgr = _manager(sp, tmp_path, logs)
+    assert mgr._probe_edge_once() is True
+    assert mgr.edge_ready
+
+
+def test_ensure_mixer_reports_device_failure(sp, monkeypatch):
+    bad = types.ModuleType('pygame')
+
+    def _boom(*a, **k):
+        raise RuntimeError('No available audio device')
+
+    bad.mixer = types.SimpleNamespace(init=_boom, get_init=lambda: None)
+    monkeypatch.setitem(sys.modules, 'pygame', bad)
+    logs = []
+    assert sp._ensure_mixer(logs.append) is False
+    assert 'mixer init failed' in '\n'.join(logs)
+    good = types.ModuleType('pygame')
+    good.mixer = types.SimpleNamespace(init=lambda *a, **k: None,
+                                       get_init=lambda: (44100, -16, 2))
+    monkeypatch.setitem(sys.modules, 'pygame', good)
+    assert sp._ensure_mixer(logs.append) is True
+
+
 def test_synthesis_uses_session_voice(sp, monkeypatch):
     captured = {}
 
