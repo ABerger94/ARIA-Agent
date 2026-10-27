@@ -57,18 +57,74 @@ def style_for_accent(accent):
                   lambda m: shifted[m.group(0)], STYLE)
 
 
-# Conversation colours (Alek, 2026-10-27): her words and his in
-# different colours in the Conversation tab, not all-white text.
-# Log colours (Alek, 2026-10-27 — Mark-LVI's LogWidget tagged
-# every line by kind; ours read as one flat yellow). The scheme:
-# ARIA speaks in the accent-cyan family; Alek is WHITE (that is
-# how LVI coloured "you" lines — the amber/yellow user side is
-# what he was complaining about); system lines drop to a muted
-# blue-grey you can read past. Activity levels earn their red /
-# amber / green; routine info stays muted.
+# Conversation colours (Alek, 2026-10-27, final say): ARIA's
+# responses render in the SYSTEM colour — whatever accent is
+# currently set (Customize wheel / Settings preset), never a
+# frozen cyan — and the user's text stays WHITE (the amber /
+# pale-yellow user side was his "all text yellow" complaint).
+# System lines drop to a muted blue-grey you can read past.
+# Activity levels earn their red / amber / green; routine info
+# stays muted.
+DEFAULT_ACCENT = '#54d9e8'
 CHAT_COLORS = {'aria': ('#54d9e8', '#dff9ff'),
                'user': ('#ffffff', '#f4f7fa'),
                'sys': ('#8ea3b6', '#aebfd0')}
+
+
+def _valid_accent(accent):
+    """Normalize a '#rrggbb' accent, or None when it is not one."""
+    try:
+        s = str(accent or '').strip().lower()
+        if len(s) == 7 and s.startswith('#'):
+            int(s[1:], 16)
+            return s
+    except Exception:
+        pass
+    return None
+
+
+def _tint(accent, frac=0.82):
+    """`accent` mixed `frac` of the way toward white — the soft
+    body-text tint that rides under the full-strength name colour,
+    the way #dff9ff rides under the default #54d9e8."""
+    r, g, b = (int(accent[i:i + 2], 16) for i in (1, 3, 5))
+    mix = lambda c: round(c + frac * (255 - c))
+    return '#%02x%02x%02x' % (mix(r), mix(g), mix(b))
+
+
+def _current_accent():
+    """The accent currently SET, in the dashboard's own boot
+    order: ui_prefs (Customize) first, then the settings file's
+    'ui_accent' (Settings presets). None = nothing set."""
+    try:
+        from aria import ui_prefs
+        found = _valid_accent(ui_prefs.get_accent())
+        if found:
+            return found
+    except Exception:
+        pass
+    try:
+        from aria import config
+        return _valid_accent(config.get_setting('ui_accent', None))
+    except Exception:
+        return None
+
+
+def chat_colors(accent=None):
+    """The Conversation tab's colour pairs for a given accent
+    (default: whatever accent is currently set). ARIA's pair
+    follows the accent — name in the accent itself, text in its
+    tint; at the default accent the pair is the exact legacy
+    (#54d9e8, #dff9ff). The user is always white; system muted."""
+    resolved = _valid_accent(accent) or _current_accent() \
+        or DEFAULT_ACCENT
+    if resolved == DEFAULT_ACCENT:
+        aria_pair = CHAT_COLORS['aria']
+    else:
+        aria_pair = (resolved, _tint(resolved))
+    return {'aria': aria_pair,
+            'user': CHAT_COLORS['user'],
+            'sys': CHAT_COLORS['sys']}
 ACTIVITY_COLORS = {'error': ('#ff6b6b', '#ffd9d9'),
                    'warn': ('#ffb84d', '#ffedc9'),
                    'ok': ('#2ee6a8', '#d3ffec'),
@@ -105,19 +161,22 @@ def activity_html(events):
     return ''.join(parts)
 
 
-def chat_html(entries):
+def chat_html(entries, accent=None):
     """Render chat entries [(ts, sender, text)] as coloured HTML:
-    ARIA in the accent cyan family, the user in white, system
-    lines muted, timestamps dim. Text is escaped — chat content
-    is not markup."""
+    ARIA in the system colour (the accent currently set; the
+    window passes its live accent so a Customize change repaints
+    the log too), the user in white, system lines muted,
+    timestamps dim. Text is escaped — chat content is not
+    markup."""
     import html as _html
+    colors = chat_colors(accent)
     parts = []
     for ts, sender, text in entries:
         _s = str(sender).casefold()
         who = ('aria' if 'aria' in _s
                else 'sys' if 'system' in _s or _s == 'sys'
                else 'user')
-        name_col, text_col = CHAT_COLORS[who]
+        name_col, text_col = colors[who]
         body = _html.escape(str(text)).replace('\n', '<br/>')
         parts.append(
             f'<p style="margin:0 0 10px 0">'
@@ -560,6 +619,13 @@ def create_dashboard(callbacks):
             if not accent.isValid(): accent = QColor('#54d9e8')
             self.setStyleSheet(style_for_accent(accent.name()))
             _apply_painted_accent(accent.name())
+            # The Conversation log follows the accent (Alek: ARIA's
+            # responses in the system colour, whatever is set) —
+            # remember it for render_once and force a repaint even
+            # when the chat text itself has not changed.
+            self._chat_accent = accent.name()
+            if hasattr(self, '_last_chat'):
+                self._last_chat = None
 
         def draft_command(self, text):
             self.entry.setText(text); self.entry.setFocus()
@@ -794,11 +860,16 @@ def create_dashboard(callbacks):
 
             def preview(hex_):
                 _apply_painted_accent(hex_)
+                # Live-preview the chat log's ARIA colour too; a
+                # Cancel restores the starting accent through this
+                # same preview path, so the log follows it back.
+                self._chat_accent = hex_
+                if hasattr(self, '_last_chat'):
+                    self._last_chat = None
 
             def commit(hex_):
                 ui_prefs.set_accent(hex_)
-                _apply_painted_accent(hex_)
-                self.setStyleSheet(style_for_accent(hex_))
+                self.apply_accent(hex_)
 
             build_customize_dialog(self, start, preview, commit).exec()
 
@@ -1107,7 +1178,9 @@ def create_dashboard(callbacks):
             if chat != self._last_chat:
                 self._last_chat = chat
                 if _entries:
-                    self.views['Conversation'].setHtml(chat_html(_entries))
+                    self.views['Conversation'].setHtml(chat_html(
+                        _entries,
+                        accent=getattr(self, '_chat_accent', None)))
                 else:
                     self.views['Conversation'].setPlainText('Your conversation with ARIA appears here.')
                 self.views['Conversation'].verticalScrollBar().setValue(self.views['Conversation'].verticalScrollBar().maximum())

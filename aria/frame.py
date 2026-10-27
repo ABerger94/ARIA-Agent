@@ -756,6 +756,32 @@ def _draw_waveform(canvas) -> None:
         cv2.line(canvas, pts[k], pts[k + 1], OK, 1, cv2.LINE_AA)
 
 
+def _chat_accent_bgr():
+    """The system colour currently SET, as a BGR tuple — ARIA's
+    chat colour follows the accent (Alek, 2026-10-27), read in
+    the dashboard's order (ui_prefs, then settings 'ui_accent').
+    Falls back to the palette ACCENT when nothing is set."""
+    hex_ = None
+    try:
+        from aria import ui_prefs as _up
+        hex_ = _up.get_accent()
+    except Exception:
+        hex_ = None
+    if not hex_:
+        try:
+            hex_ = _config.get_setting('ui_accent', None)
+        except Exception:
+            hex_ = None
+    try:
+        s = str(hex_ or '').strip().lower()
+        if len(s) == 7 and s.startswith('#'):
+            r, g, b = (int(s[i:i + 2], 16) for i in (1, 3, 5))
+            return (b, g, r)
+    except Exception:
+        pass
+    return ACCENT
+
+
 def _draw_chat_card(canvas) -> None:
     top = _card(canvas, CHAT_CARD, "CONVERSATION")
     x0, _, x1, y1 = CHAT_CARD
@@ -771,11 +797,14 @@ def _draw_chat_card(canvas) -> None:
         else:
             role, text = "MSG", str(entry)
         is_aria = role.upper() in ("A.R.I.A.", "ARIA")
-        col = ACCENT if is_aria else TEAL
+        # ARIA's responses in the system colour (whatever accent
+        # is set); the user's text white — whole entry, wrapped
+        # lines included (Alek, 2026-10-27).
+        col = _chat_accent_bgr() if is_aria else TEXT
         wrapped = textwrap.wrap(_sanitize(text), width=40) or [""]
         lines.append((f"{role}: {wrapped[0]}", col))
         for extra in wrapped[1:3]:
-            lines.append((f"  {extra}", TEXT))
+            lines.append((f"  {extra}", col))
     max_lines = 11
     y = top + 2
     for text, col in lines[-max_lines:]:

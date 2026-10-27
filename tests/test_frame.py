@@ -149,6 +149,29 @@ def test_chat_entries_from_hud_log():
     assert entries[-2][1] == "A.R.I.A."
 
 
+def test_chat_accent_bgr_follows_the_set_accent():
+    # Alek, 2026-10-27: ARIA's chat text takes the system colour
+    # (whatever accent is set); the frame card paints in BGR, so
+    # '#bd93f9' must arrive as (0xf9, 0x93, 0xbd). With nothing
+    # set it falls back to the palette ACCENT.
+    import aria.ui_prefs as _up
+    orig = frame._config.get_setting
+    orig_up = _up.get_accent
+    try:
+        _up.get_accent = lambda: None
+        frame._config.get_setting = lambda k, d=None: '#bd93f9'
+        assert frame._chat_accent_bgr() == (0xf9, 0x93, 0xbd)
+        frame._config.get_setting = lambda k, d=None: None
+        assert frame._chat_accent_bgr() == frame.ACCENT
+        frame._config.get_setting = lambda k, d=None: 'banana'
+        assert frame._chat_accent_bgr() == frame.ACCENT
+        _up.get_accent = lambda: '#58a6ff'   # ui_prefs wins over settings
+        assert frame._chat_accent_bgr() == (0xff, 0xa6, 0x58)
+    finally:
+        frame._config.get_setting = orig
+        _up.get_accent = orig_up
+
+
 def test_toggle_voice_flips_gate_and_logs():
     before = _speech.VOICE_ENABLED
     out = frame.toggle_voice()

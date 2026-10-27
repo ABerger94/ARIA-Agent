@@ -320,6 +320,29 @@ def test_chat_html_colours_speakers_and_escapes():
     assert '&lt;i&gt;' in act
 
 
+def test_chat_html_aria_follows_the_set_accent_user_stays_white():
+    # Alek, 2026-10-27, final say: ARIA's responses in the chat
+    # log take the SYSTEM colour — whatever accent is set — and
+    # the user's text stays white. A violet accent must repaint
+    # her name AND her text (a tint of the accent); his side
+    # must not move at all.
+    from aria.dashboard import chat_html, chat_colors, _tint
+    out = chat_html([('10:00:01', 'ARIA', 'In violet now'),
+                     ('10:00:05', 'Alek', 'Still white')],
+                    accent='#bd93f9')
+    assert '#bd93f9' in out                       # her name: the accent itself
+    assert _tint('#bd93f9') in out                # her text: its tint
+    assert '#54d9e8' not in out and '#dff9ff' not in out
+    assert '#ffffff' in out and '#f4f7fa' in out  # his side: unchanged white
+    colors = chat_colors('#bd93f9')
+    assert colors['aria'] == ('#bd93f9', _tint('#bd93f9'))
+    assert colors['user'] == ('#ffffff', '#f4f7fa')
+    # A junk accent can never cost the log its colours: it falls
+    # back to whatever is set, ultimately the default pair.
+    fallback = chat_html([('10:00:01', 'ARIA', 'x')], accent='banana')
+    assert '#bd93f9' not in fallback
+
+
 def test_pet_mode_hides_the_dashboard(monkeypatch, tmp_path):
     # Alek, 2026-10-27: pet mode replaces the dashboard — entering
     # it hides the main window; leaving it (toggle or the pet's
