@@ -254,6 +254,27 @@ def find_icon(root: Optional[Path] = None) -> Optional[Path]:
     return None
 
 
+def find_or_create_icon(root: Optional[Path] = None) -> Optional[Path]:
+    """The shortcut's icon: a shipped .ico when the repo has
+    one; otherwise render the waveform orb (aria/icon_render.py
+    — Alek, 2026-10-27: the shortcut must not wear the plain
+    Python interpreter icon) into aria/assets/aria.ico and use
+    that. None only when both fail — the caller then falls
+    back to the interpreter's own icon, as before."""
+    ico = find_icon(root)
+    if ico is not None:
+        return ico
+    root = Path(root) if root else ROOT
+    out = root / "aria" / "assets" / "aria.ico"
+    try:
+        from aria.icon_render import build_aria_icon
+        if build_aria_icon(out):
+            return out
+    except Exception:
+        pass
+    return None
+
+
 def build_shortcut(system: Optional[str] = None,
                    desktop: Optional[Path] = None,
                    home: Optional[Path] = None,
@@ -279,7 +300,7 @@ def build_shortcut(system: Optional[str] = None,
         target = str(console_interpreter(base))
         detail = (f"Python 3.12 — {target}" if py312 else
                   f"Python 3.12 not found — used {target}")
-        ico = find_icon()
+        ico = find_or_create_icon()
         icon_loc = str(ico) if ico else f"{target},0"
         writer = lnk_writer or create_lnk_windows
         writer(str(desktop / "A.R.I.A.lnk"), target, str(SCRIPT),

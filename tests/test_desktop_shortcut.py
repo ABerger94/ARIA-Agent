@@ -132,12 +132,15 @@ def test_windows_branch_targets_console_python312(tmp_path):
     assert detail == f'Python 3.12 — {console}'
 
 
-def test_windows_branch_fallback_says_so(tmp_path):
+def test_windows_branch_fallback_says_so(tmp_path, monkeypatch):
     desktop = tmp_path / 'Desktop'; desktop.mkdir()
     current = tmp_path / 'python.exe'; current.touch()
     recorded = {}
     def writer(lnk, target, args, work_dir, icon_loc):
         recorded.update(target=target, icon_loc=icon_loc)
+    # No icon available at all (none shipped, render failed) →
+    # the interpreter's own icon is referenced.
+    monkeypatch.setattr(dsc, 'find_or_create_icon', lambda root=None: None)
     detail = dsc.build_shortcut(system='Windows', desktop=desktop,
                                  executable=str(current),
                                  version_info=(3, 14, 0),
@@ -145,8 +148,47 @@ def test_windows_branch_fallback_says_so(tmp_path):
                                  lnk_writer=writer)
     assert recorded['target'] == str(current)
     assert detail == f'Python 3.12 not found — used {current}'
-    # No repo .ico ships → the interpreter's own icon is referenced.
     assert recorded['icon_loc'] == f'{current},0'
+
+
+def test_windows_branch_uses_orb_icon(tmp_path, monkeypatch):
+    # Alek, 2026-10-27: the shortcut wears the waveform orb,
+    # not the Python window — whatever find_or_create_icon
+    # resolves is what lands in IconLocation.
+    desktop = tmp_path / 'Desktop'; desktop.mkdir()
+    current = tmp_path / 'python.exe'; current.touch()
+    ico = tmp_path / 'aria.ico'; ico.touch()
+    monkeypatch.setattr(dsc, 'find_or_create_icon', lambda root=None: ico)
+    recorded = {}
+    def writer(lnk, target, args, work_dir, icon_loc):
+        recorded.update(icon_loc=icon_loc)
+    dsc.build_shortcut(system='Windows', desktop=desktop,
+                       executable=str(current),
+                       version_info=(3, 12, 0),
+                       runner=_fake_runner_missing,
+                       lnk_writer=writer)
+    assert recorded['icon_loc'] == str(ico)
+
+
+# ── the orb icon itself (Alek, 2026-10-27) ───────────────────────────
+
+def test_repo_ships_the_orb_icon():
+    ico = dsc.find_icon()
+    assert ico is not None and ico.name == 'aria.ico' and ico.exists()
+
+
+def test_build_aria_icon_multires_and_deterministic(tmp_path):
+    pytest = __import__('pytest')
+    PIL = pytest.importorskip('PIL.Image')
+    from aria import icon_render
+    a, b = tmp_path / 'a.ico', tmp_path / 'b.ico'
+    assert icon_render.build_aria_icon(a) is True
+    assert a.exists() and a.stat().st_size > 10_000
+    sizes = set(PIL.open(a).info.get('sizes', []))
+    for want in ((256, 256), (128, 128), (48, 48), (32, 32), (16, 16)):
+        assert want in sizes, (want, sizes)
+    assert icon_render.build_aria_icon(b) is True
+    assert a.read_bytes() == b.read_bytes()
 
 
 # ── the .lnk writer itself, against a fake win32com ──────────────────
