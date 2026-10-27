@@ -12,6 +12,7 @@ import random
 import socket
 import threading
 import time
+import unicodedata
 from datetime import datetime
 from typing import List, Tuple, Dict, Any
 
@@ -27,18 +28,33 @@ from aria.tools.schemas import COMMAND_GUIDE
 from aria import config as _config_silent
 
 _HUD_SUBS = {
-    "\u2022": "-", "\u2014": "-", "\u2013": "-", "\u00b0": "deg",
-    "\u2192": "->", "\u2190": "<-", "\u201c": '"', "\u201d": '"',
-    "\u2018": "'", "\u2019": "'", "\u2026": "..."
+    # The hyphen family FIRST: vision models emit U+2011
+    # (non-breaking hyphen) inside compound words — it wasn't
+    # in this table, so every one became '?' (Alek's screenshot,
+    # 2026-10-27: 'low?resolution', 'grey?blue', 'button?down',
+    # 'chest?up', 'off?white', 'blown?out').
+    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-",
+    "\u2014": "-", "\u2015": "-", "\u2212": "-",
+    "\u2022": "-", "\u00b0": "deg",
+    "\u2192": "->", "\u2190": "<-", "\u2191": "^", "\u2193": "v",
+    "\u201c": '"', "\u201d": '"', "\u201e": '"',
+    "\u2018": "'", "\u2019": "'", "\u201a": "'",
+    "\u2026": "...",
+    "\u00a0": " ", "\u2009": " ", "\u202f": " ",
+    "\u00d7": "x",
 }
 
 
 def hud_ascii(s: Any) -> str:
-    """Map Unicode characters to ASCII lookalikes so OpenCV Hershey fonts never render '?'."""
+    """Map Unicode characters to ASCII lookalikes so OpenCV
+    Hershey fonts never render '?'. Known characters get real
+    lookalikes; anything left folds accents to base letters
+    (NFKD) and drops — '?' is never the answer."""
     res = str(s)
     for k, v in _HUD_SUBS.items():
         res = res.replace(k, v)
-    return res.encode("ascii", errors="replace").decode("ascii")
+    res = unicodedata.normalize("NFKD", res)
+    return res.encode("ascii", errors="ignore").decode("ascii")
 
 
 def lan_ip() -> str:
