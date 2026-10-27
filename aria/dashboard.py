@@ -546,7 +546,7 @@ def create_dashboard(callbacks):
                     mbox = QVBoxLayout(self.mem_map_box); mbox.setContentsMargins(0, 0, 0, 0)
                     self.mem_map_tab = ConstellationWidget(); mbox.addWidget(self.mem_map_tab, 1)
                     detail = QHBoxLayout()
-                    self.mem_detail = QLabel('Drag to spin the ball. Click a star to see the fact.'); self.mem_detail.setWordWrap(True); detail.addWidget(self.mem_detail, 1)
+                    self.mem_detail = QLabel('Drag to spin the ball. Hover a star to read it; click one to select it for forgetting.'); self.mem_detail.setWordWrap(True); detail.addWidget(self.mem_detail, 1)
                     self.mem_forget_btn = QPushButton('Forget this fact'); self.mem_forget_btn.setEnabled(False); self.mem_forget_btn.clicked.connect(self._forget_selected_map_fact); detail.addWidget(self.mem_forget_btn)
                     mbox.addLayout(detail)
                     center_row = QHBoxLayout(); center_row.addStretch()
@@ -968,7 +968,7 @@ def create_dashboard(callbacks):
                         if r.get('key') == key), None)
             if row is None:
                 self.mem_detail.setText(
-                    'Drag to spin the ball. Click a star to see the fact.')
+                    'Drag to spin the ball. Hover a star to read it; click one to select it for forgetting.')
                 self.mem_forget_btn.setEnabled(False)
                 return
             self.mem_detail.setText(

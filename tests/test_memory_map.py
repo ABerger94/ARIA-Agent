@@ -87,5 +87,18 @@ def test_widget_rotates_picks_and_clears():
     # Empty corner clears the selection.
     assert w.pick(3, 3) is None
     assert w.selected_key() is None
+
+    # Hover reading (Alek, 2026-10-27): the popup carries the
+    # fact's FULL text by its star; empty space dismisses it.
+    long_rows = [dict(r) for r in rows]
+    long_rows[front]["value"] = "a very long fact " * 12
+    w.set_facts(long_rows)
+    assert w._popup.isHidden()
+    assert w.hover_at(float(sx[front]), float(sy[front])) == front
+    assert not w._popup.isHidden()
+    assert "a very long fact " * 12 in w._popup.text()
+    assert long_rows[front]["key"] in w._popup.text()
+    assert w.hover_at(3, 3) == -1
+    assert w._popup.isHidden()
     w.close()
     app.processEvents()

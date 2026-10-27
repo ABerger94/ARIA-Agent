@@ -8,9 +8,12 @@ brightest, faint lines between near-identical facts.
 Interaction, his words: "rotate the map around when I click
 on it like a ball" — drag to spin it (yaw + pitch, pitch
 clamped so the ball never flips inside out); a plain click
-(no drag) selects the nearest front star and captions it at
-the bottom; the parent hears fact_selected(key | None) for
-its detail row. Still when untouched: no ambient spin.
+(no drag) selects the nearest front star and the parent
+hears fact_selected(key | None) for its detail row. Reading
+a fact is HOVER (Alek, 2026-10-27): the full text pops up
+in a little window by the star — the old bottom caption
+couldn't fit a whole memory and is gone. Still when
+untouched: no ambient spin.
 
 The same widget class serves both homes he picked: the
 Memory tab's Map view and the dashboard centerpiece.
@@ -22,7 +25,7 @@ import hashlib
 import numpy as np
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QLabel, QWidget
 
 from aria import memory_map
 
@@ -45,20 +48,37 @@ class ConstellationWidget(QWidget):
         self.setMinimumSize(240, 240)
         self.setStyleSheet("background: transparent;")
         self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setMouseTracking(True)
         self._rows: list = []
         self._pts = np.zeros((0, 3))
         self._edges: list = []
         self._yaw = 0.6
         self._pitch = -0.35
         self._sel = -1
+        self._hover = -1
         self._drag_pos = None
         self._drag_moved = False
         self._accent = QColor("#54d9e8")
+        # The hover popup: the FULL fact text by its star,
+        # word-wrapped, mouse-transparent so it never steals
+        # the hover it is answering.
+        self._popup = QLabel(self)
+        self._popup.setWordWrap(True)
+        self._popup.setMaximumWidth(340)
+        self._popup.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._popup.setStyleSheet(
+            "background: rgba(8, 13, 20, 238); color: #eaf6ff;"
+            "border: 1px solid #54d9e8; border-radius: 6px;"
+            "padding: 8px;")
+        self._popup.hide()
 
     # -- data -------------------------------------------------
     def set_facts(self, rows):
         """Replace the ball's facts, keeping the current spin
         and (by key) the current selection."""
+        self._hover = -1
+        self._popup.hide()
         sel_key = self.selected_key()
         self._rows = list(rows)
         self._pts, self._edges = memory_map.layout_points(self._rows)
@@ -107,47 +127,89 @@ class ConstellationWidget(QWidget):
                                      self._pitch + float(dy_px) * 0.008))
         self.update()
 
+    def _hit(self, x: float, y: float, max_d: float = 14.0) -> int:
+        """Index of the front star nearest (x, y) within
+        max_d px, or -1. Back-of-the-ball stars never hit:
+        you can't point at what you can't see."""
+        if not len(self._pts):
+            return -1
+        view = self._view_points()
+        sx, sy, _r = self._screen_xy(view)
+        best, best_d = -1, max_d
+        for i in range(len(view)):
+            if view[i, 2] < -0.05:
+                continue
+            d = float(np.hypot(sx[i] - x, sy[i] - y))
+            if d < best_d:
+                best, best_d = i, d
+        return best
+
     def pick(self, x: float, y: float):
         """Select the front star nearest a click; returns its
         key (or None when the click lands on empty space,
         which clears the selection)."""
-        key = None
-        if len(self._pts):
-            view = self._view_points()
-            sx, sy, _r = self._screen_xy(view)
-            best, best_d = -1, 14.0
-            for i in range(len(view)):
-                if view[i, 2] < -0.05:
-                    continue            # back of the ball: not clickable
-                d = float(np.hypot(sx[i] - x, sy[i] - y))
-                if d < best_d:
-                    best, best_d = i, d
-            self._sel = best
-            if best >= 0:
-                key = self._rows[best].get("key")
-        else:
+        self._sel = self._hit(x, y)
+        key = self.selected_key() if self._sel >= 0 else None
+        if not len(self._pts):
             self._sel = -1
+            key = None
         self.fact_selected.emit(key)
         self.update()
         return key
 
+    def hover_at(self, x: float, y: float):
+        """Hover reading (Alek, 2026-10-27): over a star, the
+        little popup shows that fact's FULL text beside it;
+        over empty space, it goes away. Returns the hovered
+        index or -1."""
+        idx = self._hit(x, y, 16.0)
+        if idx < 0:
+            self._hover = -1
+            self._popup.hide()
+            return -1
+        self._hover = idx
+        row = self._rows[idx]
+        self._popup.setText(
+            f"{row.get('key', '')} — {row.get('value', '')}\n"
+            f"{row.get('category', '')} · {row.get('updated', '')}")
+        self._popup.adjustSize()
+        view = self._view_points()
+        sx, sy, _r = self._screen_xy(view)
+        px = int(sx[idx]) + 16
+        py = int(sy[idx]) + 16
+        if px + self._popup.width() > self.width():
+            px = int(sx[idx]) - self._popup.width() - 16
+        if py + self._popup.height() > self.height():
+            py = int(sy[idx]) - self._popup.height() - 16
+        self._popup.move(max(2, px), max(2, py))
+        self._popup.show()
+        self._popup.raise_()
+        return idx
+
     # -- mouse --------------------------------------------------
     def mousePressEvent(self, event):
+        self._popup.hide()
         self._drag_pos = event.position()
         self._drag_moved = False
         self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
     def mouseMoveEvent(self, event):
-        if self._drag_pos is None:
-            return
         pos = event.position()
+        if self._drag_pos is None:
+            self.hover_at(pos.x(), pos.y())
+            return
         dx = pos.x() - self._drag_pos.x()
         dy = pos.y() - self._drag_pos.y()
         if abs(dx) + abs(dy) > 3:
             self._drag_moved = True
         self._drag_pos = pos
         if self._drag_moved:
+            self._popup.hide()
             self.rotate_by(dx, dy)
+
+    def leaveEvent(self, _event):
+        self._hover = -1
+        self._popup.hide()
 
     def mouseReleaseEvent(self, event):
         self.setCursor(Qt.CursorShape.OpenHandCursor)
@@ -201,13 +263,4 @@ class ConstellationWidget(QWidget):
                 p.drawEllipse(int(sx[i] - rr), int(sy[i] - rr),
                               int(rr * 2), int(rr * 2))
                 p.setPen(Qt.PenStyle.NoPen)
-        # Caption: the selected fact, along the bottom.
-        if 0 <= self._sel < n:
-            row = self._rows[self._sel]
-            p.setPen(QColor("#eaf6ff"))
-            p.setFont(QFont("Segoe UI", 9))
-            text = f"{row.get('key', '')} — {row.get('value', '')}"
-            p.drawText(12, h - 34, w - 24, 26,
-                       Qt.AlignmentFlag.AlignCenter
-                       | Qt.TextFlag.TextWordWrap, text)
         p.end()
