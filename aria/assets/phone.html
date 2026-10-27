@@ -565,7 +565,8 @@ function stopVoicePlayback(){
   try{document.getElementById('aria-audio').pause();if(curSrc)curSrc.stop();}catch(e){}
 }
 document.getElementById('signout').onclick=async()=>{
-  try{await api('/api/logout',{method:'POST'});location.replace('/');}catch(e){}
+  try{const r=await api('/api/logout',{method:'POST'});if(!r.ok)throw Error('Could not disconnect. Try again.');location.replace('/');}
+  catch(e){document.getElementById('connection').textContent=e.message||'Could not disconnect. Try again.';}
 };
 const mailList=document.getElementById('mail-list');
 let mailRows=[],mailRequest=0;
