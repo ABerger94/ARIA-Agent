@@ -1087,11 +1087,26 @@ def wait_for_voice_probe(timeout: Optional[float] = None) -> bool:
 def speak(text: str, whisper_mode: bool = False):
     if not VOICE_ENABLED:
         return None
+    # App lock (Alek, 2026-10-27): the laptop stays silent while
+    # locked — no proactive speech, no greetings. (The phone gets
+    # its replies as text from the bridge, never through here.)
+    try:
+        from aria import applock as _applock_sp
+        if _applock_sp.is_locked():
+            return None
+    except Exception:
+        pass
     return _DEFAULT_SPEECH_MANAGER.speak(text, whisper_mode)
 
 
 def queue_stream_chunk(chunk: str):
     """Queue one completed sentence from a streaming LLM reply (A5)."""
+    try:
+        from aria import applock as _applock_sp
+        if _applock_sp.is_locked():
+            return None
+    except Exception:
+        pass
     return _DEFAULT_SPEECH_MANAGER.queue_stream_chunk(chunk)
 
 def interrupt_speech() -> int:

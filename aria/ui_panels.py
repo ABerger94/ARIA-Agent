@@ -136,6 +136,70 @@ def create_settings_dialog(parent, callbacks):
             dialog.message.setText(f'Shortcut failed — {exc}')
     dialog.desktop_icon.clicked.connect(_add_desktop_icon)
     general.addRow(dialog.desktop_icon)
+    # App lock (Alek, 2026-10-27): a Lock button that grays out
+    # the dashboard and refuses local voice until unlocked with
+    # the password (typed, or "Hey Aria" + the password spoken).
+    # The phone bridge is NOT locked — his split. Acts immediately
+    # like the desktop-icon button; only a salted hash is stored
+    # (aria/applock.py). The password step comes first: locking
+    # with no password set would lock him out of his own machine.
+    try:
+        from aria import applock as _applock
+        lock_row = QWidget(); lock_row_lay = QHBoxLayout(lock_row); lock_row_lay.setContentsMargins(0, 0, 0, 0)
+        dialog.lock_password_btn = QPushButton('Change lock password' if _applock.password_is_set() else 'Set lock password')
+        dialog.lock_btn = QPushButton('Lock ARIA')
+        lock_row_lay.addWidget(dialog.lock_password_btn); lock_row_lay.addWidget(dialog.lock_btn); lock_row_lay.addStretch()
+        def _edit_lock_password():
+            pw_dialog = QDialog(dialog); pw_dialog.setWindowTitle('ARIA | Lock password')
+            pw_lay = QVBoxLayout(pw_dialog)
+            pw_lay.addWidget(QLabel('This password unlocks ARIA — typed on the lock screen, or spoken after "Hey Aria". It is stored only as a salted hash.'))
+            pw_form = QFormLayout(); pw_lay.addLayout(pw_form)
+            current_field = None
+            if _applock.password_is_set():
+                current_field = QLineEdit(); current_field.setEchoMode(QLineEdit.EchoMode.Password); pw_form.addRow('Current password', current_field)
+            new_field = QLineEdit(); new_field.setEchoMode(QLineEdit.EchoMode.Password); pw_form.addRow('New password', new_field)
+            confirm_field = QLineEdit(); confirm_field.setEchoMode(QLineEdit.EchoMode.Password); pw_form.addRow('Confirm new password', confirm_field)
+            pw_error = QLabel(''); pw_lay.addWidget(pw_error)
+            pw_actions = QHBoxLayout(); pw_actions.addStretch()
+            pw_cancel = QPushButton('Cancel'); pw_cancel.clicked.connect(pw_dialog.reject); pw_actions.addWidget(pw_cancel)
+            pw_ok = QPushButton('Save password'); pw_actions.addWidget(pw_ok); pw_lay.addLayout(pw_actions)
+            def _try_save_password():
+                if current_field is not None and not _applock.verify_password(current_field.text()):
+                    pw_error.setText('Current password is wrong.'); return
+                if not new_field.text().strip():
+                    pw_error.setText('New password cannot be empty.'); return
+                if new_field.text().strip().casefold() != confirm_field.text().strip().casefold():
+                    pw_error.setText('New password and confirmation do not match.'); return
+                if _applock.set_password(new_field.text()):
+                    pw_dialog.accept()
+                else:
+                    pw_error.setText('Saving the password failed.')
+            pw_ok.clicked.connect(_try_save_password)
+            confirm_field.returnPressed.connect(_try_save_password)
+            return pw_dialog.exec() == QDialog.DialogCode.Accepted
+        def _lock_password_clicked():
+            if _edit_lock_password():
+                dialog.lock_password_btn.setText('Change lock password')
+                dialog.message.setText('Lock password saved.')
+        dialog.lock_password_btn.clicked.connect(_lock_password_clicked)
+        def _lock_now():
+            if not _applock.password_is_set() and not _edit_lock_password():
+                dialog.message.setText('Set a lock password first — ARIA stayed unlocked.')
+                return
+            locker = getattr(parent, 'lock_app', None)
+            if callable(locker):
+                try:
+                    locker()
+                except Exception as exc:
+                    dialog.message.setText(f'Lock failed — {exc}'); return
+                dialog.reject()
+            else:
+                dialog.message.setText('Lock is unavailable in this window.')
+        dialog.lock_btn.clicked.connect(_lock_now)
+        general.addRow('App lock', lock_row)
+    except Exception:
+        dialog.lock_btn = None
+        dialog.lock_password_btn = None
     audio = page('Voice / audio')
     dialog.voice = QCheckBox('Voice and wake-word listening enabled'); dialog.voice.setChecked(bool(speech.VOICE_ENABLED)); audio.addRow(dialog.voice)
     dialog.whisper = QCheckBox('Whisper mode'); dialog.whisper.setChecked(bool(hud.WHISPER_MODE)); audio.addRow(dialog.whisper)

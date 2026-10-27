@@ -222,7 +222,7 @@ def create_dashboard(callbacks):
                                 QTextBrowser, QLineEdit, QSlider, QGridLayout,
                                 QFileDialog, QDialog, QApplication, QListWidget, QListWidgetItem,
                                 QScrollArea)
-    from aria import frame, hud, config
+    from aria import frame, hud, config, applock
     from aria.resonance import ResonanceOrb
     from aria.neural_field import NeuralField
     from aria.constellation import ConstellationWidget
@@ -363,7 +363,7 @@ def create_dashboard(callbacks):
             self._confirm_banner = None
             self._confirm_token = None
             self._confirm_busy = False
-            root = QWidget(); self.setCentralWidget(root)
+            root = QWidget(); self.setCentralWidget(root); self._root = root
             layout = QVBoxLayout(root); layout.setContentsMargins(20, 16, 20, 16); layout.setSpacing(16)
             head = QHBoxLayout()
             brand = QLabel('A.R.I.A.'); brand.setObjectName('brand'); head.addWidget(brand)
@@ -647,6 +647,31 @@ def create_dashboard(callbacks):
             self._stop_shortcut.activated.connect(self._stop_talking)
             self._pip = VisionPip(self._center_card)
             self._pip_seen_ts = 0.0
+            # App lock overlay (Alek, 2026-10-27): covers the whole
+            # window with a gray-out panel while aria.applock is
+            # locked. A 300ms watch syncs visibility with the shared
+            # lock state — main's wake-word loop flips the same state
+            # on a voice unlock, so no cross-thread signaling is
+            # needed. The overlay is a child of the WINDOW (not of
+            # root) so disabling root can't disable the unlock panel.
+            self._lock_state = False
+            self._pet_was_visible = False
+            self._lock_overlay = QFrame(self)
+            self._lock_overlay.setObjectName('lockOverlay')
+            self._lock_overlay.setStyleSheet('QFrame#lockOverlay { background: rgba(24, 28, 34, 0.88); }')
+            _lock_lay = QVBoxLayout(self._lock_overlay)
+            _lock_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            _lock_panel = QFrame(); _lock_panel.setObjectName('lockPanel')
+            _lock_panel.setStyleSheet('QFrame#lockPanel { background: #171b21; border: 1px solid #3a4350; border-radius: 10px; }')
+            _lock_panel.setFixedWidth(420)
+            _panel_lay = QVBoxLayout(_lock_panel); _panel_lay.setContentsMargins(36, 30, 36, 30); _panel_lay.setSpacing(14)
+            _lock_title = QLabel('A.R.I.A. IS LOCKED'); _lock_title.setObjectName('title'); _lock_title.setAlignment(Qt.AlignmentFlag.AlignCenter); _panel_lay.addWidget(_lock_title)
+            self._lock_status = QLabel('Enter your password — or say “Hey Aria” and then your password.'); self._lock_status.setWordWrap(True); self._lock_status.setAlignment(Qt.AlignmentFlag.AlignCenter); _panel_lay.addWidget(self._lock_status)
+            self._lock_field = QLineEdit(); self._lock_field.setEchoMode(QLineEdit.EchoMode.Password); self._lock_field.setPlaceholderText('Lock password'); self._lock_field.returnPressed.connect(self._try_lock_unlock); _panel_lay.addWidget(self._lock_field)
+            _unlock_btn = QPushButton('Unlock'); _unlock_btn.setObjectName('primary'); _unlock_btn.clicked.connect(self._try_lock_unlock); _panel_lay.addWidget(_unlock_btn)
+            _lock_lay.addWidget(_lock_panel)
+            self._lock_overlay.hide()
+            self._lock_timer = QTimer(self); self._lock_timer.timeout.connect(self._lock_watch); self._lock_timer.start(300)
 
         def _poll_vision_pip(self):
             """Show the PiP when a vision tool has published a new
@@ -660,6 +685,58 @@ def create_dashboard(callbacks):
             if (pv.get('jpeg') and pv.get('ts', 0) > self._pip_seen_ts):
                 self._pip_seen_ts = pv['ts']
                 self._pip.show_frame(pv['jpeg'], pv.get('label', ''))
+
+        def lock_app(self):
+            """Settings' Lock button lands here: flip the shared
+            lock state; _lock_watch does the visible work."""
+            applock.lock()
+            self._lock_watch()
+
+        def unlock_app(self):
+            applock.set_locked(False)
+            self._lock_watch()
+
+        def _lock_watch(self):
+            """Sync the overlay with aria.applock (300ms timer).
+            Edges only: on lock, hide the pet and disable the whole
+            content root behind the gray-out; on unlock, restore."""
+            try:
+                locked = applock.is_locked()
+            except Exception:
+                locked = False
+            if locked == self._lock_state:
+                if locked:
+                    self._lock_overlay.setGeometry(self.rect())
+                return
+            self._lock_state = locked
+            pet = getattr(self, '_pet', None)
+            if locked:
+                self._pet_was_visible = bool(pet is not None and pet.isVisible())
+                if pet is not None:
+                    try: pet.hide()
+                    except Exception: pass
+                try: self._root.setEnabled(False)
+                except Exception: pass
+                self._lock_field.clear()
+                self._lock_status.setText('Enter your password — or say “Hey Aria” and then your password.')
+                self._lock_overlay.setGeometry(self.rect())
+                self._lock_overlay.show(); self._lock_overlay.raise_()
+                self._lock_field.setFocus()
+            else:
+                self._lock_overlay.hide()
+                try: self._root.setEnabled(True)
+                except Exception: pass
+                if self._pet_was_visible and pet is not None:
+                    try: pet.show_at_saved_pos()
+                    except Exception: pass
+                self._pet_was_visible = False
+
+        def _try_lock_unlock(self):
+            if applock.unlock_with(self._lock_field.text()):
+                self._lock_watch()
+            else:
+                self._lock_status.setText('Wrong password — ARIA is still locked.')
+                self._lock_field.clear(); self._lock_field.setFocus()
 
         def _stop_talking(self):
             """Esc: stop her mid-sentence (callbacks.interrupt —
@@ -709,6 +786,8 @@ def create_dashboard(callbacks):
 
         def resizeEvent(self, event):
             super().resizeEvent(event)
+            if getattr(self, '_lock_overlay', None) is not None and self._lock_overlay.isVisible():
+                self._lock_overlay.setGeometry(self.rect())
             if hasattr(self, 'neural'):
                 self._sync_neural_geometry()
             if getattr(self, '_pip', None) is not None and self._pip.isVisible():

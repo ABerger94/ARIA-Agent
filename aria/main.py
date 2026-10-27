@@ -100,7 +100,7 @@ def _init_wiring():
     vision.set_vision_text_caller(vision._default_vision_call)
 
     # 4. Bridge processor & chat log
-    bridge.set_bridge_processor(lambda text, silent: handle_action("voice", typed_prompt=text, silent=silent))
+    bridge.set_bridge_processor(lambda text, silent: handle_action("voice", typed_prompt=text, silent=silent, via_bridge=True))
     bridge.set_chat_log_provider(memory.get_display_chat_log)
 
     # 5. HUD mood & subsystems
@@ -185,8 +185,20 @@ def toggle_whisper_mode() -> bool:
     return set_whisper_mode(not WHISPER_MODE)
 
 
-def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silent: bool = False) -> str:
+def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silent: bool = False, via_bridge: bool = False) -> str:
     """Central action pipeline invoked from voice, PTT, HUD typed commands, or Phone Bridge."""
+    # App lock (Alek, 2026-10-27): while locked, local voice / PTT
+    # / typed actions are refused. The phone bridge (via_bridge)
+    # and scheduled turns are exempt — his split: he runs ARIA
+    # from his phone while the laptop sits locked at home.
+    if not via_bridge and mode != "scheduled":
+        try:
+            from aria import applock as _applock_ha
+            if _applock_ha.is_locked():
+                add_log("Locked: local action refused.")
+                return "ARIA is locked."
+        except Exception:
+            pass
     agent.proactive.mood_note_interaction()
 
     say = (lambda t: None) if silent else speech.speak
@@ -600,6 +612,38 @@ def continuous_voice_listener():
                         continue
 
                     add_log(f"Wake: '{transcript[:30]}'")
+
+                    # App lock (Alek, 2026-10-27): while locked, the
+                    # wake word has exactly one job — take the
+                    # password. "Hey Aria, <password>" in one breath,
+                    # or "Hey Aria" then the password as the follow-up
+                    # utterance. Anything else is ignored; she stays
+                    # silent and locked.
+                    try:
+                        from aria import applock as _applock_wk
+                        _locked_now = _applock_wk.is_locked()
+                    except Exception:
+                        _locked_now = False
+                    if _locked_now:
+                        candidate = cleaned_cmd
+                        if not candidate:
+                            hud.set_hud_state("listening")
+                            try:
+                                follow_audio = wake_rec.listen(source, timeout=6.0, phrase_time_limit=6.0)
+                                candidate = speech.transcribe_local_or_cloud(follow_audio, wake_rec).strip()
+                                _cw, _cc = _extract_wake_command(candidate)
+                                if _cw and _cc:
+                                    candidate = _cc
+                            except Exception:
+                                candidate = ""
+                        if candidate and _applock_wk.unlock_with(candidate):
+                            add_log("Unlocked by voice.")
+                            hud.set_hud_state("idle")
+                            speech.speak("Unlocked. Welcome back.")
+                        else:
+                            add_log("Locked: voice unlock attempt failed.")
+                            hud.set_hud_state("idle")
+                        continue
 
                     # Case 1: Single turn with command ('Aria, open Spotify')
                     if cleaned_cmd:
