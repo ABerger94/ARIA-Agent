@@ -70,6 +70,22 @@ def _apply_painted_accent(accent):
             pass
 
 
+def _services_status_text(subsystems) -> str:
+    """The header status line's text. The label was created with
+    'Connecting to services' and NOTHING ever updated it — it sat
+    at the top of the dashboard forever (Alek, 2026-10-27). Until
+    the first subsystem report lands, 'Connecting' is the honest
+    text; after that the label counts the armed services from the
+    same report the left column renders."""
+    subs = list(subsystems or [])
+    if not subs:
+        return 'Connecting to services'
+    ok_n = sum(1 for _name, _status, ok in subs if ok)
+    if ok_n == len(subs):
+        return 'All services online'
+    return f'{ok_n} of {len(subs)} services online'
+
+
 def create_dashboard(callbacks):
     from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
     from PyQt6.QtGui import QImage, QPixmap, QColor, QShortcut, QKeySequence
@@ -782,6 +798,7 @@ def create_dashboard(callbacks):
             self.plaque_state.set_value(str(hud.CURRENT_STATE).upper())
             self.plaque_tasks.set_value(f"{data.get('task_active', 0)} run / {data.get('task_pending', 0)} wait")
             self._set_subsystems(data['subsystems'])
+            self.status.setText(_services_status_text(data.get('subsystems')))
             self.voice.setText('Voice on' if data['voice_enabled'] else 'Voice off')
             self.whisper.setText('Whisper on' if hud.WHISPER_MODE else 'Whisper off')
             if not self.volume.isSliderDown(): self.volume.setValue(int(data['volume'] * 100))

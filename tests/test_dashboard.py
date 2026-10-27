@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import QApplication
 pkg = types.ModuleType("aria")
 pkg.__path__ = [os.path.join(os.path.dirname(__file__), "..", "aria")]
 sys.modules["aria"] = pkg
-from aria.dashboard import create_dashboard, dashboard_enabled
+from aria.dashboard import create_dashboard, dashboard_enabled, _services_status_text
 
 
 def test_dashboard_routes_controls_and_refreshes(monkeypatch, tmp_path):
@@ -59,6 +59,7 @@ def test_dashboard_routes_controls_and_refreshes(monkeypatch, tmp_path):
     callbacks.render_frame = render
     window = create_dashboard(callbacks)
     window.show(); app.processEvents(); window.render_once()
+    assert window.status.text() == 'All services online'
     assert window.tabs.count() == 7
     assert window.cpu._value == 25
     assert window.plaque_engine._value == 'Ollama'
@@ -93,6 +94,16 @@ def test_dashboard_routes_controls_and_refreshes(monkeypatch, tmp_path):
     window.tabs.setCurrentIndex(0)
     window.grab().save(str(tmp_path / 'dashboard.png'))
     window.close(); assert 'shutdown' in calls
+
+
+def test_services_status_text_counts_armed():
+    # The header label used to be born 'Connecting to services'
+    # and never updated again.
+    assert _services_status_text([]) == 'Connecting to services'
+    assert _services_status_text(None) == 'Connecting to services'
+    assert _services_status_text([('Vision', 'ONLINE', True)]) == 'All services online'
+    assert _services_status_text([('A', 'OK', True), ('B', 'ERROR', False),
+                                  ('C', 'OK', True)]) == '2 of 3 services online'
 
 
 def test_subsystems_all_rows_visible_in_scroll_area(monkeypatch, tmp_path):
