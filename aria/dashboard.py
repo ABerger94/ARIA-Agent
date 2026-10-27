@@ -91,7 +91,7 @@ def create_dashboard(callbacks):
     from PyQt6.QtGui import QImage, QPixmap, QColor, QShortcut, QKeySequence
     from PyQt6.QtWidgets import (QMainWindow, QWidget, QFrame, QLabel, QPushButton,
                                 QVBoxLayout, QHBoxLayout, QSplitter, QTabWidget,
-                                QTextBrowser, QLineEdit, QSlider, QScrollArea,
+                                QTextBrowser, QLineEdit, QSlider,
                                 QFileDialog, QDialog, QApplication, QListWidget, QListWidgetItem)
     from aria import frame, hud, config
     from aria.resonance import ResonanceOrb
@@ -148,33 +148,28 @@ def create_dashboard(callbacks):
             body = QSplitter(Qt.Orientation.Horizontal); layout.addWidget(body, 1)
             left, ll = self.card('SYSTEM MONITOR'); left.setMinimumWidth(220); left.setMaximumWidth(290)
             self.left_card = left
-            # The whole column lives in ONE scroll area (Alek,
-            # 2026-10-27, second report): the stack's minimum height
-            # (3 plaques + 3 bars + subsystems + NOW PLAYING + volume
-            # + remote) exceeds the card at smaller heights / higher
-            # DPI, and a plain QVBoxLayout answers that overflow by
-            # OVERLAPPING its children — the NOW PLAYING / Spotify
-            # text painted over the subsystems and nothing was
-            # readable. Inside a scroll area the content always lays
-            # out at its full height: everything stays reachable and
-            # nothing can ever overlap; at full height it looks
-            # exactly as before.
-            self.left_scroll = QScrollArea()
-            self.left_scroll.setWidgetResizable(True)
-            self.left_scroll.setFrameShape(QFrame.Shape.NoFrame)
-            self.left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            self.left_scroll.setStyleSheet('QScrollArea { background: transparent; border: none; }')
-            self.left_content = QWidget()
-            self.left_content.setStyleSheet('background: transparent;')
-            _ll_inner = QVBoxLayout(self.left_content)
+            # The column must FIT the card with no scrolling (Alek,
+            # 2026-10-27, third report — supersedes the same day's
+            # scroll-area design, which itself replaced the layout
+            # that OVERLAPPED its children when the stack's minimum
+            # height exceeded the card). The stack earns the room
+            # honestly: the three plaques share one row, the bars
+            # are slimmer (MetricBar 30px), subsystem rows are
+            # compact (12px), the volume label rides beside its
+            # slider, and spacings are tight. The geometry test pins
+            # the result at the minimum window size: every widget
+            # inside the card, no overlap, no scroll area.
+            ll.setContentsMargins(12, 12, 12, 12); ll.setSpacing(8)
+            _ll_inner = QVBoxLayout()
             _ll_inner.setContentsMargins(0, 0, 0, 0)
-            _ll_inner.setSpacing(8)
-            self.left_scroll.setWidget(self.left_content)
-            ll.addWidget(self.left_scroll, 1)
+            _ll_inner.setSpacing(5)
+            ll.addLayout(_ll_inner, 1)
             ll = _ll_inner
-            self.plaque_engine = StatusPlaque('ENGINE'); ll.addWidget(self.plaque_engine)
-            self.plaque_state = StatusPlaque('STATE'); ll.addWidget(self.plaque_state)
-            self.plaque_tasks = StatusPlaque('TASKS'); ll.addWidget(self.plaque_tasks)
+            _plaques = QHBoxLayout(); _plaques.setSpacing(5)
+            self.plaque_engine = StatusPlaque('ENGINE'); _plaques.addWidget(self.plaque_engine)
+            self.plaque_state = StatusPlaque('STATE'); _plaques.addWidget(self.plaque_state)
+            self.plaque_tasks = StatusPlaque('TASKS'); _plaques.addWidget(self.plaque_tasks)
+            ll.addLayout(_plaques)
             self.cpu = MetricBar('CPU'); ll.addWidget(self.cpu)
             self.mem = MetricBar('MEM'); ll.addWidget(self.mem)
             self.net = MetricBar('NET'); ll.addWidget(self.net)
@@ -183,12 +178,12 @@ def create_dashboard(callbacks):
             # One row per subsystem (Alek, 2026-10-27: the old
             # single wrapped QLabel was crushed by the column's
             # fixed contents — bottom subsystems were clipped and
-            # never showed). Rows never wrap or clip, and the column
-            # scroll area above guarantees they are all reachable.
+            # never showed). Rows never wrap or clip; the compact
+            # column above is sized so all eight fit the card.
             self.subsystems = QWidget()
             self._subsystems_layout = QVBoxLayout(self.subsystems)
             self._subsystems_layout.setContentsMargins(0, 0, 0, 0)
-            self._subsystems_layout.setSpacing(3)
+            self._subsystems_layout.setSpacing(2)
             self._subsystems_layout.addStretch()
             self._subsystem_rows = []
             ll.addWidget(self.subsystems)
@@ -205,9 +200,10 @@ def create_dashboard(callbacks):
             for name, action in [('Prev', 'previous'), ('Play', 'play_pause'), ('Next', 'next')]:
                 b = QPushButton(name); b.clicked.connect(lambda checked=False, a=action: hud._dispatch_spotify_action(a)); media.addWidget(b)
             ll.addLayout(media)
-            ll.addWidget(QLabel('SYSTEM VOLUME'))
+            _vol = QHBoxLayout(); _vol.addWidget(QLabel('SYSTEM VOLUME'))
             self.volume = QSlider(Qt.Orientation.Horizontal); self.volume.setRange(0, 100)
-            self.volume.sliderMoved.connect(lambda value: hud.set_hud_volume(value / 100)); ll.addWidget(self.volume)
+            self.volume.sliderMoved.connect(lambda value: hud.set_hud_volume(value / 100)); _vol.addWidget(self.volume, 1)
+            ll.addLayout(_vol)
             # REMOTE CONTROL used to sit here; it lives in Settings
             # (Connections tab, 'Open Remote Control') now (Alek,
             # 2026-10-27). open_remote() stays for Settings' use.
@@ -576,8 +572,8 @@ def create_dashboard(callbacks):
                     hl.setContentsMargins(0, 0, 0, 0)
                     hl.setSpacing(6)
                     dot = QLabel('●')
-                    name_lbl = QLabel()
-                    status_lbl = QLabel()
+                    name_lbl = QLabel(); name_lbl.setStyleSheet('font-size: 12px;')
+                    status_lbl = QLabel(); status_lbl.setStyleSheet('font-size: 12px;')
                     status_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
                     hl.addWidget(dot)
                     hl.addWidget(name_lbl, 1)
@@ -596,7 +592,7 @@ def create_dashboard(callbacks):
                     color = '#ff6b6b'
                 else:
                     color = '#ffb84d'
-                dot.setStyleSheet(f'color: {color};')
+                dot.setStyleSheet(f'color: {color}; font-size: 10px;')
                 status_lbl.setStyleSheet(f'color: {color};')
                 row_w.setToolTip(f'{name} — {status}')
 

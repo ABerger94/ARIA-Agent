@@ -46,7 +46,7 @@ class MetricBar(QWidget):
         self._color = color
         self._value = 0.0       # 0-100
         self._text = '--'
-        self.setFixedHeight(38)
+        self.setFixedHeight(30)
         self.setMinimumWidth(80)
 
     def set_value(self, pct: float, text: str):
@@ -124,10 +124,10 @@ class StatusPlaque(QWidget):
         self._value = '—'
         self._color = color
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(6, 4, 6, 4)
+        lay.setContentsMargins(5, 2, 5, 2)
         lay.setSpacing(0)
         self._label = QLabel()
-        self._label.setFont(QFont(C.FONT, 9))
+        self._label.setFont(QFont(C.FONT, 8))
         lay.addWidget(self._label)
         self._apply()
 

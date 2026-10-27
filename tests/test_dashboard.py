@@ -114,9 +114,10 @@ def test_subsystems_all_rows_visible_in_scroll_area(monkeypatch, tmp_path):
     # Regression (Alek, 2026-10-27): the left column's subsystems
     # were one wrapped QLabel — crushed by the column's fixed
     # contents, the bottom entries were clipped and never showed.
-    # Pins: every subsystem gets its own row inside a scroll area,
-    # statuses render verbatim, and shrinking the window to its
-    # minimum keeps every row (the area scrolls; nothing is cut).
+    # Pins: every subsystem gets its own row, statuses render
+    # verbatim, and at the minimum window size every row FITS
+    # inside the card — no scroll area anywhere (his later call
+    # the same day superseded the scroll design).
     app = QApplication.instance() or QApplication([])
     calls = []
     subs = [('Voice Pathway', 'ARMED', True),
@@ -162,9 +163,14 @@ def test_subsystems_all_rows_visible_in_scroll_area(monkeypatch, tmp_path):
         render_frame=lambda: np.zeros((800, 1280, 3), dtype=np.uint8))
     window = create_dashboard(callbacks)
     window.resize(1080, 720)               # the window's minimum size
-    window.show(); app.processEvents(); window.render_once()
-    assert window.left_scroll.widget() is window.left_content
+    window.show(); app.processEvents(); window.render_once(); app.processEvents()
+    assert not hasattr(window, 'left_scroll')
     assert len(window._subsystem_rows) == 8
+    from PyQt6.QtCore import QPoint, QRect
+    card = window.left_card
+    for _dot, _n, _s, row_w in window._subsystem_rows:
+        r = QRect(row_w.mapTo(card, QPoint(0, 0)), row_w.size())
+        assert card.rect().contains(r), r
     rendered = [(name_lbl.text(), status_lbl.text())
                 for _dot, name_lbl, status_lbl, _w in window._subsystem_rows]
     assert rendered == [(n, s) for n, s, _ok in subs]
@@ -247,9 +253,10 @@ def test_now_playing_capped_and_panel_buttons_moved_to_settings(monkeypatch):
     assert window.track.height() <= \
         window.track.fontMetrics().lineSpacing() * 2 + 8
     assert len(window.track.text()) < len(long_title)
-    # (1) no two left-column widgets overlap (mapped into the
-    # card's coordinates; the column may extend past the visible
-    # card — that is the scroll area doing its job, not overlap).
+    # (1) no two left-column widgets overlap, and every one FITS
+    # inside the card at minimum size — no scrolling (Alek,
+    # 2026-10-27: 'make all the stuff in the systems monitor panel
+    # fit in the page without scrolling').
     from PyQt6.QtCore import QPoint, QRect
     widgets = [window.plaque_engine, window.plaque_state,
                window.plaque_tasks, window.cpu, window.mem, window.net,
@@ -260,6 +267,7 @@ def test_now_playing_capped_and_panel_buttons_moved_to_settings(monkeypatch):
     rects = [QRect(w.mapTo(card, QPoint(0, 0)), w.size())
              for w in widgets]
     for i, a in enumerate(rects):
+        assert card.rect().contains(a), a
         for b in rects[i + 1:]:
             assert not a.intersects(b), (a, b)
     window.close()
