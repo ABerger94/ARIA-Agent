@@ -33,7 +33,7 @@ body.facemode #app>*:not([data-panel="vision"]){display:none!important}body.face
 <section data-panel="briefing" hidden><div class="section-head"><div><h2>Daily briefing</h2><span id="brief-stamp" class="muted">Today, at a glance</span></div><button id="brief-refresh" class="secondary">Refresh</button></div><button id="brief-listen" class="secondary" disabled>Read aloud</button><div id="brief-report" class="stack" style="margin-top:16px">Your startup briefing will appear here. Select Refresh to generate one.</div></section>
 <section data-panel="inbox" hidden><div class="section-head"><div><h2>Inbox</h2><span id="mail-status">Refresh to load your email</span></div><button id="mail-refresh" class="secondary">Refresh</button></div><input id="mail-search" aria-label="Filter inbox" placeholder="Filter sender or subject…"><div id="mail-list" class="muted">Your messages appear here. Opening a message does not mark it read.</div><article id="mail-detail" class="panel" hidden><div class="section-head"><h2 id="mail-subject"></h2><button id="mail-close" class="secondary">Close</button></div><p id="mail-from"></p><div id="mail-body"></div></article></section>
 <section data-panel="vision" hidden><main id="stage"><img id="face" alt="ARIA waveform orb"><img id="eyes" alt="Phone camera" style="display:none"><div id="caption"></div></main><div class="modes"><button id="mode-face" class="mode-btn active">Waveform orb</button><button id="mode-eyes" class="mode-btn">Camera</button><button id="mode-full" class="mode-btn">Full screen</button></div><button id="lookbtn" type="button" style="display:none">Describe what you see</button></section>
-<section data-panel="settings" hidden><div id="settings" class="panel"><h2>Phone settings</h2><button id="spk" class="row-btn">Speak replies: ON</button><button id="testspk" class="row-btn">Test audio</button><button id="cam" class="row-btn">Camera: OFF</button><p class="muted">Your browser asks before microphone or camera access. On first use, tap a voice control to allow audio playback.</p><span id="transport"></span><button id="signout" class="row-btn danger">Disconnect this phone</button><p class="muted">This phone is remembered for 30 days. You can disconnect all remembered phones from Remote Control on the laptop.</p></div></section>
+<section data-panel="settings" hidden><div id="settings" class="panel"><h2>Phone settings</h2><button id="spk" class="row-btn">Speak replies: ON</button><button id="testspk" class="row-btn">Test audio</button><button id="cam" class="row-btn">Camera: OFF</button><p class="muted">Your browser asks before microphone or camera access. On first use, tap a voice control to allow audio playback.</p><span id="transport"></span><button id="pushbtn" class="row-btn">Enable phone notifications</button><span id="pushstat" class="muted" role="status"></span><button id="signout" class="row-btn danger">Disconnect this phone</button><p class="muted">This phone is remembered for 30 days. You can disconnect all remembered phones from Remote Control on the laptop.</p></div></section>
 <form id="msgform"><input id="t" aria-label="Message ARIA" placeholder="Message ARIA…" autocomplete="off"><button id="sendbtn" type="submit">Send</button></form>
 </div><audio id="aria-audio" playsinline preload="auto" hidden></audio><audio id="aria-bg" loop playsinline preload="auto" hidden src="/silent.wav"></audio>
 <script>
@@ -635,4 +635,50 @@ loadBriefing();
 document.getElementById('mail-refresh').onclick=loadMail;
 document.getElementById('mail-search').oninput=renderMail;
 document.getElementById('mail-close').onclick=()=>{mailRequest++;document.getElementById('mail-detail').hidden=true;};
+</script>
+<script>
+// Phone notifications (Web Push): register the service worker, ask
+// permission, and hand the subscription to the bridge, which stores
+// it for aria/notify.py's push sink.
+function _urlB64ToUint8Array(base64String){
+  var padding='='.repeat((4-base64String.length%4)%4);
+  var base64=(base64String+padding).replace(/-/g,'+').replace(/_/g,'/');
+  var raw=window.atob(base64), out=new Uint8Array(raw.length);
+  for(var i=0;i<raw.length;i++) out[i]=raw.charCodeAt(i);
+  return out;
+}
+document.getElementById('pushbtn').onclick=async()=>{
+  var stat=document.getElementById('pushstat');
+  try{
+    if(!('serviceWorker' in navigator)||!('PushManager' in window)){
+      stat.textContent='This browser does not support push notifications.';
+      return;
+    }
+    var reg=await navigator.serviceWorker.register('/sw.js');
+    var perm=await Notification.requestPermission();
+    if(perm!=='granted'){
+      stat.textContent='Notification permission was not granted.';
+      return;
+    }
+    var vr=await api('/api/push/vapid');
+    var vj=await vr.json();
+    if(!vj.public_key){
+      stat.textContent='Push is not available on the laptop right now.';
+      return;
+    }
+    var sub=await reg.pushManager.getSubscription();
+    if(!sub){
+      sub=await reg.pushManager.subscribe({userVisibleOnly:true,
+        applicationServerKey:_urlB64ToUint8Array(vj.public_key)});
+    }
+    var r=await api('/api/push/subscribe',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(sub.toJSON())});
+    var j=await r.json();
+    stat.textContent=j.ok?'Phone notifications are on.':
+      'The laptop could not store the subscription.';
+  }catch(e){
+    stat.textContent='Enabling notifications failed: '+e;
+  }
+};
 </script></body></html>

@@ -490,6 +490,103 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
         'parameters': {   'properties': {'task_id': {'type': 'STRING'}},
                           'required': ['task_id'],
                           'type': 'OBJECT'}},
+    {   'description': 'Sends a notification to the user\'s phone: a dashboard toast, a Web Push to any '
+                       'subscribed phone, and the missed-notifications queue. Rate-limited (one per 5 '
+                       'minutes, six per hour) and never sent from delegated tasks or routine replays.',
+        'name': 'notify_phone',
+        'parameters': {   'properties': {   'body': {'type': 'STRING'},
+                                            'title': {'type': 'STRING'}},
+                          'required': ['body'],
+                          'type': 'OBJECT'}},
+    {   'description': 'Sets, clears, or reports the backup mirror folder: the folder (a Drive or OneDrive '
+                       'folder works well) that backups of the memory DB, settings, and chat history are '
+                       'copied to and verified. aria_keys.json is never mirrored. With no arguments it '
+                       'reports the current setting; clear=true turns mirroring off.',
+        'name': 'set_backup_mirror',
+        'parameters': {   'properties': {   'clear': {'type': 'BOOLEAN'},
+                                            'path': {'type': 'STRING'}},
+                          'required': [],
+                          'type': 'OBJECT'}},
+    {   'description': 'Runs a command in the system shell with the signed-in user\'s full permissions. '
+                       'Every call parks behind an on-screen CONFIRM showing the exact command, working '
+                       'directory, and timeout — it never runs from a routine replay or a delegated task, '
+                       ' whatever the approval mode.',
+        'name': 'run_shell_command',
+        'parameters': {   'properties': {   'command': {'type': 'STRING'},
+                                            'cwd': {'type': 'STRING'},
+                                            'timeout_seconds': {'type': 'INTEGER'}},
+                          'required': ['command'],
+                          'type': 'OBJECT'}},
+    {   'description': 'Builds a Google Flights search for origin to destination on a date and opens it. '
+                       'Prices are NOT scraped and are never invented — they are read on the opened page. '
+                       'Date formats: YYYY-MM-DD, MM/DD/YYYY, today/tomorrow, or "November 5".',
+        'name': 'flight_finder',
+        'parameters': {   'properties': {   'cabin': {'type': 'STRING'},
+                                            'date': {'type': 'STRING'},
+                                            'destination': {'type': 'STRING'},
+                                            'origin': {'type': 'STRING'},
+                                            'passengers': {'type': 'INTEGER'},
+                                            'return_date': {'type': 'STRING'}},
+                          'required': ['origin', 'destination', 'date'],
+                          'type': 'OBJECT'}},
+    {   'description': 'Steam games on this machine: action=list lists installed games, action=status '
+                       'reports updates Steam has flagged locally, action=update asks Steam to validate/'
+                       'update (a game name targets specific games). Epic Games is not supported — its '
+                       'launcher offers no per-game update trigger that can be verified.',
+        'name': 'game_updater',
+        'parameters': {   'properties': {   'action': {'type': 'STRING'},
+                                            'game': {'type': 'STRING'},
+                                            'steam_path': {'type': 'STRING'}},
+                          'required': [],
+                          'type': 'OBJECT'}},
+    {   'description': 'Minimal browser control: action=go_to opens a URL in the default browser; '
+                       'action=get_text fetches a page over plain HTTP and returns its readable text '
+                       '(not a rendered page — JavaScript-heavy pages may come back thin).',
+        'name': 'browser_control',
+        'parameters': {   'properties': {   'action': {'type': 'STRING'},
+                                            'url': {'type': 'STRING'}},
+                          'required': ['action', 'url'],
+                          'type': 'OBJECT'}},
+    {   'description': 'Registers a reminder with the Windows Task Scheduler, so it fires even when ARIA '
+                       'is closed — unlike set_reminder, which is an in-app spoken reminder that only '
+                       'fires while ARIA is running. Give at (YYYY-MM-DDTHH:MM local time) or delay_minutes.',
+        'name': 'os_reminder',
+        'parameters': {   'properties': {   'at': {'type': 'STRING'},
+                                            'delay_minutes': {'type': 'NUMBER'},
+                                            'message': {'type': 'STRING'}},
+                          'required': ['message'],
+                          'type': 'OBJECT'}},
+    {   'description': 'Reports the live state of this install: the git HEAD of the code on disk, tool '
+                       'calls in flight, recent calls, and active delegated tasks — all from runtime '
+                       'state, never from memory of what was said.',
+        'name': 'update_status',
+        'parameters': {   'properties': {   'root': {'type': 'STRING'}},
+                          'required': [],
+                          'type': 'OBJECT'}},
+    {   'description': 'Coding help from the code model: action=explain explains code (pass code or '
+                       'file_path), action=fix returns corrected code for a reported problem, action=write '
+                       'writes new code for a description and saves it to output_path. A saved file is '
+                       'reported as saved, never as working.',
+        'name': 'code_helper',
+        'parameters': {   'properties': {   'action': {'type': 'STRING'},
+                                            'code': {'type': 'STRING'},
+                                            'description': {'type': 'STRING'},
+                                            'file_path': {'type': 'STRING'},
+                                            'instruction': {'type': 'STRING'},
+                                            'output_path': {'type': 'STRING'}},
+                          'required': [],
+                          'type': 'OBJECT'}},
+    {   'description': 'Plans and writes a complete single-file program for a description (default '
+                       'language python), saving it to output_path. With run=true a Python program is '
+                       'also executed once and its output reported — output shown is not proof the '
+                       'program is correct.',
+        'name': 'dev_agent',
+        'parameters': {   'properties': {   'description': {'type': 'STRING'},
+                                            'language': {'type': 'STRING'},
+                                            'output_path': {'type': 'STRING'},
+                                            'run': {'type': 'BOOLEAN'}},
+                          'required': ['description'],
+                          'type': 'OBJECT'}},
     {   'description': 'Relaunches your own program — same interpreter, same script — when the user says '
                        '"restart your program", "restart yourself", or "restart the app". Never restarts the '
                        'computer. The relaunch happens once your spoken reply finishes. Direct user commands '
@@ -501,13 +598,13 @@ TOOLS_DECLARATION = [
     {"function_declarations": ALL_FUNCTION_DECLARATIONS}
 ]
 
-TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persistent background jobs, system health audit, self-healing diagnostics, delegated background tasks',
+TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persistent background jobs, system health audit, self-healing diagnostics, delegated background tasks, update status, code help, dev agent',
                  'tools': ['manage_autonomous_goal', 'manage_background_job', 'system_health_audit', 'self_heal_diagnose',
-                           'delegate_task', 'task_status', 'task_cancel', 'task_resume']},
-    'admin': {   'summary': 'API keys, bridge token, command guide, volume, approval controls, personas, user tools',
+                           'delegate_task', 'task_status', 'task_cancel', 'task_resume', 'update_status', 'code_helper', 'dev_agent']},
+    'admin': {   'summary': 'API keys, bridge token, command guide, volume, approval controls, personas, user tools, shell commands, backup mirror, game updates',
                  'tools': ['bridge_token', 'show_commands', 'hide_commands', 'volume',
                            'approve', 'deny', 'list_pending_approvals', 'set_approval_mode', 'get_approval_mode',
-                           'reload_user_tools', 'set_persona', 'list_personas', 'get_persona']},
+                           'reload_user_tools', 'set_persona', 'list_personas', 'get_persona', 'set_backup_mirror', 'run_shell_command', 'game_updater']},
     'comms': {'summary': 'Gmail: store credentials, send and read email, triage the inbox',
               'tools': ['gmail_setup', 'send_email', 'read_email', 'triage_email']},
     'files': {'summary': 'file commander: organize a folder, advanced find, duplicate detection, disk usage, process a file (contents, digest, description, transcript)',
@@ -520,7 +617,7 @@ TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persiste
                            'export_routine_pack', 'import_routine_pack']},
     'phone': {'summary': 'the paired Android phone node: connection status, installed apps, open an app, read the screen, notifications, tap / swipe / type / navigation keys',
               'tools': ['phone_status', 'phone_list_apps', 'phone_open_app', 'phone_read_screen',
-                        'phone_notifications', 'phone_tap', 'phone_swipe', 'phone_type', 'phone_key']},
+                        'phone_notifications', 'phone_tap', 'phone_swipe', 'phone_type', 'phone_key', 'notify_phone']},
     'user': {'summary': 'user-installed custom tools (see docs/USER_TOOL_SDK.md); populated at boot and via reload_user_tools',
              'tools': []},
     'core': {   'summary': 'everyday tools: web search, open apps/URLs, run Python code, click/type, screenshots, '
@@ -548,7 +645,7 @@ TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persiste
                              'inbox_list',
                              'inbox_describe',
                              'inbox_read',
-                             'run_skill']},
+                             'run_skill', 'flight_finder', 'browser_control']},
     'github': {'summary': 'push files and create GitHub repos', 'tools': ['github_push_file', 'github_create_repo']},
     'memory_plus': {   'summary': 'notes, journal, forgetting memories, morning briefing',
                        'tools': ['forget_memory', 'journal_write', 'take_note', 'read_notes', 'morning_briefing']},
@@ -564,7 +661,7 @@ TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persiste
                                   'set_timer',
                                   'break_reminders',
                                   'calendar_setup',
-                                  'check_calendar']},
+                                  'check_calendar', 'os_reminder']},
     'spotify': {'summary': 'music: Spotify control, DJ mode, media keys, unified media control', 'tools': ['spotify', 'dj', 'media_key', 'media_control']},
     'vision': {   'summary': 'webcam photos, camera descriptions, vision first-look questions, face tracking, neck servos',
                   'tools': ['take_photo', 'describe_camera', 'vision_look', 'face_tracking', 'move_head_servos', 'drive_wheels', 'body_stop']},
@@ -666,7 +763,17 @@ COMMAND_GUIDE = [   ('Memory', 'save_memory', 'remember my Doja playlist is spot
     ('System', 'restart_program', 'restart your program'),
     ('Custom', 'reload_user_tools', 'reload my custom tools'),
     ('Persona', 'set_persona', 'be concise'),
-    ('Persona', 'get_persona', 'what persona are you using?')]
+    ('Persona', 'get_persona', 'what persona are you using?'),
+    ('Phone', 'notify_phone', 'notify my phone that the build finished'),
+    ('System', 'set_backup_mirror', 'mirror my backups to my Drive folder'),
+    ('System', 'run_shell_command', 'run dir in a shell and show me the output'),
+    ('Travel', 'flight_finder', 'find flights from Baltimore to Denver on November 5'),
+    ('Games', 'game_updater', 'check my Steam games for updates'),
+    ('Web', 'browser_control', 'open this page in my browser'),
+    ('Time', 'os_reminder', 'remind me at 6pm even if you are closed'),
+    ('Autonomy', 'update_status', 'what version are you running and what is in flight?'),
+    ('Autonomy', 'code_helper', 'explain this code to me'),
+    ('Autonomy', 'dev_agent', 'write me a small program that renames these files')]
 
 _DECLS_BY_NAME = {d["name"]: d for d in ALL_FUNCTION_DECLARATIONS}
 

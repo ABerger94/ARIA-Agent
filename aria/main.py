@@ -76,6 +76,23 @@ def _init_wiring():
     # 2. Chat history listener
     memory.register_chat_listener(hud.add_display_chat)
 
+    # 2b. Phone notifications (aria/notify.py): the toast sink lands
+    # in the Activity log as a NOTIFY line, so a notification is
+    # visible on the desktop as well as on the phone.
+    try:
+        from aria import notify as _notify_mod
+
+        def _notify_to_log(msg):
+            if isinstance(msg, dict):
+                add_log(f"NOTIFY: {msg.get('title', 'ARIA')} — "
+                        f"{msg.get('body', '')}")
+            else:
+                add_log(f"NOTIFY: {msg}")
+
+        _notify_mod.bind_broadcaster(_notify_to_log)
+    except Exception:
+        pass
+
     # 3. Vision callers — use the native Ollama vision path
     # (_default_vision_call: native /api/chat images array first, then the
     # provider chain). agent.gemini_text was the legacy hook but Gemini keys
@@ -656,12 +673,55 @@ def _start_presence():
         if not _config_silent.get_setting('presence_enabled', True):
             return
         from aria import presence as _presence
+        idle_after = float(
+            _config_silent.get_setting('presence_idle_s', 600) or 600)
+
+        def _media_playing():
+            # Media veto: something actually playing means somebody
+            # is (almost always) in the room. SMTC first (the OS's
+            # own now-playing), then the window-title telemetry for
+            # when SMTC is dark. A broken probe reads as not-playing
+            # — it never vetoes.
+            try:
+                from aria import smtc as _smtc
+                info = _smtc.now_playing_any()
+                if info and info.get("playing"):
+                    return True
+            except Exception:
+                pass
+            try:
+                tele = hud.media_window_telemetry()
+                if tele and tele.get("playing"):
+                    return True
+            except Exception:
+                pass
+            return False
+
+        def _busy_probe():
+            if speech.is_speaking() or agent.BUSY_PROCESSING:
+                return True
+            # Live veto, with the helper's discipline: an open Live
+            # session counts as activity only while his speech is
+            # recent — the bare session stays open for hours after
+            # he walks away (aria/presence.py's session helper).
+            try:
+                mgr = _LIVE_MANAGER
+                active = bool(mgr is not None
+                              and getattr(mgr, "active", False))
+                from aria.agent import brain as _brain_mod
+                return _presence.session_counts_as_activity(
+                    active,
+                    time.time() - float(_brain_mod.LAST_ACTIVITY),
+                    idle_after)
+            except Exception:
+                return False
+
         monitor = _presence.PresenceMonitor(
             idle_signal=_presence.idle_seconds,
             locked_signal=_presence.locked,
-            busy_probe=lambda: speech.is_speaking() or agent.BUSY_PROCESSING,
-            idle_after_s=float(
-                _config_silent.get_setting('presence_idle_s', 600) or 600),
+            media_signal=_media_playing,
+            busy_probe=_busy_probe,
+            idle_after_s=idle_after,
             on_away=lambda reason: add_log(f"Presence: away ({reason})"),
             on_return=_presence_on_return)
         _presence.set_monitor(monitor)

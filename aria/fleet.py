@@ -159,6 +159,19 @@ def result_ok(result) -> bool:
         text = str(result or "")
     except Exception:
         return True
+    # Outcome typing first (aria/outcome.py): a rendered failed
+    # outcome is a failure whatever words follow it; done /
+    # unverified / ask / started are not. Guarded — outcome is an
+    # optional sibling, and the marker logic below stays the
+    # fallback for prose results.
+    try:
+        from aria import outcome as _outcome
+        if _outcome.is_failure(text):
+            return False
+        if _outcome.kind_of(text) is not None:
+            return True
+    except Exception:
+        pass
     if text.startswith("Unknown tool:"):
         return False
     for marker in ("[Tool Error", "[Argument error",

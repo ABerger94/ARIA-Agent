@@ -114,3 +114,13 @@ tzdata>=2025.1
 # Gemini Live voice mode (aria/live.py) — pure wheel; the pipeline
 # voice works without it, Live simply reports unavailable.
 google-genai>=2.8.0,<3
+
+# Web Push phone notifications (aria/notify.py) — optional at runtime:
+# without these, notifications still toast in the Activity log and
+# queue, only the phone push sink is absent. Pins verified
+# 2026-10-27 for CP312 against the pinned cryptography==41.0.0
+# (pywebpush 2.x needs cryptography>=47 — do not bump without it);
+# http-ece is sdist-only but pure Python, the pyautogui class.
+pywebpush==1.14.1
+py-vapid==1.9.6
+http-ece==1.2.1

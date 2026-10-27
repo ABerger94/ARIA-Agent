@@ -741,6 +741,32 @@ refresh();
 </script></body></html>"""
 
 
+# Web Push service worker (served at /sw.js): shows the push payload
+# as a notification and focuses the bridge on click. Static and
+# secret-free, so it is served without auth — a service worker must
+# be fetchable before the page's session exists on some browsers.
+SW_JS = """self.addEventListener('push', function(event) {
+  var data = {title: 'ARIA', body: ''};
+  try { if (event.data) data = event.data.json(); } catch (e) {
+    try { data = {title: 'ARIA', body: event.data.text()}; } catch (e2) {}
+  }
+  var title = data.title || 'ARIA';
+  var options = {body: data.body || '', tag: data.tag || undefined,
+                 data: {url: '/'}};
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+self.addEventListener('notificationclick', function(event) {
+  event.notification.close();
+  event.waitUntil(clients.matchAll({type: 'window', includeUncontrolled: true}).then(function(list) {
+    for (var i = 0; i < list.length; i++) {
+      if ('focus' in list[i]) return list[i].focus();
+    }
+    if (clients.openWindow) return clients.openWindow('/');
+  }));
+});
+"""
+
+
 class BridgeHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
@@ -960,6 +986,20 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     [{"name": f["name"], "size": f["size_h"], "when": f["when"]}
                      for f in files]).encode("utf-8"))
                 return
+            if self.path.split('?', 1)[0] == '/api/push/vapid':
+                from aria import notify as _notify_mod
+                self._send(200, json.dumps({
+                    'public_key': _notify_mod.vapid_public_key(),
+                    'webpush_available': _notify_mod.webpush_available(),
+                }).encode('utf-8'))
+                return
+            if self.path.split('?', 1)[0] == '/api/notifications':
+                from aria import notify as _notify_mod
+                self._send(200, json.dumps({
+                    'notifications': _notify_mod.queued(),
+                    'status': _notify_mod.status(),
+                }).encode('utf-8'))
+                return
             if self.path.startswith("/api/say"):
                 qs = self.path.split("?", 1)[1] if "?" in self.path else ""
                 params = dict(p.split("=", 1) for p in qs.split("&") if "=" in p)
@@ -987,6 +1027,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self.wfile.write(audio)
                 return
             self._send(404, b'{"error":"not found"}')
+            return
+
+        if self.path.split("?", 1)[0] == "/sw.js":
+            self._send(200, SW_JS.encode("utf-8"),
+                       "application/javascript; charset=utf-8")
             return
 
         if self.path.startswith("/silent.wav"):
@@ -1167,6 +1212,51 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 if BRIDGE_TOKEN:
                     add_log("Bridge: failed login attempt.")
                 self._send(401, b'{"error":"bad bridge token"}')
+            return
+        if self.path == '/api/push/subscribe':
+            if not self._authed():
+                self._send(401, b'{"error":"not connected"}')
+                return
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+            except ValueError:
+                length = -1
+            if length < 0 or length > 16384:
+                self._send(413, b'{"error":"subscription too large"}')
+                return
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+            except Exception:
+                body = None
+            sub = body.get("subscription") if isinstance(body, dict) \
+                and isinstance(body.get("subscription"), dict) else body
+            from aria import notify as _notify_mod
+            if _notify_mod.add_subscription(sub):
+                self._send(200, b'{"ok":true}')
+            else:
+                self._send(400, b'{"error":"not a push subscription"}')
+            return
+        if self.path == '/api/notifications/dismiss':
+            if not self._authed():
+                self._send(401, b'{"error":"not connected"}')
+                return
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+            except ValueError:
+                length = -1
+            if length < 0 or length > 4096:
+                self._send(413, b'{"error":"dismiss body too large"}')
+                return
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8")) \
+                    if length else {}
+            except Exception:
+                body = {}
+            ids = body.get("ids", body.get("id")) if isinstance(body, dict) else None
+            from aria import notify as _notify_mod
+            removed = _notify_mod.dismiss(ids)
+            self._send(200, json.dumps(
+                {"ok": True, "removed": removed}).encode("utf-8"))
             return
         if not (self.path.startswith("/api/ask") or self.path.startswith("/api/voice")
                 or self.path.startswith("/api/camframe") or self.path.startswith("/api/look")

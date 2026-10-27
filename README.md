@@ -98,7 +98,7 @@ remedy.
 
 ## Capabilities
 
-**120 tools** on a desktop install, organised into progressive toolkits:
+**130 tools** on a desktop install, organised into progressive toolkits:
 only the core schemas ride along per call, and specialist toolkits unlock
 on demand (`load_toolkit`) or automatically from keywords in your request.
 Tools from connected MCP servers join on top of that, namespaced per
@@ -109,16 +109,17 @@ suite:
 
 | Area | What's there |
 |---|---|
-| Computer & files | `launch_app`, `open_app_or_url`, window control (`list_windows`, `focus_window`, `minimize_window`, `close_window`, `window_snap`), GUI control (`gui_click`, `gui_type`), clipboard (`clipboard_read`, `clipboard_write`), `run_python_code` (sandboxed), the File Commander (`file_organize` — dry-run plan first, always; `file_find_advanced`, `find_file`, `file_duplicates`, `disk_usage`), `process_file`, `fetch_url`, `web_search` |
+| Computer & files | `launch_app`, `open_app_or_url`, window control (`list_windows`, `focus_window`, `minimize_window`, `close_window`, `window_snap`), GUI control (`gui_click`, `gui_type`), clipboard (`clipboard_read`, `clipboard_write`), `run_python_code` (sandboxed), `run_shell_command` (a real shell behind an on-screen CONFIRM of the exact command — never from routines or delegated tasks), `browser_control` (open a URL, or fetch a page's text), the File Commander (`file_organize` — dry-run plan first, always; `file_find_advanced`, `find_file`, `file_duplicates`, `disk_usage`), `process_file`, `fetch_url`, `web_search` |
+| Travel & games | `flight_finder` (builds and opens a Google Flights search — prices live on the page and are never invented), `game_updater` (Steam: list installed games, report flagged updates, queue a validate/update; Epic honestly unsupported) |
 | Media | `media_control` (one tool over her own video player and the system: play/pause, seek by fraction or seconds, volume), `spotify`, `media_key`, `volume`, `dj` — transport is explicit and verified, aimed at the real media session (see NOW PLAYING, below) |
 | Phone node | `phone_status`, `phone_list_apps`, `phone_open_app`, `phone_read_screen` (accessibility tree with tap targets), `phone_notifications`, `phone_tap`, `phone_swipe`, `phone_type`, `phone_key` — via the ARIA Node Android app |
 | Vision & body | `describe_camera`, `take_photo`, `vision_look`, `read_screen`, `take_screenshot`, `face_tracking`; robot body: `move_head_servos`, `drive_wheels`, `body_stop` (Arduino Nano pan/tilt head + differential drive) |
 | Connections | Gmail (`gmail_setup`, `read_email`, `send_email`, `triage_email`), calendar (`calendar_setup`, `check_calendar` — RRULE/EXDATE/RDATE recurrence honoured), GitHub (`github_create_repo`, `github_push_file`), MCP (`mcp_setup`, `mcp_connect`, `mcp_disconnect`, `mcp_list_servers`, `mcp_remove_server`) |
 | Routines | `routine_record_start/stop`, `run_routine` (with `{{parameter}}` slots), `list_routines`, `describe_routine`, `delete_routine`, `trust_routine`, `untrust_routine`, `export_routine_pack`, `import_routine_pack` |
-| Scheduling & watches | `set_timer`, `set_reminder`, `set_recurring_task`, `list_scheduled_tasks`, `cancel_scheduled_task`, `break_reminders`; price watches (`watch_price`, `check_price_watches`, `list_price_watches`, `unwatch_price` — the hourly checker actually fires), screen watches (`watch_screen`, `list_screen_watches`, `unwatch_screen`) |
-| Delegation & autonomy | `delegate_task`, `task_status`, `task_cancel`, `task_resume`; `manage_autonomous_goal`, `manage_background_job`, `system_health_audit`, `self_heal_diagnose` |
+| Scheduling & watches | `set_timer`, `set_reminder`, `set_recurring_task`, `list_scheduled_tasks`, `cancel_scheduled_task`, `break_reminders`; `os_reminder` (registered with the Windows Task Scheduler, so it fires even when ARIA is closed — `set_reminder` cannot promise that); price watches (`watch_price`, `check_price_watches`, `list_price_watches`, `unwatch_price` — the hourly checker actually fires), screen watches (`watch_screen`, `list_screen_watches`, `unwatch_screen`) |
+| Delegation & autonomy | `delegate_task`, `task_status`, `task_cancel`, `task_resume`; `manage_autonomous_goal`, `manage_background_job`, `system_health_audit`, `self_heal_diagnose`; `update_status` (git HEAD + live fleet/task state), `code_helper` (explain / fix / write code via the code model), `dev_agent` (plan + write a complete single-file program) |
 | Notes, memory & cards | `take_note`, `read_notes`, `journal_write`; `save_memory`, `search_memory`, `forget_memory`, `memory_review`; `mtg_card`, `mtg_advice` (Scryfall, keyless) |
-| Herself | `morning_briefing`, personas (`set_persona`, `get_persona`, `list_personas`), the approval layer (`set_approval_mode`, `get_approval_mode`, `list_pending_approvals`, `approve`, `deny`), self-edit (`edit_own_code`, `patch_own_code`), `reload_user_tools`, `show_commands`, `hide_commands`, `bridge_token` |
+| Herself | `morning_briefing`, personas (`set_persona`, `get_persona`, `list_personas`), the approval layer (`set_approval_mode`, `get_approval_mode`, `list_pending_approvals`, `approve`, `deny`), self-edit (`edit_own_code`, `patch_own_code`), `restart_program` (relaunch herself on a direct command — never the computer, never from a routine or delegated task), `notify_phone` (toast + Web Push + missed queue; rate-limited, and never sent from delegated work), `set_backup_mirror` (mirror the memory DB, settings, and chat history to a folder you choose — keys never mirror), `reload_user_tools`, `show_commands`, `hide_commands`, `bridge_token` |
 
 **Startup briefing.** Her greeting and the `morning_briefing` tool compose
 the same source-backed report in code: today's calendar (recurring events
@@ -319,9 +320,11 @@ boot and restarts her if she crashes.
 - **Window-title media fallback is title-grade.** Without SMTC, a paused
   player keeps its title, so the panel can say NOW PLAYING for a paused
   movie; transport stays exact, the label is the guess.
-- **No off-machine backup is built in.** Memory, journal and settings
-  live in `workspace/` on the one disk; back that folder up yourself if
-  losing it would hurt.
+- **Off-machine backup is a mirror, not a service.** `set_backup_mirror`
+  copies the memory DB, settings, and chat history to a folder you
+  choose (a synced Drive/OneDrive folder or a NAS) and verifies each
+  copy — but nothing mirrors until you set the folder, and
+  `aria_keys.json` is never mirrored.
 - **Keys are plaintext at rest.** `aria_keys.json` is gitignored and
   never committed, but anyone with your Windows account can read it.
 

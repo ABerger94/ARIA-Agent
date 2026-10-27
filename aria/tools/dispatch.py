@@ -138,12 +138,14 @@ KEYWORD_TOOLKIT_MAP: Dict[str, List[str]] = {
     "mtg": [r"\bmtg\b", r"\bmagic\b", r"\bcommander\b", r"\bedh\b", r"\bscryfall\b", r"\bcards?\b", r"\bdecks?\b", r"\bmana\b"],
     "vision": [r"\bphotos?\b", r"\bpictures?\b", r"\bcameras?\b", r"\bwebcam\b", r"\bservos?\b", r"\bhead\b", r"\bneck\b", r"\btracking\b"],
     "comms": [r"\bemai(?:ls?)\b", r"\bgmail\b", r"\bmail\b", r"\binbox\b"],
-    "admin": [r"\bvolume\b", r"\bmute\b", r"\bunmute\b", r"\bbridge\b", r"\btokens?\b", r"\bkeys?\b"],
+    "admin": [r"\bvolume\b", r"\bmute\b", r"\bunmute\b", r"\bbridge\b", r"\btokens?\b", r"\bkeys?\b", r"\bshell\b", r"\bterminal\b", r"\bcommand\s+line\b", r"\bbackup\b", r"\bmirror\b", r"\bsteam\b", r"\bgame\s+updates?\b"],
     "github": [r"\bgithub\b", r"\bgit\b", r"\brepos?(?:itory)?\b", r"\bcommit\b", r"\bpush\b"],
-    "autonomy": [r"\bgoals?\b", r"\bautonom\w*", r"\bbackground\s*(?:task|job)?\b", r"\bworkers?\b", r"\bself[- ]heal\w*", r"\bdaemon\b", r"\bheartbeat\b", r"\bincidents?\b", r"\bhealth\s*(?:audit|check)?\b", r"\bdelegate\w*\b", r"\btask\s+(?:status|cancel)\b"],
+    "autonomy": [r"\bcode\s+helper\b", r"\bdev\s+agent\b", r"\bupdate\s+status\b", r"\bgoals?\b", r"\bautonom\w*", r"\bbackground\s*(?:task|job)?\b", r"\bworkers?\b", r"\bself[- ]heal\w*", r"\bdaemon\b", r"\bheartbeat\b", r"\bincidents?\b", r"\bhealth\s*(?:audit|check)?\b", r"\bdelegate\w*\b", r"\btask\s+(?:status|cancel)\b"],
     "routines": [r"\broutine\b", r"\bautomate\b", r"\bevery time i\b"],
     "files": [r"\bduplicates?\b", r"\bdisk\s*(?:usage|space)\b", r"\borganiz\w+\s+(?:my\s+)?(?:downl|docum|pict|phot|file|fold)"],
     "monitor": [r"\bscreen\s*watch\b", r"\bwatch\b.{0,20}\bscreen\b"],
+    "core": [r"\bflights?\b", r"\bbrowser\b", r"\bweb\s+page\b"],
+    "phone": [r"\bphone\b", r"\bnotify\b", r"\bnotifications?\b", r"\bphone\s+notifications?\b"],
     "user": [r"\bcustom\s*tools?\b"],
 }
 
@@ -694,6 +696,24 @@ def _init_default_registry():
     _REGISTRY["task_resume"] = lambda a: _tool_task_resume(a)
     _REGISTRY["task_cancel"] = lambda a: _tool_task_cancel(a)
     _REGISTRY["restart_program"] = lambda a: _tool_restart_program(a)
+    # ---- Gap fills (2026-10-27): notify / backup / shell / small tools ----
+    # Local imports: these modules are stdlib-only at top level, but
+    # keeping them out of dispatch's module imports keeps the funnel
+    # loadable even if a gap module is ever broken.
+    from aria import notify as _notify_mod
+    from aria import backup_mirror as _backup_mirror_mod
+    from aria.tools import shelltool as _shelltool_mod
+    from aria.tools import gaptools as _gaptools_mod
+    _REGISTRY["notify_phone"] = lambda a: _notify_mod.tool_notify_phone(a)
+    _REGISTRY["set_backup_mirror"] = lambda a: _backup_mirror_mod.tool_set_backup_mirror(a)
+    _REGISTRY["run_shell_command"] = lambda a: _shelltool_mod.tool_run_shell_command(a)
+    _REGISTRY["flight_finder"] = lambda a: _gaptools_mod.tool_flight_finder(a)
+    _REGISTRY["game_updater"] = lambda a: _gaptools_mod.tool_game_updater(a)
+    _REGISTRY["browser_control"] = lambda a: _gaptools_mod.tool_browser_control(a)
+    _REGISTRY["os_reminder"] = lambda a: _gaptools_mod.tool_os_reminder(a)
+    _REGISTRY["update_status"] = lambda a: _gaptools_mod.tool_update_status(a)
+    _REGISTRY["code_helper"] = lambda a: _gaptools_mod.tool_code_helper(a)
+    _REGISTRY["dev_agent"] = lambda a: _gaptools_mod.tool_dev_agent(a)
     _REGISTRY["self_heal_diagnose"] = lambda a: builtins.tool_self_heal_diagnose(
         error_text=a.get("error_text", ""), context=a.get("context", "")
     )

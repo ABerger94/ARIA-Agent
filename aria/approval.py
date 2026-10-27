@@ -38,6 +38,7 @@ lazily inside functions — never at module level (no import cycles).
 import json
 import os
 import secrets
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -69,6 +70,26 @@ DESTRUCTIVE_TOOLS = frozenset({
 # In-memory pending approvals: token -> {token, tool, args, desc, created_ts}.
 # 10-minute expiry makes disk persistence unnecessary.
 _PENDING = {}
+
+# Approve-replay marker (thread-local): approve_token() sets this
+# around its execute_tool replay to (tool, args-dict-copy), so a
+# handler that must never ride a generic preauthorized scope
+# (run_shell_command) can tell "this exact call was just
+# confirmed on screen" apart from a routine/delegated replay.
+_replay_local = threading.local()
+
+
+def in_approve_replay(tool, args) -> bool:
+    """True while approve_token() is replaying exactly this call
+    (same tool name, equal args dict) on this thread."""
+    try:
+        current = getattr(_replay_local, "current", None)
+        if not current:
+            return False
+        marked_tool, marked_args = current
+        return marked_tool == tool and marked_args == dict(args or {})
+    except Exception:
+        return False
 
 
 # Approval-control tools must never gate: gating them would make it impossible
@@ -164,6 +185,8 @@ def _describe_tool(tool: str, args) -> str:
     """One-line human description of what the held call would do."""
     a = args or {}
     try:
+        if tool == "run_shell_command":
+            return f"run shell command '{a.get('command', '')}' in '{a.get('cwd', '')}'"
         if tool == "run_python_code":
             code = str(a.get("code", ""))
             first = code.strip().splitlines()[0] if code.strip() else ""
@@ -239,6 +262,7 @@ def approve_token(token: str) -> str:
         return (f"[Approval error: unknown or expired token '{t}'. "
                 f"Call list_pending_approvals() to see open requests.]")
     config.add_log(f"[approval] approved token={t} tool={entry['tool']} — executing")
+    _replay_local.current = (entry["tool"], dict(entry.get("args") or {}))
     try:
         from aria.tools import dispatch as _dispatch  # lazy: no import cycle
         result, _ok = _dispatch.execute_tool(
@@ -246,6 +270,8 @@ def approve_token(token: str) -> str:
         return str(result)
     except Exception as e:
         return f"[Approval error: failed to execute approved call: {e}]"
+    finally:
+        _replay_local.current = None
 
 
 def deny_token(token: str) -> str:
