@@ -242,7 +242,9 @@ def create_dashboard(callbacks):
         2026-10-27): when he asks what she sees, the exact frame
         the vision tool analyzed pops up in the center card's
         bottom-right corner — 'VISUAL INPUT' header, a close
-        button, gone again after 6 seconds. NOT the ambient
+        button, gone again after 10 seconds (LVI used 6; the
+        extra beats cover the vision call and speech lag, so it
+        is still up while she answers). NOT the ambient
         camera tile he removed that morning: nothing captures
         for this widget and it never appears unprompted; vision
         tools publish a frame only when he has asked her to look
@@ -292,7 +294,7 @@ def create_dashboard(callbacks):
             self.place()
             self.show()
             self.raise_()
-            self._timer.start(6000)
+            self._timer.start(10000)
 
         def place(self):
             """Bottom-right corner of the parent (the center card),

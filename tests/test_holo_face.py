@@ -177,7 +177,7 @@ def test_dashboard_starts_on_saved_holo(monkeypatch):
 
 def test_dashboard_vision_pip_on_demand(monkeypatch):
     # Alek, 2026-10-27: ask her what she sees and a PiP shows the
-    # frame, Mark-LVI style (VISUAL INPUT header, 6s auto-hide).
+    # frame, Mark-LVI style (VISUAL INPUT header, 10s auto-hide).
     # Hidden until a vision tool publishes a frame; a poll with
     # nothing new leaves it hidden.
     app = _app()

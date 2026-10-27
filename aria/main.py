@@ -216,11 +216,19 @@ def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silen
     is_screen = False
     if mode == "screen" or any(k in low for k in ["screen", "display", "desktop", "my window"]):
         image_bytes = vision.capture_screen_if_changed()
+        if image_bytes is not None:
+            # The dashboard PiP (Alek, 2026-10-27): this inline
+            # capture is the primary "what do you see" path — no
+            # vision TOOL runs for it, so the publish lives here,
+            # not only in the vision tools.
+            vision.publish_vision_preview(image_bytes, "SCREEN")
         is_screen = True
         if image_bytes is None:
             user_text = "[Screen unchanged since my last view] " + user_text
     elif mode == "camera" or any(k in low for k in ["look", "see", "holding", "camera"]):
         image_bytes = vision.capture_webcam()
+        if image_bytes:
+            vision.publish_vision_preview(image_bytes, "CAMERA")
 
     # 6. Run Agent Brain
     return agent.run_agent(user_text, image_bytes=image_bytes, is_screen=is_screen, silent=silent)
