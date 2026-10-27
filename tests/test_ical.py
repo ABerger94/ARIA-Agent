@@ -75,7 +75,14 @@ def test_rrule_expands_into_window():
     starts = [e['start'] for e in out if e['summary'] == 'Weekly Sync']
     assert len(starts) == 2                    # two Mondays in 14 days
     assert all(s.weekday() == 0 for s in starts)
-    assert all(s.hour == 11 for s in starts)   # 15:00Z -> 11:00 EDT local
+    # 15:00Z expressed in LOCAL time — the expectation must be
+    # derived, not hardcoded to EDT: on a UTC host (the CI runner)
+    # local IS UTC and the hour is 15. (Run 41's failure, 2026-10-27:
+    # this assert assumed the laptop's timezone.)
+    from datetime import timezone as _tz
+    expected_hour = datetime(2026, 10, 5, 15, 0,
+                             tzinfo=_tz.utc).astimezone().hour
+    assert all(s.hour == expected_hour for s in starts)
 
 
 def test_rrule_count_and_exdate():
