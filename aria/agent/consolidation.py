@@ -37,7 +37,7 @@ import sqlite3
 import tempfile
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from aria import config as _config
 from aria.config import add_log
