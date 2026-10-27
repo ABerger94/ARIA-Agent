@@ -252,6 +252,7 @@ def _ptt_capture():
                 if not raw_chunk:
                     continue
                 frames.append(raw_chunk)
+                hud.set_mic_level(min(1.0, speech.audioop.rms(raw_chunk, sample_width) / 3000.0))
     except Exception as e:
         add_log(f"Mic issue: {e}")
         _ptt_reset_state()

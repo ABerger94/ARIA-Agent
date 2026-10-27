@@ -20,6 +20,8 @@ import sys
 import tempfile
 import time
 import urllib.parse
+from http.cookies import SimpleCookie
+from aria.bridge_sessions import BridgeSessions, SESSION_SECONDS
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional, Callable, Any
 
@@ -44,6 +46,26 @@ _BRIDGE_ACTUAL_SCHEME = None
 _PAIR_LOCK = threading.Lock()
 _PAIR_TOKEN = ""
 _PAIR_EXPIRES = 0.0
+_SESSION_STORE = None
+_SESSION_STORE_LOCK = threading.Lock()
+
+
+def phone_sessions():
+    global _SESSION_STORE
+    path = os.path.join(WORKSPACE_DIR, 'phone_sessions.json')
+    with _SESSION_STORE_LOCK:
+        if _SESSION_STORE is None or _SESSION_STORE.path != path:
+            _SESSION_STORE = BridgeSessions(path)
+        return _SESSION_STORE
+
+
+def revoke_phone_sessions():
+    phone_sessions().revoke()
+    add_log('Phone bridge: remembered phones disconnected.')
+
+
+def phone_connection_status():
+    return phone_sessions().status()
 
 
 def create_pairing_url():
@@ -55,7 +77,7 @@ def create_pairing_url():
         _PAIR_TOKEN = secrets.token_urlsafe(24)
         _PAIR_EXPIRES = time.monotonic() + 300
         base = get_bridge_url().split("?", 1)[0]
-        return base + "?pair=" + _PAIR_TOKEN
+        return base.rstrip("/") + "/auto-login?pair=" + _PAIR_TOKEN
 
 
 def _consume_pairing(token):
@@ -481,590 +503,16 @@ def get_bridge_url() -> str:
 
 
 
-BRIDGE_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport"
-content="width=device-width,initial-scale=1"><meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-<title>A.R.I.A. Bridge</title>
-<style>
-:root{--acc:#ff5fa2;--bg:#05070a;--card:#0d1117;--line:#1c232c;--txt:#eef4fa;--dim:#8ba2b5}
-*{box-sizing:border-box}
-body{background:var(--bg);color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;margin:0;padding:14px;min-height:100vh}
-#app{max-width:560px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
-.topbar{display:flex;justify-content:space-between;align-items:center}
-.wordmark{font-size:13px;letter-spacing:4px;color:var(--dim);font-weight:600}
-.topbtns{display:flex;gap:8px;align-items:center}
-.icon-btn{background:transparent;color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:7px 11px;font-size:16px;cursor:pointer}
-#flipcam{font-size:12px;color:var(--dim)}
-#stage{position:relative;display:flex;justify-content:center}
-#face{width:min(94vw,520px);max-width:100%;border-radius:20px;border:1px solid var(--line);image-rendering:pixelated;background:#000;box-shadow:0 0 60px rgba(255,95,162,.12)}
-#eyes{width:min(94vw,520px);max-width:100%;border-radius:20px;border:1px solid var(--line);background:#000}
-#caption{position:absolute;left:12px;right:12px;bottom:10px;font-size:13px;line-height:1.4;color:var(--txt);background:rgba(5,7,10,.78);border:1px solid var(--line);border-radius:10px;padding:8px 10px;display:none;backdrop-filter:blur(6px)}
-#caption.on{display:block}
-.panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:10px}
-#settings{display:flex;flex-direction:column;gap:8px}
-#log{max-height:38vh;overflow-y:auto;font-size:14px;display:flex;flex-direction:column;gap:6px}
-.you{color:var(--acc)}.aria{color:#28f078}
-.modes{display:flex;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:4px;gap:4px}
-.mode-btn{flex:1;background:transparent;border:0;color:var(--dim);font-size:14px;font-weight:600;padding:9px;border-radius:9px;cursor:pointer}
-.mode-btn.active{background:#1a212b;color:var(--txt)}
-#lookbtn{background:transparent;border:1px solid var(--acc);color:var(--acc);border-radius:12px;padding:11px;font-size:14px;font-weight:700;cursor:pointer}
-#lookbtn:disabled{opacity:.5}
-form{display:flex;gap:8px}input{flex:1;padding:13px 14px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:#fff;font-size:16px;outline:none}
-input:focus{border-color:var(--acc)}
-#sendbtn{padding:0 22px;border-radius:12px;border:0;background:var(--acc);color:#fff;font-weight:700;font-size:16px;cursor:pointer}
-.talk-row{display:flex;gap:8px}
-#talk{flex:2;padding:15px;border-radius:12px;border:0;background:var(--acc);color:#fff;font-weight:700;font-size:16px;cursor:pointer;touch-action:none;user-select:none;-webkit-user-select:none}
-#ptt{flex:1;padding:15px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--txt);font-weight:600;font-size:16px;cursor:pointer}
-.row-btn{background:transparent;border:1px solid var(--line);color:var(--txt);font-size:14px;padding:11px;border-radius:10px;cursor:pointer;text-align:left}
-.footrow{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--dim)}
-.footrow a{color:var(--acc);text-decoration:none}
-body.facemode{padding:0}
-body.facemode #app{max-width:none}
-body.facemode #app>*:not(#stage){display:none!important}
-body.facemode #stage{position:fixed;inset:0;z-index:50;background:#000}
-body.facemode #face,body.facemode #eyes{width:100%;height:100%;object-fit:contain;border:0;border-radius:0;box-shadow:none}
-body.facemode #caption{display:none!important}
-</style></head><body>
-<div id="app">
-<header class="topbar">
-<div class="wordmark">A.R.I.A.</div>
-<div class="topbtns">
-<button id="flipcam" type="button" class="icon-btn" style="display:none">front ⇄</button>
-<button id="logbtn" type="button" class="icon-btn" aria-label="Log">📜</button>
-<button id="cog" type="button" class="icon-btn" aria-label="Settings">⚙</button>
-</div>
-</header>
-<main id="stage">
-<img id="face" alt="A.R.I.A.">
-<img id="eyes" alt="Camera view" style="display:none">
-<div id="caption"></div>
-</main>
-<div id="settings" class="panel" style="display:none">
-<button id="spk" type="button" class="row-btn">Speak replies: ON</button>
-<button id="testspk" type="button" class="row-btn">Test Audio</button>
-<button id="cam" type="button" class="row-btn">Camera: OFF</button>
-</div>
-<div id="log" class="panel" style="display:none"></div>
-<div class="modes">
-<button id="mode-face" type="button" class="mode-btn active">Face</button>
-<button id="mode-eyes" type="button" class="mode-btn">Eyes</button>
-<button id="mode-full" type="button" class="mode-btn">⛶ Full</button>
-</div>
-<button id="lookbtn" type="button" style="display:none">✦ Describe what you see</button>
-<form id="msgform">
-<input id="t" placeholder="Directive..." autocomplete="off">
-<button type="submit" id="sendbtn">Send</button>
-</form>
-<div class="talk-row">
-<button id="talk">Hold to talk</button>
-<button id="ptt" type="button">Tap to talk</button>
-</div>
-<div class="footrow">
-<a href="/commands">Command reference</a>
-<a href="/upload">Upload files</a>
-<span id="astat">Audio: ready</span>
-</div>
-</div>
-<audio id="aria-audio" playsinline webkit-playsinline preload="auto" style="display:none"></audio>
-<audio id="aria-bg" loop playsinline webkit-playsinline preload="auto" style="display:none" src="/silent.wav"></audio>
-<script>
-async function api(path,opts){
-  opts=opts||{};
-  const r=await fetch(path,opts);
-  if(r.status===401){ location.href='/'; }
-  return r;
-}
-let spkOn=localStorage.getItem('spk')!=='0';
-function updateSpkBtn(){document.getElementById('spk').innerText='Speak replies: '+(spkOn?'ON':'OFF');}
-updateSpkBtn();
+with open(os.path.join(os.path.dirname(__file__), 'assets', 'phone.html'), encoding='utf-8') as _phone_page:
+    BRIDGE_HTML = _phone_page.read()
 
-let actx=null,curSrc=null,voiceErrT=null;
 
-function b64ToArrayBuffer(b64){
-  const bin=window.atob(b64);
-  const len=bin.length;
-  const bytes=new Uint8Array(len);
-  for(let i=0;i<len;i++){bytes[i]=bin.charCodeAt(i);}
-  return bytes.buffer;
-}
 
-function ensureAudio(){
-  if(!actx){
-    try{
-      const AC=window.AudioContext||window.webkitAudioContext;
-      if(AC)actx=new AC();
-    }catch(e){console.log('actx init err',e);}
-  }
-  if(actx&&(actx.state==='suspended'||actx.state==='interrupted')){
-    try{actx.resume().catch(()=>{});}catch(e){}
-  }
-  return actx;
-}
-
-function unlockAudio(){
-  try{
-    const bg=document.getElementById('aria-bg');
-    if(bg&&bg.paused){
-      bg.play().catch(()=>{});
-    }
-  }catch(e){}
-  // NOTE: the audio session category is NOT set here. It is set at the
-  // point of use instead — 'playback' in playAudio(), 'playAndRecord'
-  // around hold-to-talk capture. Setting it globally per-gesture raced
-  // with getUserMedia and broke recording on iOS.
-  try{
-    const ctx=ensureAudio();
-    if(ctx){
-      if(ctx.state==='suspended'||ctx.state==='interrupted'){
-        ctx.resume().catch(()=>{});
-      }
-      const b=ctx.createBuffer(1,1,22050);
-      const s=ctx.createBufferSource();
-      s.buffer=b;
-      s.connect(ctx.destination);
-      s.start(0);
-    }
-  }catch(e){}
-  const st=document.getElementById('astat');
-  if(st&&st.innerText.indexOf('error')===-1)st.innerText='Audio: active';
-}
-
-['touchstart','touchend','pointerdown','click','keydown'].forEach(evt=>{
-  document.addEventListener(evt,unlockAudio,{passive:true});
-});
-
-let lastVoiceErr='';
-function voiceError(msg,detail){
-  lastVoiceErr=detail||msg||'';
-  const st=document.getElementById('astat');
-  if(st)st.innerText='Audio error: '+(msg||'tap Speak for details');
-  const b=document.getElementById('spk');
-  b.innerText='Speak replies: ERROR - tap for details';
-  // Sticky on purpose: the old auto-clear hid total TTS outages behind
-  // "Audio: ready". Clears on next successful playback or when tapped.
-  clearTimeout(voiceErrT);
-  b.onclick=()=>{
-    alert('Voice failed. '+(lastVoiceErr?('PC says: '+lastVoiceErr+' '):'')+
-      'On the PC, check the ARIA action stream for the line starting '+
-      '"Bridge TTS failed:" — it names the exact synthesis error.');
-    clearVoiceError();
-  };
-}
-function clearVoiceError(){
-  lastVoiceErr='';
-  const b=document.getElementById('spk');
-  clearTimeout(voiceErrT);
-  b.onclick=spkToggle;
-  updateSpkBtn();
-  const st=document.getElementById('astat');
-  if(st)st.innerText='Audio: ready';
-}
-
-function spkToggle(){
-  spkOn=!spkOn;
-  localStorage.setItem('spk',spkOn?'1':'0');
-  updateSpkBtn();
-  if(spkOn)unlockAudio();
-}
-document.getElementById('spk').onclick=spkToggle;
-
-function playViaWebAudio(buf){
-  return new Promise((resolve,reject)=>{
-    const ctx=ensureAudio();
-    if(!ctx){reject(new Error('no audio context'));return;}
-    if(ctx.state==='suspended'||ctx.state==='interrupted'){
-      ctx.resume().catch(()=>{});
-    }
-    if(curSrc){try{curSrc.stop();}catch(e){}curSrc=null;}
-    const copy=buf.slice(0);
-    ctx.decodeAudioData(copy,(decoded)=>{
-      try{
-        const src=ctx.createBufferSource();
-        src.buffer=decoded;
-        src.connect(ctx.destination);
-        src.onended=()=>{curSrc=null;resolve();};
-        src.start(0);
-        curSrc=src;
-      }catch(err){reject(err);}
-    },(err)=>{reject(err);});
-  });
-}
-
-function playAudio(buf,mime){
-  return new Promise((resolve)=>{
-    if(!spkOn||!buf||!buf.byteLength){resolve();return;}
-    unlockAudio();
-    const st=document.getElementById('astat');
-    if(st)st.innerText='Audio: playing...';
-
-    let resolved=false;
-    const finish=(ok)=>{
-      if(!resolved){
-        resolved=true;
-        if(ok){clearVoiceError();}
-        else if(st)st.innerText='Audio: ready';
-        resolve();
-      }
-    };
-
-    const player=document.getElementById('aria-audio');
-    let blobUrl=null;
-    try{
-      // Use the server's real content type. The old hardcoded
-      // 'audio/mpeg' mislabeled SAPI WAV bytes and broke the primary
-      // playback path whenever Edge was down.
-      const blob=new Blob([buf],{type:mime||'audio/mpeg'});
-      blobUrl=URL.createObjectURL(blob);
-      player.src=blobUrl;
-
-      const cleanupPlayer=()=>{
-        if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
-        player.onended=null;
-        player.onerror=null;
-        finish(true);
-      };
-
-      player.onended=cleanupPlayer;
-      player.onerror=()=>{
-        if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
-        player.onended=null;
-        player.onerror=null;
-        playViaWebAudio(buf).then(()=>finish(true)).catch((e)=>{
-          console.log('web audio fallback error',e);
-          voiceError('playback failed',String(e&&e.message||e));
-          finish(false);
-        });
-      };
-
-      const p=player.play();
-      if(p!==undefined){
-        p.catch((err)=>{
-          console.log('HTMLAudio play rejected, using WebAudio fallback',err);
-          if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
-          player.onended=null;
-          player.onerror=null;
-          playViaWebAudio(buf).then(()=>finish(true)).catch((e)=>{
-            console.log('web audio fallback error',e);
-            voiceError('playback failed',String(e&&e.message||e));
-            finish(false);
-          });
-        });
-      }
-    }catch(err){
-      console.log('HTMLAudio error, using WebAudio fallback',err);
-      playViaWebAudio(buf).then(()=>finish(true)).catch((e)=>{
-        voiceError('playback failed',String(e&&e.message||e));
-        finish(false);
-      });
-    }
-  });
-}
-
-async function playReply(text){
-  if(!spkOn||!text)return;
-  try{
-    const r=await api('/api/say?text='+encodeURIComponent(text.slice(0,500)));
-    if(!r.ok){
-      // Surface the PC's real TTS reason (e.g. "tts unavailable: edge-tts
-      // failed (...); SAPI fallback failed (...)") instead of a bare status.
-      let srv='tts http '+r.status;
-      try{const j=await r.json();if(j&&j.error)srv=j.error;}catch(e){}
-      throw new Error(srv);
-    }
-    const mime=r.headers.get('Content-Type')||'audio/mpeg';
-    const buf=await r.arrayBuffer();
-    await playAudio(buf,mime);
-  }catch(e){console.log('voice:',e);voiceError('tts failed',String(e&&e.message||e));}
-}
-
-document.getElementById('testspk').onclick=async()=>{
-  unlockAudio();
-  const st=document.getElementById('astat');
-  if(st)st.innerText='Audio: synthesizing test...';
-  try{
-    const r=await api('/api/say?text='+encodeURIComponent('Speech test successful. Phone audio is active.'));
-    if(!r.ok){
-      let srv='http '+r.status;
-      try{const j=await r.json();if(j&&j.error)srv=j.error;}catch(e){}
-      throw new Error(srv);
-    }
-    const mime=r.headers.get('Content-Type')||'audio/mpeg';
-    const buf=await r.arrayBuffer();
-    await playAudio(buf,mime);
-  }catch(e){
-    alert('Test failed: '+(e&&e.message||e));
-    voiceError('test failed',String(e&&e.message||e));
-  }
-};
-
-const logEl=document.getElementById('log');
-function add(s,m){
-  const d=document.createElement('div');
-  d.innerHTML='<b class="'+s+'">'+s.toUpperCase()+':</b> '+m.replace(/</g,'&lt;');
-  logEl.appendChild(d);logEl.scrollTop=logEl.scrollHeight;
-}
-async function refreshLog(){
-  try{
-    const r=await api('/api/log');
-    if(!r.ok)return;
-    const rows=await r.json();logEl.innerHTML='';
-    rows.forEach(x=>add(x[1].toLowerCase()==='user'?'you':'aria',x[2]));
-  }catch(e){}
-}
-refreshLog();
-setInterval(refreshLog,3000);
-document.getElementById('face').src='/face.mjpg';
-
-const msgForm=document.getElementById('msgform');
-msgForm.addEventListener('submit',async function(e){
-  e.preventDefault();
-  e.stopPropagation();
-  unlockAudio();
-  const inp=document.getElementById('t');
-  const t=inp.value.trim();
-  if(!t)return false;
-  inp.value='';
-  add('you',t);
-  const btn=document.getElementById('sendbtn');
-  btn.disabled=true;
-  try{
-    const r=await api('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t,want_audio:spkOn})});
-    btn.disabled=false;
-    if(r.ok){
-      const d=await r.json();
-      const replies=d.reply||[];
-      for(const s of replies){
-        if(s&&s.trim())add('aria',s);
-      }
-      if(d.audio&&spkOn){
-        try{
-          const buf=b64ToArrayBuffer(d.audio);
-          await playAudio(buf,d.audio_mime||'audio/mpeg');
-        }catch(err){
-          console.log('play audio err',err);
-          voiceError('audio decode',String(err&&err.message||err));
-        }
-      }else if(replies.length>0&&spkOn){
-        await playReply(replies[0]);
-      }
-    }else{
-      let rd={};try{rd=await r.json();}catch(e){}
-      alert('Directive failed: '+(rd.error||r.status));
-    }
-  }catch(err){
-    btn.disabled=false;
-    alert('Network error: '+err);
-  }
-  return false;
-});
-
-let mr=null,chunks=[],talkActive=false,talkStream=null;
-const talkBtn=document.getElementById('talk');
-const pttBtn=document.getElementById('ptt');
-function setTalkUI(state){
-  // state: 'idle' | 'listening' | 'processing'
-  talkBtn.innerText=state==='listening'?'Listening...':(state==='processing'?'Processing...':'Hold to talk');
-  pttBtn.innerText=state==='listening'?'Tap to stop':(state==='processing'?'Processing...':'Tap to talk');
-}
-async function beginTalk(){
-  if(talkActive)return;
-  talkActive=true;
-  chunks=[];
-  setTalkUI('listening');
-  try{
-    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
-    if(!talkActive){
-      stream.getTracks().forEach(t=>t.stop());
-      setTalkUI('idle');
-      return;
-    }
-    talkStream=stream;
-    let mimeType='';
-    if(window.MediaRecorder&&typeof MediaRecorder.isTypeSupported==='function'){
-      if(MediaRecorder.isTypeSupported('audio/webm;codecs=opus'))mimeType='audio/webm;codecs=opus';
-      else if(MediaRecorder.isTypeSupported('audio/webm'))mimeType='audio/webm';
-      else if(MediaRecorder.isTypeSupported('audio/mp4'))mimeType='audio/mp4';
-      else if(MediaRecorder.isTypeSupported('audio/aac'))mimeType='audio/aac';
-    }
-    mr=mimeType?new MediaRecorder(stream,{mimeType}):new MediaRecorder(stream);
-    mr.ondataavailable=ev=>{if(ev.data&&ev.data.size>0)chunks.push(ev.data);};
-    mr.onstop=async()=>{
-      if(talkStream){talkStream.getTracks().forEach(t=>t.stop());talkStream=null;}
-      const recType=(mr&&mr.mimeType)||mimeType||'audio/webm';
-      const blob=new Blob(chunks,{type:recType});
-      setTalkUI('processing');
-      try{
-        const r=await api('/api/voice',{method:'POST',headers:{'Content-Type':recType},body:blob});
-        if(r.ok){
-          const mime=r.headers.get('Content-Type')||'audio/mpeg';
-          const buf=await r.arrayBuffer();
-          const transcript=decodeURIComponent(r.headers.get('X-Transcript')||'');
-          const reply=decodeURIComponent(r.headers.get('X-Reply')||'');
-          if(transcript)add('you',transcript);
-          if(reply)add('aria',reply);
-          try{await playAudio(buf,mime);}catch(e){console.log('voice:',e);voiceError('voice play',String(e&&e.message||e));}
-        }else{
-          let rd={};try{rd=await r.json();}catch(e){}
-          if(rd.reply)add('aria',rd.reply);
-          voiceError('voice error',rd.error||('http '+r.status));
-          if(!rd.reply)alert('Voice request failed: '+(rd.error||r.status));
-        }
-      }catch(err){alert('Voice error: '+err);}
-      setTalkUI('idle');
-    };
-    mr.start();
-  }catch(err){
-    talkActive=false;
-    setTalkUI('idle');
-    alert('Mic error ('+err+'). Ensure HTTPS certificate is accepted.');
-  }
-}
-function endTalk(){
-  if(!talkActive)return;
-  talkActive=false;
-  if(mr&&mr.state==='recording'){mr.stop();}
-  else{
-    if(talkStream){talkStream.getTracks().forEach(t=>t.stop());talkStream=null;}
-    setTalkUI('idle');
-  }
-}
-talkBtn.onpointerdown=(e)=>{
-  e.preventDefault();
-  unlockAudio();
-  beginTalk();
-};
-talkBtn.onpointerup=(e)=>{
-  e.preventDefault();
-  unlockAudio();
-  endTalk();
-};
-talkBtn.onpointercancel=talkBtn.onpointerup;
-pttBtn.addEventListener('click',()=>{
-  unlockAudio();
-  if(talkActive)endTalk();
-  else beginTalk();
-});
-
-// Phone-as-eyes: stream this page's camera to the laptop as ARIA's body
-// camera (set ARIA_BODY_CAMERA=bridge on the laptop first).
-let camOn=false,camStream=null,camTimer=null,camFacing='user';
-const camBtn=document.getElementById('cam');
-const camVideo=document.createElement('video');
-camVideo.setAttribute('playsinline','');camVideo.muted=true;camVideo.style.display='none';
-document.body.appendChild(camVideo);
-const camCanvas=document.createElement('canvas');camCanvas.width=480;camCanvas.height=360;
-function camFacingName(){return camFacing==='user'?'front':'rear';}
-function updateCamBtn(){
-  camBtn.innerText='Camera: '+(camOn?('ON ('+camFacingName()+')'):'OFF');
-  const fc=document.getElementById('flipcam');
-  fc.style.display=camOn?'':'none';
-  fc.innerText=camFacingName()+' ⇄';
-}
-async function startCamStream(){
-  if(camStream){camStream.getTracks().forEach(t=>t.stop());camStream=null;}
-  camStream=await navigator.mediaDevices.getUserMedia(
-    {video:{facingMode:camFacing,width:{ideal:480},height:{ideal:360}},audio:false});
-  camVideo.srcObject=camStream;
-  await camVideo.play();
-}
-async function toggleCam(){
-  if(camOn){
-    camOn=false;updateCamBtn();
-    if(camTimer){clearInterval(camTimer);camTimer=null;}
-    if(camStream){camStream.getTracks().forEach(t=>t.stop());camStream=null;}
-    return;
-  }
-  try{
-    await startCamStream();
-    camOn=true;updateCamBtn();
-    const ctx=camCanvas.getContext('2d');
-    let posting=false;
-    camTimer=setInterval(()=>{
-      if(!camOn||posting)return;
-      if(camVideo.readyState<2||camVideo.videoWidth===0)return;
-      ctx.drawImage(camVideo,0,0,camCanvas.width,camCanvas.height);
-      posting=true;
-      camCanvas.toBlob(async(blob)=>{
-        posting=false;
-        if(!blob||!camOn)return;
-        try{await api('/api/camframe',{method:'POST',headers:{'Content-Type':'image/jpeg'},body:blob});}catch(e){}
-      },'image/jpeg',0.6);
-    },350);
-  }catch(err){
-    alert('Camera error ('+err+'). Grant camera permission and ensure the HTTPS certificate is accepted.');
-  }
-}
-camBtn.addEventListener('click',()=>{unlockAudio();toggleCam();});
-async function flipCam(){
-  if(!camOn)return;
-  camFacing=(camFacing==='user')?'environment':'user';
-  updateCamBtn();
-  try{await startCamStream();}
-  catch(err){alert('Camera flip failed ('+err+').');}
-}
-document.getElementById('flipcam').addEventListener('click',()=>{unlockAudio();flipCam();});
-
-// ---- view modes: face / eyes / fullscreen ----
-const stageEl=document.getElementById('stage');
-const faceImg=document.getElementById('face');
-const eyesImg=document.getElementById('eyes');
-const captionEl=document.getElementById('caption');
-const lookBtn=document.getElementById('lookbtn');
-function setCaption(t){
-  captionEl.innerText=t||'';
-  captionEl.classList.toggle('on',!!t);
-}
-async function setView(mode){
-  document.getElementById('mode-face').classList.toggle('active',mode==='face');
-  document.getElementById('mode-eyes').classList.toggle('active',mode==='eyes');
-  const eyes=mode==='eyes';
-  faceImg.style.display=eyes?'none':'';
-  eyesImg.style.display=eyes?'':'none';
-  lookBtn.style.display=eyes?'':'none';
-  if(eyes){
-    setCaption('Connecting…');
-    try{
-      const r=await api('/api/camstatus');
-      if(r.ok){
-        const d=await r.json();
-        if(d.active){setCaption('');eyesImg.src='/phone_cam.mjpg';}
-        else{setCaption('Camera is off — enable it in ⚙ settings.');eyesImg.style.display='none';}
-      }else{setCaption('Could not reach camera.');}
-    }catch(e){setCaption('Could not reach camera.');}
-  }else{
-    eyesImg.removeAttribute('src');
-    setCaption('');
-  }
-}
-document.getElementById('mode-face').addEventListener('click',()=>setView('face'));
-document.getElementById('mode-eyes').addEventListener('click',()=>setView('eyes'));
-document.getElementById('mode-full').addEventListener('click',()=>{
-  if(document.getElementById('mode-eyes').classList.contains('active'))setView('face');
-  document.body.classList.add('facemode');
-});
-stageEl.addEventListener('click',()=>{
-  if(document.body.classList.contains('facemode'))document.body.classList.remove('facemode');
-});
-lookBtn.addEventListener('click',async()=>{
-  lookBtn.disabled=true;lookBtn.innerText='Looking…';setCaption('');
-  try{
-    const r=await api('/api/look',{method:'POST'});
-    let d={};try{d=await r.json();}catch(e){}
-    if(r.ok&&d.reply){setCaption(d.reply);add('aria',d.reply);}
-    else setCaption('Look failed: '+(d.error||r.status));
-  }catch(e){setCaption('Look failed: '+e);}
-  lookBtn.disabled=false;lookBtn.innerText='✦ Describe what you see';
-});
-document.getElementById('cog').addEventListener('click',()=>{
-  const s=document.getElementById('settings');
-  s.style.display=(s.style.display==='none')?'flex':'none';
-});
-document.getElementById('logbtn').addEventListener('click',()=>{
-  const l=document.getElementById('log');
-  l.style.display=(l.style.display==='none')?'flex':'none';
-  if(l.style.display!=='none'){l.scrollTop=l.scrollHeight;}
-});
-</script></body></html>"""
-
+PAIR_EXPIRED_HTML = """<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ARIA | Pairing link expired</title><body style="background:#080d14;color:#e2edf5;font:16px system-ui;padding:40px;line-height:1.6">
+<h1>Get a fresh connection link</h1><p>This QR code has expired or has already paired another phone.</p>
+<p>On your laptop, open <strong>Remote Control</strong> and select <strong>Refresh QR</strong>, then scan again.</p>
+<p><a style="color:#67dce5" href="/">Open this phone's existing connection</a></p></body></html>"""
 
 BRIDGE_LOGIN_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport"
 content="width=device-width,initial-scale=1"><title>A.R.I.A. Bridge - Login</title>
@@ -1243,21 +691,61 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 dict(p.split("=", 1) for p in qs.split("&") if "=" in p).get("token", ""))
         return tok
 
+    def _phone_session(self):
+        try:
+            cookies = SimpleCookie(self.headers.get('Cookie', ''))
+            value = cookies.get('aria_phone_session')
+            return value.value if value else ''
+        except Exception:
+            return ''
+
     def _authed(self):
+        if phone_sessions().valid(self._phone_session()):
+            return True
         return bool(BRIDGE_TOKEN) and hmac.compare_digest(
             self._token_from_request(), BRIDGE_TOKEN)
 
     def _bridge_cookie(self) -> str:
-        cookie = ("aria_bridge_token=" + urllib.parse.quote(BRIDGE_TOKEN or "", safe="")
-                  + "; HttpOnly; Path=/; SameSite=Strict")
+        token = phone_sessions().issue()
+        cookie = ("aria_phone_session=" + token
+                  + f"; HttpOnly; Path=/; SameSite=Lax; Max-Age={SESSION_SECONDS}")
         if (_BRIDGE_ACTUAL_SCHEME or BRIDGE_SCHEME) == "https":
             cookie += "; Secure"
         return cookie
+
+    def _login_redirect(self):
+        try:
+            cookie = self._bridge_cookie()
+        except OSError:
+            self._send(503, b'{"error":"Could not remember this phone. Check laptop storage, then refresh the QR code."}')
+            return
+        self.send_response(303)
+        self.send_header("Location", "/")
+        self.send_header("Set-Cookie", cookie)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        add_log('Phone bridge: phone paired and connected automatically.')
 
     def do_GET(self):
         if self.path.startswith("/api/"):
             if not self._authed():
                 self._send(401, b'{"error":"bad or missing bridge token"}')
+                return
+            if self.path.split('?', 1)[0] == '/api/status':
+                from aria import hud
+                from aria.agent import providers
+                state = str(getattr(hud, 'CURRENT_STATE', 'idle'))
+                self._send(200, json.dumps({'connected': True, 'state': state,
+                    'provider': providers.get_active_provider() or 'Waiting for first response',
+                    'transport': _BRIDGE_ACTUAL_SCHEME or BRIDGE_SCHEME}).encode('utf-8'))
+                return
+            if self.path.split('?', 1)[0] == '/api/mail':
+                from aria.mailview import fetch_message, fetch_messages
+                uid = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get('uid', [''])[0]
+                result = fetch_message(uid) if uid else fetch_messages(limit=30)
+                self._send(200 if result.get('ok') else 400, json.dumps(result).encode('utf-8'))
                 return
             if self.path.startswith("/api/log"):
                 logs = _CHAT_LOG_CALL() if _CHAT_LOG_CALL else []
@@ -1330,7 +818,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             try:
-                while True:
+                while self._authed():
                     jpg = get_phone_frame_jpeg()
                     if jpg:
                         chunk = (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
@@ -1352,7 +840,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             try:
-                while True:
+                while self._authed():
                     jpg = get_face_frame_jpeg()
                     if jpg:
                         chunk = (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
@@ -1363,18 +851,21 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return
 
         path = self.path.split("?", 1)[0]
-        if path == "/":
+        if path in ("/", "/auto-login"):
             pair = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("pair", [""])[0]
             if pair:
-                if not _consume_pairing(pair):
-                    self._send(401, b'{"error":"Pairing code expired or already used. Refresh Remote Control on the laptop."}')
+                if self._authed():
+                    _consume_pairing(pair)
+                    self.send_response(303)
+                    self.send_header('Location', '/')
+                    self.send_header('Cache-Control', 'no-store')
+                    self.send_header('Content-Length', '0')
+                    self.end_headers()
                     return
-                self.send_response(302)
-                self.send_header("Location", "/")
-                self.send_header("Set-Cookie", self._bridge_cookie())
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("Referrer-Policy", "no-referrer")
-                self.end_headers()
+                if not _consume_pairing(pair):
+                    self._send(401, PAIR_EXPIRED_HTML.encode('utf-8'), 'text/html; charset=utf-8')
+                    return
+                self._login_redirect()
                 return
             # One-time upgrade FIRST: a valid ?token= becomes a cookie and
             # redirects to the clean URL, so the page's API calls (cookie /
@@ -1384,10 +875,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             qtok = urllib.parse.unquote_plus(
                 dict(p.split("=", 1) for p in qs.split("&") if "=" in p).get("token", ""))
             if BRIDGE_TOKEN and qtok and qtok == BRIDGE_TOKEN:
-                self.send_response(302)
-                self.send_header("Location", "/")
-                self.send_header("Set-Cookie", self._bridge_cookie())
-                self.end_headers()
+                self._login_redirect()
                 return
             if self._authed():
                 self._send(200, BRIDGE_HTML.encode("utf-8"), "text/html; charset=utf-8")
@@ -1416,18 +904,50 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self._send(404, b'{"error":"not found"}')
 
     def do_POST(self):
+        if self.path == '/api/interrupt':
+            if not self._authed():
+                self._send(401, b'{"error":"not connected"}')
+                return
+            from aria.speech import interrupt_speech
+            interrupt_speech()
+            self._send(200, b'{"ok":true}')
+            return
+        if self.path == '/api/logout':
+            if not self._authed():
+                self._send(401, b'{"error":"not connected"}')
+                return
+            phone_sessions().revoke(self._phone_session())
+            self.send_response(303)
+            self.send_header('Set-Cookie', 'aria_phone_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0')
+            self.send_header('Set-Cookie', 'aria_bridge_token=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0')
+            self.send_header('Location', '/')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
         if self.path.startswith("/api/login"):
-            length = int(self.headers.get("Content-Length", 0))
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                if length < 0 or length > 4096:
+                    self._send(413, b'{"error":"login too large"}')
+                    return
+            except ValueError:
+                self._send(400, b'{"error":"bad content length"}')
+                return
             try:
                 tok = json.loads(self.rfile.read(length).decode("utf-8")).get("token", "")
             except Exception:
                 tok = ""
             if BRIDGE_TOKEN and tok == BRIDGE_TOKEN:
+                try:
+                    cookie = self._bridge_cookie()
+                except OSError:
+                    self._send(503, b'{"error":"Could not remember this phone"}')
+                    return
                 body = b'{"ok":true}'
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
-                self.send_header("Set-Cookie", self._bridge_cookie())
+                self.send_header("Set-Cookie", cookie)
                 self.end_headers()
                 self.wfile.write(body)
             else:

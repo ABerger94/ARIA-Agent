@@ -14,7 +14,7 @@ Built by Alek Berger. Not a framework, not a demo — a finished companion.
 ## Native desktop command center
 
 The default Qt window now uses native resizable panels: a system and Spotify
-sidebar, ARIA's live avatar in the center, and Conversation / Inbox / Calendar /
+sidebar, Mark's Resonance waveform orb in the center, and Conversation / Inbox / Calendar /
 Tasks / Activity tabs. Type Unicode text directly in the command bar. Voice,
 push-to-talk, interruption, whisper, volume, file browsing, and file drops use
 the existing backend. Inbox and Calendar load on Refresh in background threads;
@@ -22,11 +22,32 @@ missing connections display the existing setup instructions.
 
 Click **REMOTE CONTROL** in the sidebar to connect a phone on the same Wi-Fi.
 Scan the QR code or copy its link. It works once, expires in five minutes, and
-Refresh replaces it. The phone retains the existing face, camera, voice, command
-reference and upload pages. A first-time HTTPS certificate warning may appear;
-Windows Firewall and Wi-Fi client isolation can prevent LAN access. This is
-local-network access, not an internet tunnel. Already paired phones keep the
-existing bridge authentication behavior; expiring the QR does not sign them out.
+Refresh replaces it. Scanning opens the controls directly with no token form.
+The phone is remembered for 30 days, including across laptop app restarts, using
+a per-phone HttpOnly cookie. Session hashes are stored in the workspace, not
+raw phone credentials. Reopen the same address in the same browser to reconnect.
+Disconnect one phone in its Settings, or all remembered phones from the laptop's
+Remote Control dialog. Existing master-token API clients remain compatible.
+
+The mobile companion has Control, Conversation, Inbox, Orb & Camera, and Settings
+sections, live connection status, stop-speech, voice/text controls, file uploads,
+and shortcuts. Browser microphone, camera, autoplay, and certificate permissions
+still apply; QR pairing cannot bypass them.
+
+Inbox subjects and sender names are decoded, dates are local, and message bodies
+open in a separate reading pane. Desktop and phone share structured mail data.
+IMAP uses read-only selection and BODY.PEEK: reading does not mark mail as seen.
+HTML-only messages become plain text; remote images and scripts are not loaded.
+
+The default desktop and its phone stream use the adapted Resonance waveform
+renderer from Mark-LVI-ARIA, with its CC BY-NC 4.0 license and attribution in
+`LICENSES/`. The orb reads measured mic and Edge playback levels when available;
+the system voice fallback has state animation without a measured output level.
+The classic fallback layout still retains its original avatar.
+
+A first-time HTTPS certificate warning may appear. Windows Firewall and Wi-Fi
+client isolation can prevent LAN access. This is local-network access, not an
+internet tunnel. Expiring the QR does not sign out an already paired phone.
 
 Install updated dependencies with `py -3.12 -m pip install -r requirements.txt`.
 For the previous canvas layout, set `ARIA_UI_LAYOUT=classic` before launching.

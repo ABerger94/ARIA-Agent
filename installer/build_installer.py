@@ -34,6 +34,7 @@ BUILD_PATH = os.path.join(REPO_ROOT, "build")
 ADD_DATA = [
     (os.path.join("aria", "assets"), os.path.join("aria", "assets")),
     ("soul.md", "."),
+    ("LICENSES", "LICENSES"),
 ]
 
 HIDDEN_IMPORTS = [

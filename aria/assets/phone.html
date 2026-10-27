@@ -1,0 +1,605 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#080d14"><link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Ccircle cx=%2716%27 cy=%2716%27 r=%2712%27 fill=%27none%27 stroke=%27%2364d9e7%27 stroke-width=%273%27/%3E%3C/svg%3E"><title>A.R.I.A. Bridge</title><style>
+:root{--acc:#64d9e7;--bg:#080d14;--card:#0e1823;--line:#213548;--txt:#e4edf6;--dim:#8ea3b6;color-scheme:dark}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at top,#102432,transparent 65%),var(--bg);color:var(--txt);font:15px/1.5 system-ui,sans-serif}
+button,input,a{-webkit-tap-highlight-color:transparent}button,a,input{font:inherit}button{cursor:pointer}button:disabled{opacity:.5;cursor:wait}
+button:focus-visible,a:focus-visible{outline:2px solid var(--acc);outline-offset:3px}[hidden]{display:none!important}
+#app{max-width:1040px;padding:24px 24px 130px;margin:auto}.topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:30px}
+.wordmark{font:bold 23px ui-monospace,monospace;letter-spacing:5px}.eyebrow{font:11px ui-monospace,monospace;letter-spacing:2px;color:var(--acc);text-transform:uppercase}
+.topbtns{display:flex;gap:8px;align-items:center}.icon-btn,.row-btn,.secondary,nav button{color:var(--txt);border:1px solid var(--line);background:#101f2c;border-radius:10px;padding:10px 14px;min-height:44px}
+.online,.offline{font-size:12px;white-space:nowrap}.online{color:#78deb5}.online:before{content:'●';margin-right:7px}.offline{color:#e9b977}
+h1{font-size:32px;letter-spacing:-1px;margin:6px 0}h2{font-size:18px;margin:0 0 12px}p{margin:6px 0 16px}.muted{color:var(--dim)}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:24px 0}.stat,.panel{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px}.stat small{display:block;color:var(--dim);font-size:11px;letter-spacing:1.4px;text-transform:uppercase}.stat strong{font-size:15px;display:block;margin-top:5px;overflow-wrap:anywhere}#state{text-transform:capitalize}
+nav{display:flex;gap:6px;border-bottom:1px solid var(--line);margin:0 0 24px;padding-bottom:12px;overflow:auto}nav button{background:transparent;border-color:transparent;white-space:nowrap;color:var(--dim)}nav .selected{background:#143342;border-color:#285669;color:var(--acc)}
+.grid{display:grid;grid-template-columns:1.1fr 1fr;gap:16px}.stack{display:flex;flex-direction:column;gap:14px}.talk-row{display:flex;gap:10px;margin:20px 0 12px}
+#talk{flex:1;background:var(--acc);color:#06212a;border:0;border-radius:12px;padding:20px;font-weight:700;touch-action:none;user-select:none;-webkit-user-select:none;min-height:70px}#ptt{flex:1;border:1px solid #35566b;background:#132735;color:var(--txt);border-radius:12px;padding:16px;font-weight:600}
+#astat{font-size:12px;color:var(--dim);display:block}.shortcuts{display:flex;flex-wrap:wrap;gap:8px}.shortcuts button{background:transparent;border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:9px 12px;font-size:13px}
+#recent-reply{white-space:pre-wrap;max-height:200px;overflow:auto;color:#c9d9e6}.tools{display:flex;gap:12px;flex-wrap:wrap}.tools a{color:var(--acc);text-decoration:none;font-size:13px}.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
+#msgform{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:min(100%,1040px);padding:16px 24px max(16px,env(safe-area-inset-bottom));display:flex;gap:10px;background:linear-gradient(transparent,#080d14 15%);z-index:20}
+input{min-width:0;background:#101e2b;border:1px solid var(--line);color:var(--txt);border-radius:12px;padding:14px 16px;font-size:16px;outline:none}input:focus{border-color:var(--acc)}#t{flex:1}#sendbtn{background:var(--acc);color:#06212a;border:0;border-radius:12px;padding:0 22px;font-weight:700}
+#log{display:flex;flex-direction:column;gap:14px;min-height:200px;max-height:65vh;overflow:auto}#log>div{max-width:90%;padding:14px 18px;background:#111f2c;border:1px solid var(--line);border-radius:14px}#log>div:has(.you){align-self:flex-end;background:#12313b}#log b{font-size:11px;letter-spacing:1px;color:var(--acc)}#log p{white-space:pre-wrap;margin:6px 0 0;overflow-wrap:anywhere}
+#stage{position:relative;display:flex;justify-content:center;min-height:240px;max-height:480px;background:#080d14;border-radius:16px;overflow:hidden}#face,#eyes{width:100%;max-height:480px;object-fit:contain}#caption{position:absolute;left:12px;right:12px;bottom:12px;background:#08121ee8;border-radius:10px;padding:12px;display:none}#caption.on{display:block}.modes{display:flex;gap:8px;margin:14px 0}.mode-btn{flex:1;border:1px solid var(--line);background:var(--card);color:var(--dim);border-radius:10px;padding:11px}.mode-btn.active{color:var(--acc);border-color:#337188}#lookbtn{width:100%;background:#163443;color:var(--acc);border:1px solid #337188;padding:14px;border-radius:10px}
+#settings{display:flex;flex-direction:column;gap:12px;max-width:600px}.row-btn{text-align:left}.danger{color:#ffa3a7;border-color:#674147}#transport{color:var(--dim);font-size:12px}
+#mail-search{width:100%;margin-bottom:12px}#mail-list{display:flex;flex-direction:column;gap:8px}.mail-card{text-align:left;width:100%;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;color:var(--txt)}.mail-card:hover{border-color:#3f7a8b}.mail-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:5px}.mail-head strong{font-size:13px;color:var(--acc)}.mail-head time{font-size:11px;color:var(--dim);white-space:nowrap}.mail-card span{display:block;overflow-wrap:anywhere}#mail-detail{margin-top:20px}#mail-body{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.7 system-ui,sans-serif}#mail-from{overflow-wrap:anywhere;color:var(--dim);font-size:12px}#mail-status{font-size:12px;color:var(--dim)}
+body.facemode #app>*:not([data-panel="vision"]){display:none!important}body.facemode [data-panel="vision"]{display:block!important}body.facemode .modes,body.facemode #lookbtn,body.facemode #msgform{display:none!important}body.facemode #stage{position:fixed;inset:0;max-height:none;border-radius:0;z-index:50}body.facemode #face,body.facemode #eyes{width:100%;height:100%;max-height:none;object-fit:contain}body.facemode #caption{display:none!important}
+@media(max-width:650px){#app{padding:20px 16px 120px}.topbar{margin-bottom:24px}.wordmark{font-size:20px}.topbtns .icon-btn{display:none}.grid{grid-template-columns:1fr}.panel{padding:18px}h1{font-size:28px}.stats{margin:20px 0}nav{margin-bottom:20px}nav button{padding:10px}#msgform{padding-left:16px;padding-right:16px}.mail-head{align-items:start}.mail-head time{max-width:110px;white-space:normal;text-align:right}}
+</style></head><body><div id="app">
+<header class="topbar"><div><div class="wordmark">A.R.I.A.</div><div class="eyebrow">Phone companion</div></div><div class="topbtns"><span id="connection" class="offline" role="status">Connecting…</span><button id="logbtn" class="icon-btn">Conversation</button><button id="cog" class="icon-btn">Settings</button><button id="flipcam" class="icon-btn" style="display:none">Flip camera</button></div></header>
+<div class="eyebrow">Your assistant, within reach</div><h1>Remote control</h1><p class="muted">Talk to ARIA. Check your inbox. Pick up where you left off.</p>
+<div class="stats"><div class="stat"><small>ARIA is</small><strong id="state">Connecting</strong></div><div class="stat"><small>Active engine</small><strong id="provider">Checking connection</strong></div></div>
+<nav aria-label="Companion sections"><button data-tab="control" class="selected" aria-selected="true">Control</button><button data-tab="chat">Conversation</button><button data-tab="inbox">Inbox</button><button data-tab="vision">Orb &amp; camera</button><button data-tab="settings">Settings</button></nav>
+<section data-panel="control" class="grid"><div class="panel"><div class="eyebrow">Voice connection</div><h2>What can I help with?</h2><p class="muted">Hold while you speak, or tap once to start and again to finish.</p><div class="talk-row"><button id="talk">Hold to talk</button><button id="ptt" type="button">Tap to talk</button></div><span id="astat" role="status">Audio: ready</span><button id="stop-speech" class="secondary" style="margin-top:16px">Stop speaking</button></div><div class="stack"><div class="panel"><div class="eyebrow">Latest from ARIA</div><p id="recent-reply">Your latest reply will appear here.</p></div><div class="panel"><h2>Start here</h2><div class="shortcuts"><button data-prompt="Give me my morning briefing">Daily briefing</button><button data-prompt="What tasks are running?">My tasks</button><button data-prompt="Check my calendar for today">Today's calendar</button></div></div><div class="tools"><a href="/upload">Send a file</a><a href="/commands">Command reference</a></div></div></section>
+<section data-panel="chat" hidden><div class="section-head"><h2>Conversation</h2><span class="muted">Synced with your laptop</span></div><div id="log"></div></section>
+<section data-panel="inbox" hidden><div class="section-head"><div><h2>Inbox</h2><span id="mail-status">Refresh to load your email</span></div><button id="mail-refresh" class="secondary">Refresh</button></div><input id="mail-search" aria-label="Filter inbox" placeholder="Filter sender or subject…"><div id="mail-list" class="muted">Your messages appear here. Opening a message does not mark it read.</div><article id="mail-detail" class="panel" hidden><div class="section-head"><h2 id="mail-subject"></h2><button id="mail-close" class="secondary">Close</button></div><p id="mail-from"></p><div id="mail-body"></div></article></section>
+<section data-panel="vision" hidden><main id="stage"><img id="face" alt="ARIA waveform orb"><img id="eyes" alt="Phone camera" style="display:none"><div id="caption"></div></main><div class="modes"><button id="mode-face" class="mode-btn active">Waveform orb</button><button id="mode-eyes" class="mode-btn">Camera</button><button id="mode-full" class="mode-btn">Full screen</button></div><button id="lookbtn" type="button" style="display:none">Describe what you see</button></section>
+<section data-panel="settings" hidden><div id="settings" class="panel"><h2>Phone settings</h2><button id="spk" class="row-btn">Speak replies: ON</button><button id="testspk" class="row-btn">Test audio</button><button id="cam" class="row-btn">Camera: OFF</button><p class="muted">Your browser asks before microphone or camera access. On first use, tap a voice control to allow audio playback.</p><span id="transport"></span><button id="signout" class="row-btn danger">Disconnect this phone</button><p class="muted">This phone is remembered for 30 days. You can disconnect all remembered phones from Remote Control on the laptop.</p></div></section>
+<form id="msgform"><input id="t" aria-label="Message ARIA" placeholder="Message ARIA…" autocomplete="off"><button id="sendbtn" type="submit">Send</button></form>
+</div><audio id="aria-audio" playsinline preload="auto" hidden></audio><audio id="aria-bg" loop playsinline preload="auto" hidden src="/silent.wav"></audio>
+<script>
+async function api(path,opts){
+  opts=opts||{};
+  const r=await fetch(path,opts);
+  if(r.status===401){ location.replace('/'); }
+  return r;
+}
+let spkOn=localStorage.getItem('spk')!=='0';
+function updateSpkBtn(){document.getElementById('spk').innerText='Speak replies: '+(spkOn?'ON':'OFF');}
+updateSpkBtn();
+
+let actx=null,curSrc=null,voiceErrT=null;
+
+function b64ToArrayBuffer(b64){
+  const bin=window.atob(b64);
+  const len=bin.length;
+  const bytes=new Uint8Array(len);
+  for(let i=0;i<len;i++){bytes[i]=bin.charCodeAt(i);}
+  return bytes.buffer;
+}
+
+function ensureAudio(){
+  if(!actx){
+    try{
+      const AC=window.AudioContext||window.webkitAudioContext;
+      if(AC)actx=new AC();
+    }catch(e){console.log('actx init err',e);}
+  }
+  if(actx&&(actx.state==='suspended'||actx.state==='interrupted')){
+    try{actx.resume().catch(()=>{});}catch(e){}
+  }
+  return actx;
+}
+
+function unlockAudio(){
+  try{
+    const bg=document.getElementById('aria-bg');
+    if(bg&&bg.paused){
+      bg.play().catch(()=>{});
+    }
+  }catch(e){}
+  // NOTE: the audio session category is NOT set here. It is set at the
+  // point of use instead — 'playback' in playAudio(), 'playAndRecord'
+  // around hold-to-talk capture. Setting it globally per-gesture raced
+  // with getUserMedia and broke recording on iOS.
+  try{
+    const ctx=ensureAudio();
+    if(ctx){
+      if(ctx.state==='suspended'||ctx.state==='interrupted'){
+        ctx.resume().catch(()=>{});
+      }
+      const b=ctx.createBuffer(1,1,22050);
+      const s=ctx.createBufferSource();
+      s.buffer=b;
+      s.connect(ctx.destination);
+      s.start(0);
+    }
+  }catch(e){}
+  const st=document.getElementById('astat');
+  if(st&&st.innerText.indexOf('error')===-1)st.innerText='Audio: active';
+}
+
+['touchstart','touchend','pointerdown','click','keydown'].forEach(evt=>{
+  document.addEventListener(evt,unlockAudio,{passive:true});
+});
+
+let lastVoiceErr='';
+function voiceError(msg,detail){
+  lastVoiceErr=detail||msg||'';
+  const st=document.getElementById('astat');
+  if(st)st.innerText='Audio error: '+(msg||'tap Speak for details');
+  const b=document.getElementById('spk');
+  b.innerText='Speak replies: ERROR - tap for details';
+  // Sticky on purpose: the old auto-clear hid total TTS outages behind
+  // "Audio: ready". Clears on next successful playback or when tapped.
+  clearTimeout(voiceErrT);
+  b.onclick=()=>{
+    alert('Voice failed. '+(lastVoiceErr?('PC says: '+lastVoiceErr+' '):'')+
+      'On the PC, check the ARIA action stream for the line starting '+
+      '"Bridge TTS failed:" — it names the exact synthesis error.');
+    clearVoiceError();
+  };
+}
+function clearVoiceError(){
+  lastVoiceErr='';
+  const b=document.getElementById('spk');
+  clearTimeout(voiceErrT);
+  b.onclick=spkToggle;
+  updateSpkBtn();
+  const st=document.getElementById('astat');
+  if(st)st.innerText='Audio: ready';
+}
+
+function spkToggle(){
+  spkOn=!spkOn;
+  localStorage.setItem('spk',spkOn?'1':'0');
+  updateSpkBtn();
+  if(spkOn)unlockAudio();
+}
+document.getElementById('spk').onclick=spkToggle;
+
+function playViaWebAudio(buf){
+  return new Promise((resolve,reject)=>{
+    const ctx=ensureAudio();
+    if(!ctx){reject(new Error('no audio context'));return;}
+    if(ctx.state==='suspended'||ctx.state==='interrupted'){
+      ctx.resume().catch(()=>{});
+    }
+    if(curSrc){try{curSrc.stop();}catch(e){}curSrc=null;}
+    const copy=buf.slice(0);
+    ctx.decodeAudioData(copy,(decoded)=>{
+      try{
+        const src=ctx.createBufferSource();
+        src.buffer=decoded;
+        src.connect(ctx.destination);
+        src.onended=()=>{curSrc=null;resolve();};
+        src.start(0);
+        curSrc=src;
+      }catch(err){reject(err);}
+    },(err)=>{reject(err);});
+  });
+}
+
+function playAudio(buf,mime){
+  return new Promise((resolve)=>{
+    if(!spkOn||!buf||!buf.byteLength){resolve();return;}
+    unlockAudio();
+    const st=document.getElementById('astat');
+    if(st)st.innerText='Audio: playing...';
+
+    let resolved=false;
+    const finish=(ok)=>{
+      if(!resolved){
+        resolved=true;
+        if(ok){clearVoiceError();}
+        else if(st)st.innerText='Audio: ready';
+        resolve();
+      }
+    };
+
+    const player=document.getElementById('aria-audio');
+    let blobUrl=null;
+    try{
+      // Use the server's real content type. The old hardcoded
+      // 'audio/mpeg' mislabeled SAPI WAV bytes and broke the primary
+      // playback path whenever Edge was down.
+      const blob=new Blob([buf],{type:mime||'audio/mpeg'});
+      blobUrl=URL.createObjectURL(blob);
+      player.src=blobUrl;
+
+      const cleanupPlayer=()=>{
+        if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
+        player.onended=null;
+        player.onerror=null;
+        finish(true);
+      };
+
+      player.onended=cleanupPlayer;
+      player.onerror=()=>{
+        if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
+        player.onended=null;
+        player.onerror=null;
+        playViaWebAudio(buf).then(()=>finish(true)).catch((e)=>{
+          console.log('web audio fallback error',e);
+          voiceError('playback failed',String(e&&e.message||e));
+          finish(false);
+        });
+      };
+
+      const p=player.play();
+      if(p!==undefined){
+        p.catch((err)=>{
+          console.log('HTMLAudio play rejected, using WebAudio fallback',err);
+          if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
+          player.onended=null;
+          player.onerror=null;
+          playViaWebAudio(buf).then(()=>finish(true)).catch((e)=>{
+            console.log('web audio fallback error',e);
+            voiceError('playback failed',String(e&&e.message||e));
+            finish(false);
+          });
+        });
+      }
+    }catch(err){
+      console.log('HTMLAudio error, using WebAudio fallback',err);
+      playViaWebAudio(buf).then(()=>finish(true)).catch((e)=>{
+        voiceError('playback failed',String(e&&e.message||e));
+        finish(false);
+      });
+    }
+  });
+}
+
+async function playReply(text){
+  if(!spkOn||!text)return;
+  try{
+    const r=await api('/api/say?text='+encodeURIComponent(text.slice(0,500)));
+    if(!r.ok){
+      // Surface the PC's real TTS reason (e.g. "tts unavailable: edge-tts
+      // failed (...); SAPI fallback failed (...)") instead of a bare status.
+      let srv='tts http '+r.status;
+      try{const j=await r.json();if(j&&j.error)srv=j.error;}catch(e){}
+      throw new Error(srv);
+    }
+    const mime=r.headers.get('Content-Type')||'audio/mpeg';
+    const buf=await r.arrayBuffer();
+    await playAudio(buf,mime);
+  }catch(e){console.log('voice:',e);voiceError('tts failed',String(e&&e.message||e));}
+}
+
+document.getElementById('testspk').onclick=async()=>{
+  unlockAudio();
+  const st=document.getElementById('astat');
+  if(st)st.innerText='Audio: synthesizing test...';
+  try{
+    const r=await api('/api/say?text='+encodeURIComponent('Speech test successful. Phone audio is active.'));
+    if(!r.ok){
+      let srv='http '+r.status;
+      try{const j=await r.json();if(j&&j.error)srv=j.error;}catch(e){}
+      throw new Error(srv);
+    }
+    const mime=r.headers.get('Content-Type')||'audio/mpeg';
+    const buf=await r.arrayBuffer();
+    await playAudio(buf,mime);
+  }catch(e){
+    alert('Test failed: '+(e&&e.message||e));
+    voiceError('test failed',String(e&&e.message||e));
+  }
+};
+
+const logEl=document.getElementById('log');
+let lastLogSignature='';
+function add(s,m){
+  const d=document.createElement('div');
+  const who=document.createElement('b');who.className=s;who.textContent=s==='you'?'You':'ARIA';
+  const text=document.createElement('p');text.textContent=String(m);d.append(who,text);
+  logEl.appendChild(d);logEl.scrollTop=logEl.scrollHeight;
+}
+async function refreshLog(){
+  try{
+    const r=await api('/api/log');
+    if(!r.ok)return;
+    const rows=await r.json();const signature=JSON.stringify(rows);
+    if(signature===lastLogSignature)return;lastLogSignature=signature;
+    logEl.replaceChildren();
+    rows.forEach(x=>add(/user|alek/i.test(x[1])?'you':'aria',x[2]));
+    const last=rows.filter(x=>!/user|alek/i.test(x[1])).pop();
+    if(last)document.getElementById('recent-reply').textContent=last[2];
+  }catch(e){}
+}
+refreshLog();
+setInterval(refreshLog,3000);
+document.getElementById('face').src='/face.mjpg';
+
+const msgForm=document.getElementById('msgform');
+msgForm.addEventListener('submit',async function(e){
+  e.preventDefault();
+  e.stopPropagation();
+  if(document.getElementById('sendbtn').disabled)return false;
+  unlockAudio();
+  const inp=document.getElementById('t');
+  const t=inp.value.trim();
+  if(!t)return false;
+  inp.value='';
+  add('you',t);
+  const btn=document.getElementById('sendbtn');
+  btn.disabled=true;
+  try{
+    const r=await api('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t,want_audio:spkOn})});
+    btn.disabled=false;
+    if(r.ok){
+      const d=await r.json();
+      const replies=d.reply||[];
+      for(const s of replies){
+        if(s&&s.trim())add('aria',s);
+      }
+      if(d.audio&&spkOn){
+        try{
+          const buf=b64ToArrayBuffer(d.audio);
+          await playAudio(buf,d.audio_mime||'audio/mpeg');
+        }catch(err){
+          console.log('play audio err',err);
+          voiceError('audio decode',String(err&&err.message||err));
+        }
+      }else if(replies.length>0&&spkOn){
+        await playReply(replies[0]);
+      }
+    }else{
+      let rd={};try{rd=await r.json();}catch(e){}
+      alert('Directive failed: '+(rd.error||r.status));
+    }
+  }catch(err){
+    btn.disabled=false;
+    alert('Network error: '+err);
+  }
+  return false;
+});
+
+let mr=null,chunks=[],talkActive=false,talkStream=null;
+const talkBtn=document.getElementById('talk');
+const pttBtn=document.getElementById('ptt');
+function setTalkUI(state){
+  // state: 'idle' | 'listening' | 'processing'
+  talkBtn.innerText=state==='listening'?'Listening...':(state==='processing'?'Processing...':'Hold to talk');
+  pttBtn.innerText=state==='listening'?'Tap to stop':(state==='processing'?'Processing...':'Tap to talk');
+}
+async function beginTalk(){
+  if(talkActive)return;
+  talkActive=true;
+  chunks=[];
+  setTalkUI('listening');
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    if(!talkActive){
+      stream.getTracks().forEach(t=>t.stop());
+      setTalkUI('idle');
+      return;
+    }
+    talkStream=stream;
+    let mimeType='';
+    if(window.MediaRecorder&&typeof MediaRecorder.isTypeSupported==='function'){
+      if(MediaRecorder.isTypeSupported('audio/webm;codecs=opus'))mimeType='audio/webm;codecs=opus';
+      else if(MediaRecorder.isTypeSupported('audio/webm'))mimeType='audio/webm';
+      else if(MediaRecorder.isTypeSupported('audio/mp4'))mimeType='audio/mp4';
+      else if(MediaRecorder.isTypeSupported('audio/aac'))mimeType='audio/aac';
+    }
+    mr=mimeType?new MediaRecorder(stream,{mimeType}):new MediaRecorder(stream);
+    mr.ondataavailable=ev=>{if(ev.data&&ev.data.size>0)chunks.push(ev.data);};
+    mr.onstop=async()=>{
+      if(talkStream){talkStream.getTracks().forEach(t=>t.stop());talkStream=null;}
+      const recType=(mr&&mr.mimeType)||mimeType||'audio/webm';
+      const blob=new Blob(chunks,{type:recType});
+      setTalkUI('processing');
+      try{
+        const r=await api('/api/voice',{method:'POST',headers:{'Content-Type':recType},body:blob});
+        if(r.ok){
+          const mime=r.headers.get('Content-Type')||'audio/mpeg';
+          const buf=await r.arrayBuffer();
+          const transcript=decodeURIComponent(r.headers.get('X-Transcript')||'');
+          const reply=decodeURIComponent(r.headers.get('X-Reply')||'');
+          if(transcript)add('you',transcript);
+          if(reply)add('aria',reply);
+          try{await playAudio(buf,mime);}catch(e){console.log('voice:',e);voiceError('voice play',String(e&&e.message||e));}
+        }else{
+          let rd={};try{rd=await r.json();}catch(e){}
+          if(rd.reply)add('aria',rd.reply);
+          voiceError('voice error',rd.error||('http '+r.status));
+          if(!rd.reply)alert('Voice request failed: '+(rd.error||r.status));
+        }
+      }catch(err){alert('Voice error: '+err);}
+      setTalkUI('idle');
+    };
+    mr.start();
+  }catch(err){
+    talkActive=false;
+    setTalkUI('idle');
+    alert('Mic error ('+err+'). Ensure HTTPS certificate is accepted.');
+  }
+}
+function endTalk(){
+  if(!talkActive)return;
+  talkActive=false;
+  if(mr&&mr.state==='recording'){mr.stop();}
+  else{
+    if(talkStream){talkStream.getTracks().forEach(t=>t.stop());talkStream=null;}
+    setTalkUI('idle');
+  }
+}
+talkBtn.onpointerdown=(e)=>{
+  e.preventDefault();
+  unlockAudio();
+  beginTalk();
+};
+talkBtn.onpointerup=(e)=>{
+  e.preventDefault();
+  unlockAudio();
+  endTalk();
+};
+talkBtn.onpointercancel=talkBtn.onpointerup;
+pttBtn.addEventListener('click',()=>{
+  unlockAudio();
+  if(talkActive)endTalk();
+  else beginTalk();
+});
+
+// Phone-as-eyes: stream this page's camera to the laptop as ARIA's body
+// camera (set ARIA_BODY_CAMERA=bridge on the laptop first).
+let camOn=false,camStream=null,camTimer=null,camFacing='user';
+const camBtn=document.getElementById('cam');
+const camVideo=document.createElement('video');
+camVideo.setAttribute('playsinline','');camVideo.muted=true;camVideo.style.display='none';
+document.body.appendChild(camVideo);
+const camCanvas=document.createElement('canvas');camCanvas.width=480;camCanvas.height=360;
+function camFacingName(){return camFacing==='user'?'front':'rear';}
+function updateCamBtn(){
+  camBtn.innerText='Camera: '+(camOn?('ON ('+camFacingName()+')'):'OFF');
+  const fc=document.getElementById('flipcam');
+  fc.style.display=camOn?'':'none';
+  fc.innerText=camFacingName()+' ⇄';
+}
+async function startCamStream(){
+  if(camStream){camStream.getTracks().forEach(t=>t.stop());camStream=null;}
+  camStream=await navigator.mediaDevices.getUserMedia(
+    {video:{facingMode:camFacing,width:{ideal:480},height:{ideal:360}},audio:false});
+  camVideo.srcObject=camStream;
+  await camVideo.play();
+}
+async function toggleCam(){
+  if(camOn){
+    camOn=false;updateCamBtn();
+    if(camTimer){clearInterval(camTimer);camTimer=null;}
+    if(camStream){camStream.getTracks().forEach(t=>t.stop());camStream=null;}
+    return;
+  }
+  try{
+    await startCamStream();
+    camOn=true;updateCamBtn();
+    const ctx=camCanvas.getContext('2d');
+    let posting=false;
+    camTimer=setInterval(()=>{
+      if(!camOn||posting)return;
+      if(camVideo.readyState<2||camVideo.videoWidth===0)return;
+      ctx.drawImage(camVideo,0,0,camCanvas.width,camCanvas.height);
+      posting=true;
+      camCanvas.toBlob(async(blob)=>{
+        posting=false;
+        if(!blob||!camOn)return;
+        try{await api('/api/camframe',{method:'POST',headers:{'Content-Type':'image/jpeg'},body:blob});}catch(e){}
+      },'image/jpeg',0.6);
+    },350);
+  }catch(err){
+    alert('Camera error ('+err+'). Grant camera permission and ensure the HTTPS certificate is accepted.');
+  }
+}
+camBtn.addEventListener('click',()=>{unlockAudio();toggleCam();});
+async function flipCam(){
+  if(!camOn)return;
+  camFacing=(camFacing==='user')?'environment':'user';
+  updateCamBtn();
+  try{await startCamStream();}
+  catch(err){alert('Camera flip failed ('+err+').');}
+}
+document.getElementById('flipcam').addEventListener('click',()=>{unlockAudio();flipCam();});
+
+// ---- view modes: face / eyes / fullscreen ----
+const stageEl=document.getElementById('stage');
+const faceImg=document.getElementById('face');
+const eyesImg=document.getElementById('eyes');
+const captionEl=document.getElementById('caption');
+const lookBtn=document.getElementById('lookbtn');
+function setCaption(t){
+  captionEl.innerText=t||'';
+  captionEl.classList.toggle('on',!!t);
+}
+async function setView(mode){
+  document.getElementById('mode-face').classList.toggle('active',mode==='face');
+  document.getElementById('mode-eyes').classList.toggle('active',mode==='eyes');
+  const eyes=mode==='eyes';
+  faceImg.style.display=eyes?'none':'';
+  eyesImg.style.display=eyes?'':'none';
+  lookBtn.style.display=eyes?'':'none';
+  if(eyes){
+    setCaption('Connecting…');
+    try{
+      const r=await api('/api/camstatus');
+      if(r.ok){
+        const d=await r.json();
+        if(d.active){setCaption('');eyesImg.src='/phone_cam.mjpg';}
+        else{setCaption('Camera is off. Enable it in Settings.');eyesImg.style.display='none';}
+      }else{setCaption('Could not reach camera.');}
+    }catch(e){setCaption('Could not reach camera.');}
+  }else{
+    eyesImg.removeAttribute('src');
+    setCaption('');
+  }
+}
+document.getElementById('mode-face').addEventListener('click',()=>setView('face'));
+document.getElementById('mode-eyes').addEventListener('click',()=>setView('eyes'));
+document.getElementById('mode-full').addEventListener('click',()=>{
+  if(document.getElementById('mode-eyes').classList.contains('active'))setView('face');
+  document.body.classList.add('facemode');
+});
+stageEl.addEventListener('click',()=>{
+  if(document.body.classList.contains('facemode'))document.body.classList.remove('facemode');
+});
+lookBtn.addEventListener('click',async()=>{
+  lookBtn.disabled=true;lookBtn.innerText='Looking…';setCaption('');
+  try{
+    const r=await api('/api/look',{method:'POST'});
+    let d={};try{d=await r.json();}catch(e){}
+    if(r.ok&&d.reply){setCaption(d.reply);add('aria',d.reply);}
+    else setCaption('Look failed: '+(d.error||r.status));
+  }catch(e){setCaption('Look failed: '+e);}
+  lookBtn.disabled=false;lookBtn.innerText='✦ Describe what you see';
+});
+document.getElementById('cog').addEventListener('click',()=>{
+  switchTab('settings');
+});
+document.getElementById('logbtn').addEventListener('click',()=>{
+  switchTab('chat');
+});
+
+function switchTab(name){
+  document.querySelectorAll('[data-panel]').forEach(p=>p.hidden=p.dataset.panel!==name);
+  document.querySelectorAll('[data-tab]').forEach(b=>{b.classList.toggle('selected',b.dataset.tab===name);b.setAttribute('aria-selected',String(b.dataset.tab===name));});
+  if(name==='vision')setView('face');
+}
+document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
+document.querySelectorAll('[data-prompt]').forEach(b=>b.onclick=()=>{
+  document.getElementById('t').value=b.dataset.prompt;document.getElementById('t').focus();
+});
+async function statusTick(){
+  const badge=document.getElementById('connection');
+  try{
+    const r=await api('/api/status');if(!r.ok)throw Error();const d=await r.json();
+    badge.textContent='Connected';badge.className='online';
+    document.getElementById('state').textContent=d.state;
+    document.getElementById('provider').textContent=d.provider;
+    document.getElementById('transport').textContent=d.transport==='https'?'HTTPS · local network':'HTTP · local network';
+  }catch(e){badge.textContent='Reconnecting…';badge.className='offline';}
+}
+statusTick();setInterval(statusTick,5000);window.addEventListener('online',statusTick);
+document.getElementById('stop-speech').onclick=async()=>{
+  stopVoicePlayback();
+  try{await api('/api/interrupt',{method:'POST'});}catch(e){}
+};
+function stopVoicePlayback(){
+  try{document.getElementById('aria-audio').pause();if(curSrc)curSrc.stop();}catch(e){}
+}
+document.getElementById('signout').onclick=async()=>{
+  try{await api('/api/logout',{method:'POST'});location.replace('/');}catch(e){}
+};
+const mailList=document.getElementById('mail-list');
+let mailRows=[],mailRequest=0;
+function mailDate(value){const d=new Date(value);return isNaN(d)?'':d.toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});}
+function renderMail(){
+  mailList.replaceChildren();const q=document.getElementById('mail-search').value.toLowerCase();
+  const rows=mailRows.filter(m=>(m.sender+' '+m.subject).toLowerCase().includes(q));
+  if(!rows.length){mailList.textContent=mailRows.length?'No matching messages.':'No messages to display.';return;}
+  rows.forEach(m=>{
+    const b=document.createElement('button');b.className='mail-card';
+    const head=document.createElement('div');head.className='mail-head';
+    const from=document.createElement('strong');from.textContent=(m.unread?'• ':'')+m.sender;
+    const date=document.createElement('time');date.textContent=mailDate(m.date);head.append(from,date);
+    const subj=document.createElement('span');subj.textContent=m.subject;b.append(head,subj);
+    b.onclick=()=>openMail(m);mailList.append(b);
+  });
+}
+async function loadMail(){
+  const b=document.getElementById('mail-refresh');b.disabled=true;document.getElementById('mail-status').textContent='Refreshing…';
+  try{const r=await api('/api/mail');const d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||'Inbox unavailable');
+    mailRows=d.messages;renderMail();document.getElementById('mail-status').textContent=mailRows.length+' recent messages';
+  }catch(e){document.getElementById('mail-status').textContent=e.message;}finally{b.disabled=false;}
+}
+async function openMail(m){
+  const request=++mailRequest;const detail=document.getElementById('mail-detail');detail.hidden=false;
+  document.getElementById('mail-subject').textContent=m.subject;
+  document.getElementById('mail-from').textContent=m.sender+' <'+m.address+'> · '+mailDate(m.date);
+  document.getElementById('mail-body').textContent='Opening message…';detail.scrollIntoView({behavior:'smooth',block:'start'});
+  try{const r=await api('/api/mail?uid='+encodeURIComponent(m.uid));const d=await r.json();if(request!==mailRequest)return;
+    if(!r.ok||!d.ok)throw Error(d.error||'Message unavailable');
+    document.getElementById('mail-body').textContent=d.message.body+(d.message.truncated?'\n\n[Large message: preview truncated]':'');
+  }catch(e){if(request===mailRequest)document.getElementById('mail-body').textContent=e.message;}
+}
+document.getElementById('mail-refresh').onclick=loadMail;
+document.getElementById('mail-search').oninput=renderMail;
+document.getElementById('mail-close').onclick=()=>{mailRequest++;document.getElementById('mail-detail').hidden=true;};
+</script></body></html>

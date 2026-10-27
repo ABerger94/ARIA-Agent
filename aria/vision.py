@@ -617,13 +617,13 @@ def face_track_loop(is_busy_fn: Optional[Callable[[], bool]] = None):
             add_log(f"Face track err: {e}")
 
 
-def publish_face_frame(canvas: np.ndarray):
+def publish_face_frame(canvas: np.ndarray, crop_box=None):
     """Crop the face and stash a JPEG for the Phone Bridge."""
     now = time.time()
     if now - _FACE_FRAME["last"] < _FACE_FPS_MIN_GAP:
         return
     try:
-        x, y, w, h = FACE_CROP
+        x, y, w, h = FACE_CROP if crop_box is None else crop_box
         ch, cw = canvas.shape[:2]
         crop = canvas[max(0, y):min(ch, y + h), max(0, x):min(cw, x + w)]
         if crop.size == 0:
