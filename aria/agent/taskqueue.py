@@ -32,6 +32,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from aria import config as _config
 from aria.config import add_log
+from aria.agent import taskstore
 
 
 class TaskStatus(Enum):
@@ -40,6 +41,7 @@ class TaskStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    BLOCKED = "blocked"   # parked with a checkpoint; resumable
 
 
 class TaskPriority(Enum):
@@ -59,6 +61,8 @@ class Task:
     error: str = field(compare=False, default="")
     speak: Any = field(compare=False, default=None)
     on_complete: Any = field(compare=False, default=None)
+    resume: Any = field(compare=False, default=None)
+    resumed_from: str = field(compare=False, default="")
     started_at: float = field(compare=False, default=0.0)
     cancel_flag: threading.Event = field(
         compare=False, default_factory=threading.Event)
@@ -111,7 +115,21 @@ class TaskQueue:
 
     def submit(self, goal: str, priority: TaskPriority = TaskPriority.NORMAL,
                speak: Optional[Callable] = None,
-               on_complete: Optional[Callable] = None) -> str:
+               on_complete: Optional[Callable] = None,
+               resume_from: str = "") -> str:
+        resume_state = None
+        if resume_from:
+            rec = taskstore.get(resume_from)
+            if rec is None:
+                raise ValueError(f"no journal record for task {resume_from}")
+            if rec.get("status") not in taskstore.RESUMABLE_STATUSES:
+                raise ValueError(
+                    f"task {resume_from} is {rec.get('status')}, not resumable")
+            resume_state = {"plan": rec.get("plan"),
+                            "completed": rec.get("completed") or [],
+                            "results": rec.get("results") or {}}
+            if not goal:
+                goal = rec.get("goal", "")
         task_id = str(uuid.uuid4())[:8]
         task = Task(
             priority=priority.value,
@@ -120,6 +138,8 @@ class TaskQueue:
             goal=goal,
             speak=speak,
             on_complete=on_complete,
+            resume=resume_state,
+            resumed_from=resume_from,
         )
         with self._condition:
             self._queue.append(task)
@@ -201,12 +221,37 @@ class TaskQueue:
 
     def _run_task(self, task: Task) -> None:
         add_log(f"Task running: [{task.task_id}] {task.goal[:60]}")
+        # Journal first (Gap fill 3): the record exists before any
+        # step runs, so a crash mid-task leaves a resumable trace.
+        taskstore.create(task.task_id, task.goal,
+                         resumed_from=task.resumed_from)
+
+        def _ckpt(state: dict) -> None:
+            taskstore.checkpoint(task.task_id, state)
+
         try:
             executor = self._get_executor()
+            # Pass the hardening kwargs only to executors whose
+            # execute() accepts them — injected test doubles keep
+            # the original (goal, speak, cancel_flag) signature.
+            import inspect
+            params = inspect.signature(executor.execute).parameters
+            kwargs: Dict[str, Any] = {}
+            if "on_checkpoint" in params:
+                kwargs["on_checkpoint"] = _ckpt
+            if "resume" in params:
+                kwargs["resume"] = task.resume
+            if "verify" in params:
+                try:
+                    kwargs["verify"] = bool(
+                        _config.get_setting("task_verify", True))
+                except Exception:
+                    kwargs["verify"] = False
             result = executor.execute(
                 goal=task.goal,
                 speak=task.speak,
                 cancel_flag=task.cancel_flag,
+                **kwargs,
             )
             with self._lock:
                 if task.cancel_flag.is_set():
@@ -214,6 +259,10 @@ class TaskQueue:
                 else:
                     task.status = TaskStatus.COMPLETED
                     task.result = result
+            taskstore.finish(
+                task.task_id,
+                "cancelled" if task.cancel_flag.is_set() else "completed",
+                result=str(result))
             if task.on_complete and not task.cancel_flag.is_set():
                 try:
                     task.on_complete(task.task_id, result)
@@ -221,10 +270,23 @@ class TaskQueue:
                     add_log(f"Task on_complete callback error: {e}")
             add_log(f"Task completed: [{task.task_id}]")
         except Exception as e:
-            with self._lock:
-                task.status = TaskStatus.FAILED
-                task.error = str(e)
-            add_log(f"Task failed: [{task.task_id}] {e}")
+            from aria.agent.taskexec import TaskBlocked
+            if isinstance(e, TaskBlocked):
+                # Parked, not failed: checkpoint persisted, reason
+                # recorded, resumable via the task_resume tool.
+                taskstore.checkpoint(task.task_id, e.state)
+                taskstore.finish(task.task_id, "blocked",
+                                 blocked_reason=e.reason)
+                with self._lock:
+                    task.status = TaskStatus.BLOCKED
+                    task.error = e.reason
+                add_log(f"Task blocked: [{task.task_id}] {e.reason[:80]}")
+            else:
+                with self._lock:
+                    task.status = TaskStatus.FAILED
+                    task.error = str(e)
+                taskstore.finish(task.task_id, "failed", error=str(e))
+                add_log(f"Task failed: [{task.task_id}] {e}")
         finally:
             with self._lock:
                 self._active_count -= 1
@@ -243,4 +305,14 @@ def get_queue() -> TaskQueue:
         if _queue is None:
             _queue = TaskQueue()
             _queue.start()
+            # Crash recovery (Gap fill 3): journal records a dead
+            # process left 'running' become blocked — visible and
+            # resumable, never silently re-run or silently lost.
+            try:
+                n = taskstore.recover_interrupted()
+                if n:
+                    add_log(f"Task journal: {n} interrupted task(s) "
+                            "recovered as blocked")
+            except Exception as e:
+                add_log(f"Task journal recovery failed: {e}")
         return _queue

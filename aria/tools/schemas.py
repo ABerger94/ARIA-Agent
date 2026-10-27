@@ -435,6 +435,13 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
         'parameters': {   'properties': {'task_id': {'type': 'STRING'}},
                           'required': ['task_id'],
                           'type': 'OBJECT'}},
+    {   'description': 'Resumes a blocked or failed delegated task from its saved checkpoint by its '
+                       'task_id: steps already completed are skipped and the current step re-runs. '
+                       'Use after the blocker (missing input, a restart) has been addressed.',
+        'name': 'task_resume',
+        'parameters': {   'properties': {'task_id': {'type': 'STRING'}},
+                          'required': ['task_id'],
+                          'type': 'OBJECT'}},
     {   'description': 'Cancels a pending or running delegated background task by its task_id.',
         'name': 'task_cancel',
         'parameters': {   'properties': {'task_id': {'type': 'STRING'}},
@@ -447,7 +454,7 @@ TOOLS_DECLARATION = [
 
 TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persistent background jobs, system health audit, self-healing diagnostics, delegated background tasks',
                  'tools': ['manage_autonomous_goal', 'manage_background_job', 'system_health_audit', 'self_heal_diagnose',
-                           'delegate_task', 'task_status', 'task_cancel']},
+                           'delegate_task', 'task_status', 'task_cancel', 'task_resume']},
     'admin': {   'summary': 'API keys, bridge token, command guide, volume, approval controls, personas, user tools',
                  'tools': ['bridge_token', 'show_commands', 'hide_commands', 'volume',
                            'approve', 'deny', 'list_pending_approvals', 'set_approval_mode', 'get_approval_mode',

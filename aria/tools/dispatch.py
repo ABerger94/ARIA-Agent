@@ -465,6 +465,27 @@ def _tool_task_status(args: dict) -> str:
     return out
 
 
+def _tool_task_resume(args: dict) -> str:
+    """Resume a blocked/failed delegated task from its journal
+    checkpoint (Gap fill 3): finished steps are skipped, the
+    current step re-runs. The journal is the source of truth —
+    a task that finished (or never existed) cannot resume."""
+    from aria.agent import taskqueue, taskstore
+    tid = str((args or {}).get("task_id", "") or "").strip()
+    rec = taskstore.get(tid) if tid else None
+    if rec is None:
+        return (f"No journal record for task '{tid}' — only tasks "
+                "that were journaled can resume.")
+    try:
+        new_id = taskqueue.get_queue().submit(
+            rec.get("goal", ""), resume_from=tid)
+    except ValueError as e:
+        return f"Can't resume task {tid}: {e}"
+    done = len(rec.get("completed") or [])
+    return (f"Resumed task {tid} as new task {new_id} — "
+            f"{done} completed step(s) will be skipped.")
+
+
 def _tool_task_cancel(args: dict) -> str:
     from aria.agent import taskqueue
     tid = str((args or {}).get("task_id", "") or "").strip()
@@ -565,6 +586,7 @@ def _init_default_registry():
     _REGISTRY["system_health_audit"] = lambda a: builtins.tool_system_health_audit()
     _REGISTRY["delegate_task"] = lambda a: _tool_delegate_task(a)
     _REGISTRY["task_status"] = lambda a: _tool_task_status(a)
+    _REGISTRY["task_resume"] = lambda a: _tool_task_resume(a)
     _REGISTRY["task_cancel"] = lambda a: _tool_task_cancel(a)
     _REGISTRY["self_heal_diagnose"] = lambda a: builtins.tool_self_heal_diagnose(
         error_text=a.get("error_text", ""), context=a.get("context", "")
