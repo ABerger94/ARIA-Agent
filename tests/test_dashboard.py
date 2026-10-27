@@ -60,7 +60,8 @@ def test_dashboard_routes_controls_and_refreshes(monkeypatch, tmp_path):
     window = create_dashboard(callbacks)
     window.show(); app.processEvents(); window.render_once()
     assert window.tabs.count() == 5
-    assert window.cpu[1].value() == 25
+    assert window.cpu._value == 25
+    assert window.plaque_engine._value == 'Ollama'
     assert '<b>literal text</b>' in window.views['Conversation'].toPlainText()
     assert not window.face.grab().isNull()
     window.entry.setText('  hello ARIA  '); window.entry.returnPressed.emit()

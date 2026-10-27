@@ -35,10 +35,11 @@ def create_dashboard(callbacks):
     from PyQt6.QtGui import QImage, QPixmap
     from PyQt6.QtWidgets import (QMainWindow, QWidget, QFrame, QLabel, QPushButton,
                                 QVBoxLayout, QHBoxLayout, QSplitter, QTabWidget,
-                                QTextBrowser, QLineEdit, QProgressBar, QSlider,
+                                QTextBrowser, QLineEdit, QSlider,
                                 QFileDialog, QDialog, QApplication, QListWidget, QListWidgetItem)
     from aria import frame, hud, config
     from aria.resonance import ResonanceOrb
+    from aria.metric_bar import MetricBar, StatusPlaque
 
     class Dashboard(QMainWindow):
         panel_result = pyqtSignal(str, object)
@@ -64,13 +65,16 @@ def create_dashboard(callbacks):
             head = QHBoxLayout()
             brand = QLabel('A.R.I.A.'); brand.setObjectName('brand'); head.addWidget(brand)
             head.addWidget(QLabel('ADAPTIVE ROBOTIC INTELLIGENCE AGENT')); head.addStretch()
-            self.status = QLabel('Connecting to services'); self.status.setFixedWidth(200); head.addWidget(self.status)
             self.clock = QLabel(); self.clock.setFixedWidth(190); head.addWidget(self.clock); layout.addLayout(head)
             body = QSplitter(Qt.Orientation.Horizontal); layout.addWidget(body, 1)
             left, ll = self.card('SYSTEM MONITOR'); left.setMinimumWidth(220); left.setMaximumWidth(290)
-            self.cpu = self.meter(ll, 'PROCESSOR'); self.mem = self.meter(ll, 'MEMORY')
+            self.plaque_engine = StatusPlaque('ENGINE'); ll.addWidget(self.plaque_engine)
+            self.plaque_state = StatusPlaque('STATE'); ll.addWidget(self.plaque_state)
+            self.plaque_tasks = StatusPlaque('TASKS'); ll.addWidget(self.plaque_tasks)
+            self.cpu = MetricBar('CPU'); ll.addWidget(self.cpu)
+            self.mem = MetricBar('MEM'); ll.addWidget(self.mem)
+            self.net = MetricBar('NET'); ll.addWidget(self.net)
             self.power = QLabel(); ll.addWidget(self.power)
-            self.engine = QLabel(); self.engine.setMinimumHeight(50); self.engine.setWordWrap(True); ll.addWidget(self.engine)
             self.subsystems = QLabel(); self.subsystems.setWordWrap(True); ll.addWidget(self.subsystems)
             ll.addStretch()
             title = QLabel('NOW PLAYING'); title.setObjectName('title'); ll.addWidget(title)
@@ -135,11 +139,6 @@ def create_dashboard(callbacks):
             card = QFrame(); card.setObjectName('card'); lay = QVBoxLayout(card); lay.setContentsMargins(16, 16, 16, 16); lay.setSpacing(14)
             label = QLabel(title); label.setObjectName('title'); lay.addWidget(label)
             return card, lay
-
-        def meter(self, layout, name):
-            label = QLabel(name); layout.addWidget(label)
-            bar = QProgressBar(); bar.setRange(0, 100); bar.setTextVisible(False); layout.addWidget(bar)
-            return label, bar
 
         def submit(self):
             text = self.entry.text().strip()
@@ -394,12 +393,16 @@ def create_dashboard(callbacks):
             data = frame.strip_data()
             self.clock.setText(datetime.now().strftime('%H:%M  |  %a %d %b'))
             self.state.setText(str(hud.CURRENT_STATE).upper()); self.subtitle.setText(str(hud.SUBTITLE_TEXT))
-            for key, meter in [('cpu', self.cpu), ('mem', self.mem)]:
-                value = int(data[key]); meter[0].setText(('PROCESSOR' if key == 'cpu' else 'MEMORY') + f'   {value}%'); meter[1].setValue(value)
+            self.cpu.set_value(int(data['cpu']), f"{int(data['cpu'])}%")
+            self.mem.set_value(int(data['mem']), f"{int(data['mem'])}%")
+            net_kbs = float(data.get('net_down_kbs', 0) or 0) + float(data.get('net_up_kbs', 0) or 0)
+            net_text = f'{net_kbs:.0f} KB/s' if net_kbs < 1024 else f'{net_kbs / 1024:.1f} MB/s'
+            self.net.set_value(min(100.0, net_kbs / 102.4), net_text)
             self.power.setText(f"POWER  {data['battery']}   /   UPTIME {frame._fmt_uptime(data['uptime_s'])}")
-            self.engine.setText('ENGINE\n' + (data['active_provider'] or 'Waiting for first response'))
+            self.plaque_engine.set_value(data['active_provider'] or 'Waiting')
+            self.plaque_state.set_value(str(hud.CURRENT_STATE).upper())
+            self.plaque_tasks.set_value(f"{data.get('task_active', 0)} run / {data.get('task_pending', 0)} wait")
             self.subsystems.setText('\n'.join(f'{name}   {status}' for name, status, ok in data['subsystems']))
-            self.status.setText(f"{data['task_active']} active / {data['scheduled']} scheduled")
             self.voice.setText('Voice on' if data['voice_enabled'] else 'Voice off')
             self.whisper.setText('Whisper on' if hud.WHISPER_MODE else 'Whisper off')
             if not self.volume.isSliderDown(): self.volume.setValue(int(data['volume'] * 100))
