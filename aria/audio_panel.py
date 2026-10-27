@@ -24,7 +24,9 @@ def build_audio_dialog(parent):
 
     dlg = QDialog(parent)
     dlg.setWindowTitle('Audio Devices')
-    dlg.setStyleSheet(STYLE)
+    dlg.setStyleSheet(
+        parent.styleSheet() if parent is not None and parent.styleSheet()
+        else STYLE)
     dlg.resize(520, 460)
     lay = QVBoxLayout(dlg)
 

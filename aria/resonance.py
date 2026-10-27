@@ -417,3 +417,27 @@ class ResonanceOrb(QWidget):
             p.setPen(QPen(blend(qcol(C.WHITE), 0.6 + 0.4 * min(1.0, amp * 2)), 1))
             p.drawText(QRectF(cx - r, cy - fsz, r * 2, fsz * 2),
                        Qt.AlignmentFlag.AlignCenter, name)
+
+
+# Accent-linked palette (Port 5, Customize): the teal family only —
+# ACC/ACC2/GREEN/MUTED_C are signal colours and never move.
+_ACCENT_DEFAULTS = {'PRI': '#00d4ff', 'PRI_DIM': '#007a99',
+                    'WHITE': '#d8f8ff'}
+
+
+def apply_accent(accent_hex) -> bool:
+    """Hue-shift the orb's accent-linked colours to a new accent
+    (aria/hue_wheel.shift_palette). None restores the defaults.
+    Returns False for an invalid accent, palette untouched."""
+    if accent_hex is None:
+        for key, value in _ACCENT_DEFAULTS.items():
+            setattr(C, key, value)
+        return True
+    from aria.hue_wheel import shift_palette
+    shifted = shift_palette(dict(_ACCENT_DEFAULTS),
+                            _ACCENT_DEFAULTS['PRI'], accent_hex)
+    if shifted is None:
+        return False
+    for key, value in shifted.items():
+        setattr(C, key, value)
+    return True

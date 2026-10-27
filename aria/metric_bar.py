@@ -147,3 +147,27 @@ class StatusPlaque(QWidget):
             f'border-radius: 3px;')
         self._label.setStyleSheet(
             f'color: {self._color}; background: transparent; border: none;')
+
+
+# Accent-linked palette (Port 5, Customize): the cyan family only —
+# ACC/RED/GREEN thresholds are signal colours and never move.
+_ACCENT_DEFAULTS = {'PRI': '#54d9e8', 'BORDER_A': '#1b3042',
+                    'TEXT_DIM': '#5ab8cc'}
+
+
+def apply_accent(accent_hex) -> bool:
+    """Hue-shift the bars'/plaques' accent-linked colours to a new
+    accent (aria/hue_wheel.shift_palette). None restores the defaults.
+    Returns False for an invalid accent, palette untouched."""
+    if accent_hex is None:
+        for key, value in _ACCENT_DEFAULTS.items():
+            setattr(C, key, value)
+        return True
+    from aria.hue_wheel import shift_palette
+    shifted = shift_palette(dict(_ACCENT_DEFAULTS),
+                            _ACCENT_DEFAULTS['PRI'], accent_hex)
+    if shifted is None:
+        return False
+    for key, value in shifted.items():
+        setattr(C, key, value)
+    return True

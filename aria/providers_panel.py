@@ -75,7 +75,9 @@ def build_providers_dialog(parent):
 
     dlg = QDialog(parent)
     dlg.setWindowTitle('Providers')
-    dlg.setStyleSheet(STYLE)
+    dlg.setStyleSheet(
+        parent.styleSheet() if parent is not None and parent.styleSheet()
+        else STYLE)
     dlg.resize(520, 400)
     lay = QVBoxLayout(dlg)
 

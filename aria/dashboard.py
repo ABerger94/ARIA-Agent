@@ -29,6 +29,46 @@ QSlider::groove:horizontal { height: 4px; background: #21374b; }
 QSlider::handle:horizontal { background: #66dbe7; width: 12px; margin: -5px 0; border-radius: 6px; }
 """
 
+# The stylesheet's colour family (Port 5, Customize): every hex here is
+# hue-linked — one accent re-derives all of them, S/V ratios preserved
+# (aria/hue_wheel.shift_palette). #dce6ef (body text) is deliberately
+# NOT linked: text stays readable under any accent.
+_STYLE_LINKED = ('#080d14', '#0d1520', '#0a111b', '#1b3042', '#274257',
+                 '#54d9e8', '#77e7ef', '#111e2c', '#193044', '#24516a',
+                 '#174452', '#319aab', '#a5f5fa', '#42c9da', '#172434',
+                 '#21374b', '#66dbe7', '#829aaf')
+_STYLE_BASE = '#54d9e8'
+
+
+def style_for_accent(accent):
+    """STYLE with its colour family hue-shifted to `accent`.
+
+    None or an invalid accent returns STYLE unchanged — a bad stored
+    preference can never cost the window its theme."""
+    if not accent:
+        return STYLE
+    from aria.hue_wheel import shift_palette
+    shifted = shift_palette({h: h for h in _STYLE_LINKED},
+                            _STYLE_BASE, accent)
+    if shifted is None:
+        return STYLE
+    import re
+    return re.sub('|'.join(re.escape(h) for h in _STYLE_LINKED),
+                  lambda m: shifted[m.group(0)], STYLE)
+
+
+def _apply_painted_accent(accent):
+    """Push an accent into the painted widgets' palettes (orb, bars).
+
+    Each module guards itself; a failure here is cosmetic and must
+    never break the window."""
+    import importlib
+    for mod_name in ('aria.resonance', 'aria.metric_bar'):
+        try:
+            importlib.import_module(mod_name).apply_accent(accent)
+        except Exception:
+            pass
+
 
 def create_dashboard(callbacks):
     from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
@@ -41,6 +81,12 @@ def create_dashboard(callbacks):
     from aria.resonance import ResonanceOrb
     from aria.metric_bar import MetricBar, StatusPlaque
     from aria.video_panel import VideoPanel, HAVE_VIDEO as _HAVE_VIDEO
+    try:
+        from aria import ui_prefs as _ui_prefs
+        _accent0 = _ui_prefs.get_accent()
+    except Exception:
+        _accent0 = None
+    _apply_painted_accent(_accent0)
 
     class Dashboard(QMainWindow):
         panel_result = pyqtSignal(str, object)
@@ -51,7 +97,7 @@ def create_dashboard(callbacks):
             self.setWindowTitle('A.R.I.A. | Command Center')
             self.resize(1440, 900)
             self.setMinimumSize(1080, 720)
-            self.setStyleSheet(STYLE)
+            self.setStyleSheet(style_for_accent(_accent0))
             self.setAcceptDrops(True)
             self._loading = set()
             self._email_request = 0
@@ -128,7 +174,7 @@ def create_dashboard(callbacks):
                 pl.addWidget(view); self.tabs.addTab(page, name)
             rl.addWidget(self.tabs, 1)
             row = QHBoxLayout()
-            for text, fn in [('Commands', self.commands), ('Add file', self.browse_file), ('Providers', self.open_providers), ('Audio', self.open_audio)]:
+            for text, fn in [('Commands', self.commands), ('Add file', self.browse_file), ('Providers', self.open_providers), ('Audio', self.open_audio), ('Customize', self.open_customize)]:
                 b = QPushButton(text); b.clicked.connect(fn); row.addWidget(b)
             rl.addLayout(row); body.addWidget(right); body.setSizes([250, 560, 550])
             command = QHBoxLayout()
@@ -299,6 +345,21 @@ def create_dashboard(callbacks):
         def open_audio(self):
             from aria.audio_panel import build_audio_dialog
             build_audio_dialog(self).exec()
+
+        def open_customize(self):
+            from aria import ui_prefs
+            from aria.customize_panel import build_customize_dialog
+            start = ui_prefs.get_accent()
+
+            def preview(hex_):
+                _apply_painted_accent(hex_)
+
+            def commit(hex_):
+                ui_prefs.set_accent(hex_)
+                _apply_painted_accent(hex_)
+                self.setStyleSheet(style_for_accent(hex_))
+
+            build_customize_dialog(self, start, preview, commit).exec()
 
         def show_video(self, source, title='', muted=False):
             """Play a file/direct URL in the center card, orb swapped out.
