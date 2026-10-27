@@ -354,6 +354,17 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
     _LAST_TOOL_EXECUTED = (fn_name, time.time())
 
     # 6. Execute Handler
+    # Fleet registry (aria/fleet.py, the Mark-LVI port): the call
+    # is in flight from here to the return, so the Tasks tab's
+    # Fleet section can show what she is ACTUALLY doing — the
+    # funnel is the only place that knows.
+    _fleet_token = None
+    try:
+        from aria import fleet as _fleet_mod
+        _fleet_token = _fleet_mod.begin(
+            fn_name, _fleet_mod.detail_for(fn_name, args or {}))
+    except Exception:
+        _fleet_token = None
     _SCOPE.preauthorized = bool(preauthorized)
     try:
         handler = _REGISTRY.get(fn_name)
@@ -428,6 +439,11 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
             _routines_mod.maybe_capture(fn_name, args or {})
         except Exception as _e_silent:
             _config_mod.log_silent("execute_tool", _e_silent)
+    try:
+        from aria import fleet as _fleet_mod
+        _fleet_mod.finish(_fleet_token, _fleet_mod.result_ok(r))
+    except Exception:
+        pass
     return r, False
 
 

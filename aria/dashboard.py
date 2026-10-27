@@ -1116,15 +1116,27 @@ def create_dashboard(callbacks):
             if activity != self._last_activity:
                 self._last_activity = activity
                 self.views['Activity'].setHtml(activity_html(_events))
+            # Fleet lives INSIDE the Tasks tab (Alek, 2026-10-27:
+            # no new tab) — runtime state only, above the existing
+            # delegated/scheduled lists.
+            try:
+                from aria import fleet as _fleet_mod
+                fleet_text = _fleet_mod.render_text(_fleet_mod.snapshot())
+            except Exception:
+                fleet_text = ''
             try:
                 from aria.agent.taskqueue import get_queue
                 from aria.scheduler import sched_list
                 tasks = get_queue().get_all_statuses()
                 text = '\n\n'.join(f"{t.get('status', '?').upper()}  {t.get('goal', '')}\n{t.get('error') or t.get('result') or ''}" for t in tasks)
                 scheduled = '\n'.join(str(row) for row in sched_list())
-                self.views['Tasks'].setPlainText((text or 'No delegated tasks.') + '\n\nSCHEDULED\n' + (scheduled or 'No scheduled tasks.'))
+                body = (text or 'No delegated tasks.') + '\n\nSCHEDULED\n' + (scheduled or 'No scheduled tasks.')
+                self.views['Tasks'].setPlainText(
+                    (fleet_text + '\n\n———\n\n' + body) if fleet_text else body)
             except Exception as exc:
-                self.views['Tasks'].setPlainText('Task status unavailable: ' + str(exc))
+                self.views['Tasks'].setPlainText(
+                    (fleet_text + '\n\n' if fleet_text else '')
+                    + 'Task status unavailable: ' + str(exc))
             self._poll_approvals()
 
         def closeEvent(self, event):
