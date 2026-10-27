@@ -12,6 +12,9 @@ from datetime import datetime
 STYLE = """
 QWidget { background: #080d14; color: #dce6ef; font: 12px 'Segoe UI'; }
 QFrame#card { background: #0d1520; border: 1px solid #1b3042; border-radius: 10px; }
+QFrame#visionPip { background: rgba(0, 6, 10, 242); border: 1px solid #54d9e8; border-radius: 6px; }
+QLabel#pipTitle { color: #54d9e8; font: bold 9px 'Consolas'; letter-spacing: 1px; }
+QPushButton#pipClose { background: transparent; border: none; padding: 0; color: #829aaf; }
 QLabel { background: transparent; border: none; }
 QLabel#title { color: #54d9e8; font: bold 11px 'Consolas'; letter-spacing: 2px; }
 QLabel#brand { color: #77e7ef; font: bold 28px 'Consolas'; letter-spacing: 4px; }
@@ -233,6 +236,72 @@ def create_dashboard(callbacks):
         from aria.holo_face import HoloFace
     except Exception:
         HoloFace = None
+
+    class VisionPip(QFrame):
+        """On-demand picture-in-picture, Mark-LVI style (Alek,
+        2026-10-27): when he asks what she sees, the exact frame
+        the vision tool analyzed pops up in the center card's
+        bottom-right corner — 'VISUAL INPUT' header, a close
+        button, gone again after 6 seconds. NOT the ambient
+        camera tile he removed that morning: nothing captures
+        for this widget and it never appears unprompted; vision
+        tools publish a frame only when he has asked her to look
+        (aria.vision.publish_vision_preview)."""
+
+        _W = 244
+
+        def __init__(self, parent):
+            super().__init__(parent)
+            self.setObjectName('visionPip')
+            self.setFixedWidth(self._W)
+            lay = QVBoxLayout(self)
+            lay.setContentsMargins(6, 5, 6, 6)
+            lay.setSpacing(4)
+            hdr = QHBoxLayout()
+            self.title = QLabel('◈ VISUAL INPUT')
+            self.title.setObjectName('pipTitle')
+            hdr.addWidget(self.title)
+            hdr.addStretch()
+            close = QPushButton('✕')
+            close.setObjectName('pipClose')
+            close.setFixedSize(16, 16)
+            close.clicked.connect(self.hide)
+            hdr.addWidget(close)
+            lay.addLayout(hdr)
+            self.img = QLabel()
+            self.img.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lay.addWidget(self.img)
+            self._timer = QTimer(self)
+            self._timer.setSingleShot(True)
+            self._timer.timeout.connect(self.hide)
+            self.hide()
+
+        def show_frame(self, jpeg, label=''):
+            px = QPixmap()
+            px.loadFromData(jpeg)
+            if px.isNull():
+                return
+            scaled = px.scaled(self._W - 12, 160,
+                               Qt.AspectRatioMode.KeepAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+            self.img.setPixmap(scaled)
+            self.img.setFixedSize(scaled.size())
+            self.title.setText('◈ VISUAL INPUT' +
+                               (f' — {label}' if label else ''))
+            self.adjustSize()
+            self.place()
+            self.show()
+            self.raise_()
+            self._timer.start(6000)
+
+        def place(self):
+            """Bottom-right corner of the parent (the center card),
+            12px in from its edges."""
+            parent = self.parent()
+            if parent is None:
+                return
+            self.move(max(0, parent.width() - self.width() - 12),
+                      max(0, parent.height() - self.height() - 12))
 
     class Dashboard(QMainWindow):
         panel_result = pyqtSignal(str, object)
@@ -469,6 +538,21 @@ def create_dashboard(callbacks):
             self._commands_shortcut.activated.connect(self.commands)
             self._fullscreen_shortcut = QShortcut(QKeySequence('F11'), self)
             self._fullscreen_shortcut.activated.connect(self._toggle_fullscreen)
+            self._pip = VisionPip(self._center_card)
+            self._pip_seen_ts = 0.0
+
+        def _poll_vision_pip(self):
+            """Show the PiP when a vision tool has published a new
+            frame (he asked her to look at something). Cheap dict
+            read; a stale or absent frame leaves the PiP hidden."""
+            try:
+                from aria import vision as _vision_mod
+                pv = _vision_mod.vision_preview()
+            except Exception:
+                return
+            if (pv.get('jpeg') and pv.get('ts', 0) > self._pip_seen_ts):
+                self._pip_seen_ts = pv['ts']
+                self._pip.show_frame(pv['jpeg'], pv.get('label', ''))
 
         def _toggle_fullscreen(self):
             """F11, Mark-LVI style (Alek, 2026-10-27): true full
@@ -512,6 +596,8 @@ def create_dashboard(callbacks):
             super().resizeEvent(event)
             if hasattr(self, 'neural'):
                 self._sync_neural_geometry()
+            if getattr(self, '_pip', None) is not None and self._pip.isVisible():
+                self._pip.place()
 
         def dragEnterEvent(self, event):
             if event.mimeData().hasUrls(): event.acceptProposedAction()
@@ -1192,6 +1278,7 @@ def create_dashboard(callbacks):
                 else:
                     self.views['Conversation'].setPlainText('Your conversation with ARIA appears here.')
                 self.views['Conversation'].verticalScrollBar().setValue(self.views['Conversation'].verticalScrollBar().maximum())
+            self._poll_vision_pip()
             _events = frame.activity_events(100)
             activity = '\n\n'.join(f'{ts}  {level}\n{message}' for ts, level, message, meta in _events)
             if activity != self._last_activity:

@@ -173,3 +173,37 @@ def test_dashboard_starts_on_saved_holo(monkeypatch):
     window.show(); app.processEvents()
     assert window.holo.isVisible() and not window.face.isVisible()
     window.close(); app.processEvents()
+
+
+def test_dashboard_vision_pip_on_demand(monkeypatch):
+    # Alek, 2026-10-27: ask her what she sees and a PiP shows the
+    # frame, Mark-LVI style (VISUAL INPUT header, 6s auto-hide).
+    # Hidden until a vision tool publishes a frame; a poll with
+    # nothing new leaves it hidden.
+    app = _app()
+    callbacks, _calls = _dashboard_stubs(monkeypatch, centerpiece='orb')
+    from aria.dashboard import create_dashboard
+    window = create_dashboard(callbacks)
+    window.show(); app.processEvents()
+    assert hasattr(window, '_pip') and not window._pip.isVisible()
+    window._poll_vision_pip()
+    assert not window._pip.isVisible()
+    from PyQt6.QtCore import QBuffer, QIODevice
+    from PyQt6.QtGui import QColor, QImage
+    img = QImage(16, 12, QImage.Format.Format_RGB888)
+    img.fill(QColor('#ff8800'))
+    buf = QBuffer(); buf.open(QIODevice.OpenModeFlag.WriteOnly)
+    img.save(buf, 'JPG')
+    fake_vision = types.ModuleType('aria.vision')
+    fake_vision.vision_preview = lambda: {
+        'jpeg': bytes(buf.data()), 'label': 'CAMERA', 'ts': 123.0}
+    monkeypatch.setitem(sys.modules, 'aria.vision', fake_vision)
+    monkeypatch.setattr(sys.modules['aria'], 'vision', fake_vision,
+                        raising=False)
+    window._poll_vision_pip()
+    assert window._pip.isVisible()
+    assert not window._pip.img.pixmap().isNull()
+    assert 'CAMERA' in window._pip.title.text()
+    window._pip._timer.timeout.emit()
+    assert not window._pip.isVisible()
+    window.close(); app.processEvents()

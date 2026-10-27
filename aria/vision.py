@@ -141,6 +141,31 @@ def get_phone_frame_status() -> dict:
             "age_s": round(age, 1) if last else -1.0}
 
 
+# ── Vision preview (dashboard picture-in-picture) ────────────────────
+# The exact frame a vision tool just analyzed, published for the
+# dashboard's on-demand PiP (Alek, 2026-10-27: "when I ask her what
+# she sees, I want a camera pip to show up"). NOT a capture loop:
+# nothing publishes except a vision tool that already captured a
+# frame to answer him — the ambient always-on camera tile he
+# removed on 2026-10-27 stays removed.
+_VISION_PREVIEW: Dict[str, Any] = {"jpeg": None, "label": "", "ts": 0.0}
+
+
+def publish_vision_preview(jpeg: Optional[bytes], label: str = "") -> None:
+    """Publish the frame a vision tool is about to analyze, so the
+    dashboard PiP can show him exactly what she saw."""
+    if not jpeg:
+        return
+    _VISION_PREVIEW["jpeg"] = bytes(jpeg)
+    _VISION_PREVIEW["label"] = str(label or "")
+    _VISION_PREVIEW["ts"] = time.time()
+
+
+def vision_preview() -> Dict[str, Any]:
+    """The latest published vision frame: {jpeg, label, ts}."""
+    return dict(_VISION_PREVIEW)
+
+
 def describe_phone_view(question: str = "") -> str:
     """Describe what ARIA's phone camera currently sees."""
     jpg = get_phone_frame_jpeg()
@@ -405,6 +430,7 @@ def tool_read_screen(question: str = "") -> str:
         data = capture_screen()
     except Exception as e:
         return f"[Screen capture failed: {e}]"
+    publish_vision_preview(data, "SCREEN")
     q = question or "Read all text visible on this screen, top to bottom. Be concise."
     b64 = base64.b64encode(data).decode("utf-8")
     contents = [{"role": "user", "parts": [
@@ -426,6 +452,7 @@ def tool_describe_camera(question: str = "") -> str:
         return f"[Camera capture failed: {e}]"
     if not data:
         return "[Camera not available right now.]"
+    publish_vision_preview(data, "CAMERA")
     q = question or "Describe what you see in detail."
     b64 = base64.b64encode(data).decode("utf-8")
     contents = [{"role": "user", "parts": [
@@ -499,6 +526,7 @@ def vision_first_look(image_bytes: bytes, question: str = "",
         return "[Vision first-look is disabled (ARIA_VISION_FASTPATH=0).]"
     if not image_bytes:
         return "[Vision first-look unavailable: no image was provided.]"
+    publish_vision_preview(image_bytes, "VISION")
     pool = _first_look_pool(pool)
     ready = False
     try:

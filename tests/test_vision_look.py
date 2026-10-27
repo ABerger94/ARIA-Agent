@@ -178,3 +178,31 @@ def test_first_look_leaves_existing_chain_untouched():
     finally:
         vision._VISION_TEXT_CALL = old
     print("ok first_look_leaves_existing_chain_untouched")
+
+
+def test_vision_preview_publish_and_tools():
+    # Alek, 2026-10-27: the dashboard PiP shows the frame a vision
+    # tool analyzed when he asks what she sees. The tools publish
+    # the frame they captured; nothing publishes on its own (the
+    # ambient camera tile he removed stays removed).
+    before = vision.vision_preview()        # earlier tests may have
+    vision.publish_vision_preview(None, "CAMERA")      # empty = no-op
+    assert vision.vision_preview() == before
+    old_cam, old_scr = vision.capture_webcam, vision.capture_screen
+    old_call = vision._VISION_TEXT_CALL
+    vision.capture_webcam = lambda: PNG_1X1
+    vision.capture_screen = lambda: PNG_1X1
+    vision._VISION_TEXT_CALL = lambda s, c: "described"
+    try:
+        assert vision.tool_describe_camera("what do you see?") == "described"
+        pv = vision.vision_preview()
+        assert pv["jpeg"] == PNG_1X1 and pv["label"] == "CAMERA" and pv["ts"] > 0
+        assert vision.tool_read_screen("read it") == "described"
+        assert vision.vision_preview()["label"] == "SCREEN"
+        out = vision.vision_first_look(PNG_1X1, pool=FakePool())
+        assert out == "A red bicycle."
+        assert vision.vision_preview()["label"] == "VISION"
+    finally:
+        vision.capture_webcam, vision.capture_screen = old_cam, old_scr
+        vision._VISION_TEXT_CALL = old_call
+    print("ok vision_preview_publish_and_tools")
