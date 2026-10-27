@@ -237,10 +237,21 @@ def test_dashboard_centerpiece_memory_map(monkeypatch):
     assert window.face.isVisible()
     assert not window.mem_map_center.isVisible()
     assert not window.map_close.isVisible()
+    # The 3D orb (Alek, 2026-10-27): a fourth centerpiece on
+    # the same swap contract; the flat orb is untouched.
+    window.set_centerpiece('orb3d')
+    app.processEvents()
+    assert window._centerpiece == 'orb3d'
+    assert window.orb3d.isVisible()
+    assert not window.face.isVisible()
+    assert ('cp', 'orb3d') in calls
+    window.orb3d.advance('speaking', 0.6, False)
+    app.processEvents()
     window.set_centerpiece('orb')
     app.processEvents()
     assert window.face.isVisible()
     assert not window.mem_map_center.isVisible()
+    assert not window.orb3d.isVisible()
     # Tab Map mode (select the Memory tab first — a background
     # tab's children report not-visible regardless).
     idx = [window.tabs.tabText(i) for i in range(window.tabs.count())].index('Memory')

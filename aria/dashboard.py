@@ -190,7 +190,7 @@ def _apply_painted_accent(accent):
     never break the window."""
     import importlib
     for mod_name in ('aria.resonance', 'aria.metric_bar', 'aria.holo_face',
-                     'aria.neural_field'):
+                     'aria.neural_field', 'aria.orb3d'):
         try:
             importlib.import_module(mod_name).apply_accent(accent)
         except Exception:
@@ -226,6 +226,7 @@ def create_dashboard(callbacks):
     from aria.resonance import ResonanceOrb
     from aria.neural_field import NeuralField
     from aria.constellation import ConstellationWidget
+    from aria.orb3d import Orb3D
     from aria.metric_bar import MetricBar, StatusPlaque
     from aria.video_panel import VideoPanel, HAVE_VIDEO as _HAVE_VIDEO
     try:
@@ -519,6 +520,12 @@ def create_dashboard(callbacks):
                 'border: 1px solid #1b3042; border-radius: 4px;')
             self.map_close.clicked.connect(
                 lambda: self.set_centerpiece('orb'))
+            # The 3D orb centerpiece (Alek, 2026-10-27): the
+            # waveform on a spinnable ball. The flat orb above
+            # stays untouched; this is a separate widget fed by
+            # the same advance() contract.
+            self.orb3d = Orb3D(transparent_background=True)
+            self.orb3d.hide(); _stack.addWidget(self.orb3d, 0, 0)
             cl.addWidget(self.center_stack, 1)
             self._last_orb_publish = 0.0
             self.state = QLabel('IDLE'); self.state.setAlignment(Qt.AlignmentFlag.AlignCenter); self.state.setObjectName('brand'); cl.addWidget(self.state)
@@ -1184,7 +1191,7 @@ def create_dashboard(callbacks):
             matching the boot-time rule. 'map' is the memory
             constellation (Alek, 2026-10-27), fed fresh facts
             on every swap to it."""
-            self._centerpiece = name if name in ('holo', 'map') else 'orb'
+            self._centerpiece = name if name in ('holo', 'map', 'orb3d') else 'orb'
             if self._centerpiece == 'holo' and self.holo is None:
                 self._centerpiece = 'orb'
             try:
@@ -1205,11 +1212,14 @@ def create_dashboard(callbacks):
             if self.holo is not None:
                 self.holo.hide()
             self.mem_map_center.hide()
+            self.orb3d.hide()
             if self._centerpiece == 'holo' and self.holo is not None:
                 self.holo.show()
             elif self._centerpiece == 'map':
                 self.mem_map_center.show()
                 self._place_map_close()
+            elif self._centerpiece == 'orb3d':
+                self.orb3d.show()
             else:
                 self.face.show()
 
@@ -1386,6 +1396,9 @@ def create_dashboard(callbacks):
                     from aria import audio_levels as _al
                     _vis = _al.viseme()
                 self.holo.advance(state, level, _muted, viseme=_vis)
+            elif getattr(self, 'orb3d', None) is not None \
+                    and self.orb3d.isVisible():
+                self.orb3d.advance(state, level, _muted)
             else:
                 self.face.advance(state, level, _muted)
             self._sync_neural_geometry()
@@ -1400,7 +1413,9 @@ def create_dashboard(callbacks):
             # can see.
             _center = self.face if self.face.isVisible() else (
                 self.holo if self.holo is not None
-                and self.holo.isVisible() else None)
+                and self.holo.isVisible() else (
+                    self.orb3d if getattr(self, 'orb3d', None) is not None
+                    and self.orb3d.isVisible() else None))
             if _center is not None and time.monotonic() - self._last_orb_publish >= .125:
                 self._last_orb_publish = time.monotonic()
                 try:

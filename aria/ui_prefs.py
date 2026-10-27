@@ -36,14 +36,14 @@ def get_centerpiece() -> str:
     try:
         with open(_ui_file(), encoding="utf-8") as f:
             value = (json.load(f) or {}).get("centerpiece")
-        return value if value in ("orb", "holo", "map") else "orb"
+        return value if value in ("orb", "holo", "map", "orb3d") else "orb"
     except Exception:
         return "orb"
 
 
 def set_centerpiece(name: str) -> str:
     """Persist the centerpiece choice; unknown names collapse to 'orb'."""
-    name = name if name in ("orb", "holo", "map") else "orb"
+    name = name if name in ("orb", "holo", "map", "orb3d") else "orb"
     os.makedirs(os.path.dirname(_ui_file()), exist_ok=True)
     payload = {}
     try:
