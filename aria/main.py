@@ -234,13 +234,25 @@ def _ptt_reset_state():
     hud.draw_hud()
 
 
+def _mic_device():
+    """Persisted input-device choice (Audio panel); None = system default.
+
+    Never raises — a broken prefs file must not silence the microphone.
+    """
+    try:
+        from aria import audio_prefs
+        return audio_prefs.get_input_device()
+    except Exception:
+        return None
+
+
 def _ptt_capture():
     frames = []
     sample_rate = 16000
     sample_width = 2
 
     try:
-        with speech.SoundDeviceSource(sample_rate=16000) as source:
+        with speech.SoundDeviceSource(sample_rate=16000, device=_mic_device()) as source:
             sample_rate = source.SAMPLE_RATE
             sample_width = source.SAMPLE_WIDTH
             chunk_size = source.CHUNK
@@ -482,7 +494,7 @@ def continuous_voice_listener():
             time.sleep(1.0)
             continue
         try:
-            with speech.SoundDeviceSource() as source:
+            with speech.SoundDeviceSource(device=_mic_device()) as source:
                 VOICE_LISTENER_ONLINE = True
                 try:
                     wake_rec.adjust_for_ambient_noise(source, duration=0.8)

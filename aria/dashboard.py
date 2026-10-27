@@ -128,7 +128,7 @@ def create_dashboard(callbacks):
                 pl.addWidget(view); self.tabs.addTab(page, name)
             rl.addWidget(self.tabs, 1)
             row = QHBoxLayout()
-            for text, fn in [('Commands', self.commands), ('Add file', self.browse_file)]:
+            for text, fn in [('Commands', self.commands), ('Add file', self.browse_file), ('Providers', self.open_providers), ('Audio', self.open_audio)]:
                 b = QPushButton(text); b.clicked.connect(fn); row.addWidget(b)
             rl.addLayout(row); body.addWidget(right); body.setSizes([250, 560, 550])
             command = QHBoxLayout()
@@ -291,6 +291,14 @@ def create_dashboard(callbacks):
                                   f"{status['paired_devices']} remembered phone(s) · waiting for connection")
             timer = QTimer(dialog); timer.timeout.connect(connection_tick); timer.start(1000)
             dialog.exec()
+
+        def open_providers(self):
+            from aria.providers_panel import build_providers_dialog
+            build_providers_dialog(self).exec()
+
+        def open_audio(self):
+            from aria.audio_panel import build_audio_dialog
+            build_audio_dialog(self).exec()
 
         def show_video(self, source, title='', muted=False):
             """Play a file/direct URL in the center card, orb swapped out.
