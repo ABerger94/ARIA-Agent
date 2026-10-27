@@ -58,6 +58,33 @@ def test_panel_api_and_seek_honesty(tmp_path):
     panel.close(); app.processEvents()
 
 
+def test_panel_command_signal_and_snapshot(tmp_path):
+    # Gap fill 6: the unified media_control tool reaches the panel
+    # through the command signal (queued to the GUI thread) and
+    # reads a plain-data snapshot built from cached values.
+    app = _app()
+    from aria.video_panel import VideoPanel
+    panel = VideoPanel(); panel.show()
+    snap = panel.snapshot()
+    assert snap['loaded'] is False and snap['playing'] is False
+    clip = tmp_path / 'clip.mp4'
+    clip.write_bytes(b'not a real video')
+    assert panel.show_video(str(clip), title='Movie Night') is True
+    panel.command.emit('mute', None)
+    app.processEvents()
+    assert panel._audio.isMuted()
+    snap = panel.snapshot()
+    assert snap['loaded'] is True and snap['title'] == 'Movie Night'
+    assert snap['muted'] is True
+    # apply_command is the same code path, callable on-thread:
+    out = panel.apply_command('seek_percent', 50)
+    assert out['loaded'] is True  # fake media: duration 0, seek is a no-op
+    panel.command.emit('stop', None)
+    app.processEvents()
+    assert panel.snapshot()['loaded'] is False
+    panel.close(); app.processEvents()
+
+
 def _dashboard_stubs(monkeypatch):
     calls = []
     data = dict(cpu=25, mem=40, battery='80%', uptime_s=600,

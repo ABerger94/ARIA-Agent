@@ -411,6 +411,15 @@ def tool_media_key(action: str = "play_pause", key: str = "") -> str:
             return f"[Media key failed: {e}]"
 
 
+def tool_media_control(action: str = "status", target: str = "auto",
+                       value: str = "") -> str:
+    """The unified media surface (Gap fill 6): one entry over the
+    built-in video player, system media keys, and master volume.
+    Routing rules live in aria.media_control."""
+    from aria import media_control
+    return media_control.control(action, target=target, value=value)
+
+
 def tool_volume(action: str = "status", level: int = 50) -> str:
     """Control master system audio volume via the HUD volume manager.
 

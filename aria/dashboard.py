@@ -157,6 +157,13 @@ def create_dashboard(callbacks):
             if self.video is not None:
                 self.video.hide(); cl.addWidget(self.video, 1)
                 self.video.closed.connect(self._on_video_closed)
+                # Gap fill 6: let the media_control tool reach the
+                # built-in player (via its command signal).
+                try:
+                    from aria import media_control as _mc
+                    _mc.register_panel(self.video)
+                except Exception:
+                    pass
             self.holo = HoloFace() if HoloFace is not None else None
             self._centerpiece = _centerpiece0 if self.holo is not None else 'orb'
             if self.holo is not None:

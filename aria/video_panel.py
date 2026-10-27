@@ -52,12 +52,22 @@ class VideoPanel(QWidget):
     """
 
     closed = pyqtSignal()
+    # Cross-thread control channel (Gap fill 6): emitting this
+    # signal from any thread delivers the command on the panel's
+    # own (GUI) thread — the only thread Qt playback may be
+    # touched from. Payload is action-specific (ms / pct / level).
+    command = pyqtSignal(str, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         if not HAVE_VIDEO:
             raise RuntimeError('QtMultimedia unavailable')
         self._source = ''
+        self._title = ''
+        self._pos_cache = 0      # plain caches, updated by the
+        self._dur_cache = 0      # player's own signals: safe reads
+        self._playing_cache = False
+        self._muted_cache = False
         self._player = QMediaPlayer(self)
         self._audio = QAudioOutput(self)
         self._player.setAudioOutput(self._audio)
@@ -97,6 +107,7 @@ class VideoPanel(QWidget):
         self._player.positionChanged.connect(self._on_position)
         self._player.durationChanged.connect(self._on_duration)
         self._player.playbackStateChanged.connect(self._on_state)
+        self.command.connect(self._on_command)
 
     # ---- facade-shaped API (mirrors the source's JarvisUI video calls)
 
@@ -111,8 +122,9 @@ class VideoPanel(QWidget):
         if not url.isValid():
             return False
         self._source = source
-        self._title_label.setText(
-            title or os.path.basename(source.rstrip('/')) or source)
+        self._title = (title or os.path.basename(source.rstrip('/'))
+                       or source)
+        self._title_label.setText(self._title)
         self.set_muted(muted)
         self._player.setSource(url)
         self._player.play()
@@ -122,6 +134,9 @@ class VideoPanel(QWidget):
         self._player.stop()
         self._player.setSource(QUrl())
         self._source = ''
+        self._title = ''
+        self._pos_cache = 0
+        self._dur_cache = 0
 
     def seek(self, position_ms: int) -> int:
         """Seek, clamped to the media. Returns the target position;
@@ -163,6 +178,7 @@ class VideoPanel(QWidget):
         self.set_playing(not self.is_playing())
 
     def set_muted(self, muted: bool) -> None:
+        self._muted_cache = bool(muted)
         self._audio.setMuted(bool(muted))
         self._mute_btn.setText('Unmute' if muted else 'Mute')
 
@@ -170,18 +186,67 @@ class VideoPanel(QWidget):
         """0-100, the scale the rest of the window already speaks."""
         self._audio.setVolume(max(0, min(100, int(level))) / 100.0)
 
+    # ---- unified media control surface (Gap fill 6)
+
+    def snapshot(self) -> dict:
+        """Plain-data playback state for non-GUI threads: built
+        from cached ints and attributes only — never touches the
+        player object itself."""
+        return {
+            'loaded': bool(self._source),
+            'source': self._source,
+            'title': self._title,
+            'playing': self._playing_cache,
+            'position_ms': int(self._pos_cache),
+            'duration_ms': int(self._dur_cache),
+            'muted': bool(self._muted_cache),
+        }
+
+    def apply_command(self, action: str, payload=None) -> dict:
+        """Execute one media command NOW (GUI thread only — the
+        command signal below is the cross-thread way in) and
+        return the resulting snapshot."""
+        a = (action or '').lower().strip()
+        if a == 'play':
+            self.set_playing(True)
+        elif a == 'pause':
+            self.set_playing(False)
+        elif a == 'toggle':
+            self.toggle_play()
+        elif a == 'stop':
+            self.stop_video()
+        elif a == 'seek_ms':
+            self.seek(int(payload or 0))
+        elif a == 'seek_percent':
+            self.seek_percent(float(payload or 0))
+        elif a == 'seek_by':
+            self.seek(self._pos_cache + int(payload or 0))
+        elif a == 'mute':
+            self.set_muted(True)
+        elif a == 'unmute':
+            self.set_muted(False)
+        elif a == 'set_volume':
+            self.set_volume(int(payload or 0))
+        return self.snapshot()
+
+    def _on_command(self, action: str, payload) -> None:
+        self.apply_command(action, payload)
+
     # ---- player signal plumbing
 
     def _on_position(self, position: int) -> None:
+        self._pos_cache = int(position)
         if not self._seek.isSliderDown():
             self._seek.setValue(int(position))
         self._time_label.setText(
             f'{fmt_ms(position)} / {fmt_ms(self._player.duration())}')
 
     def _on_duration(self, duration: int) -> None:
+        self._dur_cache = int(duration)
         self._seek.setRange(0, int(duration))
         self._time_label.setText(
             f'{fmt_ms(self._player.position())} / {fmt_ms(duration)}')
 
     def _on_state(self, _state) -> None:
+        self._playing_cache = self.is_playing()
         self._play_btn.setText('Pause' if self.is_playing() else 'Play')

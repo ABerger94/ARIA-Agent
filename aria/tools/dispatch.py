@@ -584,6 +584,9 @@ def _init_default_registry():
     _REGISTRY["minimize_window"] = lambda a: builtins.tool_minimize_window(a.get("title", ""))
     _REGISTRY["close_window"] = lambda a: builtins.tool_close_window(a.get("title", ""))
     _REGISTRY["media_key"] = lambda a: builtins.tool_media_key(a.get("action", "") or a.get("key", "play_pause"))
+    _REGISTRY["media_control"] = lambda a: builtins.tool_media_control(
+        a.get("action", "status"), a.get("target", "auto"),
+        str(a.get("value", "")))
     _REGISTRY["mtg_card"] = lambda a: builtins.tool_mtg_card(a.get("card_name", ""))
     _REGISTRY["watch_price"] = lambda a: builtins.tool_watch_price(
         a.get("url", ""), a.get("target_price", ""), a.get("label", "item")

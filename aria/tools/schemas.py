@@ -251,6 +251,19 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
     {   'description': 'Close a window by (partial) title..',
         'name': 'close_window',
         'parameters': {'properties': {'title': {'type': 'STRING'}}, 'required': ['title'], 'type': 'OBJECT'}},
+    {   'description': 'Unified media control. Actions: play, pause, stop, next, prev, seek_to, '
+                       'seek_percent, seek_by, volume, mute, unmute, status. Target "auto" (default) '
+                       'routes to the built-in video player while it has media loaded — including '
+                       'seeking, e.g. seek_percent with value "50" is "skip to halfway" — and falls '
+                       'back to system media keys and master volume otherwise; target "hud" or '
+                       '"system" forces one surface. value carries the seek target (seconds, "M:SS", '
+                       'or a percentage) or the volume level 0-100.',
+        'name': 'media_control',
+        'parameters': {   'properties': {   'action': {'type': 'STRING'},
+                                            'target': {'type': 'STRING'},
+                                            'value': {'type': 'STRING'}},
+                          'required': ['action'],
+                          'type': 'OBJECT'}},
     {   'description': 'Press a media key: mute, volume_up, volume_down, play_pause, next, prev.',
         'name': 'media_key',
         'parameters': {'properties': {'action': {'type': 'STRING'}, 'key': {'type': 'STRING'}}, 'required': [], 'type': 'OBJECT'}},
@@ -521,7 +534,7 @@ TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persiste
                                   'break_reminders',
                                   'calendar_setup',
                                   'check_calendar']},
-    'spotify': {'summary': 'music: Spotify control, DJ mode, media keys', 'tools': ['spotify', 'dj', 'media_key']},
+    'spotify': {'summary': 'music: Spotify control, DJ mode, media keys, unified media control', 'tools': ['spotify', 'dj', 'media_key', 'media_control']},
     'vision': {   'summary': 'webcam photos, camera descriptions, vision first-look questions, face tracking, neck servos',
                   'tools': ['take_photo', 'describe_camera', 'vision_look', 'face_tracking', 'move_head_servos', 'drive_wheels', 'body_stop']},
     'windows': {   'summary': 'list, focus, minimize, close, snap windows; launch apps',
