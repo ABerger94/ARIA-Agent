@@ -989,12 +989,51 @@ def _ffmpeg_to_pcm16(audio_bytes: bytes, sample_rate: int = 16000) -> bytes:
     return proc.stdout
 
 
+def _av_to_pcm16(audio_bytes: bytes, sample_rate: int = 16000) -> bytes:
+    """Decode any audio container to mono 16-bit PCM with PyAV —
+    the fallback when ffmpeg is not on PATH. The av wheel bundles
+    its own libav libraries (av is pinned in requirements.txt, a
+    faster-whisper dependency), so this works on a machine with
+    no system ffmpeg installed at all."""
+    import av
+    from av.audio.resampler import AudioResampler
+    resampler = AudioResampler(format="s16", layout="mono",
+                               rate=sample_rate)
+    pcm = bytearray()
+    with av.open(io.BytesIO(audio_bytes)) as container:
+        for frame in container.decode(audio=0):
+            for out in resampler.resample(frame):
+                pcm.extend(out.to_ndarray().tobytes())
+        for out in resampler.resample(None):  # flush the resampler
+            pcm.extend(out.to_ndarray().tobytes())
+    if not pcm:
+        raise RuntimeError("PyAV decoded no audio frames")
+    return bytes(pcm)
+
+
+def _decode_to_pcm16(audio_bytes: bytes) -> bytes:
+    """Container audio -> mono 16-bit PCM at 16 kHz. ffmpeg first
+    (the long-standing path); when ffmpeg is not on PATH — Alek's
+    laptop, 2026-10-27: every phone voice request died on exactly
+    this — PyAV decodes with its bundled libraries instead."""
+    try:
+        return _ffmpeg_to_pcm16(audio_bytes)
+    except FileNotFoundError:
+        pass
+    try:
+        return _av_to_pcm16(audio_bytes)
+    except ImportError:
+        raise RuntimeError(
+            "transcribe needs ffmpeg to decode webm audio and it is not on PATH")
+
+
 def transcribe_audio(audio_bytes: bytes, mime: str = "audio/webm") -> str:
     """Transcribe raw audio bytes with the same recognizer pipeline the mic
     listener uses (local faster-whisper when available, else Google STT).
 
     WAV/FLAC/AIFF go through sr.AudioFile directly; anything else
-    (webm/opus from the phone bridge) is decoded to PCM with ffmpeg first.
+    (webm/opus from the phone bridge) is decoded to PCM first —
+    ffmpeg when present, PyAV when it is not.
     Raises RuntimeError when conversion is unavailable - the bridge turns that
     into a real error response, never silence.
     """
@@ -1012,10 +1051,9 @@ def transcribe_audio(audio_bytes: bytes, mime: str = "audio/webm") -> str:
             raise RuntimeError(f"transcribe could not read {clean_mime}: {e}")
     else:
         try:
-            pcm = _ffmpeg_to_pcm16(audio_bytes)
-        except FileNotFoundError:
-            raise RuntimeError(
-                "transcribe needs ffmpeg to decode webm audio and it is not on PATH")
+            pcm = _decode_to_pcm16(audio_bytes)
+        except RuntimeError:
+            raise
         except Exception as e:
             raise RuntimeError(f"transcribe decode failed: {e}")
         audio = sr.AudioData(pcm, sample_rate=16000, sample_width=2)
