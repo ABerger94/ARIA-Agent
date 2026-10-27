@@ -1,6 +1,6 @@
 """
-ARIA provider fallback chain (default order: ollama_cloud -> groq -> openrouter
--> mistral -> gemini, configurable via PROVIDER_CHAIN).
+ARIA provider fallback chain (default order: gemini -> ollama_cloud -> groq
+-> openrouter -> mistral, configurable via PROVIDER_CHAIN).
 
 Every provider normalizes to the internal parts-dict shape:
     {"candidates": [{"content": {"parts": [...]}}]}
