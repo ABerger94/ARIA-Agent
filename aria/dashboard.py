@@ -40,6 +40,7 @@ def create_dashboard(callbacks):
     from aria import frame, hud, config
     from aria.resonance import ResonanceOrb
     from aria.metric_bar import MetricBar, StatusPlaque
+    from aria.video_panel import VideoPanel, HAVE_VIDEO as _HAVE_VIDEO
 
     class Dashboard(QMainWindow):
         panel_result = pyqtSignal(str, object)
@@ -90,6 +91,10 @@ def create_dashboard(callbacks):
             body.addWidget(left)
             center, cl = self.card('ARIA / LIVE')
             self.face = ResonanceOrb(); cl.addWidget(self.face, 1)
+            self.video = VideoPanel() if _HAVE_VIDEO else None
+            if self.video is not None:
+                self.video.hide(); cl.addWidget(self.video, 1)
+                self.video.closed.connect(self._on_video_closed)
             self._last_orb_publish = 0.0
             self.state = QLabel('IDLE'); self.state.setAlignment(Qt.AlignmentFlag.AlignCenter); self.state.setObjectName('brand'); cl.addWidget(self.state)
             self.subtitle = QLabel(); self.subtitle.setTextFormat(Qt.TextFormat.PlainText); self.subtitle.setWordWrap(True); self.subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter); cl.addWidget(self.subtitle)
@@ -287,6 +292,31 @@ def create_dashboard(callbacks):
             timer = QTimer(dialog); timer.timeout.connect(connection_tick); timer.start(1000)
             dialog.exec()
 
+        def show_video(self, source, title='', muted=False):
+            """Play a file/direct URL in the center card, orb swapped out.
+
+            Returns False (and changes nothing) when QtMultimedia is
+            unavailable or the source is unusable — the caller reports
+            that honestly instead of the window pretending to play.
+            """
+            if self.video is None:
+                return False
+            if not self.video.show_video(source, title, muted):
+                return False
+            self.face.hide(); self.video.show()
+            return True
+
+        def stop_video(self):
+            if self.video is not None:
+                self.video.stop_video()
+            self._on_video_closed()
+
+        def _on_video_closed(self):
+            if self.video is not None:
+                self.video.stop_video()
+                self.video.hide()
+            self.face.show()
+
         def _poll_approvals(self):
             """Show the confirm banner for the oldest pending approval.
 
@@ -377,7 +407,9 @@ def create_dashboard(callbacks):
             self.face.advance(state, level, not getattr(speech, 'VOICE_ENABLED', True))
             # Publish the same orb to the phone; the old pixel renderer is not
             # run in the native dashboard. Limit JPEG production to 8 Hz.
-            if time.monotonic() - self._last_orb_publish >= .125:
+            # While a video owns the center card the orb is hidden — do
+            # not publish a frame nobody can see.
+            if self.face.isVisible() and time.monotonic() - self._last_orb_publish >= .125:
                 self._last_orb_publish = time.monotonic()
                 try:
                     import numpy as np
