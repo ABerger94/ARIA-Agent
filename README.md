@@ -1,687 +1,378 @@
 # A.R.I.A. — Adaptive Robotic Intelligence Agent
 
-A Python desktop AI companion. She lives on your Windows laptop behind a
-native Qt dashboard: she talks (natural Edge TTS voice), listens (mic +
-speech recognition), remembers, and acts through a multi-provider agent loop
-(Gemini → Ollama Cloud → Groq → OpenRouter → Mistral) with **120 tools**
-across progressive toolkits. Her phone bridge turns any phone into her
-face, voice, and eyes — and, with the Android node app, into a phone she
-can drive. She connects to MCP servers and uses their tools as her own; an
-Arduino robot body gives her a pan/tilt head and differential-drive wheels.
+A personal desktop assistant with a face, a voice, and a memory — she lives on
+your Windows PC as a native Qt command center, talks in a natural neural voice,
+drives the computer by voice or text, and remembers what you tell her across
+sessions.
 
-Built by Alek Berger. Not a framework, not a demo — a finished companion.
+ARIA is built by **Alek Berger**. Her dashboard, centrepieces, desktop pet and
+several subsystems are ported from his **Mark-LVI-ARIA** fork — whose engine,
+avatar and HUD lineage is the **MARK LVI** codebase by **FatihMakes** — and
+grown well past it: a real inbox and calendar, a media system that reads every
+app on the machine, an Android phone she can drive, and a task engine that
+survives its own restarts.
 
-## Native desktop command center
+> **Licence: CC BY-NC 4.0** — the ported MARK LVI material is © FatihMakes,
+> attribution required, non-commercial use only. Full attribution and licence
+> texts live in [`LICENSES/`](LICENSES/). Upstream project:
+> [github.com/FatihMakes/Mark-LVI](https://github.com/FatihMakes/Mark-LVI) ·
+> [@FatihMakes on YouTube](https://www.youtube.com/@FatihMakes)
 
-The default Qt window is a three-column command center:
+---
 
-- **Left — system monitor + media.** Per-subsystem status rows (voice,
-  vision, memory, servos, scheduler, GitHub, autonomy — green / amber / red,
-  live), the **NOW PLAYING** panel (below), and the system volume.
-- **Center — her face.** A neural-field background behind Mark's Resonance
-  waveform orb or the holo face (with a viseme-driven mouth when she
-  speaks), swapped for the video player while media plays in-app. The same
-  centerpiece is what the phone bridge publishes.
-- **Right — tabs.** Conversation, Briefing, News, Inbox, Calendar, Tasks,
-  Activity. Type Unicode text directly in the command bar. Voice,
-  push-to-talk, interruption, whisper, file browsing, and drag-and-drop
-  file drops use the existing backend. Inbox and Calendar load on Refresh
-  in background threads; missing connections display setup instructions.
+## Architecture
 
-The header carries a live services summary (click it for per-service
-detail), the clock, and **Settings** — the only header button. Conversation
-and Activity are colour-coded by kind, Mark-LVI style: ARIA in the accent
-cyan family, you in white, system lines muted; activity entries earn red /
-amber / green by level, routine info stays muted.
+**Engines.** The default conversation engine is a **multi-provider
+function-calling loop** (`aria/agent/`): Gemini first, then Ollama Cloud,
+Groq, OpenRouter and Mistral, in the chain
+`gemini → ollama_cloud → groq → openrouter → mistral` (a chain saved in your
+settings wins over the default). Failures are classified per
+(provider, model) — a rate limit cools that one rung down (60s provider /
+300s model), an auth failure rests it longer, a 400 never cools anything —
+and the walk skips resting rungs instead of hammering them. There is no
+arbitrary turn cap: a request gets a 30-minute reasoning budget, and on
+timeout she asks "Should I keep going?" — "yes" resumes the same chain.
 
-**Pet mode** (the Pet button, or Settings → Pet) replaces the whole UI —
-dashboard and any open dialogs close, leaving just the floating desktop
-pet; leaving pet mode brings the dashboard back. There is deliberately
-**no ambient camera tile** on the dashboard: her camera works on demand
-(ask her to look), never as a always-on picture-in-picture.
+**Task-based routing.** The conversation stays on the chain's front rung
+while heavy roles route by name, never hard-coded: vision runs on
+gemma4:31b-cloud and background code work on qwen3-coder:480b-cloud through
+Ollama Cloud (override via `OLLAMA_VISION_MODEL` / `OLLAMA_CODE_MODEL`;
+empty disables the role). A retired model tag can never break her — an
+HTTP 410 parks the dead model and the chain moves on, and the key that
+served it is never quarantined for a model's death.
 
-**Remote Control** lives in Settings → Connections. Open it to connect a
-phone on the same Wi-Fi: scan the QR code or copy its link. It works once,
-expires in five minutes, and Refresh replaces it. Scanning opens the
-controls directly with no token form. The phone is remembered for 30 days,
-including across laptop app restarts, using a per-phone HttpOnly cookie.
-Session hashes are stored in the workspace, not raw phone credentials.
-Reopen the same address in the same browser to reconnect. Disconnect one
-phone in its Settings, or all remembered phones from the laptop's Remote
-Control dialog. Existing master-token API clients remain compatible.
+**Gemini Live (opt-in).** Set `"voice_mode": "live"` in the settings file
+and conversation moves to a Gemini Live session (`aria/live.py`) — Google's
+servers handle hearing, turn-taking and speech in one stream, in the Kore
+voice, with her tools routed through the same dispatch as everything else.
+The microphone pauses while presence says you're away, and if Live drops,
+the pipeline engine re-arms the wake-word listener and takes over. The
+default stays the pipeline: Live is a mode, not a dependency.
 
-The mobile companion has Control, Conversation, Inbox, Orb & Camera, and Settings
-sections, live connection status, stop-speech, voice/text controls, file uploads,
-and shortcuts. Browser microphone, camera, autoplay, and certificate permissions
-still apply; QR pairing cannot bypass them.
+**Persona.** Her identity — name, whose she is, the standing rules she works
+under — lives in `soul.md` at the repo root, loaded at boot. It is on her
+self-edit watchlist like any code file. Switchable overlays (`concise`,
+`coach`) layer on top via `set_persona`; her soul stays her soul.
 
-Inbox subjects and sender names are decoded, dates are local, and message bodies
-open in a separate reading pane. Desktop and phone share structured mail data.
-IMAP uses read-only selection and BODY.PEEK: reading does not mark mail as seen.
-HTML-only messages become plain text; remote images and scripts are not loaded.
+**Memory.** Three layers (`aria/memory.py`): a SQLite semantic-vector store
+for facts, a Markdown journal, and an unbroken **memory spine**
+(`memory_spine.jsonl`) logging turns, tool invocations and journal entries;
+session context (`where_we_left_off.md`) is restored at boot so she picks
+up where you left off. A nightly **consolidation** pass reconciles the
+store — duplicates are skipped, and contradictions are never overwritten:
+they queue in `memory_contradictions.json` for the `memory_review` tool,
+with the losing version archived to `memory_retired.json`. Nothing is ever
+silently deleted.
 
-The default desktop and its phone stream use the adapted Resonance waveform
-renderer from Mark-LVI-ARIA, with its CC BY-NC 4.0 license and attribution in
-`LICENSES/`. The orb reads measured mic and Edge playback levels when available;
-the system voice fallback has state animation without a measured output level.
-The classic fallback layout still retains its original avatar.
+**Delegated tasks, journaled.** `delegate_task` runs multi-step work in the
+background through a durable journal (`aria/agent/taskstore.py`): every
+step checkpoints as it finishes, a crash or restart marks in-flight work
+*blocked* instead of losing it, `task_resume` continues a blocked task
+skipping the steps already done, a step that needs you parks as
+*blocked_input* with its question attached, and a skeptical verifier turn
+checks the result before she calls it done. She never replays a finished
+step and never claims a step she didn't run.
 
-A first-time HTTPS certificate warning may appear. Windows Firewall and Wi-Fi
-client isolation can prevent LAN access. This is local-network access, not an
-internet tunnel. Expiring the QR does not sign out an already paired phone.
+**Presence.** `aria/presence.py` watches input idle: away past the
+threshold, every *unprompted* path goes silent — proactive speech, the
+briefing, check-ins — while anything you ask for still answers instantly.
+Return after a long absence and she greets you once. Presence gates speech,
+never obedience.
 
-Install updated dependencies with `py -3.12 -m pip install -r requirements.txt`.
-For the previous canvas layout, set `ARIA_UI_LAYOUT=classic` before launching.
-`ARIA_UI_HOST=cv2` still selects the classic fallback host.
+**Self-restart with a net.** She can edit her own codebase. The agent
+fingerprints every `.py` file in `aria/` plus `soul.md` at boot; a verified
+change cleanly re-executes her — but only after the changed files pass a
+syntax check **and an import smoke test in a fresh interpreter**. A broken
+edit is preserved as `<file>.broken-<epoch>` and the committed copy is
+auto-restored from git: a bad self-edit can't brick her. The watcher is
+scoped to the package + root launcher, so test and probe edits can't
+trigger it. Updates restart her program only — never the computer.
 
-## Settings and commands
+**Failure records.** Tool failures, incidents and self-heal diagnoses land
+in her logs and the Activity tab, colour-coded by level; the self-healing
+loop (`system_health_audit`, `self_heal_diagnose`) records what broke,
+diagnoses it, and attempts recovery on the classes that have a designed
+remedy.
 
-**Settings** is in the window header. Its tabs: **General** (startup
-briefings, safe mode, action approval mode, UI accent presets), **Voice /
-audio** (voice gate, whisper, volume, Edge voice, and the microphone device
-chooser), **Providers** (read-only: the live provider chain, each
-provider's state and model, failover stats), **Extensions** (read-only:
-configured MCP servers and the built-in tool count — manage servers by
-asking ARIA), **Customize** (the accent hue wheel; picking previews live
-and re-derives the whole colour family), **Pet** (show/hide the desktop
-pet, pet form), **Daily briefing** (your name, local area, timezone,
-optional world topics), and **Connections** (Gmail, calendar and provider
-credentials — never through the chat — plus Remote Control). Blank
-password/key fields retain existing values; provider changes require a
-restart. Settings are saved atomically.
+---
 
-**Commands** (`Ctrl+K`) lists tools from the live registry, including
-connected MCP tools. Search names, descriptions and examples, or filter by
-category. Clicking a command runs it immediately — the same path as typing
-it in the command bar and pressing Enter.
+## Capabilities
 
-## Media: the NOW PLAYING panel
+**120 tools** on a desktop install, organised into progressive toolkits:
+only the core schemas ride along per call, and specialist toolkits unlock
+on demand (`load_toolkit`) or automatically from keywords in your request.
+Tools from connected MCP servers join on top of that, namespaced per
+server. The in-app **Commands** catalog (`Ctrl+K`) is the source of truth:
+it is rebuilt from the live registry every time it opens, so it cannot list
+a tool she doesn't have — and clicking a command runs it. The shape of the
+suite:
 
-The left column's media panel shows and controls **whatever is actually
-playing — not just Spotify**:
+| Area | What's there |
+|---|---|
+| Computer & files | `launch_app`, `open_app_or_url`, window control (`list_windows`, `focus_window`, `minimize_window`, `close_window`, `window_snap`), GUI control (`gui_click`, `gui_type`), clipboard (`clipboard_read`, `clipboard_write`), `run_python_code` (sandboxed), the File Commander (`file_organize` — dry-run plan first, always; `file_find_advanced`, `find_file`, `file_duplicates`, `disk_usage`), `process_file`, `fetch_url`, `web_search` |
+| Media | `media_control` (one tool over her own video player and the system: play/pause, seek by fraction or seconds, volume), `spotify`, `media_key`, `volume`, `dj` — transport is explicit and verified, aimed at the real media session (see NOW PLAYING, below) |
+| Phone node | `phone_status`, `phone_list_apps`, `phone_open_app`, `phone_read_screen` (accessibility tree with tap targets), `phone_notifications`, `phone_tap`, `phone_swipe`, `phone_type`, `phone_key` — via the ARIA Node Android app |
+| Vision & body | `describe_camera`, `take_photo`, `vision_look`, `read_screen`, `take_screenshot`, `face_tracking`; robot body: `move_head_servos`, `drive_wheels`, `body_stop` (Arduino Nano pan/tilt head + differential drive) |
+| Connections | Gmail (`gmail_setup`, `read_email`, `send_email`, `triage_email`), calendar (`calendar_setup`, `check_calendar` — RRULE/EXDATE/RDATE recurrence honoured), GitHub (`github_create_repo`, `github_push_file`), MCP (`mcp_setup`, `mcp_connect`, `mcp_disconnect`, `mcp_list_servers`, `mcp_remove_server`) |
+| Routines | `routine_record_start/stop`, `run_routine` (with `{{parameter}}` slots), `list_routines`, `describe_routine`, `delete_routine`, `trust_routine`, `untrust_routine`, `export_routine_pack`, `import_routine_pack` |
+| Scheduling & watches | `set_timer`, `set_reminder`, `set_recurring_task`, `list_scheduled_tasks`, `cancel_scheduled_task`, `break_reminders`; price watches (`watch_price`, `check_price_watches`, `list_price_watches`, `unwatch_price` — the hourly checker actually fires), screen watches (`watch_screen`, `list_screen_watches`, `unwatch_screen`) |
+| Delegation & autonomy | `delegate_task`, `task_status`, `task_cancel`, `task_resume`; `manage_autonomous_goal`, `manage_background_job`, `system_health_audit`, `self_heal_diagnose` |
+| Notes, memory & cards | `take_note`, `read_notes`, `journal_write`; `save_memory`, `search_memory`, `forget_memory`, `memory_review`; `mtg_card`, `mtg_advice` (Scryfall, keyless) |
+| Herself | `morning_briefing`, personas (`set_persona`, `get_persona`, `list_personas`), the approval layer (`set_approval_mode`, `get_approval_mode`, `list_pending_approvals`, `approve`, `deny`), self-edit (`edit_own_code`, `patch_own_code`), `reload_user_tools`, `show_commands`, `hide_commands`, `bridge_token` |
 
-- **Source, in order:** ARIA's own video player when it has media loaded
-  (exact position/duration, shown as a real progress bar); the active
-  Windows media session via **SMTC** (`aria/smtc.py`, backed by the
-  `winsdk` wheel in `requirements.txt`) — Spotify, Movies & TV, the
-  Media Player app, VLC, a browser, anything Windows knows about; then
-  by-process window-title fallbacks (Spotify and known players) for when
-  SMTC is unavailable. Without `winsdk` everything still works, with
-  title-grade state (a title can't prove paused vs playing).
-- **Real state:** playing shows `● NOW PLAYING` (green, with the app named
-  for non-Spotify sources), paused shows `❚❚ PAUSED` — with the track or
-  movie still named. No standby placeholders, no fabricated progress.
-- **Explicit Play and Pause buttons** (plus Prev / Next). Transport is
-  *closed-loop*: the command aims at the specific media session (no focus
-  stealing, no blind global toggle), the state is re-read, and if the
-  session ignored the call — some do — it escalates to the system media
-  key and verifies again. Voice control (`tool_spotify`, the unified
-  `media_control` tool) follows the same rules.
+**Startup briefing.** Her greeting and the `morning_briefing` tool compose
+the same source-backed report in code: today's calendar (recurring events
+expanded), a short tomorrow preview, important recent email, local weather,
+local headlines and world headlines — every story deduplicated across
+sources, so one story appears once. Sources are dated (news within 48
+hours), linked, and share a 14-second budget; a disconnected or failed
+source is named as such instead of described as empty. The **Briefing** and
+**News** tabs show the same report in the dashboard and on the phone.
 
-## Source-backed daily briefings
+**Tool SDK.** Drop a Python file in `aria/tools/user_tools/` defining
+`TOOL_NAME`, `TOOL_DESCRIPTION`, `TOOL_PARAMETERS` and `run(args)`, and she
+learns a new skill at boot (`reload_user_tools` picks up changes live).
+Five-minute guide in `docs/USER_TOOL_SDK.md`.
 
-ARIA's startup greeting and `morning_briefing` now use the same daily report:
-today's calendar (including recurring shifts), a short tomorrow preview, important
-recent email subjects, local weather, Dundalk/Baltimore County headlines, and world
-headlines. Email importance is a conservative header-based ranking, not a claim
-that ARIA read every message body; promotions and social digests are deprioritized.
-The recent sample is capped at 30 messages from the last 48 hours. When available,
-the unread count comes from the mailbox status rather than the size of that sample.
+---
 
-News is drawn from dated RSS items published within 48 hours. The report includes
-links to its sources in the new desktop and phone **Briefing** views. Slow sources
-are skipped after a shared 14-second budget; disconnected or failed sources are
-identified instead of being described as empty. The startup greeting is logged to
-the conversation and spoken directly, without a model inventing extra plans or
-rephrasing away important sections. Refresh and Read aloud are separate controls.
+## The UI
 
-Optional settings in `workspace/settings.json` (via the existing settings
-store) are `briefing_name` (default Alek), `briefing_city` (Dundalk, Maryland),
-`briefing_timezone` (America/New_York), `briefing_world_topics` (a list of optional
-world-news search topics), and `startup_briefing` (true). Local and world news are
-always separate. Ordinary daily/weekly/monthly/yearly calendar recurrence,
-exceptions and explicit moved/cancelled occurrences are supported; high-frequency
-sub-day recurrence reports an error instead of expanding without a bound.
+A native PyQt6 command center in three columns — no browser, no web view.
 
-## Features
+- **Left — SYS MONITOR + media.** Live per-subsystem status rows (voice,
+  vision, memory, servos, scheduler, GitHub, autonomy — green / amber /
+  red from real probes, never painted labels), the **NOW PLAYING** panel,
+  and the system volume slider.
+- **NOW PLAYING.** Whatever is actually playing, not just Spotify. Source,
+  in order: her own video player when it has media loaded (exact
+  position/duration, a real progress bar); the active Windows media
+  session via **SMTC** (`aria/smtc.py`, on the `winsdk` wheel) — Spotify,
+  Media Player, Movies & TV, VLC, a browser, anything Windows knows
+  about; then by-process window-title fallbacks for when SMTC is
+  unavailable. State is honest: `● NOW PLAYING` green while playing,
+  `❚❚ PAUSED` with the track still named — no standby placeholders, no
+  fabricated progress. **Play and Pause are separate buttons**, and
+  transport is closed-loop: the command aims at the specific session (no
+  focus-stealing, no blind global toggle), the state is re-read, and if
+  the session ignored it, the call escalates to the system media key and
+  verifies again.
+- **Centre — her face.** A **neural field** — precomputed nodes and wiring
+  with signal pulses travelling the edges, in her state colours — spans
+  the whole centre card on a black backdrop, top to bottom: behind the
+  centrepiece, the state line, the subtitle and the Hold to talk buttons.
+  The centrepiece cycles between the **Resonance orb** (her voice drawn
+  as a polar waveform ribbon around her name, driven by her live audio
+  level history) and the **holo face** (real measured geometry —
+  MediaPipe's canonical face model, 468 vertices, Apache-2.0 — with a
+  viseme mouth shaped by the speech itself). A video panel takes the
+  centre while media plays in-app. The classic OpenCV HUD (pixel avatar,
+  context tiles) remains as a fallback layout
+  (`ARIA_UI_LAYOUT=classic`).
+- **Right — tabs:** **Conversation | Briefing | News | Inbox | Calendar |
+  Tasks | Activity**. Inbox is a real mail client (subjects and senders
+  decoded, local dates, bodies in a reading pane; IMAP reads use
+  BODY.PEEK — reading never marks mail as seen). Conversation and
+  Activity are colour-coded Mark-LVI style: ARIA in cyan, you in white,
+  system lines muted; activity entries earn red / amber / green by level.
+- **Header:** a live services summary — click it for the per-service
+  dialog — the clock, and **Settings**, the only header button.
+- **Settings** (`aria/ui_panels.py`) has eight tabs: **General** (startup
+  briefing, safe mode, approval mode, accent presets), **Voice / audio**
+  (voice gate, whisper, volume, Edge voice, microphone chooser),
+  **Providers** (read-only: the live chain, each rung's state and model,
+  failover stats), **Extensions** (read-only: MCP servers and the
+  built-in tool count), **Customize** (an accent hue wheel — picking
+  previews live and re-derives the whole colour family, neural field and
+  orb included), **Pet**, **Daily briefing** (name, area, timezone,
+  topics), and **Connections** (credentials — never through the chat —
+  plus Remote Control). Settings save atomically; blank key fields keep
+  the stored value.
+- **Pet mode.** The Pet button replaces the whole UI — dashboard *and* any
+  open dialog close — leaving the floating desktop pet: the character, or
+  the waveform orb at pet size, switchable from its right-click menu.
+  Drag her anywhere (the spot is remembered); pet mode is sticky across
+  restarts.
+- **Subtitles** (the line under the state readout) pass through
+  `hud_ascii`, which maps typographic characters to ASCII lookalikes —
+  the full hyphen family included — and folds accents; a `?` is never
+  the answer.
+- **Talking to her:** voice (wake word or push-to-talk — hold the mic
+  button or SPACE), typing in the command bar (Unicode welcome), or
+  dropping a file on the window.
 
-- **Animated HUD Face & Full-Body Pixel Avatar** (OpenCV) — expressive
-  pixel-person avatar with fluid cognitive-state expressions: idle, listening,
-  speaking, thinking, tool-running (code-eyes), sleepy, and reactive poses
-  (arms, scratch, listen). Waveform mouth; twin ear antennae with synchronous
-  pulsing tips and ear twitches; customizable HUD color themes
-  (`aria/theme.cfg`). Interactive **context tiles** (dashboard, subtitles,
-  audio, tasks, Spotify) that collapse and cycle. The subsystem box reports
-  live status for every subsystem, including which camera her eyes use
-  (`[bridge]`, `[cam N]`, or `[net]`), and the CAM.01 optic PIP shows the live
-  camera feed.
-- **Voice In / Voice Out** — Edge TTS neural voice with sentence boundary
-  streaming and pipelined TTS synthesis prefetch; instant speech interruption
-  barge-in via the `X` key or voice; desktop mic input prefers local
-  faster-whisper transcription when installed, with Google cloud fallback;
-  hold-SPACE push-to-talk; wake-word listener loop.
-- **Whisper Mode & Mood Engine** — toggleable whisper mode (W key, voice, or HUD)
-  for softer volume, concise replies, and quieted heartbeats; mood system
-  (energy/warmth axes) flavoring idle facial tempo and greetings.
-- **Agent Brain** — multi-provider function-calling loop (no arbitrary turn cap;
-  30-minute reasoning budget per request — on timeout she asks "Should I keep
-  going?" and "yes"/"continue" resumes the active chain). Ollama Cloud
-  (gpt-oss:120b) is the primary brain, failing over through Groq, OpenRouter,
-  Mistral, and Gemini (via Google's OpenAI-compatible endpoint,
-  `gemini-3.8-flash` by default), with per-key rotation and automatic
-  quarantine on rate limits and errors. HTTP 410 (retired model tag) never
-  quarantines a key — the dead model is parked and the chain moves on.
-  The HUD reports which provider is serving and flags fallbacks.
-  **Task-based routing:** the conversational loop stays on gpt-oss:120b while
-  vision runs on gemma4:31b-cloud and heavy background code on
-  qwen3-coder:480b-cloud — routed by role, never hard-coded, so a retired
-  model tag can't break her (override via `OLLAMA_VISION_MODEL` /
-  `OLLAMA_CODE_MODEL`; empty disables the role). Vision calls native Ollama
-  /api/chat first (gemma4:31b-cloud), then the provider chain; if nothing
-  answers she reports vision as unavailable.
-- **Progressive Tool Loading** — only the core tool schemas go to the model
-  per call; specialist toolkits (autonomy, Gmail, Spotify, scheduler, GitHub,
-  vision/hardware, Windows control, MTG, memory/notes, admin, MCP, routines,
-  files, monitor, user) unlock on demand via `load_toolkit` or automatically
-  from keywords in your request. 120 tools total, with
-  duplicate-call blocking, argument repair, and parallel execution of
-  independent calls.
-- **MCP Client** — she connects to Model Context Protocol servers and uses
-  their tools as her own. `mcp_setup` adds a server (stdio command or
-  SSE/streamable-HTTP URL), `mcp_connect` connects and registers every server
-  tool as a first-class ARIA tool named `mcp_<server>__<tool>` (argument
-  validation and output truncation apply like any other tool),
-  `mcp_list_servers` shows connection status, `mcp_disconnect` unloads.
-  Configured servers auto-connect in the background at boot. Requires the
-  `mcp` Python package; only connect servers you trust, since stdio servers
-  run local commands.
-- **OPS Command Center** — press `O` for a tabbed mission-control overlay
-  inside the Python window: Log, Tasks, Sensors, Controls, Notes, HUB, Day.
-  `H` still toggles the commands view; `1–7` switch tabs, `J/K` scroll.
-  Real Roboto Mono typography (bundled, rendered via PIL), rounded panels,
-  and honest sensors — a missing `psutil` shows an install hint instead of
-  fake gauges, and the GPU gauge only appears when `nvidia-smi` reports one.
-  The Tasks tab lists scheduled jobs, background workers, and saved routines.
-- **Routines** — teach her a multi-step workflow once ("save that as
-  *stream setup*"), replay it forever by name. Steps record from real tool
-  calls, support `{{parameter}}` slots, and carry a trusted flag — untrusted
-  routines still ask before destructive steps.
-- **Approval layer** — `set_approval_mode`: `auto` (today's behavior),
-  `confirm-risky`, or `confirm-all`. In confirm modes a destructive action
-  pauses with a token; say the word and she runs `approve`, or `deny` to drop
-  it. Approvals expire after 10 minutes and surface in the OPS Log.
-- **File Commander** — `file_organize` sorts a messy folder by type
-  (dry-run plan first, always — nothing moves until you say so),
-  `file_find_advanced` searches by name/size/age/content, `file_duplicates`
-  finds byte-identical copies (report only), `disk_usage` shows what's eating
-  the drive. System directories are refused outright.
-- **Window control** — beyond list/focus/minimize/close: `window_snap` tiles
-  windows (left/right/maximize/center), `launch_app` opens installed apps by
-  name.
-- **Ambient event bus** — reminders, price drops, new inbox files, and
-  calendar-soon events flow through the heartbeat's existing decline-learning,
-  so she speaks up about what matters and stays quiet about what you've
-  dismissed.
-- **Email triage & screen watcher** — `triage_email` sorts unread mail into
-  act-now / FYI / noise; `watch_screen` takes a standing vision question
-  ("tell me when the build finishes") and alerts on change.
-- **Price watcher, for real** — `watch_price` now actually checks hourly and
-  fires a `price_drop` event instead of just promising to.
-- **Tool SDK** — drop a Python file in `aria/tools/user_tools/` defining
-  `TOOL_NAME`, `TOOL_DESCRIPTION`, `TOOL_PARAMETERS`, and `run(args)`, and
-  she learns a new skill at boot (`reload_user_tools` picks up changes live).
-  Five-minute guide in `docs/USER_TOOL_SDK.md`.
-- **Personas** — switchable prompt overlays (`concise`, `coach`) via
-  `set_persona`; her soul stays her soul.
-- **Installer groundwork & first-run wizard** — `installer/` holds a
-  PyInstaller one-folder build generator (`--dry-run` validated) plus an
-  Inno Setup script for a real Windows installer; on first launch she walks
-  through missing API keys herself (skippable). Build notes in
-  `docs/INSTALLER.md`.
-- **Autonomy: Heartbeat, Workers, Self-Healing** — a proactive heartbeat daemon
-  that acts on important events on its own; persistent background workers for
-  long jobs, a downloads watcher, and system resource monitoring (with alerts
-  when CPU/memory/disk cross thresholds); and a self-healing loop that
-  records incidents, diagnoses errors, and attempts automatic recovery.
-  Manage it all with `manage_autonomous_goal`, `manage_background_job`,
-  `system_health_audit`, and `self_heal_diagnose`.
-- **Durable Memory & Spine** — SQLite semantic vector memory + Markdown journal;
-  unbroken memory spine (`memory_spine.jsonl`) logging turns, tool invocations,
-  and journal entries; session context (`where_we_left_off.md`) automatically
-  restored at boot.
-- **Hot Package Self-Restart** — she can edit her own codebase or `soul.md`;
-  the agent fingerprints every `.py` file in the `aria/` package plus
-  `soul.md` at boot and cleanly re-executes on verified modifications. The
-  watcher is scoped to the package + root launcher, so test/probe edits can't
-  trigger it. Before restarting, changed files are syntax-checked and
-  import-smoke-tested in a fresh interpreter; a broken edit is preserved as
-  `<file>.broken-<epoch>` and the committed copy is auto-restored from git —
-  a bad self-edit can't brick her.
-- **Scheduler** — one-shot and recurring reminders/jobs, morning briefings,
-  break reminders.
-- **Phone Bridge (HTTPS)** — secure mobile companion web app (token login +
-  cookie auth, per-machine self-signed certificate) with a sleek minimal UI:
-  her big pixel face as the hero, Face / Eyes / Full view modes, and
-  fullscreen face mode for the mounted phone (tap to exit). The bridge page
-  can be her camera: tap Camera ON and the phone streams its front (or rear,
-  via the flip switch) camera to the laptop as `ARIA_BODY_CAMERA=bridge`.
-  Eyes mode shows the live camera view (`/phone_cam.mjpg`); "Describe what
-  you see" snapshots a frame and has her narrate it (`/api/look`).
-  Hold-to-talk and tap-to-talk voice, text directives, settings (speak
-  replies, test audio, camera), and a toggleable conversation log. Spoken
-  replies use Edge TTS first with offline Windows SAPI as fallback.
-  The **/upload page** lets you send files from the phone straight into her
-  inbox — a background watcher picks them up and she can read, describe, or
-  act on them (`inbox_list`, `inbox_describe`, `inbox_read`).
-- **Phone Node (Android)** — the ARIA Node app connects to the bridge over
-  a WebSocket (`/node/ws`, authenticated with the bridge's own credentials)
-  and ARIA gains nine `phone_*` tools: `phone_status`, `phone_list_apps`,
-  `phone_open_app`, `phone_read_screen` (the accessibility tree, with
-  tap targets), `phone_notifications`, `phone_tap`, `phone_swipe`,
-  `phone_type`, `phone_key`. Hub and protocol in `aria/node_hub.py` /
-  `aria/phone_node.py`. Safety rule: phone *control* never runs inside a
-  routine replay or a delegated/preauthorized call — reads are unrestricted,
-  taps are for live conversation only.
-- **Robot Body** — Arduino Nano firmware (`arduino/aria_body/aria_body.ino`)
-  driving a pan/tilt head (`P<pos>T<pos>`) and differential-drive wheels
-  (`W<l>,<r>`) over a no-solder Nano + sensor shield, with a dedicated stop
-  command (`S`) and an animated OLED face — eyes that blink and glance where
-  the head turns, plus a smile (1.3" SH1106 I2C display, U8G2 library).
-  `drive_wheels` / `body_stop` tools, `ARIA_BODY_SERIAL_URL`
-  for network serial, and `sim/robot_sim.py`, a virtual body for testing
-  without hardware. Her eyes select via `ARIA_BODY_CAMERA`: USB index, IP
-  camera URL, or `bridge`. Full build guide in `docs/ROBOT_BODY.md`.
+There is deliberately **no ambient camera tile**: her camera works on
+demand — ask her to look — never as an always-on picture-in-picture.
 
-## Requirements
+---
 
-- Windows 10/11, **Python 3.12** — always invoked as `py -3.12`. 3.12 is a
-  hard ceiling, not a preference: `aria/speech.py` imports `audioop`
-  (removed in Python 3.13), and the default `python` on the target laptop
-  is 3.14, where PyAudio has no wheel. `aria.py` relaunches under an
-  alternate interpreter only when `ARIA_ALT_PYTHON` points at one.
-- An [Ollama Cloud](https://ollama.com/) API key (`OLLAMA_API_KEY` — free
-  starter tier) for her primary brain (gpt-oss:120b); Groq / OpenRouter /
-  Mistral / Gemini keys are optional fallbacks. Screenshot vision runs natively
-  through Ollama Cloud /api/chat (gemma4:31b-cloud), then the provider chain.
-- Microphone + speakers (webcam optional, used for face tracking / vision)
-- `winsdk` (installed from `requirements.txt`; Windows-only wheel) powers
-  the SMTC media feed — real now-playing titles and play/pause state for
-  every media app. It is optional at runtime: without it, media readout
-  falls back to window titles and transport to the system media keys.
+## Phone bridge & node
 
-## Quick start
+**The bridge** (`aria/bridge.py`) is an HTTPS server on your local network
+(TLS on **8001**, per-machine self-signed certificate; a first-visit
+certificate warning per device is expected). **Remote Control** in
+Settings → Connections shows a QR code: scan it and the phone is paired —
+no token form — remembered for 30 days via a per-phone HttpOnly cookie
+(session *hashes* are stored, never raw credentials). The phone gets her
+centrepiece (the bridge publishes the same composited frame the desktop
+shows), Face / Eyes views with its own camera streaming back as her eyes,
+hold-to-talk voice, the conversation, inbox, briefing, a **Send a file**
+page (uploads land in her inbox for `inbox_list` / `inbox_describe` /
+`inbox_read`), and a Commands page. Expiring the QR does not sign out an
+already-paired phone; disconnect phones individually or all at once from
+the laptop.
+
+**The node.** The **ARIA Node** Android app connects to the bridge over a
+WebSocket (`/node/ws`, authenticated with the bridge's own credentials)
+and turns the phone into hardware she can drive — the nine `phone_*`
+tools above. One hard safety rule: phone *control* never runs inside a
+routine replay or a delegated/preauthorized call; reads are unrestricted,
+taps are for live conversation only.
+
+---
+
+## Setup
+
+**Windows 10/11, Python 3.12** — always invoked as `py -3.12`. 3.12 is a
+hard ceiling, not a preference: `aria/speech.py` imports `audioop`
+(removed in Python 3.13), and the default `python` on the target laptop
+is 3.14, where PyAudio has no wheel.
 
 ```bat
 py -3.12 -m pip install -r requirements.txt
 py -3.12 aria.py
 ```
 
-First run creates `aria_keys.json` next to the script. Add your keys with:
+First run creates `aria_keys.json` next to the launcher and walks a short
+setup wizard that checks dependencies and any missing keys (Ctrl+C skips
+it). Add keys any time with:
 
 ```bat
 py -3.12 tools\aria_add_key.py
 ```
 
 (or set `OLLAMA_API_KEY` / `GROQ_API_KEY` / `GITHUB_TOKEN` as environment
-variables — env vars take precedence over `aria_keys.json`). On first launch
-she runs a short setup wizard that checks dependencies and walks through any
-missing keys (Ctrl+C skips it).
+variables — env vars take precedence over `aria_keys.json`.)
 
-Gmail sending and reading use an app password, saved via ARIA's `gmail_setup` tool (`send_email` / `read_email`).
+**Then the connection pass** — by voice, or from Settings → Connections:
 
-To give her the phone face: on the laptop `set ARIA_BODY_CAMERA=bridge`,
-open the bridge page on the phone (see Bridge URL printed at startup), log in
-with your bridge token, and tap Camera ON in the ⚙ settings panel.
+| Say | She stores | Notes |
+|---|---|---|
+| "Set up Gmail" | Gmail user + app password | a Google **app password**; IMAP read/triage (BODY.PEEK), SMTP send |
+| "Set up my calendar" | calendar source | read-only by design; recurrence expands |
+| "Wire my Groq key" (also OpenRouter / Mistral / Ollama Cloud / Gemini) | provider creds | the chain's rungs; Gemini needs only its key |
+| "Set up an MCP server", then "connect it" | `mcp_servers` | a server is a program she runs — connect servers you trust; its tools join as `mcp_<server>__<tool>` |
 
-## Troubleshooting
+One footnote: **`winsdk`** (in `requirements.txt`, Windows-only wheel)
+powers the SMTC media feed. It is optional at runtime — without it, media
+readout falls back to window titles and transport to the system media
+keys, and the Activity tab says SMTC is unavailable once, in so many
+words, instead of failing silently.
 
-- **`ModuleNotFoundError: No module named 'numpy'`** (or cv2, etc.) — the
-  interpreter running `aria.py` doesn't have the dependencies. Run
-  `py -3.12 -m pip install -r requirements.txt` with the *same* interpreter
-  you launch her with. If `pip` and `python` disagree about environments
-  (`where python` shows more than one — the laptop default is 3.14), install
-  into the right one explicitly via `py -3.12 -m pip`.
-- **`pygame` fails to build** — pip couldn't find a prebuilt wheel for your
-  Python and the from-source build needs a C++ toolchain. Upgrade pip first
-  (`py -3.12 -m pip install --upgrade pip setuptools wheel`) and retry. If it
-  still fails, skip it: pygame is only used for local audio playback and is
-  imported lazily — she boots and runs fine without it. Install everything
-  else with:
-  `findstr /v /b "pygame" requirements.txt > %TEMP%\aria-req.txt`
-  followed by `py -3.12 -m pip install -r %TEMP%\aria-req.txt`.
-- **She goes quiet after an update** — pull the latest code and restart her;
-  she also restarts herself when she edits her own code.
+**Auto-start:** copy `windows\aria_autostart.bat` and
+`windows\aria_watchdog.bat` next to `aria.py`, run the autostart once with
+her path, and the watchdog in your Startup folder launches her on every
+boot and restarts her if she crashes.
 
-## Auto-start on boot
+---
 
-1. Copy `windows\aria_autostart.bat` and `windows\aria_watchdog.bat` to the
-   same folder as `aria.py`
-2. Double-click `aria_autostart.bat` once and enter your `aria.py` path
-   (e.g. `E:\ARIA\aria.py`)
-3. It installs the watchdog into your Windows Startup folder — ARIA launches
-   on every boot and restarts automatically if she crashes
+## Safety model
 
-## Project layout
+- **Approval layer.** `set_approval_mode`: `auto`, `confirm-risky`, or
+  `confirm-all`. In the confirm modes a destructive action pauses with a
+  token and waits — approve or deny by voice, or from the dashboard's
+  confirm banner (the same execution path, so a click and a spoken "yes"
+  can never diverge). Approvals expire after 10 minutes and surface in
+  the Activity log.
+- **Delegation inherits the gates.** A delegated task runs the same tools
+  through the same dispatch and the same verifier; work that needs you
+  parks as blocked instead of bypassing anything, and a delegated or
+  preauthorized context can never drive the phone.
+- **Routines earn trust.** Recorded routines replay by name; untrusted
+  routines still ask before destructive steps. Imported packs land
+  untrusted and never overwrite.
+- **File Commander is dry-run-first.** `file_organize` produces a plan and
+  moves nothing until you say so; `file_duplicates` is report-only;
+  system directories are refused outright.
+- **Self-editing with a net.** Import-smoke-tested before any restart,
+  broken edits preserved and auto-restored from git (above). Updates
+  restart her program, never the computer; any process-kill path fails
+  closed unless the target is positively identified as her own Python
+  process.
+- **Honest states everywhere.** Tools answer from observation — a press
+  that didn't take says so, a source that isn't connected says so, a
+  session that ignored a command says so. "Pushed" is a receipt; only
+  your witness closes a claim.
 
-```
-aria.py                  Root entrypoint / launcher (auto-redirects to
-                         Python 3.9 when PyAudio/pygame are missing)
-aria/                    Modular system package
-  agent/                 Multi-provider agent loop, streaming, prompt
-                         engineering, self-edit auto-restart watcher
-    brain.py             Central orchestrator: prompt building, function-
-                         calling loop, sandboxing, supervision
-    proactive.py         Proactive heartbeat daemon (consumes the event bus)
-    workers.py           Persistent background jobs, downloads watcher,
-                         system resource monitor
-    self_healing.py      Incident log, error diagnosis, auto-heal attempts
-    shortcuts.py         Voice/text shortcuts
-  hud.py                 OpenCV HUD: subsystem status rows, optic PIP,
-                         collapsible context tiles, overlay renderer;
-                         Spotify/media telemetry (SMTC-first, then
-                         by-process window titles)
-  dashboard.py           The native Qt command center (three columns,
-                         tabs, pet mode, services dialog)
-  ui_panels.py           Settings + Commands dialogs (live tool catalog)
-  smtc.py                Windows SMTC sessions: now-playing for every
-                         media app + closed-loop explicit transport
-  media_control.py       One media tool over the HUD player / system
-  node_hub.py            Phone-node hub (WebSocket command routing)
-  phone_node.py          The nine phone_* tools over the hub
-  pet_window.py          The floating desktop pet
-  neural_field.py        The dashboard's animated neural background
-  presence.py            Idle/away presence gating for proactive speech
-  live.py                Gemini Live voice mode (opt-in, settings file)
-  pixel_avatar.py        Full-body pixel-person avatar, reactive cognitive
-                         expressions, ear antennae
-  theme.cfg              HUD color theme definitions
-  speech.py              Edge TTS streaming prefetch, Whisper/Google STT,
-                         bridge TTS + transcription
-  bridge.py              HTTPS phone bridge server: face/eyes UI, live MJPEG
-                         streams, voice + camera endpoints, /upload page
-  inbox.py               Phone-upload inbox: watcher + list/describe/read
-  memory.py              SQLite semantic vector memory, journal, memory spine
-  mcp.py                 MCP client: connect to MCP servers, register their
-                         tools as ARIA tools (mcp_<server>__<tool>)
-  routines.py            Record-and-replay multi-step routines
-  approval.py            Approval layer: auto / confirm-risky / confirm-all
-  events.py              In-process event bus (reminder_fired, price_drop, …)
-  screenwatch.py         Standing vision questions with change detection
-  persona.py             Switchable persona overlays (concise, coach)
-  personas/              Persona overlay fragments
-  pricecheck.py          Hourly price-watch checker (emits price_drop)
-  first_run.py           First-launch setup wizard (deps + API keys)
-  ops_screen.py          Tabbed OPS command center (O: Log/Tasks/Sensors/
-                         Controls/Notes/HUB/Day)
-  scheduler.py           Autonomous scheduler and reminders
-  spotify.py             Desktop Spotify player control & DJ mode
-  hardware.py            Arduino serial: servo head, drive wheels, body tools
-  vision.py              Camera capture (USB / IP / bridge), face tracking,
-                         screen analysis, phone-frame ingest
-  tools/                 Core tools & on-demand specialist toolkits
-    schemas.py           Tool declarations + progressive toolkits
-    dispatch.py          Registry, execution, parallel calls, dedup
-    sandbox.py           Risky-tool gating, argument validation
-    builtins.py          Tool implementations
-    skills.py            Bounded workflow skills
-    fileops.py           File commander: organize/find/duplicates/disk usage
-    winctl.py            Window snap + app launching
-    triage.py            Email triage (IMPORTANT / FYI / NOISE)
-    usertools.py         User tool SDK loader
-    user_tools/          Drop-in custom tools (sample_greeting.py)
-arduino/aria_body/       Nano firmware: P/T head, W wheels, S stop protocol
-sim/robot_sim.py         Virtual robot body (TCP) for hardware-free testing
-docs/ROBOT_BODY.md       No-solder robot body build guide
-docs/ARIA_ULTIMATE_SPEC.md  Ultimate build spec (all 11 modules)
-docs/USER_TOOL_SDK.md    5-minute custom-tool guide
-docs/INSTALLER.md        Building the Windows installer
-installer/               PyInstaller one-folder generator + Inno Setup script
-tests/test_headless.py   Headless test suite (no camera/mic/hardware needed)
-tests/test_ultimate*.py  Ultimate module tests (50 tests)
-workspace/               Runtime data (memory DB, spine, models, mood, chat logs)
-soul.md                  Her persona & standing directives — loaded on boot
-requirements.txt         Python dependencies
-windows/                 Auto-start installer + watchdog (.bat)
-tools/                   Helper scripts (key manager)
+---
+
+## Known limitations
+
+- **Python 3.12 is the ceiling** (above). Everything is invoked as
+  `py -3.12`; the default `python` on the machine will not do.
+- **Gemini Live is settings-file only.** There is no UI toggle yet;
+  `"voice_mode": "live"` in the settings file is the switch, and a
+  restart applies it.
+- **The bridge is LAN-only** with a self-signed certificate — expect a
+  one-time browser warning per device, and Wi-Fi client isolation can
+  block phone access entirely.
+- **Window-title media fallback is title-grade.** Without SMTC, a paused
+  player keeps its title, so the panel can say NOW PLAYING for a paused
+  movie; transport stays exact, the label is the guess.
+- **No off-machine backup is built in.** Memory, journal and settings
+  live in `workspace/` on the one disk; back that folder up yourself if
+  losing it would hurt.
+- **Keys are plaintext at rest.** `aria_keys.json` is gitignored and
+  never committed, but anyone with your Windows account can read it.
+
+---
+
+## Development
+
+Tests live in `tests/` and run the way CI runs them
+(`.github/workflows/tests.yml`, Python 3.12): a ruff gate
+(`--select F401`) over `aria/`, then **every suite file in its own
+process** — the stubs one file installs must never leak into another's
+imports. New behaviour ships with a test that would have caught the bug
+it fixes, ideally against the real modules, not stubs of them.
+
+```bat
+py -3.12 -m pytest tests\test_dashboard.py -q
 ```
 
-## Version history
+Layout, briefly: `aria.py` (root launcher), `aria/agent/` (the brain:
+provider loop, task journal, consolidation, workers, self-healing),
+`aria/tools/` (schemas for the progressive toolkits, dispatch, sandbox,
+builtins), `aria/dashboard.py` + `aria/ui_panels.py` (the Qt command
+center and its dialogs), `aria/bridge.py` (the phone bridge),
+`aria/node_hub.py` + `aria/phone_node.py` (the Android node),
+`aria/smtc.py` + `aria/media_control.py` (media), `aria/presence.py`,
+`aria/live.py`, `aria/neural_field.py`, `aria/resonance.py`,
+`aria/holo_face.py`, `aria/pet_window.py` (centrepieces and pet),
+`aria/briefing.py`, `aria/memory.py`, `aria/routines.py`,
+`aria/approval.py`, `aria/scheduler.py`, `aria/mcp.py`, `aria/hud.py`
+(the classic OpenCV HUD + shared telemetry), `arduino/` (robot body
+firmware), `docs/` (robot build guide, tool SDK, installer notes),
+`installer/` (PyInstaller generator + Inno Setup script), `windows/`
+(auto-start + watchdog), `tools/` (key manager).
 
-### Latest
+---
 
-- **The Mark-LVI wave + media overhaul (October 2026)** — the Qt dashboard
-  absorbed Mark-LVI's UI (ten ports: resonance orb, holo face with viseme
-  mouth, neural-field background, video panel, pet window, customize
-  wheel, panels) and the six architecture gap fills (presence gating,
-  Gemini Live mode, durable task journal with resume + verifier, memory
-  consolidation with a contradiction queue, per-provider/model cooldowns,
-  unified `media_control`). On top: the **phone node** (Android app +
-  nine `phone_*` tools), the **SMTC media overhaul** (NOW PLAYING covers
-  every media app with explicit, closed-loop-verified Play/Pause), the
-  briefing overhaul (cross-source story dedupe — one story, once),
-  colour-coded Conversation/Activity logs, pet mode that replaces the
-  whole UI, and Settings absorbing the Providers / Extensions /
-  Customize / Pet surfaces. 120 registered tools; the test suite runs
-  per-file in CI (`.github/workflows/tests.yml`).
-- **Self-restart hardening** — the hot-restart watcher now import-smoke-tests
-  changed files in a fresh interpreter (catches bad imports `py_compile`
-  misses, e.g. cross-repo contamination), auto-restores broken edits from git
-  (broken copy kept as `<file>.broken-<epoch>`), and is scoped to the `aria/`
-  package + root launcher so test/probe edits can't trigger it. HTTP 410
-  responses are treated as retired model tags (the key is never quarantined).
-  Gemini rejoined the provider chain as the last fallback leg
-  (`gemini-3.8-flash` via Google's OpenAI-compatible endpoint).
-- **ARIA Ultimate** — the all-encompassing desktop agent build: **routines**
-  (record once, replay by name with `{{parameter}}` slots), an **approval
-  layer** (`auto` / `confirm-risky` / `confirm-all` with token approve/deny),
-  a **file commander** (dry-run-first organize, advanced find, duplicate
-  detection, disk usage), **window snap + app launching**, an **ambient event
-  bus** feeding the heartbeat, **email triage** and a **screen watcher**, a
-  working **hourly price checker**, a **tool SDK** (`aria/tools/user_tools/`
-  drop-ins), switchable **personas**, and **installer groundwork**
-  (PyInstaller one-folder generator, Inno Setup script, first-run key
-  wizard). 95 tools across 16 toolkits; 50 new tests green.
-- **OPS command center** — press `O` for a tabbed overlay (Log, Tasks,
-  Sensors, Controls, Notes, HUB, Day) inside the Python window; `H` keeps the
-  commands view. Visual overhaul with real Roboto Mono typography via PIL,
-  rounded panels, and honest sensors (missing `psutil` shows an install hint;
-  GPU gauge only when `nvidia-smi` reports one). Fixed the boot-killing
-  circular import (`spotify → dispatch → hud → ops_screen → agent →
-  shortcuts → spotify`) by lazily importing `ops_screen`.
-- **Ollama Cloud primary** — the default brain chain is now ollama_cloud
-  (gpt-oss:120b) → Groq → OpenRouter → Mistral. Embeddings go to Ollama's
-  /api/embeddings (nomic-embed-text); transcription runs locally via
-  faster-whisper when available, else Google cloud STT.
-  The HUD reports the serving provider and flags fallbacks.
-- **HUD fault tracebacks** — full exception tracebacks now land in the log
-  instead of a bare fault line; fixed an undefined `List` import in
-  proactive.
+## Your data
 
-- **Optic PIP live-frame fix** — the CAM.01 picture-in-picture box could never
-  render video: `hud.py` bound `LATEST_CAMERA_FRAME` by value at import time
-  (permanently `None`) while `vision.py` rebinds it per capture. The frame is
-  now read live off the vision module on every draw.
-- **Python 3.9 auto-redirect** — `aria.py` detects a Python missing PyAudio /
-  pygame at launch and relaunches itself under the Python 3.9 install when
-  present; self-restarts prefer 3.9 too. Ends the "works on one interpreter,
-  breaks on another" era. *(Superseded by Fork A: the relaunch only ever
-  happened when `ARIA_ALT_PYTHON` was set; the supported runtime is now
-  Python 3.12 via `py -3.12`.)*
-- **HUD upgrade** — collapsible context tiles (dashboard, subtitles, audio,
-  tasks, Spotify), full-body pixel avatar with reactive cognitive-state
-  expressions and poses, subsystem rows capped to fit cleanly above the optic
-  PIP, which moved, resized, and was relabeled CAM.01.
-- **Autonomy pack** — proactive heartbeat daemon, persistent background
-  workers (long jobs, downloads watcher, system resource monitor with
-  alerts), and a self-healing loop (incident log → diagnosis → auto-heal
-  attempts). New `autonomy` toolkit: `manage_autonomous_goal`,
-  `manage_background_job`, `system_health_audit`, `self_heal_diagnose`.
-- **Phone bridge inbox uploads** — `/upload` page on the bridge sends files
-  straight into her inbox; a background watcher picks them up and
-  `inbox_list` / `inbox_describe` / `inbox_read` let her work with them.
-  Inbox-first photo routing: "look at" a sent/uploaded photo uses the inbox,
-  never the webcam.
-- **MCP streamable-HTTP transport** — pure-Python MCP client support for
-  streamable-HTTP servers alongside stdio and SSE; UI dynamic scaling.
+Everything is on your machine — no ARIA server, no telemetry, no account.
+Your voice goes to the speech and provider services you configured (Edge
+TTS, your provider chain, Gemini in Live mode); that is what leaves the
+PC. `aria_keys.json`, logs, the memory DB and the journal are all
+gitignored — they stay on your machine and never get committed.
 
-### Since v9.36
+## Credits
 
-- **MCP client** — ARIA connects to Model Context Protocol servers and uses
-  their tools: `mcp_setup` / `mcp_connect` / `mcp_disconnect` /
-  `mcp_list_servers` / `mcp_remove_server` (new `mcp` toolkit); every server
-  tool is registered at connect time as a first-class ARIA tool
-  (`mcp_<server>__<tool>`) with its JSON Schema converted to Gemini function
-  declarations, so argument validation, duplicate-call blocking, and output
-  truncation all apply. stdio and SSE/HTTP transports, persistent sessions on
-  a background asyncio loop, background auto-connect of enabled servers at
-  boot; `mcp>=1.0,<2` added to requirements.
-- **Robot body** — Arduino Nano firmware with eased pan/tilt head, timed
-  differential-drive wheels, and dedicated stop; `drive_wheels` / `body_stop`
-  agent tools; `ARIA_BODY_SERIAL_URL` for network serial; `sim/robot_sim.py`
-  virtual body; full no-solder build guide in `docs/ROBOT_BODY.md`; wheels
-  chosen over tracks for the mobile base.
-- **Body camera sources** — `ARIA_BODY_CAMERA` accepts a USB index, an IP
-  camera stream URL, or `bridge` (frames uploaded by the phone bridge page);
-  snapshots and face tracking work on all three; HUD subsystem box shows the
-  active source (`[bridge]` / `[cam N]` / `[net]`).
-- **Bridge-page camera** — the phone bridge streams its own camera
-  (480x360 JPEG, ~3 fps) to `POST /api/camframe`; one phone is now her face,
-  voice, and eyes with no extra apps; front/rear flip switch in the header.
-- **Bridge redesign** — sleek minimal dark UI: her pixel face as the hero,
-  Face / Eyes / ⛶ Full segmented control, fullscreen face mode for the
-  mounted phone (tap to exit), live Eyes viewer (`/phone_cam.mjpg`),
-  "Describe what you see" snapshot narration (`POST /api/look`),
-  hold-to-talk + tap-to-talk, ⚙ settings panel (speak replies, test audio,
-  camera), toggleable conversation log, UTF-8 header icons.
-- **Bridge hardening** — token login page + HttpOnly SameSite cookie auth on
-  all routes, unknown paths 404, configurable bind host, per-machine
-  self-signed certificate (PowerShell/.NET fallback when `cryptography` is
-  broken), loud TTS failures surfacing the real engine error, Edge-first
-  TTS with offline SAPI fallback, no `?token=` in media URLs.
-- **Bridge confirmation gating removed** — risky tools now execute immediately
-  with an audit log instead of pausing for yes/no.
-- `.gitattributes` normalizes line endings to LF (prevents CRLF/LF merge
-  conflicts on Windows).
+Built by **Alek Berger**. The dashboard centrepieces, neuron field,
+desktop pet and phone-node design descend from his Mark-LVI-ARIA fork of
+**MARK LVI** by **FatihMakes** (CC BY-NC 4.0; see `LICENSES/`). Face
+geometry: MediaPipe canonical face model, Apache-2.0.
 
-- **v9.36** — Voice pipeline & false wake hardening: removed noisy VAD
-  bypass, eliminated self-hearing mic echo during TTS playback, and enforced
-  strict wake phrase recognition confidence; audio resampling and wake lock
-  handling optimizations.
-- **v9.35** — Pixel Avatar face overhaul & modular refactor:
-  - Refactored monolithic codebase into the modular `aria/` package; hot
-    self-restart watcher upgraded to fingerprint the full package tree.
-  - New Pixel-person avatar HUD with expressive face states: idle, listening,
-    speaking waveform mouth, thinking / green code-eyes face during model tool
-    calls, and floating diagonal sleepy Z's.
-  - Twin ear antennae with synchronized pulsating tips and twitch animations.
-  - HUD color themes configurable via `theme.cfg`.
-  - Instant speech barge-in via the `X` key to cut off active TTS playback.
-  - Phone bridge audio reply playback fixes and mobile stability improvements.
-- **v9.34** — Whisper mode (softer/quieter voice, 1–2 sentence replies, no
-  heartbeat chatter except the low-battery safety alert; toggled by voice,
-  HUD button, or the W key; persisted) and a mood system (energy/warmth
-  axes, one HUD mood word, flavors greetings and idle-face tempo only —
-  never facts or answers).
-- **v9.33** — Everything lives under the script folder: a one-time startup
-  migration moves any leftover ~/robot_workspace data (memory DB, chat
-  history, journal, models, …) into <script-dir>/workspace, never
-  overwriting files already there.
-- **v9.32** — HUD subsystems panel right-aligns the status column inside
-  the box; long statuses like "ARMED (1)" no longer spill past the edge.
-- **v9.31** — Phone bridge text replies speak aloud on the phone: after a
-  text reply arrives, the bridge page fetches its audio from /api/say and
-  plays it (same as hold-to-talk); Speak replies ON/OFF toggle persisted
-  in localStorage. Audio trims at 500 chars; full text still shows.
-- **v9.30** — Merges her streaming chat-log fix with the v9.28 feature set:
-  her cure (always log the full reply text after the stream) is kept, with
-  the HUD subtitle/draw kept out of silent turns; live subsystem rows,
-  last-tool readout, and the 30-minute loop budget are restored.
-- **v9.29** — Streamed speech returns to the tactical chat log: v9.25's
-  sentence streaming bypassed speak(), so streamed replies were spoken but
-  never logged; the post-stream branch now records the full reply text.
-- **v9.28** — Live HUD subsystem status tracking: every subsystem row now
-  reports its real state instead of a hardcoded label — camera/screen
-  reflect the last capture attempt, memory runs a cached DB probe, sandbox
-  shows RUNNING while code executes, scheduler shows a live pending-task
-  count; plus a new last-tool row showing the most recently executed tool
-  and its time. Agent-loop time budget raised from 10 to 30 minutes per
-  request.
-- **v9.27** — Pipelined parallel TTS prefetching + early clause speech emission:
-  text generation feeds a dedicated prefetch synthesis worker in parallel with
-  playback, eliminating the 1-2s gap between sentences; early clause boundary
-  detection begins vocalizing long opening sentences after the first clause
-  (>=3 words), cutting time-to-first-sound.
-- **v9.26** — Streaming-speech queue fix: the pre-tool speech stop now uses
-  interrupt_speech() (the old inline drain skipped task_done, leaking the
-  unfinished-tasks counter and leaving the stop event set, which silently
-  muted streaming on every tool-call turn); the stop event is cleared
-  before each fresh streaming call.
-- **v9.25** — Streaming Sentence TTS & Context Diet: real-time SSE token
-  streaming from Gemini detects sentence boundaries on the fly and enqueues
-  speech instantly, cutting voice latency to <800ms; unique memory key
-  indexing with ON CONFLICT DO UPDATE; internal system keys isolated from
-  the prompt context; dynamic semantic memory retrieval injects user identity
-  and top-k semantically relevant memories.
-- **v9.24** — Self-edit auto-restart: she fingerprints her script + soul.md
-  at boot; a changed fingerprint at turn end triggers an announced,
-  compile-checked self-relaunch (deferred while confirming; a new turn
-  cancels a pending restart)
-- **v9.23** — Barge-in: any new typed, mic, PTT, wake-word, or phone-bridge
-  message stops her current speech immediately; empty transcripts don't
-  interrupt
-- **v9.22** — Every face gets a mouth: yellow waveform ripple on thinking /
-  working / listening, green on coding (idle/speaking keep pink); working
-  radar arc moved down to clear the mouth
-- **v9.21** — "Open the video downloader" shortcut: probes localhost:3003,
-  starts the server via start-windows.bat when it's down, then opens the page
-  (port is a one-line constant now)
-- **v9.20** — File/app launching quotes the path (same as URLs already
-  did), so paths with spaces like "The Boy and the Heron" open correctly
-  instead of truncating at the first space
-- **v9.19** — Version numbers removed from all user-visible text and code
-  (HUD, subtitles, console, spoken greeting, comments); the header
-  changelog keeps the full version history
-- **v9.18** — Subtitle sanitizer: vocal subtitles now pass through the
-  HUD's `_hud()` ASCII sanitizer like the chat log and action stream,
-  so curly quotes and other Unicode punctuation render correctly
-- **v9.17** — Back to Google cloud transcription by default; the local
-  faster-whisper path stays in the file, dormant behind `_USE_LOCAL_STT`
-- **v9.16** — Hallucination guard for local STT: voice-activity filtering
-  (Silero VAD), no conditioning on previous text, and segments the model
-  itself flags as non-speech are dropped -- silence becomes "didn't catch
-  that" instead of invented words
-- **v9.15** — Loop cap removed: no turn limit, 10-minute budget per request;
-  on timeout she asks "Should I keep going?" and "yes"/"continue" resumes
-  the same reasoning chain
-- **v9.14** — Local speech recognition (faster-whisper on CPU) with silent
-  Google fallback
-- **v9.13** — Reliable morning brief: scheduled briefs run the briefing
-  routine directly instead of through the model
-- **v9.12** — Face-only video stream on the phone bridge (`/face.mjpg`)
-- **v9.11** — Push-to-talk: hold SPACE to record, release to transcribe
-- **v9.10** — Unbroken memory spine: append-only turn/tool/journal log,
-  `where_we_left_off.md` at shutdown, recent context reloads at boot
-- **v9.9** — Secret redaction, heartbeat decline learning, animated faces,
-  bounded workflow skills, key-triggered input off the main thread
-- **v9.8** — Progressive tool loading, duplicate-call blocking, argument
-  repair; fixed 4 wrong required-field declarations
-- **v9.7** — Explicit "open that link from earlier" references resolve URLs
-  from conversation history
-- **v9.6** — Gmail sending via app password
-- **v8.3** — Key rotation on 5xx errors; "open Spotify" action; voice media keys
-- **v7.11** — Current face: pink waveform mouth, lash flicks, pink iris rings,
-  plum eyeliner, larger eyes
-
-## Notes
-
-- `aria_keys.json`, logs, memory DB, and journal are gitignored — they stay
-  on your machine and never get committed.
-- Tested on Windows 11 (Python 3.12 via `py -3.12` for full audio support;
-  `aria.py` relaunches under an alternate interpreter only when
-  `ARIA_ALT_PYTHON` is set).
-- The v9.17 changelog entry ("Google cloud transcription by default, local
-  faster-whisper dormant behind `_USE_LOCAL_STT`") was never implemented —
-  no such flag exists in the code. Current behavior: the desktop mic prefers
-  local faster-whisper whenever it is installed, falling back to Google cloud
-  transcription, and the bridge's voice messages go through the same
-  local-faster-whisper-then-Google pipeline.
+_The previous README carried a long version-by-version changelog; it
+lives on in this repo's git history. This document describes what ARIA
+is now._
