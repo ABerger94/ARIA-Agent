@@ -326,3 +326,27 @@ def test_dashboard_vision_pip_on_demand(monkeypatch):
     window._pip._timer.timeout.emit()
     assert not window._pip.isVisible()
     window.close(); app.processEvents()
+
+
+def test_escape_is_the_stop_talking_key(monkeypatch):
+    # Alek, 2026-10-27: "Esc when I'm using aria to be the stop
+    # talking quick key." A REAL Esc keypress on the window must
+    # reach callbacks.interrupt (main wires it to
+    # speech.interrupt_speech) — not a direct method call.
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    app = _app()
+    callbacks, _calls = _dashboard_stubs(monkeypatch)
+    hits = []
+    callbacks.interrupt = lambda: hits.append('stop')
+    from aria.dashboard import create_dashboard
+    window = create_dashboard(callbacks)
+    window.show()
+    app.setActiveWindow(window)
+    app.processEvents()
+    assert window._stop_shortcut.key().toString() == 'Esc'
+    QTest.keyClick(window, Qt.Key.Key_Escape)
+    app.processEvents()
+    assert hits == ['stop']
+    window.close()
+    app.processEvents()

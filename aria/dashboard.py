@@ -635,6 +635,14 @@ def create_dashboard(callbacks):
             self._commands_shortcut.activated.connect(self.commands)
             self._fullscreen_shortcut = QShortcut(QKeySequence('F11'), self)
             self._fullscreen_shortcut.activated.connect(self._toggle_fullscreen)
+            # Esc — the stop-talking quick key (Alek, 2026-10-27):
+            # fires the same interrupt main wires the Stop
+            # control to (speech.interrupt_speech). Window-wide,
+            # typing included: when she's talking over you, Esc
+            # is the fastest hand. (Leaving fullscreen stays on
+            # F11 — Esc has one job here.)
+            self._stop_shortcut = QShortcut(QKeySequence('Esc'), self)
+            self._stop_shortcut.activated.connect(self._stop_talking)
             self._pip = VisionPip(self._center_card)
             self._pip_seen_ts = 0.0
 
@@ -650,6 +658,14 @@ def create_dashboard(callbacks):
             if (pv.get('jpeg') and pv.get('ts', 0) > self._pip_seen_ts):
                 self._pip_seen_ts = pv['ts']
                 self._pip.show_frame(pv['jpeg'], pv.get('label', ''))
+
+        def _stop_talking(self):
+            """Esc: stop her mid-sentence (callbacks.interrupt —
+            main wires it to speech.interrupt_speech)."""
+            try:
+                callbacks.interrupt()
+            except Exception as exc:
+                config.log_silent('dashboard.esc_stop', exc)
 
         def _toggle_fullscreen(self):
             """F11, Mark-LVI style (Alek, 2026-10-27): true full
