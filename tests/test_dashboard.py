@@ -350,12 +350,13 @@ def test_pet_mode_hides_the_dashboard(monkeypatch, tmp_path):
     window.close()
 
 
-def test_now_playing_panel_and_camera_tile(monkeypatch, tmp_path):
+def test_now_playing_panel(monkeypatch, tmp_path):
     # Batch B (Alek, 2026-10-27): NOW PLAYING shows track and
-    # artist on separate lines with a state dot, and the vision
-    # tile in the centre card shows the camera's frame.
-    import base64
-    import time as _time
+    # artist on separate lines with a state dot. (The camera PiP
+    # tile that shipped in the same batch was REMOVED the same
+    # day at Alek's word — annoying on the dash, and he doesn't
+    # want constant camera watching. The last assert pins its
+    # absence.)
     app = QApplication.instance() or QApplication([])
     calls = []
     data = dict(cpu=25, mem=40, battery='80%', uptime_s=600,
@@ -389,16 +390,6 @@ def test_now_playing_panel_and_camera_tile(monkeypatch, tmp_path):
     speech = types.ModuleType('aria.speech'); speech.VOICE_ENABLED = True
     monkeypatch.setitem(sys.modules, 'aria.speech', speech)
     monkeypatch.setattr(sys.modules['aria'], 'speech', speech, raising=False)
-    from PyQt6.QtCore import QBuffer, QIODevice
-    from PyQt6.QtGui import QPixmap
-    _pm = QPixmap(8, 8); _pm.fill()
-    _buf = QBuffer(); _buf.open(QIODevice.OpenModeFlag.WriteOnly)
-    _pm.save(_buf, 'JPG')
-    jpeg = bytes(_buf.data())
-    vision = types.ModuleType('aria.vision')
-    vision.capture_webcam = lambda: jpeg
-    monkeypatch.setitem(sys.modules, 'aria.vision', vision)
-    monkeypatch.setattr(sys.modules['aria'], 'vision', vision, raising=False)
     callbacks = types.SimpleNamespace(
         ptt_press=lambda: None, ptt_release=lambda: None,
         interrupt=lambda: None, toggle_whisper=lambda: None,
@@ -409,12 +400,7 @@ def test_now_playing_panel_and_camera_tile(monkeypatch, tmp_path):
     window.show(); app.processEvents(); window.render_once(); app.processEvents()
     assert window.track.text() == 'The Song\nThe Artist'
     assert '#2ee6a8' in window.now_playing_title.styleSheet()
-    for _ in range(100):
-        app.processEvents()
-        if not window.cam_tile.pixmap().isNull():
-            break
-        _time.sleep(0.02)
-    assert not window.cam_tile.pixmap().isNull()
+    assert not hasattr(window, 'cam_tile')   # PiP removed (Alek)
     window.close()
 
 
@@ -539,4 +525,61 @@ def test_overlays_open_and_close(monkeypatch, tmp_path):
     assert any('fs — stdio — npx fs' in t for t in texts), texts
     window._close_overlay(); app.processEvents()
     assert window._overlay is None
+    window.close()
+
+
+def test_orb_publish_falls_back_when_composite_fails(monkeypatch, tmp_path):
+    # Alek, 2026-10-27 07:17: after the composite landed, the
+    # bridge orb VANISHED — a failing composite must degrade to
+    # the plain grab, never to no frames at all.
+    app = QApplication.instance() or QApplication([])
+    calls = []
+    published = []
+    data = dict(cpu=25, mem=40, battery='80%', uptime_s=600,
+                active_provider='Ollama', subsystems=[],
+                task_active=0, scheduled=0, voice_enabled=True, volume=.5)
+    frame = types.ModuleType('aria.frame')
+    frame.strip_data = lambda: data
+    frame._fmt_uptime = lambda seconds: '10m'
+    frame.spotify_data = lambda: {'title': ''}
+    frame.chat_entries = lambda n: []
+    frame.activity_events = lambda n: []
+    frame.toggle_voice = lambda: None
+    frame.receive_file = lambda p: None
+    hud = types.ModuleType('aria.hud')
+    hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = ''; hud.WHISPER_MODE = False
+    hud._dispatch_spotify_action = lambda a: None
+    hud.set_hud_volume = lambda v: None
+    config = types.ModuleType('aria.config'); config.redact = str
+    config.log_silent = lambda *args: None
+    config.get_setting = lambda key, default=None: default
+    for name, mod in [('aria.frame', frame), ('aria.hud', hud), ('aria.config', config)]:
+        monkeypatch.setitem(sys.modules, name, mod)
+        monkeypatch.setattr(sys.modules['aria'], name.rsplit('.', 1)[1], mod, raising=False)
+    queue = types.ModuleType('aria.agent.taskqueue')
+    queue.get_queue = lambda: types.SimpleNamespace(get_all_statuses=lambda: [])
+    scheduler = types.ModuleType('aria.scheduler'); scheduler.sched_list = lambda: []
+    monkeypatch.setitem(sys.modules, 'aria.agent.taskqueue', queue)
+    monkeypatch.setitem(sys.modules, 'aria.scheduler', scheduler)
+    speech = types.ModuleType('aria.speech'); speech.VOICE_ENABLED = True
+    monkeypatch.setitem(sys.modules, 'aria.speech', speech)
+    monkeypatch.setattr(sys.modules['aria'], 'speech', speech, raising=False)
+    vision = types.ModuleType('aria.vision')
+    vision.publish_face_frame = lambda pixels, box: published.append(pixels)
+    monkeypatch.setitem(sys.modules, 'aria.vision', vision)
+    monkeypatch.setattr(sys.modules['aria'], 'vision', vision, raising=False)
+    callbacks = types.SimpleNamespace(
+        ptt_press=lambda: None, ptt_release=lambda: None,
+        interrupt=lambda: None, toggle_whisper=lambda: None,
+        submit=calls.append, request_stop=lambda: None,
+        is_running=lambda: True, housekeeping=lambda: None,
+        render_frame=lambda: np.zeros((800, 1280, 3), dtype=np.uint8))
+    window = create_dashboard(callbacks)
+    window.show(); app.processEvents()
+    def boom(center):
+        raise RuntimeError('composite unavailable')
+    window._composite_center_image = boom
+    window.render_once(); app.processEvents()
+    assert published, 'publish must still happen via the grab fallback'
+    assert published[0].size > 0
     window.close()

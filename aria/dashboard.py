@@ -139,7 +139,6 @@ def create_dashboard(callbacks):
         panel_result = pyqtSignal(str, object)
         email_result = pyqtSignal(int, object)
         news_result = pyqtSignal(str)
-        cam_result = pyqtSignal(object)
 
         def __init__(self):
             super().__init__()
@@ -248,24 +247,6 @@ def create_dashboard(callbacks):
             _stack.setContentsMargins(0, 0, 0, 0)
             self.neural = NeuralField(); _stack.addWidget(self.neural, 0, 0)
             self.face = ResonanceOrb(transparent_background=True); _stack.addWidget(self.face, 0, 0)
-            # Vision preview tile (Mark-LVI's camera preview, in
-            # spirit): a small picture-in-picture in the centre
-            # card's corner showing what her camera sees, refreshed
-            # every few seconds from a worker thread (a capture
-            # opens the camera — never on the UI thread). Above the
-            # orb, below the video, which covers it while playing.
-            self.cam_tile = QLabel('Camera off')
-            self.cam_tile.setFixedSize(176, 132)
-            self.cam_tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.cam_tile.setStyleSheet(
-                'background: #0a111b; border: 1px solid #1b3042; '
-                'border-radius: 6px; color: #5ab8cc;')
-            self.cam_tile.setToolTip("What ARIA's camera sees — refreshes every few seconds")
-            _stack.addWidget(self.cam_tile, 0, 0,
-                             Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
-            self._cam_at = 0.0
-            self._cam_busy = False
-            self.cam_result.connect(self._on_cam_result)
             self.video = VideoPanel() if _HAVE_VIDEO else None
             if self.video is not None:
                 self.video.hide(); _stack.addWidget(self.video, 0, 0)
@@ -880,42 +861,25 @@ def create_dashboard(callbacks):
             DROPPING its alpha — every soft glow pixel the
             transparent-background orb paints semi-transparent
             became full-strength cyan, flattening the waveform
-            into a solid disc.)"""
-            from PyQt6.QtCore import QPoint
-            from PyQt6.QtGui import QColor, QPainter
+            into a solid disc.)
+
+            Built from per-widget grab()s drawn source-over —
+            the capture path that has always worked on the
+            laptop. The first version used QWidget.render() into
+            a QPainter; on Alek's machine that produced NO frames
+            at all (witnessed 07:17: the bridge orb vanished), so
+            render() is not used here."""
+            from PyQt6.QtGui import QColor, QPainter, QPixmap
             size = self.center_stack.size()
-            img = QImage(size, QImage.Format.Format_RGB32)
-            img.fill(QColor('#0d1520'))
-            p = QPainter(img)
+            base = QPixmap(size)
+            base.fill(QColor('#0d1520'))
+            p = QPainter(base)
             if self.neural.isVisible():
-                self.neural.render(p, QPoint(0, 0))
-            center.render(p, QPoint(0, 0))
+                p.drawPixmap(0, 0, self.neural.grab())
+            p.drawPixmap(0, 0, center.grab())
             p.end()
-            return img.convertToFormat(QImage.Format.Format_BGR888)
-
-        def _cam_work(self):
-            """Worker thread: one webcam capture (opens/releases
-            the camera — far too slow for the UI thread)."""
-            data = None
-            try:
-                from aria import vision
-                data = vision.capture_webcam()
-            except Exception:
-                data = None
-            self.cam_result.emit(data)
-
-        def _on_cam_result(self, data):
-            self._cam_busy = False
-            if data:
-                from PyQt6.QtGui import QPixmap
-                pm = QPixmap()
-                if pm.loadFromData(data):
-                    self.cam_tile.setPixmap(pm.scaled(
-                        self.cam_tile.size(),
-                        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                        Qt.TransformationMode.SmoothTransformation))
-                    return
-            self.cam_tile.setText('Camera off')
+            return base.toImage().convertToFormat(
+                QImage.Format.Format_BGR888)
 
         def _poll_approvals(self):
             """Show the confirm banner for the oldest pending approval.
@@ -1035,7 +999,21 @@ def create_dashboard(callbacks):
                 try:
                     import numpy as np
                     from aria.vision import publish_face_frame
-                    image = self._composite_center_image(_center)
+                    image = None
+                    try:
+                        image = self._composite_center_image(_center)
+                    except Exception as exc:
+                        # An ugly orb beats NO orb: fall back to
+                        # the plain grab rather than publishing
+                        # nothing (the 07:17 vanishing).
+                        if not getattr(self, '_orb_composite_warned',
+                                       False):
+                            self._orb_composite_warned = True
+                            config.log_silent(
+                                'dashboard.orb_composite', exc)
+                    if image is None:
+                        image = _center.grab().toImage().convertToFormat(
+                            QImage.Format.Format_BGR888)
                     ptr = image.bits(); ptr.setsize(image.sizeInBytes())
                     pixels = np.frombuffer(ptr, dtype=np.uint8).reshape(image.height(), image.bytesPerLine())[:, :image.width() * 3].reshape(image.height(), image.width(), 3).copy()
                     publish_face_frame(pixels, (0, 0, image.width(), image.height()))
@@ -1094,13 +1072,6 @@ def create_dashboard(callbacks):
             else:
                 self.now_playing_title.setText('NOW PLAYING')
                 self.now_playing_title.setStyleSheet('')
-            # Vision tile: throttled worker-thread captures.
-            if (self.isVisible() and not self._cam_busy
-                    and time.time() - self._cam_at > 3
-                    and (self.video is None or not self.video.isVisible())):
-                self._cam_busy = True
-                self._cam_at = time.time()
-                threading.Thread(target=self._cam_work, daemon=True).start()
             _entries = frame.chat_entries(100)
             chat = '\n\n'.join(f'{ts}  {sender}\n{text}' for ts, sender, text in _entries)
             if chat != self._last_chat:
