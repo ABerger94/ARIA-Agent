@@ -97,6 +97,7 @@ def create_dashboard(callbacks):
     class Dashboard(QMainWindow):
         panel_result = pyqtSignal(str, object)
         email_result = pyqtSignal(int, object)
+        news_result = pyqtSignal(str)
 
         def __init__(self):
             super().__init__()
@@ -164,7 +165,7 @@ def create_dashboard(callbacks):
             body.addWidget(center)
             right, rl = self.card('WORKSPACE'); right.setMinimumWidth(340)
             self.tabs = QTabWidget(); self.views = {}
-            for name in ('Conversation', 'Inbox', 'Calendar', 'Tasks', 'Activity'):
+            for name in ('Conversation', 'Inbox', 'Calendar', 'Tasks', 'Activity', 'News'):
                 page = QWidget(); pl = QVBoxLayout(page)
                 view = QTextBrowser(); view.setOpenExternalLinks(False); self.views[name] = view
                 if name == 'Inbox':
@@ -183,8 +184,15 @@ def create_dashboard(callbacks):
                 if name == 'Calendar':
                     btn = QPushButton('Refresh ' + name.lower()); btn.clicked.connect(lambda checked=False, n=name: self.load_panel(n)); pl.addWidget(btn)
                     view.setPlainText('Select Refresh to load your connected ' + name.lower() + '.')
+                if name == 'News':
+                    btn = QPushButton('Refresh headlines'); btn.clicked.connect(lambda: self.load_news(force=True)); pl.addWidget(btn)
+                    view.setOpenExternalLinks(True)
+                    view.setPlainText('Open the News tab to load top headlines.')
                 pl.addWidget(view); self.tabs.addTab(page, name)
             rl.addWidget(self.tabs, 1)
+            self._news_loaded_at = 0.0; self._news_loading = False
+            self.news_result.connect(self._on_news_result)
+            self.tabs.currentChanged.connect(self._on_tab_changed)
             row = QHBoxLayout()
             for text, fn in [('Commands', self.commands), ('Add file', self.browse_file), ('Providers', self.open_providers), ('Audio', self.open_audio), ('Customize', self.open_customize)]:
                 b = QPushButton(text); b.clicked.connect(fn); row.addWidget(b)
@@ -358,6 +366,47 @@ def create_dashboard(callbacks):
         def open_audio(self):
             from aria.audio_panel import build_audio_dialog
             build_audio_dialog(self).exec()
+
+        def _on_tab_changed(self, index):
+            if self.tabs.tabText(index) == 'News':
+                self.load_news()
+
+        def load_news(self, force=False):
+            """Fetch top headlines off-thread into the News tab.
+
+            Lazy: opening the tab loads once, then only when stale
+            (>30 min) or Refresh forces it. Failure renders the feed's
+            honest empty state, never stale headlines presented as new."""
+            if self._news_loading:
+                return
+            if (not force and self._news_loaded_at
+                    and time.monotonic() - self._news_loaded_at < 1800):
+                return
+            self._news_loading = True
+            self.views['News'].setPlainText('Loading headlines…')
+
+            def work():
+                try:
+                    from aria.news_feed import (fetch_headlines,
+                                                format_headlines_html)
+                    self.news_result.emit(
+                        format_headlines_html(fetch_headlines()))
+                except Exception as exc:
+                    config.log_silent('dashboard.news', exc)
+                    self.news_result.emit(
+                        "<p style='color:#829aaf'>Could not load "
+                        "headlines.</p>")
+
+            threading.Thread(target=work, daemon=True).start()
+
+        def _on_news_result(self, html_text):
+            self._news_loading = False
+            # A failed load must not count as fresh: the next tab visit
+            # retries instead of sitting on the error for 30 minutes.
+            self._news_loaded_at = (time.monotonic()
+                                    if 'Could not load' not in html_text
+                                    else 0.0)
+            self.views['News'].setHtml(html_text)
 
         def open_customize(self):
             from aria import ui_prefs
