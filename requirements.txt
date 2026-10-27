@@ -38,6 +38,11 @@ psutil==5.9.4
 Pillow==10.0.0
 edge-tts==7.3.1
 pygame==2.6.1
+# python-dateutil's rrule expands recurring calendar events (RRULE/
+# EXDATE/RDATE) inside aria/ical.py. It is imported there behind a
+# guard: without it the calendar still works — recurring events
+# simply show their first occurrence.
+python-dateutil>=2.8,<3
 # UI host (Merger Phase 4e): PyQt6 window hosting the frame canvas —
 # the only host that can receive real OS drag-and-drop (cv2.imshow
 # windows never deliver drop events). ARIA_UI_HOST=cv2, or a missing /
