@@ -64,8 +64,27 @@ def test_banner_width_follows_parent():
     small = QWidget(); small.resize(500, 400); small.show()
     assert ConfirmBanner('t', 'd', small).width() == 500 - 32
     big = QWidget(); big.resize(2000, 1000); big.show()
-    assert ConfirmBanner('t', 'd', big).width() == 600
+    assert ConfirmBanner('t', 'd', big).width() == 980
     small.close(); big.close(); app.processEvents()
+
+
+def test_banner_legibility_pass():
+    # Alek, 2026-10-27: "so small and cramped. It's illegible."
+    # The LVI-inherited 600px cap and 9-10pt type are pinned
+    # GONE: on a real window the banner takes a real share of
+    # it, and every text element is 11pt or larger with
+    # full-size buttons.
+    app = _app()
+    parent = QWidget(); parent.resize(1600, 900); parent.show()
+    from aria.confirm_banner import ConfirmBanner
+    banner = ConfirmBanner('Approve run_shell_command?',
+                           'rm -rf build && make release', parent)
+    assert banner.width() >= 850
+    assert banner._title_label.font().pointSize() >= 12
+    assert banner._detail_label.font().pointSize() >= 11
+    assert banner._confirm_button.height() >= 40
+    assert banner._cancel_button.height() >= 40
+    banner.close(); parent.close(); app.processEvents()
 
 
 # ---------------- approval store ----------------

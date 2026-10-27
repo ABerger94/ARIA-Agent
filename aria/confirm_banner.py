@@ -65,7 +65,7 @@ class ConfirmBanner(_OverlayBase):
     """
 
     answered = pyqtSignal(bool)
-    _OW = 600
+    _OW = 760
 
     def __init__(self, title: str, detail: str, parent=None):
         super().__init__(parent)
@@ -79,21 +79,25 @@ class ConfirmBanner(_OverlayBase):
         """)
         # Width follows the window: wide enough to actually read in,
         # never wider than the window itself. Height is capped the same
-        # way (see the scroll area below).
+        # way (see the scroll area below). Legibility pass (Alek,
+        # 2026-10-27: "so small and cramped. It's illegible."): the
+        # LVI-inherited 600px cap and 9-10pt type are gone — the
+        # banner now takes a real share of the window (55%, floored
+        # at 680, capped at 980) with 11-13pt type throughout.
         _pw = parent.width() if parent is not None else 0
         _ph = parent.height() if parent is not None else 0
-        self.setFixedWidth(max(360, min(self._OW, _pw - 32)) if _pw
-                           else self._OW)
+        self.setFixedWidth(min(980, max(680, int(_pw * 0.55)), _pw - 32)
+                           if _pw else self._OW)
         if _ph:
             self.setMaximumHeight(max(240, _ph - 24))
         self._parent_h = _ph
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 16, 20, 16)
-        lay.setSpacing(8)
+        lay.setContentsMargins(26, 20, 26, 20)
+        lay.setSpacing(10)
 
         hdr = QLabel('⚠  CONFIRM')
-        hdr.setFont(QFont(C.FONT, 11, QFont.Weight.Bold))
+        hdr.setFont(QFont(C.FONT, 13, QFont.Weight.Bold))
         hdr.setStyleSheet(f'color: {C.ACC}; background: transparent;')
         lay.addWidget(hdr)
 
@@ -105,7 +109,7 @@ class ConfirmBanner(_OverlayBase):
 
         ttl = QLabel(title)
         ttl.setWordWrap(True)
-        ttl.setFont(QFont(C.FONT, 10, QFont.Weight.Bold))
+        ttl.setFont(QFont(C.FONT, 12, QFont.Weight.Bold))
         ttl.setStyleSheet(f'color: {C.TEXT}; background: transparent;')
         self._title_label = ttl
         body_lay.addWidget(ttl)
@@ -114,9 +118,12 @@ class ConfirmBanner(_OverlayBase):
         if detail:
             dtl = QLabel(detail)
             dtl.setWordWrap(True)
-            dtl.setFont(QFont(C.FONT, 10))
+            dtl.setFont(QFont(C.FONT, 11))
+            # The detail IS the thing being approved (often a
+            # command) — it renders in the full text colour, not
+            # the dimmed meta colour (legibility pass, 2026-10-27).
             dtl.setStyleSheet(
-                f'color: {C.TEXT_MED}; background: transparent;')
+                f'color: {C.TEXT}; background: transparent;')
             self._detail_label = dtl
             body_lay.addWidget(dtl)
 
@@ -135,17 +142,18 @@ class ConfirmBanner(_OverlayBase):
             'QScrollBar::add-page, QScrollBar::sub-page '
             '{ background: none; }')
         scroll.setWidget(body)
-        _cap = (self._parent_h - 150) if self._parent_h else 330
-        scroll.setMaximumHeight(max(60, min(460, _cap)))
+        _cap = (self._parent_h - 210) if self._parent_h else 420
+        scroll.setMaximumHeight(max(140, min(640, _cap)))
         self._detail_scroll = scroll
         lay.addWidget(scroll, 1)
 
         row = QHBoxLayout()
-        row.setSpacing(8)
+        row.setSpacing(10)
 
         yes = QPushButton('▸  CONFIRM')
-        yes.setFixedHeight(32)
-        yes.setFont(QFont(C.FONT, 9, QFont.Weight.Bold))
+        yes.setFixedHeight(42)
+        yes.setMinimumWidth(150)
+        yes.setFont(QFont(C.FONT, 11, QFont.Weight.Bold))
         yes.setCursor(Qt.CursorShape.PointingHandCursor)
         yes.setStyleSheet(f"""
             QPushButton {{ background: transparent; color: {C.ACC};
@@ -157,8 +165,9 @@ class ConfirmBanner(_OverlayBase):
         row.addWidget(yes)
 
         no = QPushButton('CANCEL')
-        no.setFixedHeight(32)
-        no.setFont(QFont(C.FONT, 9))
+        no.setFixedHeight(42)
+        no.setMinimumWidth(150)
+        no.setFont(QFont(C.FONT, 11))
         no.setCursor(Qt.CursorShape.PointingHandCursor)
         no.setStyleSheet(f"""
             QPushButton {{ background: transparent; color: {C.TEXT_MED};
@@ -174,3 +183,4 @@ class ConfirmBanner(_OverlayBase):
         # the safe answer wins.
         no.setDefault(True)
         no.setFocus()
+        self.adjustSize()
