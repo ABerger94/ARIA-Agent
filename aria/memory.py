@@ -393,6 +393,38 @@ def memory_forget_key(key: str) -> bool:
     return bool(gone)
 
 
+def memory_map_points() -> List[Dict[str, Any]]:
+    """Rows + embedding vectors for the Memory constellation
+    (Alek, 2026-10-27). Same visibility rule as the Memory tab;
+    'vec' is a float32 numpy array, or None for facts saved
+    without one (older rows) — the layout parks those on a
+    category ring. An unreadable store reads as empty."""
+    try:
+        with DB_LOCK:
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            cur.execute("SELECT category, key, value, updated_at, embedding "
+                        "FROM memory WHERE key NOT LIKE '\\_%' ESCAPE '\\' "
+                        "ORDER BY updated_at DESC LIMIT 500")
+            rows = cur.fetchall()
+            conn.close()
+    except Exception:
+        return []
+    out = []
+    for c, k, v, u, emb in rows:
+        vec = None
+        if emb:
+            try:
+                arr = np.frombuffer(emb, dtype=np.float32)
+                if arr.size:
+                    vec = arr
+            except Exception:
+                vec = None
+        out.append({"category": c or "", "key": k, "value": v or "",
+                    "updated": (u or "")[:10], "vec": vec})
+    return out
+
+
 def build_prompt_memories(query: str = "", top_k: int = 6) -> str:
     """Build a compact, highly relevant memory block for LLM system prompt.
     Always includes core identity facts, dynamic semantic search matches,

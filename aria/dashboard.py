@@ -224,6 +224,7 @@ def create_dashboard(callbacks):
     from aria import frame, hud, config
     from aria.resonance import ResonanceOrb
     from aria.neural_field import NeuralField
+    from aria.constellation import ConstellationWidget
     from aria.metric_bar import MetricBar, StatusPlaque
     from aria.video_panel import VideoPanel, HAVE_VIDEO as _HAVE_VIDEO
     try:
@@ -468,9 +469,13 @@ def create_dashboard(callbacks):
                 except Exception:
                     pass
             self.holo = HoloFace(transparent_background=True) if HoloFace is not None else None
-            self._centerpiece = _centerpiece0 if self.holo is not None else 'orb'
+            self._centerpiece = _centerpiece0
+            if self._centerpiece == 'holo' and self.holo is None:
+                self._centerpiece = 'orb'
             if self.holo is not None:
                 self.holo.hide(); _stack.addWidget(self.holo, 0, 0)
+            self.mem_map_center = ConstellationWidget()
+            self.mem_map_center.hide(); _stack.addWidget(self.mem_map_center, 0, 0)
             cl.addWidget(self.center_stack, 1)
             self._last_orb_publish = 0.0
             self.state = QLabel('IDLE'); self.state.setAlignment(Qt.AlignmentFlag.AlignCenter); self.state.setObjectName('brand'); cl.addWidget(self.state)
@@ -521,10 +526,15 @@ def create_dashboard(callbacks):
                     view.setPlainText('Open the News tab to load top headlines.')
                 if name == 'Memory':
                     # What she remembers (Alek, 2026-10-27, his
-                    # pick over the LVI overlay): a real tab of
-                    # fact rows built by _rebuild_memory_tab —
-                    # no QTextBrowser view for this one.
+                    # pick over the LVI overlay): a real tab, two
+                    # views of the same store — the fact List
+                    # (rows built by _rebuild_memory_tab) and the
+                    # constellation Map (drag to spin it like a
+                    # ball; 'View in center' sends it to the
+                    # centerpiece). No QTextBrowser view here.
                     toolbar = QHBoxLayout()
+                    self.mem_list_btn = QPushButton('List'); self.mem_list_btn.setCheckable(True); self.mem_list_btn.setChecked(True); self.mem_list_btn.clicked.connect(lambda: self._set_memory_mode('list')); toolbar.addWidget(self.mem_list_btn)
+                    self.mem_map_btn = QPushButton('Map'); self.mem_map_btn.setCheckable(True); self.mem_map_btn.clicked.connect(lambda: self._set_memory_mode('map')); toolbar.addWidget(self.mem_map_btn)
                     self.mem_count = QLabel(''); toolbar.addWidget(self.mem_count, 1)
                     mem_refresh = QPushButton('Refresh'); mem_refresh.clicked.connect(self._rebuild_memory_tab); toolbar.addWidget(mem_refresh)
                     pl.addLayout(toolbar)
@@ -532,6 +542,19 @@ def create_dashboard(callbacks):
                     self.mem_rows = QWidget(); self.mem_rows.setStyleSheet('background: transparent;')
                     self._mem_layout = QVBoxLayout(self.mem_rows); self._mem_layout.setContentsMargins(6, 6, 6, 6); self._mem_layout.setSpacing(4)
                     self.mem_scroll.setWidget(self.mem_rows); pl.addWidget(self.mem_scroll, 1)
+                    self.mem_map_box = QWidget(); self.mem_map_box.setStyleSheet('background: transparent;')
+                    mbox = QVBoxLayout(self.mem_map_box); mbox.setContentsMargins(0, 0, 0, 0)
+                    self.mem_map_tab = ConstellationWidget(); mbox.addWidget(self.mem_map_tab, 1)
+                    detail = QHBoxLayout()
+                    self.mem_detail = QLabel('Drag to spin the ball. Click a star to see the fact.'); self.mem_detail.setWordWrap(True); detail.addWidget(self.mem_detail, 1)
+                    self.mem_forget_btn = QPushButton('Forget this fact'); self.mem_forget_btn.setEnabled(False); self.mem_forget_btn.clicked.connect(self._forget_selected_map_fact); detail.addWidget(self.mem_forget_btn)
+                    mbox.addLayout(detail)
+                    center_row = QHBoxLayout(); center_row.addStretch()
+                    view_center = QPushButton('View in center'); view_center.clicked.connect(lambda: self.set_centerpiece('map')); center_row.addWidget(view_center); center_row.addStretch()
+                    mbox.addLayout(center_row)
+                    pl.addWidget(self.mem_map_box, 1)
+                    self.mem_map_box.hide()
+                    self.mem_map_tab.fact_selected.connect(self._on_map_fact_selected)
                     self.tabs.addTab(page, name)
                     self._rebuild_memory_tab()
                     continue
@@ -735,6 +758,10 @@ def create_dashboard(callbacks):
             if not accent.isValid(): accent = QColor('#54d9e8')
             self.setStyleSheet(style_for_accent(accent.name()))
             _apply_painted_accent(accent.name())
+            for _mw in (getattr(self, 'mem_map_tab', None),
+                        getattr(self, 'mem_map_center', None)):
+                if _mw is not None:
+                    _mw.set_accent(accent.name())
             # The Conversation log follows the accent (Alek: ARIA's
             # responses in the system colour, whatever is set) —
             # remember it for render_once and force a repaint even
@@ -896,6 +923,7 @@ def create_dashboard(callbacks):
                 row.addWidget(rm)
                 lay.addLayout(row)
             lay.addStretch()
+            self._feed_memory_maps()
 
         def _forget_memory(self, key):
             """The Memory tab's per-row ✕: forget exactly that
@@ -906,6 +934,52 @@ def create_dashboard(callbacks):
             except Exception:
                 pass
             self._rebuild_memory_tab()
+
+        def _feed_memory_maps(self):
+            """Push her current memory map (rows + embedding
+            vectors) into both constellation widgets — the
+            Memory tab's Map view and the centerpiece."""
+            try:
+                from aria import memory as _mem
+                rows = _mem.memory_map_points()
+            except Exception:
+                rows = []
+            self._mem_map_rows = rows
+            for w in (getattr(self, 'mem_map_tab', None),
+                      getattr(self, 'mem_map_center', None)):
+                if w is not None:
+                    w.set_facts(rows)
+
+        def _set_memory_mode(self, mode):
+            """The Memory tab's List | Map toggle."""
+            map_mode = mode == 'map'
+            self.mem_list_btn.setChecked(not map_mode)
+            self.mem_map_btn.setChecked(map_mode)
+            self.mem_scroll.setVisible(not map_mode)
+            self.mem_map_box.setVisible(map_mode)
+            if map_mode:
+                self._feed_memory_maps()
+
+        def _on_map_fact_selected(self, key):
+            """A star was clicked in the tab's Map view: fill
+            the detail row (and arm its forget button), or
+            reset it when the click landed on empty space."""
+            row = next((r for r in getattr(self, '_mem_map_rows', [])
+                        if r.get('key') == key), None)
+            if row is None:
+                self.mem_detail.setText(
+                    'Drag to spin the ball. Click a star to see the fact.')
+                self.mem_forget_btn.setEnabled(False)
+                return
+            self.mem_detail.setText(
+                f"{row['key']} — {row['value']}  "
+                f"({row['category']} · {row['updated']})")
+            self.mem_forget_btn.setEnabled(True)
+
+        def _forget_selected_map_fact(self):
+            key = self.mem_map_tab.selected_key()
+            if key:
+                self._forget_memory(key)
 
         def load_news(self, force=False):
             """Fetch top headlines off-thread into the News tab.
@@ -1055,14 +1129,19 @@ def create_dashboard(callbacks):
             (the dashboard's own Centerpiece button is gone, Alek
             2026-10-27): persist it and swap the visible face.
             'holo' without a holo widget falls back to the orb,
-            matching the boot-time rule."""
-            self._centerpiece = ('holo' if name == 'holo'
-                                 and self.holo is not None else 'orb')
+            matching the boot-time rule. 'map' is the memory
+            constellation (Alek, 2026-10-27), fed fresh facts
+            on every swap to it."""
+            self._centerpiece = name if name in ('holo', 'map') else 'orb'
+            if self._centerpiece == 'holo' and self.holo is None:
+                self._centerpiece = 'orb'
             try:
                 from aria import ui_prefs
                 ui_prefs.set_centerpiece(self._centerpiece)
             except Exception:
                 pass
+            if self._centerpiece == 'map':
+                self._feed_memory_maps()
             self._show_centerpiece()
 
         def _show_centerpiece(self):
@@ -1070,11 +1149,15 @@ def create_dashboard(callbacks):
             video owns the center card right now)."""
             if self.video is not None and self.video.isVisible():
                 return
+            self.face.hide()
+            if self.holo is not None:
+                self.holo.hide()
+            self.mem_map_center.hide()
             if self._centerpiece == 'holo' and self.holo is not None:
-                self.face.hide(); self.holo.show()
+                self.holo.show()
+            elif self._centerpiece == 'map':
+                self.mem_map_center.show()
             else:
-                if self.holo is not None:
-                    self.holo.hide()
                 self.face.show()
 
         def show_video(self, source, title='', muted=False):
@@ -1091,6 +1174,7 @@ def create_dashboard(callbacks):
             self.face.hide()
             if self.holo is not None:
                 self.holo.hide()
+            self.mem_map_center.hide()
             self.video.show()
             return True
 

@@ -71,3 +71,22 @@ def test_rows_for_ui_unreadable_store_is_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(memory, "DB_PATH",
                         str(tmp_path / "missing_dir" / "nope.db"))
     assert memory.memory_rows_for_ui() == []
+
+
+def test_map_points_embedding_roundtrip(tmp_path, monkeypatch):
+    # The constellation feeds on these: an embedded fact comes
+    # back with its vector, an unembedded one with None (it
+    # will park on a ring), hidden keys stay hidden.
+    import numpy as np
+    db = _seed(tmp_path, monkeypatch)
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE memory SET embedding=? WHERE key='job'",
+                 (memory._pack_embedding([0.25, 0.5]),))
+    conn.commit()
+    conn.close()
+    rows = memory.memory_map_points()
+    by_key = {r["key"]: r for r in rows}
+    assert set(by_key) == {"job", "fav_color"}
+    assert by_key["job"]["vec"] is not None
+    assert len(by_key["job"]["vec"]) == 2
+    assert by_key["fav_color"]["vec"] is None

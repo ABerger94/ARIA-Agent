@@ -99,8 +99,13 @@ def _dashboard_stubs(monkeypatch, centerpiece='orb'):
     prefs.get_centerpiece = lambda: centerpiece
     prefs.set_centerpiece = lambda name: calls.append(('cp', name))
     prefs.set_accent = lambda a: None
+    mem = types.ModuleType('aria.memory')
+    mem.memory_rows_for_ui = lambda: []
+    mem.memory_forget_key = lambda key: False
+    mem.memory_map_points = lambda: []
     for name, mod in [('aria.frame', frame), ('aria.hud', hud),
-                      ('aria.config', config), ('aria.ui_prefs', prefs)]:
+                      ('aria.config', config), ('aria.ui_prefs', prefs),
+                      ('aria.memory', mem)]:
         monkeypatch.setitem(sys.modules, name, mod)
         monkeypatch.setattr(sys.modules['aria'], name.rsplit('.', 1)[1],
                             mod, raising=False)
@@ -186,6 +191,49 @@ def test_dashboard_memory_tab_lists_and_forgets(monkeypatch):
     rms[0].click(); app.processEvents()
     assert [r['key'] for r in store] == ['job']   # first row forgotten
     assert window.mem_count.text().startswith('1 stored facts')
+    window.close(); app.processEvents()
+
+
+def test_dashboard_centerpiece_memory_map(monkeypatch):
+    # Alek, 2026-10-27: the constellation is a third
+    # centerpiece — set_centerpiece('map') shows the ball in
+    # the center stack (orb hidden), and the Memory tab's Map
+    # mode swaps the fact list for the same widget.
+    app = _app()
+    callbacks, calls = _dashboard_stubs(monkeypatch)
+    fake_mem = types.ModuleType('aria.memory')
+    fake_mem.memory_rows_for_ui = lambda: []
+    fake_mem.memory_forget_key = lambda key: False
+    fake_mem.memory_map_points = lambda: [
+        {'category': 'fact', 'key': 'job', 'value': 'Little Caesars',
+         'updated': '2026-10-26',
+         'vec': np.array([1.0, 0.0, 0.0], dtype=np.float32)}]
+    monkeypatch.setitem(sys.modules, 'aria.memory', fake_mem)
+    monkeypatch.setattr(sys.modules['aria'], 'memory', fake_mem,
+                        raising=False)
+    from aria.dashboard import create_dashboard
+    window = create_dashboard(callbacks)
+    window.show(); app.processEvents()
+    window.set_centerpiece('map')
+    app.processEvents()
+    assert window._centerpiece == 'map'
+    assert window.mem_map_center.isVisible()
+    assert not window.face.isVisible()
+    assert ('cp', 'map') in calls
+    window.set_centerpiece('orb')
+    app.processEvents()
+    assert window.face.isVisible()
+    assert not window.mem_map_center.isVisible()
+    # Tab Map mode (select the Memory tab first — a background
+    # tab's children report not-visible regardless).
+    idx = [window.tabs.tabText(i) for i in range(window.tabs.count())].index('Memory')
+    window.tabs.setCurrentIndex(idx); app.processEvents()
+    window._set_memory_mode('map'); app.processEvents()
+    assert window.mem_map_box.isVisible()
+    assert not window.mem_scroll.isVisible()
+    window._set_memory_mode('list'); app.processEvents()
+    assert window.mem_scroll.isVisible()
+    assert not window.mem_map_box.isVisible()
     window.close(); app.processEvents()
 
 

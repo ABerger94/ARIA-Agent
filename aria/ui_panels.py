@@ -204,13 +204,14 @@ def create_settings_dialog(parent, callbacks):
     # when it offers one.
     cust_cp_note = QLabel('Centerpiece — the face in the middle of the dashboard. Applies immediately.'); cust_cp_note.setWordWrap(True); cust_lay.addWidget(cust_cp_note)
     centerpiece_row = QHBoxLayout(); centerpiece_row.addWidget(QLabel('Centerpiece'))
-    dialog.centerpiece = QComboBox(); dialog.centerpiece.addItem('Waveform orb', 'orb'); dialog.centerpiece.addItem('Character', 'holo')
+    dialog.centerpiece = QComboBox(); dialog.centerpiece.addItem('Waveform orb', 'orb'); dialog.centerpiece.addItem('Character', 'holo'); dialog.centerpiece.addItem('Memory map', 'map')
     try:
         from aria import ui_prefs as _up_cp
         _cur_cp = _up_cp.get_centerpiece()
     except Exception:
         _cur_cp = 'orb'
-    dialog.centerpiece.setCurrentIndex(1 if _cur_cp == 'holo' else 0)
+    _cp_idx = dialog.centerpiece.findData(_cur_cp)
+    dialog.centerpiece.setCurrentIndex(_cp_idx if _cp_idx >= 0 else 0)
     def _centerpiece_changed(idx):
         form = dialog.centerpiece.itemData(idx)
         try:
