@@ -168,6 +168,57 @@ def test_active_session_is_whatever_is_playing(monkeypatch):
     assert edge.calls == ['pause'] and spotify.calls == []
 
 
+def test_set_playing_closed_loop_escalates_when_session_shrugs(monkeypatch):
+    # Alek's witness: prev/next worked, play/pause did nothing —
+    # a session can accept the SMTC call without acting. The
+    # closed loop must notice the state didn't flip and escalate
+    # to the media-key toggle.
+    session = _Session('Spotify', status=4)   # playing
+    session.obey = False                      # ignores try_pause
+    orig_pause = session.try_pause_async
+    def stubborn_pause():
+        session.calls.append('pause')
+        return _Op(True)                      # claims success, does nothing
+    session.try_pause_async = stubborn_pause
+    _install(monkeypatch, _Manager([session]))
+    monkeypatch.setattr(smtc, '_SETTLE_S', 0)
+    taps = []
+    tools_pkg = types.ModuleType('aria.tools'); tools_pkg.__path__ = []
+    builtins = types.ModuleType('aria.tools.builtins')
+    def fake_key(action):
+        taps.append(action)
+        session._status = 5                   # the toggle works
+        return 'ok'
+    builtins.tool_media_key = fake_key
+    tools_pkg.builtins = builtins
+    monkeypatch.setitem(sys.modules, 'aria.tools', tools_pkg)
+    monkeypatch.setitem(sys.modules, 'aria.tools.builtins', builtins)
+    final = smtc.set_playing(False, spotify_only=True)
+    assert final is False                     # paused, as wanted
+    assert session.calls == ['pause']
+    assert taps == ['play_pause']             # escalated exactly once
+
+
+def test_set_playing_cooperative_and_already(monkeypatch):
+    session = _Session('Spotify', status=4)
+    orig_pause = session.try_pause_async
+    def good_pause():
+        session.calls.append('pause')
+        session._status = 5
+        return _Op(True)
+    session.try_pause_async = good_pause
+    _install(monkeypatch, _Manager([session]))
+    monkeypatch.setattr(smtc, '_SETTLE_S', 0)
+    assert smtc.set_playing(False, spotify_only=True) is False
+    assert session.calls == ['pause']
+    # Already paused: no further calls at all.
+    assert smtc.set_playing(False, spotify_only=True) is False
+    assert session.calls == ['pause']
+    # No session anywhere: None, and callers decide the message.
+    _install(monkeypatch, _Manager([]))
+    assert smtc.set_playing(True) is None
+
+
 def test_app_labels():
     assert smtc.app_label('SpotifyAB.SpotifyMusic_1.0') == 'Spotify'
     assert smtc.app_label('Microsoft.ZuneVideo_8wekyb3d8bbwe') == 'Movies & TV'

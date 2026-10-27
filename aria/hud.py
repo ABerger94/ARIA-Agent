@@ -521,6 +521,20 @@ def _dispatch_media_action(action: str):
                 add_hud_log(res)
                 return
             from aria import smtc
+            if action in ("play", "pause"):
+                # Closed-loop, like the Spotify path: aim, verify,
+                # escalate to the toggle if the session shrugs.
+                want = (action == "play")
+                pre = smtc.refresh_now()["active"]
+                if pre is not None:
+                    if bool(pre["playing"]) == want:
+                        add_hud_log(f"Media: already {'playing' if want else 'paused'} ({pre.get('app', 'session')}).")
+                        return
+                    final = smtc.set_playing(want)
+                    add_hud_log(f"Media: {action} ({pre.get('app', 'session')})."
+                                if final == want else
+                                f"Media: {action} did not take on {pre.get('app', 'the session')}.")
+                    return
             if smtc.control_active(action):
                 add_hud_log(f"Media: {action}.")
                 return

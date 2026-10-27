@@ -148,36 +148,37 @@ def tool_spotify(action: str = "play_pause", query: str = "") -> str:
 
     # 3a. Explicit play / pause (Alek, 2026-10-27): the media key
     # is a blind toggle, so a "Play" button that pauses a playing
-    # track is a bug, not a control. SMTC aims the explicit call
-    # at the Spotify session itself (no focus steal). Fallback:
-    # tap the toggle ONLY when telemetry says the direction is
-    # actually needed; when the state is already right, say so
-    # and tap nothing.
+    # track is a bug, not a control. SMTC closed-loop
+    # (smtc.set_playing): aim the explicit call at the Spotify
+    # session, re-read the state, escalate to the media-key
+    # toggle if the session ignored it — his first witness was
+    # that prev/next worked and play/pause did nothing, which is
+    # exactly a session accepting calls without acting.
     if a in ("play", "pause") and not q:
+        want = (a == "play")
         try:
             from aria import smtc
-            if smtc.control(a):
-                return f"Spotify: {a}."
+            state = smtc.refresh_now()["spotify"]
+            if state is not None:
+                if bool(state["playing"]) == want:
+                    return f"Spotify: already {'playing' if want else 'paused'}."
+                final = smtc.set_playing(want, spotify_only=True)
+                if final == want:
+                    return f"Spotify: {a}."
+                return (f"[Spotify did not {'start' if want else 'pause'} "
+                        f"— the session ignored both the direct call "
+                        f"and the media key.]")
         except Exception:
             pass
-        playing = None
+        # No SMTC backend (winsdk missing): the old focus + toggle
+        # path, with the title telemetry only for the not-running
+        # check — its playing guess is not trusted for a no-op.
         running = False
-        trusted = False
         try:
             from aria import hud as _hud
-            _t = _hud._get_spotify_telemetry()
-            playing = _t.get("playing")
-            running = bool(_t.get("running"))
-            # Only SMTC knows paused-vs-playing for sure; the
-            # window title guesses "playing" for a paused track,
-            # so the no-op shortcut trusts SMTC state only.
-            trusted = _t.get("source") == "smtc"
+            running = bool(_hud._get_spotify_telemetry().get("running"))
         except Exception:
             pass
-        if trusted and a == "play" and playing:
-            return "Spotify: already playing."
-        if trusted and a == "pause" and running and not playing:
-            return "Spotify: already paused."
         if not running:
             return "[Spotify is not running — say 'open Spotify' first.]"
         tool_focus_window("Spotify")

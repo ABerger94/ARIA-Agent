@@ -215,6 +215,55 @@ def _cached() -> dict:
     return data or {"spotify": None, "active": None}
 
 
+def refresh_now() -> dict:
+    """A synchronous fresh read of every session, cache updated.
+    For closed-loop control verification — the cached read can
+    be a second stale, which is an eternity after pressing a
+    button."""
+    data = _read_all()
+    with _LOCK:
+        _CACHE["time"] = time.time()
+        _CACHE["data"] = data
+    return data
+
+
+_SETTLE_S = 0.35
+
+
+def set_playing(want: bool, *, spotify_only: bool = False) -> Optional[bool]:
+    """Closed-loop play/pause (Alek, 2026-10-27: the buttons
+    didn't work while prev/next did — some sessions, Spotify's
+    notoriously, accept SMTC transport calls without acting).
+    Aim the explicit call, RE-READ the session, and if the
+    state didn't flip, escalate to the global media-key toggle.
+    Returns the session's final playing state, or None when
+    there is no session to aim at."""
+    pick = "spotify" if spotify_only else "active"
+    state = refresh_now()[pick]
+    if state is None:
+        return None
+    if bool(state["playing"]) == want:
+        return want
+    if spotify_only:
+        control("play" if want else "pause")
+    else:
+        control_active("play" if want else "pause")
+    time.sleep(_SETTLE_S)
+    state = refresh_now()[pick]
+    if state is not None and bool(state["playing"]) == want:
+        return want
+    # Escalation: the session ignored the explicit call — the
+    # global toggle is dumb but it is what the hardware keys do.
+    try:
+        from aria.tools.builtins import tool_media_key
+        tool_media_key("play_pause")
+    except Exception:
+        return state["playing"] if state else None
+    time.sleep(_SETTLE_S)
+    state = refresh_now()[pick]
+    return bool(state["playing"]) if state else None
+
+
 def now_playing() -> Optional[dict]:
     """The cached SPOTIFY now-playing dict, refreshed in the
     background when stale — never blocks the caller."""
