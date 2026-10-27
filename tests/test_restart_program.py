@@ -143,7 +143,10 @@ def test_restart_drains_settles_and_relaunches(monkeypatch, tmp_path):
     _armable(monkeypatch, tmp_path, events)
     result = brain.request_program_restart()
     assert result == "Restarting my program now."
-    assert events == [("sleep", 2.0), ("restart",)]
+    # Speech never starts: the grace phase polls its full 20
+    # attempts, then the settle, then the relaunch.
+    assert events[:20] == [("sleep", 0.25)] * 20
+    assert events[20:] == [("sleep", 2.0), ("restart",)]
     assert brain._PROGRAM_RESTART_ARMED is True
 
 
@@ -236,6 +239,40 @@ def test_never_gated_never_risky_never_captured():
 
 def test_prompt_routes_the_phrases_to_the_tool():
     src = (ROOT / "aria" / "agent" / "brain.py").read_text(encoding="utf-8")
-    assert r'\"Restart your program\", \"restart yourself\", ' \
-           r'\"restart the app\" mean restart_program' in src
+    assert r'\"restart the app\", or a bare \"restart\" said to you' in src
+    assert "as a command, mean restart_program" in src
     assert "never just say you will restart" in src
+
+
+# ── The voice shortcut: no model in the loop ─────────────────────────
+
+def test_shortcut_restart_bypasses_the_model(monkeypatch):
+    shortcuts = importlib.import_module("aria.agent.shortcuts")
+    monkeypatch.setattr(brain, "request_program_restart",
+                        lambda: "Restarting my program now.")
+    out = shortcuts.check_voice_shortcut("restart")
+    assert out == ("Restarting my program now.",
+                   "Restarting my program now.")
+    out = shortcuts.check_voice_shortcut("Restart!")
+    assert out[1] == "Restarting my program now."
+    out = shortcuts.check_voice_shortcut("restart your program")
+    assert out[1] == "Restarting my program now."
+
+
+def test_shortcut_restart_never_matches_the_computer(monkeypatch):
+    shortcuts = importlib.import_module("aria.agent.shortcuts")
+    called = []
+    monkeypatch.setattr(brain, "request_program_restart",
+                        lambda: called.append(1) or "x")
+    assert shortcuts.check_voice_shortcut("restart the computer") is None
+    assert shortcuts.check_voice_shortcut("restart my pc") is None
+    assert called == []
+
+
+def test_shortcut_restart_speaks_the_refusal(monkeypatch):
+    shortcuts = importlib.import_module("aria.agent.shortcuts")
+    monkeypatch.setattr(
+        brain, "request_program_restart",
+        lambda: "I can't restart my program from here — no script.")
+    out = shortcuts.check_voice_shortcut("restart yourself")
+    assert out[1].startswith("I can't restart my program")

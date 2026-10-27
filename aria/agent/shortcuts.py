@@ -90,4 +90,18 @@ def check_voice_shortcut(user_prompt: str) -> Optional[Tuple[str, str]]:
             return f"Battery: {b.percent}%, {state}", f"Battery is at {b.percent} percent, {state}."
         return "Battery: unknown", "Battery status is unavailable."
 
+    # 6. Program restart — a direct command, never the computer.
+    # Exact matches only, so "restart the computer" can never land
+    # here. This runs BEFORE the model loop (run_agent's fast
+    # path), so restarting works even when every provider is down:
+    # the brain owns the relaunch locally (aria.agent.brain,
+    # imported lazily — brain imports this module at load).
+    if norm in ("restart", "restart now", "restart yourself",
+                "restart your program", "restart the program",
+                "restart the app", "restart app", "restart aria",
+                "please restart", "restart please"):
+        from aria.agent import brain as _brain_mod
+        res = _brain_mod.request_program_restart()
+        return res, res
+
     return None

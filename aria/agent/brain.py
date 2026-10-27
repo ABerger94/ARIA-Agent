@@ -357,8 +357,20 @@ def _wait_and_restart_program() -> None:
     """The self-edit waiter, mirrored: let speech drain (bounded),
     settle briefly, then relaunch. Runs on its own thread — the
     turn that asked is over — and is NOT the shared _RESTART_TIMER,
-    so the per-turn timer cancel in run_agent cannot drop it."""
+    so the per-turn timer cancel in run_agent cannot drop it.
+
+    One addition over the self-edit waiter: a short grace phase
+    first. The voice-shortcut path arms the restart BEFORE the
+    brain speaks the acknowledgement, so the queues can read idle
+    at entry with the announcement still on its way — wait
+    (bounded, attempt-counted) for speech to start before
+    draining, or the relaunch could cut the announcement off."""
     global _PROGRAM_RESTART_ARMED
+    for _ in range(20):  # up to ~5s for the announcement to start
+        if (speech._SPEECH_QUEUE.unfinished_tasks > 0
+                or speech._AUDIO_PLAY_QUEUE.unfinished_tasks > 0):
+            break
+        time.sleep(0.25)
     deadline = time.time() + 120
     while (speech._SPEECH_QUEUE.unfinished_tasks > 0 or speech._AUDIO_PLAY_QUEUE.unfinished_tasks > 0) and time.time() < deadline:
         time.sleep(0.5)
@@ -413,8 +425,9 @@ def build_system_instruction(user_prompt: str) -> str:
         "You are also an embodied autonomous desktop AI Agent OS running on the user's laptop. "
         "If you edit your own program file (the running Python script) or soul.md, I automatically "
         "restart the Python process when your turn completes so the new code loads — never ask the user to restart you. "
-        "\"Restart your program\", \"restart yourself\", \"restart the app\" mean restart_program — your own "
-        "program relaunching, never the computer: call restart_program for those, never just say you will restart. "
+        "\"Restart your program\", \"restart yourself\", \"restart the app\", or a bare \"restart\" said to you "
+        "as a command, mean restart_program — your own program relaunching, never the computer: call "
+        "restart_program for those, never just say you will restart. "
         "Self-editing: use edit_own_code(path, content) to rewrite one of your source files whole, or "
         "patch_own_code(path, old_text, new_text) for one exact-match change — they are the ONLY tools that "
         "can modify your code (aria/ package .py files, the aria.py launcher, soul.md); write_file saves to "
