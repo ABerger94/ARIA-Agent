@@ -161,7 +161,11 @@ def chat_html(entries, accent=None):
     colors = chat_colors(accent)
     parts = []
     for ts, sender, text in entries:
-        _s = str(sender).casefold()
+        # Production logs her as 'A.R.I.A.' (brain.log_conversation)
+        # — match on letters only, or the dots defeat the substring
+        # test and her entries fall through to the white user pair
+        # (the bug behind "her text is still white", 2026-10-27).
+        _s = ''.join(ch for ch in str(sender).casefold() if ch.isalpha())
         who = ('aria' if 'aria' in _s
                else 'sys' if 'system' in _s or _s == 'sys'
                else 'user')

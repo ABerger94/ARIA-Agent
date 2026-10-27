@@ -298,9 +298,12 @@ def test_chat_html_colours_speakers_and_escapes():
     # tagged lines by kind — ARIA in the accent family, "you" in
     # WHITE, system muted. The first cut here made his side
     # amber/pale-yellow and he called it "all text yellow". Chat
-    # content is escaped — a message is never markup.
+    # content is escaped — a message is never markup. Entries
+    # use the PRODUCTION sender 'A.R.I.A.' (brain logs her with
+    # dots) — plain 'ARIA' here let the dotted name slip past
+    # the matcher and her text rendered white for a full day.
     from aria.dashboard import chat_html, activity_html
-    out = chat_html([('10:00:01', 'ARIA', 'Hello <b>there</b>'),
+    out = chat_html([('10:00:01', 'A.R.I.A.', 'Hello <b>there</b>'),
                      ('10:00:05', 'Alek', 'Hi ARIA'),
                      ('10:00:09', 'System', 'Voice ready')])
     assert out.count('#54d9e8') >= 2                 # ARIA: name AND text, full accent
@@ -329,7 +332,7 @@ def test_chat_html_aria_follows_the_set_accent_user_stays_white():
     # (the first cut tinted her text 82% toward white and he
     # reported it as still-white text); his side must not move.
     from aria.dashboard import chat_html, chat_colors
-    out = chat_html([('10:00:01', 'ARIA', 'In violet now'),
+    out = chat_html([('10:00:01', 'A.R.I.A.', 'In violet now'),
                      ('10:00:05', 'Alek', 'Still white')],
                     accent='#bd93f9')
     assert out.count('#bd93f9') >= 2              # her name AND her text
@@ -340,7 +343,7 @@ def test_chat_html_aria_follows_the_set_accent_user_stays_white():
     assert colors['user'] == ('#ffffff', '#f4f7fa')
     # A junk accent can never cost the log its colours: it falls
     # back to whatever is set, ultimately the default pair.
-    fallback = chat_html([('10:00:01', 'ARIA', 'x')], accent='banana')
+    fallback = chat_html([('10:00:01', 'A.R.I.A.', 'x')], accent='banana')
     assert '#bd93f9' not in fallback
 
 
