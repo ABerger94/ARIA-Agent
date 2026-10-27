@@ -44,7 +44,7 @@ def test_qr_mobile_controls_inbox_and_reopen(monkeypatch, tmp_path):
     monkeypatch.setattr(bridge, '_BRIDGE_SERVER', server)
     monkeypatch.setattr(bridge, '_BRIDGE_ACTUAL_SCHEME', 'http')
     thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
-    app = QApplication.instance() or QApplication([])
+    app = QApplication.instance() or QApplication(['aria-phone-test'])
     errors = []
     class Page(QWebEnginePage):
         def javaScriptConsoleMessage(self, level, message, line, source):
