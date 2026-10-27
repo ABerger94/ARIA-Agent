@@ -206,3 +206,44 @@ def test_catalog_against_the_real_schemas_and_dispatch(monkeypatch):
     assert len(rows) > 50
     assert all(r['category'] for r in rows)
     assert any(r['name'] == 'read_email' for r in rows)
+
+
+def test_settings_desktop_icon_button(monkeypatch):
+    # Alek, 2026-10-27 (Mark-LVI port): Settings → General hosts an
+    # "Add desktop icon" button that acts IMMEDIATELY on click —
+    # the result line from aria.desktop_shortcut lands in the
+    # dialog's status label, and a failure shows the failure line
+    # instead of raising.
+    app = QApplication.instance() or QApplication(['aria-settings-test'])
+    saved = {}; calls = []
+    config = types.ModuleType('aria.config'); config._KEYS = {}
+    config.get_setting = lambda key, default=None: saved.get(key, default)
+    config.settings_load = lambda: dict(saved)
+    def save(values): saved.update(values); return True
+    config.settings_save = save; config.key_get = lambda key, fallback='': ('', 'script default')
+    config.save_keys = lambda: True; config.is_safe_mode = lambda: False
+    speech = types.ModuleType('aria.speech'); speech.VOICE_ENABLED = True
+    hud = types.ModuleType('aria.hud'); hud.WHISPER_MODE = False
+    hud.get_hud_volume = lambda: .5; hud.set_hud_volume = calls.append
+    approval = types.ModuleType('aria.approval'); approval.MODES = ('auto', 'confirm-risky', 'confirm-all')
+    approval.get_mode = lambda: 'confirm-risky'; approval.set_mode = calls.append
+    for name, mod in [('config', config), ('speech', speech), ('hud', hud), ('approval', approval)]:
+        monkeypatch.setitem(sys.modules, 'aria.' + name, mod); monkeypatch.setattr(pkg, name, mod, raising=False)
+    dsc = types.ModuleType('aria.desktop_shortcut')
+    dsc.create_desktop_shortcut = lambda: 'Desktop shortcut created. (stub detail)'
+    monkeypatch.setitem(sys.modules, 'aria.desktop_shortcut', dsc); monkeypatch.setattr(pkg, 'desktop_shortcut', dsc, raising=False)
+    class Parent(QMainWindow):
+        def apply_accent(self, value): calls.append(value)
+        def open_remote(self): calls.append('remote')
+    parent = Parent(); parent.setStyleSheet(STYLE)
+    callbacks = types.SimpleNamespace(speak=calls.append, toggle_whisper=lambda: calls.append('whisper'))
+    dialog = create_settings_dialog(parent, callbacks); dialog.show(); app.processEvents()
+    assert dialog.desktop_icon.text() == 'Add desktop icon'
+    dialog.desktop_icon.click()
+    assert dialog.message.text() == 'Desktop shortcut created. (stub detail)'
+    def boom():
+        raise RuntimeError('no desktop')
+    dsc.create_desktop_shortcut = boom
+    dialog.desktop_icon.click()
+    assert dialog.message.text() == 'Shortcut failed — no desktop'
+    dialog.close(); parent.close()

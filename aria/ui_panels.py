@@ -124,6 +124,18 @@ def create_settings_dialog(parent, callbacks):
     for i in range(dialog.accent.count()):
         if dialog.accent.itemData(i) == config.get_setting('ui_accent', '#54d9e8'): dialog.accent.setCurrentIndex(i)
     general.addRow('Interface accent', dialog.accent)
+    # Add desktop icon (Mark-LVI port, Alek 2026-10-27): acts
+    # IMMEDIATELY on click, like the Pet page's toggle — not via
+    # Apply. The result line lands in the dialog's status label.
+    dialog.desktop_icon = QPushButton('Add desktop icon')
+    def _add_desktop_icon():
+        try:
+            from aria import desktop_shortcut as _dsc
+            dialog.message.setText(_dsc.create_desktop_shortcut())
+        except Exception as exc:
+            dialog.message.setText(f'Shortcut failed — {exc}')
+    dialog.desktop_icon.clicked.connect(_add_desktop_icon)
+    general.addRow(dialog.desktop_icon)
     audio = page('Voice / audio')
     dialog.voice = QCheckBox('Voice and wake-word listening enabled'); dialog.voice.setChecked(bool(speech.VOICE_ENABLED)); audio.addRow(dialog.voice)
     dialog.whisper = QCheckBox('Whisper mode'); dialog.whisper.setChecked(bool(hud.WHISPER_MODE)); audio.addRow(dialog.whisper)
