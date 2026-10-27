@@ -175,11 +175,47 @@ def weather_section(city):
                    sources=[{'title': 'Weather', 'url': 'https://wttr.in/' + urllib.parse.quote(city)}])
 
 
+_STOPWORDS = frozenset(
+    'the a an and or of to in on for after at by with from as is are was were '
+    'be been it its this that before over under new says say said'.split())
+_WIRE_PREFIX = re.compile(
+    r'^(Insight|Analysis|Live|Exclusive|Opinion|Review|Watch|Video|'
+    r'Photos|Explainer|Interview):\s+')
+
+
+def _content_words(title):
+    """The words that identify a story: casefolded, punctuation
+    stripped, stopwords out. Two outlets phrase the same story
+    differently ('Baltimore County florist to close after 115
+    years' vs 'Longtime Floral Shop To Close In Baltimore County
+    After 115 Years' — Alek's 2026-10-27 greeting carried BOTH);
+    the raw-word Jaccard misses pairs like that, content words
+    catch them."""
+    words = re.sub(r'[^\w]+', ' ', str(title).casefold()).split()
+    return {w for w in words if w not in _STOPWORDS and len(w) > 1}
+
+
+def _same_story(a, b):
+    """True when two content-word sets describe one story:
+    Jaccard >= .45, or the smaller set mostly contained in the
+    larger (>= .75)."""
+    if not a or not b:
+        return False
+    inter = len(a & b)
+    if inter / len(a | b) >= .45:
+        return True
+    return inter / min(len(a), len(b)) >= .75
+
+
 def parse_headlines(xml, now, limit=3):
     root = ET.fromstring(xml)
     results = []; seen = set()
     for item in root.findall('.//item'):
         title = ' '.join((item.findtext('title') or '').split())
+        # Wire copy carries its section as a prefix ('Insight:
+        # Fashion's AI era...' — Reuters, in Alek's 2026-10-27
+        # greeting). The label is not part of the headline.
+        title = _WIRE_PREFIX.sub('', title)
         # Google News titles arrive as 'Headline - Publisher'
         # ('… - WBAL-TV', '… - Reuters'). Alek (2026-10-27):
         # headlines only, no source names in the briefing. Strip
@@ -204,13 +240,14 @@ def parse_headlines(xml, now, limit=3):
             continue
         normalized = re.sub(r'[^\w]+', ' ', title.casefold()).strip()
         words = set(normalized.split())
-        if normalized in seen or any(len(words & row['_words']) / max(1, len(words | row['_words'])) > .65 for row in results):
+        content = _content_words(title)
+        if normalized in seen or any(len(words & row['_words']) / max(1, len(words | row['_words'])) > .65 or _same_story(content, row['_content']) for row in results):
             continue
         seen.add(normalized)
-        results.append({'title': title[:250], 'url': link, 'published': published.isoformat(), '_words': words})
+        results.append({'title': title[:250], 'url': link, 'published': published.isoformat(), '_words': words, '_content': content})
         if len(results) >= limit:
             break
-    return [{k: v for k, v in row.items() if k != '_words'} for row in results]
+    return [{k: v for k, v in row.items() if not k.startswith('_')} for row in results]
 
 
 def news_section(now, kind, city, topics):
@@ -218,15 +255,31 @@ def news_section(now, kind, city, topics):
         query = city + ' Baltimore County local news when:1d'
         url = 'https://news.google.com/rss/search?' + urllib.parse.urlencode({'q': query, 'hl': 'en-US', 'gl': 'US', 'ceid': 'US:en'})
         label = 'Local headlines'
-    elif topics:
-        url = 'https://news.google.com/rss/search?' + urllib.parse.urlencode({'q': '(' + ' OR '.join(topics[:4]) + ') world news when:1d', 'hl': 'en-US', 'gl': 'US', 'ceid': 'US:en'})
-        label = 'World headlines'
+        items = parse_headlines(_get(url), now, limit=4)
     else:
-        url = 'https://feeds.bbci.co.uk/news/world/rss.xml'; label = 'World headlines'
-    items = parse_headlines(_get(url), now, limit=2 if kind == 'local_news' else 3)
+        label = 'World headlines'
+        items = []
+        if topics:
+            # His topics AND the general world feed: topics alone
+            # made 'world news' a niche wire (the 2026-10-27
+            # greeting's lone Reuters fashion item); the BBC feed
+            # guarantees a real world story is in the pool.
+            url = 'https://news.google.com/rss/search?' + urllib.parse.urlencode({'q': '(' + ' OR '.join(topics[:4]) + ') world news when:1d', 'hl': 'en-US', 'gl': 'US', 'ceid': 'US:en'})
+            items += parse_headlines(_get(url), now, limit=3)
+        items += parse_headlines(_get('https://feeds.bbci.co.uk/news/world/rss.xml'), now, limit=4 if topics else 5)
+        deduped, kept = [], []
+        for row in items:
+            cw = _content_words(row['title'])
+            if any(_same_story(cw, k) for k in kept):
+                continue
+            kept.append(cw)
+            deduped.append(row)
+        items = deduped[:5]
     if not items:
         return section('No recent ' + ('local' if kind == 'local_news' else 'world') + ' headlines were returned by the news source.', 'empty')
-    return section(label + ': ' + '; '.join(row['title'] for row in items) + '.', sources=items)
+    result = section(label + ': ' + '; '.join(row['title'] for row in items) + '.', sources=items)
+    result['label'] = label
+    return result
 
 
 def compose(now, sources, name='Alek', timeout=14):
@@ -272,12 +325,50 @@ def compose(now, sources, name='Alek', timeout=14):
     # both blocks verbatim made the greeting a five-part report.
     by = {s['key']: s for s in sections}
     spoken = [by[k]['text'] for k in ('schedule', 'email', 'weather')]
-    titles = []
+    # Cross-section dedupe (Alek, 2026-10-27 — 'the news section
+    # sucks'): the same story in both feeds, or twice via two
+    # outlets, is ONE story. Local wins; the world section's text
+    # is rebuilt from what survives so the Briefing tab agrees
+    # with what was spoken.
+    pools = {}
+    kept_words = []
     for key in ('local_news', 'world_news'):
+        pool = []
         for item in by[key].get('sources', []):
             t = str(item.get('title', '')).strip()
-            if t and t not in titles:
-                titles.append(t)
+            if not t:
+                continue
+            cw = _content_words(t)
+            if any(_same_story(cw, k) for k in kept_words):
+                continue
+            kept_words.append(cw)
+            pool.append(t)
+        pools[key] = pool
+    world = by['world_news']
+    if world.get('status') == 'ok' and world.get('sources') \
+            and len(pools['world_news']) != len(world['sources']):
+        world['sources'] = [it for it in world['sources']
+                            if str(it.get('title', '')).strip() in pools['world_news']]
+        if pools['world_news']:
+            world['text'] = (world.get('label', 'World headlines') + ': '
+                             + '; '.join(pools['world_news']) + '.')
+    # Spoken picks diversify: local lead, world lead, then the
+    # remaining headline least like either — never two phrasings
+    # of one story, never a single feed's leftovers by default.
+    picks = []
+    if pools['local_news']:
+        picks.append(pools['local_news'][0])
+    if pools['world_news']:
+        picks.append(pools['world_news'][0])
+    rest = pools['local_news'][1:] + pools['world_news'][1:]
+    while rest and len(picks) < 3:
+        def _dist(t, _picks=picks):
+            cw = _content_words(t)
+            return min(1.0 - len(cw & _content_words(p)) / max(1, len(cw | _content_words(p))) for p in _picks) if _picks else 1.0
+        nxt = max(rest, key=_dist)
+        picks.append(nxt)
+        rest.remove(nxt)
+    titles = picks
     if titles:
         spoken.append('In the news: ' + '. '.join(titles[:3]) + '.')
     else:

@@ -628,8 +628,15 @@ def publish_face_frame(canvas: np.ndarray, crop_box=None):
         crop = canvas[max(0, y):min(ch, y + h), max(0, x):min(cw, x + w)]
         if crop.size == 0:
             return
-        small = cv2.resize(crop, (280, 233), interpolation=cv2.INTER_AREA)
-        ok, buf = cv2.imencode(".jpg", small, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+        # The old fixed 280x233 stamp was sized for the pixel
+        # avatar; the phone shows the frame nearly full-screen, so
+        # it arrived as upscaled mush (Alek, 2026-10-27). Keep the
+        # frame's own aspect, cap the width at 720, quality 82.
+        if crop.shape[1] > 720:
+            scale = 720 / crop.shape[1]
+            crop = cv2.resize(crop, (720, max(1, round(crop.shape[0] * scale))),
+                              interpolation=cv2.INTER_AREA)
+        ok, buf = cv2.imencode(".jpg", crop, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
         if not ok:
             return
         data = buf.tobytes()

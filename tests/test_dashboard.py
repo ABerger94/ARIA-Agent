@@ -278,3 +278,196 @@ def test_classic_layout_rollback(monkeypatch):
     assert dashboard_enabled()
     monkeypatch.setenv('ARIA_UI_LAYOUT', 'classic')
     assert not dashboard_enabled()
+
+
+def test_chat_html_colours_speakers_and_escapes():
+    # Alek, 2026-10-27: her lines and his in different colours in
+    # the Conversation tab, not all-white text. Chat content is
+    # escaped — a message is never markup.
+    from aria.dashboard import chat_html
+    out = chat_html([('10:00:01', 'ARIA', 'Hello <b>there</b>'),
+                     ('10:00:05', 'Alek', 'Hi ARIA')])
+    assert '#54d9e8' in out and '#c9f4fa' in out      # ARIA: name + text
+    assert '#ffb84d' in out and '#ffe3b3' in out      # Alek: name + text
+    assert '&lt;b&gt;' in out and '<b>there</b>' not in out.replace(
+        '<b style=', '')
+
+
+def test_pet_mode_hides_the_dashboard(monkeypatch, tmp_path):
+    # Alek, 2026-10-27: pet mode replaces the dashboard — entering
+    # it hides the main window; leaving it (toggle or the pet's
+    # own raise) brings the window back.
+    app = QApplication.instance() or QApplication([])
+    calls = []
+    data = dict(cpu=25, mem=40, battery='80%', uptime_s=600,
+                active_provider='Ollama', subsystems=[],
+                task_active=0, scheduled=0, voice_enabled=True, volume=.5)
+    frame = types.ModuleType('aria.frame')
+    frame.strip_data = lambda: data
+    frame._fmt_uptime = lambda seconds: '10m'
+    frame.spotify_data = lambda: {'title': ''}
+    frame.chat_entries = lambda n: []
+    frame.activity_events = lambda n: []
+    frame.toggle_voice = lambda: None
+    frame.receive_file = lambda p: None
+    hud = types.ModuleType('aria.hud')
+    hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = ''; hud.WHISPER_MODE = False
+    hud._dispatch_spotify_action = lambda a: None
+    hud.set_hud_volume = lambda v: None
+    config = types.ModuleType('aria.config'); config.redact = str
+    config.log_silent = lambda *args: None
+    config.get_setting = lambda key, default=None: default
+    for name, mod in [('aria.frame', frame), ('aria.hud', hud), ('aria.config', config)]:
+        monkeypatch.setitem(sys.modules, name, mod)
+        monkeypatch.setattr(sys.modules['aria'], name.rsplit('.', 1)[1], mod, raising=False)
+    queue = types.ModuleType('aria.agent.taskqueue')
+    queue.get_queue = lambda: types.SimpleNamespace(get_all_statuses=lambda: [])
+    scheduler = types.ModuleType('aria.scheduler'); scheduler.sched_list = lambda: []
+    monkeypatch.setitem(sys.modules, 'aria.agent.taskqueue', queue)
+    monkeypatch.setitem(sys.modules, 'aria.scheduler', scheduler)
+    speech = types.ModuleType('aria.speech'); speech.VOICE_ENABLED = True
+    monkeypatch.setitem(sys.modules, 'aria.speech', speech)
+    monkeypatch.setattr(sys.modules['aria'], 'speech', speech, raising=False)
+    callbacks = types.SimpleNamespace(
+        ptt_press=lambda: None, ptt_release=lambda: None,
+        interrupt=lambda: None, toggle_whisper=lambda: None,
+        submit=calls.append, request_stop=lambda: None,
+        is_running=lambda: True, housekeeping=lambda: None,
+        render_frame=lambda: np.zeros((800, 1280, 3), dtype=np.uint8))
+    window = create_dashboard(callbacks)
+    window.show(); app.processEvents()
+    assert window.isVisible()
+    window.toggle_pet(); app.processEvents()
+    assert window._pet.isVisible() and not window.isVisible()
+    window.toggle_pet(); app.processEvents()
+    assert not window._pet.isVisible() and window.isVisible()
+    window.toggle_pet(); app.processEvents()
+    window._raise_from_pet(); app.processEvents()
+    assert not window._pet.isVisible() and window.isVisible()
+    window.close()
+
+
+def test_now_playing_panel_and_camera_tile(monkeypatch, tmp_path):
+    # Batch B (Alek, 2026-10-27): NOW PLAYING shows track and
+    # artist on separate lines with a state dot, and the vision
+    # tile in the centre card shows the camera's frame.
+    import base64
+    import time as _time
+    app = QApplication.instance() or QApplication([])
+    calls = []
+    data = dict(cpu=25, mem=40, battery='80%', uptime_s=600,
+                active_provider='Ollama', subsystems=[],
+                task_active=0, scheduled=0, voice_enabled=True, volume=.5)
+    frame = types.ModuleType('aria.frame')
+    frame.strip_data = lambda: data
+    frame._fmt_uptime = lambda seconds: '10m'
+    frame.spotify_data = lambda: {'running': True, 'playing': True,
+                                  'title': 'The Artist - The Song',
+                                  'artist': 'The Artist', 'track': 'The Song'}
+    frame.chat_entries = lambda n: []
+    frame.activity_events = lambda n: []
+    frame.toggle_voice = lambda: None
+    frame.receive_file = lambda p: None
+    hud = types.ModuleType('aria.hud')
+    hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = ''; hud.WHISPER_MODE = False
+    hud._dispatch_spotify_action = lambda a: None
+    hud.set_hud_volume = lambda v: None
+    config = types.ModuleType('aria.config'); config.redact = str
+    config.log_silent = lambda *args: None
+    config.get_setting = lambda key, default=None: default
+    for name, mod in [('aria.frame', frame), ('aria.hud', hud), ('aria.config', config)]:
+        monkeypatch.setitem(sys.modules, name, mod)
+        monkeypatch.setattr(sys.modules['aria'], name.rsplit('.', 1)[1], mod, raising=False)
+    queue = types.ModuleType('aria.agent.taskqueue')
+    queue.get_queue = lambda: types.SimpleNamespace(get_all_statuses=lambda: [])
+    scheduler = types.ModuleType('aria.scheduler'); scheduler.sched_list = lambda: []
+    monkeypatch.setitem(sys.modules, 'aria.agent.taskqueue', queue)
+    monkeypatch.setitem(sys.modules, 'aria.scheduler', scheduler)
+    speech = types.ModuleType('aria.speech'); speech.VOICE_ENABLED = True
+    monkeypatch.setitem(sys.modules, 'aria.speech', speech)
+    monkeypatch.setattr(sys.modules['aria'], 'speech', speech, raising=False)
+    from PyQt6.QtCore import QBuffer, QIODevice
+    from PyQt6.QtGui import QPixmap
+    _pm = QPixmap(8, 8); _pm.fill()
+    _buf = QBuffer(); _buf.open(QIODevice.OpenModeFlag.WriteOnly)
+    _pm.save(_buf, 'JPG')
+    jpeg = bytes(_buf.data())
+    vision = types.ModuleType('aria.vision')
+    vision.capture_webcam = lambda: jpeg
+    monkeypatch.setitem(sys.modules, 'aria.vision', vision)
+    monkeypatch.setattr(sys.modules['aria'], 'vision', vision, raising=False)
+    callbacks = types.SimpleNamespace(
+        ptt_press=lambda: None, ptt_release=lambda: None,
+        interrupt=lambda: None, toggle_whisper=lambda: None,
+        submit=calls.append, request_stop=lambda: None,
+        is_running=lambda: True, housekeeping=lambda: None,
+        render_frame=lambda: np.zeros((800, 1280, 3), dtype=np.uint8))
+    window = create_dashboard(callbacks)
+    window.show(); app.processEvents(); window.render_once(); app.processEvents()
+    assert window.track.text() == 'The Song\nThe Artist'
+    assert '#2ee6a8' in window.now_playing_title.styleSheet()
+    for _ in range(100):
+        app.processEvents()
+        if not window.cam_tile.pixmap().isNull():
+            break
+        _time.sleep(0.02)
+    assert not window.cam_tile.pixmap().isNull()
+    window.close()
+
+
+def test_center_composite_is_opaque_and_layered(monkeypatch, tmp_path):
+    # Alek, 2026-10-27: the phone bridge orb was a blown-out cyan
+    # disc — the publish path dropped the centrepiece grab's
+    # alpha, flattening every glow gradient. The composite must
+    # be opaque, filled with the card colour at the corners, and
+    # visibly layered (field/orb) toward the middle.
+    app = QApplication.instance() or QApplication([])
+    calls = []
+    data = dict(cpu=25, mem=40, battery='80%', uptime_s=600,
+                active_provider='Ollama', subsystems=[],
+                task_active=0, scheduled=0, voice_enabled=True, volume=.5)
+    frame = types.ModuleType('aria.frame')
+    frame.strip_data = lambda: data
+    frame._fmt_uptime = lambda seconds: '10m'
+    frame.spotify_data = lambda: {'title': ''}
+    frame.chat_entries = lambda n: []
+    frame.activity_events = lambda n: []
+    frame.toggle_voice = lambda: None
+    frame.receive_file = lambda p: None
+    hud = types.ModuleType('aria.hud')
+    hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = ''; hud.WHISPER_MODE = False
+    hud._dispatch_spotify_action = lambda a: None
+    hud.set_hud_volume = lambda v: None
+    config = types.ModuleType('aria.config'); config.redact = str
+    config.log_silent = lambda *args: None
+    config.get_setting = lambda key, default=None: default
+    for name, mod in [('aria.frame', frame), ('aria.hud', hud), ('aria.config', config)]:
+        monkeypatch.setitem(sys.modules, name, mod)
+        monkeypatch.setattr(sys.modules['aria'], name.rsplit('.', 1)[1], mod, raising=False)
+    queue = types.ModuleType('aria.agent.taskqueue')
+    queue.get_queue = lambda: types.SimpleNamespace(get_all_statuses=lambda: [])
+    scheduler = types.ModuleType('aria.scheduler'); scheduler.sched_list = lambda: []
+    monkeypatch.setitem(sys.modules, 'aria.agent.taskqueue', queue)
+    monkeypatch.setitem(sys.modules, 'aria.scheduler', scheduler)
+    speech = types.ModuleType('aria.speech'); speech.VOICE_ENABLED = True
+    monkeypatch.setitem(sys.modules, 'aria.speech', speech)
+    monkeypatch.setattr(sys.modules['aria'], 'speech', speech, raising=False)
+    callbacks = types.SimpleNamespace(
+        ptt_press=lambda: None, ptt_release=lambda: None,
+        interrupt=lambda: None, toggle_whisper=lambda: None,
+        submit=calls.append, request_stop=lambda: None,
+        is_running=lambda: True, housekeeping=lambda: None,
+        render_frame=lambda: np.zeros((800, 1280, 3), dtype=np.uint8))
+    window = create_dashboard(callbacks)
+    window.show(); app.processEvents(); window.render_once(); app.processEvents()
+    from PyQt6.QtGui import QImage
+    img = window._composite_center_image(window.face)
+    assert img.format() == QImage.Format.Format_BGR888
+    corner = img.pixelColor(2, 2)
+    # The corner is backdrop-dark (card #0d1520 / face #080d14
+    # family), never blown-out glow colour.
+    assert corner.red() < 40 and corner.green() < 48 and corner.blue() < 56
+    centre = img.pixelColor(img.width() // 2, img.height() // 2)
+    assert (centre.red(), centre.green(), centre.blue()) != (
+        corner.red(), corner.green(), corner.blue())
+    window.close()

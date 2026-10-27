@@ -115,7 +115,9 @@ def test_spoken_text_merges_news_into_one_line():
         sources=[{'title': 'World one', 'url': 'https://x/3'},
                  {'title': 'World two', 'url': 'https://x/4'}])
     report = b.compose(NOW, funcs)
-    assert 'In the news: Local one. Local two. World one.' in report['text']
+    # Diversified picks (Alek, 2026-10-27): local lead, world
+    # lead, then the most-different remainder.
+    assert 'In the news: Local one. World one. Local two.' in report['text']
     assert 'Local headlines:' not in report['text']
     by_key = {s['key']: s for s in report['sections']}
     assert by_key['local_news']['text'] == 'Local headlines: A; B.'
@@ -144,6 +146,45 @@ def test_news_titles_drop_the_publisher_suffix():
     assert 'Fashion AI era arrives' in titles
     # A lowercase dash tail is part of the headline, not a publisher.
     assert 'A well-known shop - a history in flowers' in titles
+
+
+def test_news_dedupes_the_same_story_across_outlets():
+    # Alek's 2026-10-27 greeting carried this story twice, from
+    # two outlets, in two phrasings. One story = one headline.
+    def item(title):
+        return (f'<item><title>{title}</title><link>https://news.example/x</link>'
+                '<pubDate>Tue, 27 Oct 2026 07:00:00 +0000</pubDate></item>')
+    xml = ('<rss><channel>'
+           + item('Baltimore County florist to close after 115 years in business - WBAL-TV')
+           + item('Longtime Floral Shop To Close In Baltimore County After 115 Years - Patch')
+           + '</channel></rss>')
+    rows = b.parse_headlines(xml, NOW)
+    assert len(rows) == 1
+
+
+def test_news_strips_wire_section_prefixes():
+    def item(title):
+        return (f'<item><title>{title}</title><link>https://news.example/x</link>'
+                '<pubDate>Tue, 27 Oct 2026 07:00:00 +0000</pubDate></item>')
+    xml = '<rss><channel>' + item("Insight: Fashion's AI era arrives - Reuters") + '</channel></rss>'
+    rows = b.parse_headlines(xml, NOW)
+    assert rows[0]['title'] == "Fashion's AI era arrives"
+
+
+def test_spoken_news_never_repeats_a_story_across_sections():
+    funcs = sources()
+    funcs['local_news'] = lambda: b.section(
+        'Local headlines: F.',
+        sources=[{'title': 'Baltimore County florist to close after 115 years', 'url': 'https://x/1'}])
+    funcs['world_news'] = lambda: b.section(
+        'World headlines: F2; S.',
+        sources=[{'title': 'Longtime floral shop to close in Baltimore County after 115 years', 'url': 'https://x/2'},
+                 {'title': 'World leaders reach climate deal at summit', 'url': 'https://x/3'}])
+    report = b.compose(NOW, funcs)
+    assert report['text'].count('115 years') == 1
+    assert 'climate deal' in report['text']
+    by_key = {s['key']: s for s in report['sections']}
+    assert 'floral shop' not in by_key['world_news']['text']
 
 
 def test_weather_uses_observed_values(monkeypatch):

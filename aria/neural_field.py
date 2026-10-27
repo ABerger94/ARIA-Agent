@@ -24,7 +24,7 @@ import random
 import time
 
 from PyQt6.QtCore import QLineF, QRectF, Qt
-from PyQt6.QtGui import QBrush, QColor, QPainter, QPen
+from PyQt6.QtGui import QBrush, QColor, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QWidget
 
 # This dashboard's palette (LVI's canvas used its own cyan family;
@@ -36,6 +36,34 @@ ACC2 = '#ffcc00'
 GREEN = '#00ff88'
 MUTED_C = '#ff3366'
 BG = '#0d1520'          # the centre card's background
+
+
+# Accent-linked palette (Customize): the cyan family only —
+# state colours (ACC/GREEN/MUTED) are signals and never move.
+_ACCENT_DEFAULTS = {'PRI': '#54d9e8', 'PRI_DIM': '#007a99'}
+_PALETTE_VER = 0
+
+
+def apply_accent(accent_hex) -> bool:
+    """Hue-shift the field's accent-linked colours to the chosen
+    accent (aria/hue_wheel.shift_palette), like the bars/plaques.
+    None restores the defaults. Bumps the palette version so the
+    cached grid layer rebuilds in the new colour."""
+    global PRI, PRI_DIM, _PALETTE_VER
+    if accent_hex is None:
+        PRI = _ACCENT_DEFAULTS['PRI']
+        PRI_DIM = _ACCENT_DEFAULTS['PRI_DIM']
+        _PALETTE_VER += 1
+        return True
+    from aria.hue_wheel import shift_palette
+    shifted = shift_palette(dict(_ACCENT_DEFAULTS),
+                            _ACCENT_DEFAULTS['PRI'], accent_hex)
+    if shifted is None:
+        return False
+    PRI = shifted['PRI']
+    PRI_DIM = shifted['PRI_DIM']
+    _PALETTE_VER += 1
+    return True
 
 
 def _blend(col: QColor, a: float) -> QColor:
@@ -58,6 +86,8 @@ class NeuralField(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._cache = None          # (nodes, edges, lines)
         self._key = None            # (W, H) the cache was built for
+        self._grid = None           # pre-rendered dot-grid pixmap
+        self._grid_key = None       # (W, H, palette version)
         self._pulses: list = []     # [edge_index, position, speed]
         self._state = 'idle'
         self._muted = False
@@ -163,6 +193,23 @@ class NeuralField(QWidget):
         if not p.isActive():
             return
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # LVI's static grid-dot layer sits under the neurons —
+        # pre-rendered once per size/palette into a pixmap and
+        # blitted, never redrawn point by point per frame.
+        grid_key = (W, H, _PALETTE_VER)
+        if self._grid is None or self._grid_key != grid_key:
+            pm = QPixmap(max(1, int(W)), max(1, int(H)))
+            pm.fill(Qt.GlobalColor.transparent)
+            gp = QPainter(pm)
+            gp.setPen(QPen(_blend(main, 0.14), 1))
+            for gx in range(0, int(W), 48):
+                for gy in range(0, int(H), 48):
+                    gp.drawPoint(gx, gy)
+            gp.end()
+            self._grid = pm
+            self._grid_key = grid_key
+        p.drawPixmap(0, 0, self._grid)
 
         p.setPen(QPen(_blend(main, 0.10), 1))
         p.drawLines(lines)

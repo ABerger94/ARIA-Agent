@@ -57,13 +57,37 @@ def style_for_accent(accent):
                   lambda m: shifted[m.group(0)], STYLE)
 
 
+# Conversation colours (Alek, 2026-10-27): her words and his in
+# different colours in the Conversation tab, not all-white text.
+CHAT_COLORS = {'aria': ('#54d9e8', '#c9f4fa'), 'user': ('#ffb84d', '#ffe3b3')}
+
+
+def chat_html(entries):
+    """Render chat entries [(ts, sender, text)] as coloured HTML:
+    ARIA in the accent cyan family, the user in warm amber,
+    timestamps dim. Text is escaped — chat content is not markup."""
+    import html as _html
+    parts = []
+    for ts, sender, text in entries:
+        who = 'aria' if 'aria' in str(sender).casefold() else 'user'
+        name_col, text_col = CHAT_COLORS[who]
+        body = _html.escape(str(text)).replace('\n', '<br/>')
+        parts.append(
+            f'<p style="margin:0 0 10px 0">'
+            f'<span style="color:#7d8fa3">{_html.escape(str(ts))}</span> '
+            f'<b style="color:{name_col}">{_html.escape(str(sender))}</b><br/>'
+            f'<span style="color:{text_col}">{body}</span></p>')
+    return ''.join(parts)
+
+
 def _apply_painted_accent(accent):
     """Push an accent into the painted widgets' palettes (orb, bars).
 
     Each module guards itself; a failure here is cosmetic and must
     never break the window."""
     import importlib
-    for mod_name in ('aria.resonance', 'aria.metric_bar', 'aria.holo_face'):
+    for mod_name in ('aria.resonance', 'aria.metric_bar', 'aria.holo_face',
+                     'aria.neural_field'):
         try:
             importlib.import_module(mod_name).apply_accent(accent)
         except Exception:
@@ -115,6 +139,7 @@ def create_dashboard(callbacks):
         panel_result = pyqtSignal(str, object)
         email_result = pyqtSignal(int, object)
         news_result = pyqtSignal(str)
+        cam_result = pyqtSignal(object)
 
         def __init__(self):
             super().__init__()
@@ -221,6 +246,24 @@ def create_dashboard(callbacks):
             _stack.setContentsMargins(0, 0, 0, 0)
             self.neural = NeuralField(); _stack.addWidget(self.neural, 0, 0)
             self.face = ResonanceOrb(transparent_background=True); _stack.addWidget(self.face, 0, 0)
+            # Vision preview tile (Mark-LVI's camera preview, in
+            # spirit): a small picture-in-picture in the centre
+            # card's corner showing what her camera sees, refreshed
+            # every few seconds from a worker thread (a capture
+            # opens the camera — never on the UI thread). Above the
+            # orb, below the video, which covers it while playing.
+            self.cam_tile = QLabel('Camera off')
+            self.cam_tile.setFixedSize(176, 132)
+            self.cam_tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.cam_tile.setStyleSheet(
+                'background: #0a111b; border: 1px solid #1b3042; '
+                'border-radius: 6px; color: #5ab8cc;')
+            self.cam_tile.setToolTip("What ARIA's camera sees — refreshes every few seconds")
+            _stack.addWidget(self.cam_tile, 0, 0,
+                             Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
+            self._cam_at = 0.0
+            self._cam_busy = False
+            self.cam_result.connect(self._on_cam_result)
             self.video = VideoPanel() if _HAVE_VIDEO else None
             if self.video is not None:
                 self.video.hide(); _stack.addWidget(self.video, 0, 0)
@@ -608,9 +651,12 @@ def create_dashboard(callbacks):
                 row_w.setToolTip(f'{name} — {status}')
 
         def toggle_pet(self):
-            """Show/hide the desktop pet (Port 7). Created lazily; the
-            pet mirrors the dashboard's voice state and follows the
-            saved centerpiece as its starting form."""
+            """Pet mode REPLACES the dashboard (Alek, 2026-10-27):
+            entering pet mode hides this window, leaving pet mode
+            (toggle again, or the pet's own menu) brings it back.
+            The pet is created lazily, mirrors the dashboard's
+            voice state, and follows the saved centerpiece as its
+            starting form."""
             if getattr(self, '_pet', None) is None:
                 from aria.pet_window import PetWindow
                 self._pet = PetWindow(
@@ -619,10 +665,15 @@ def create_dashboard(callbacks):
                     on_exit=self._raise_from_pet)
             if self._pet.isVisible():
                 self._pet.hide()
+                self.show()
             else:
                 self._pet.show_at_saved_pos()
+                self.hide()
 
         def _raise_from_pet(self):
+            pet = getattr(self, '_pet', None)
+            if pet is not None:
+                pet.hide()
             self.show()
             self.raise_()
             self.activateWindow()
@@ -699,6 +750,52 @@ def create_dashboard(callbacks):
                 self.video.stop_video()
                 self.video.hide()
             self._show_centerpiece()
+
+        def _composite_center_image(self, center):
+            """The centre card as the phone should see it: neural
+            field + centrepiece composited over the card colour
+            into an OPAQUE image. (Alek, 2026-10-27 — the orb
+            'looks like shit' on the mobile bridge: the old code
+            converted the centrepiece's grab straight to BGR888,
+            DROPPING its alpha — every soft glow pixel the
+            transparent-background orb paints semi-transparent
+            became full-strength cyan, flattening the waveform
+            into a solid disc.)"""
+            from PyQt6.QtCore import QPoint
+            from PyQt6.QtGui import QColor, QPainter
+            size = self.center_stack.size()
+            img = QImage(size, QImage.Format.Format_RGB32)
+            img.fill(QColor('#0d1520'))
+            p = QPainter(img)
+            if self.neural.isVisible():
+                self.neural.render(p, QPoint(0, 0))
+            center.render(p, QPoint(0, 0))
+            p.end()
+            return img.convertToFormat(QImage.Format.Format_BGR888)
+
+        def _cam_work(self):
+            """Worker thread: one webcam capture (opens/releases
+            the camera — far too slow for the UI thread)."""
+            data = None
+            try:
+                from aria import vision
+                data = vision.capture_webcam()
+            except Exception:
+                data = None
+            self.cam_result.emit(data)
+
+        def _on_cam_result(self, data):
+            self._cam_busy = False
+            if data:
+                from PyQt6.QtGui import QPixmap
+                pm = QPixmap()
+                if pm.loadFromData(data):
+                    self.cam_tile.setPixmap(pm.scaled(
+                        self.cam_tile.size(),
+                        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                        Qt.TransformationMode.SmoothTransformation))
+                    return
+            self.cam_tile.setText('Camera off')
 
         def _poll_approvals(self):
             """Show the confirm banner for the oldest pending approval.
@@ -814,7 +911,7 @@ def create_dashboard(callbacks):
                 try:
                     import numpy as np
                     from aria.vision import publish_face_frame
-                    image = _center.grab().toImage().convertToFormat(QImage.Format.Format_BGR888)
+                    image = self._composite_center_image(_center)
                     ptr = image.bits(); ptr.setsize(image.sizeInBytes())
                     pixels = np.frombuffer(ptr, dtype=np.uint8).reshape(image.height(), image.bytesPerLine())[:, :image.width() * 3].reshape(image.height(), image.width(), 3).copy()
                     publish_face_frame(pixels, (0, 0, image.width(), image.height()))
@@ -847,15 +944,48 @@ def create_dashboard(callbacks):
             if not self.volume.isSliderDown(): self.volume.setValue(int(data['volume'] * 100))
             music = frame.spotify_data(); _track_full = music.get('title') or music.get('track') or 'Spotify is not running'
             self.track.setToolTip(_track_full)
-            # Elide to the label's two-line cap (see __init__): the
-            # raw title used to wrap unbounded and overrun the column.
+            # NOW PLAYING panel: track on one line, artist under it
+            # (the telemetry parses both from the window title) —
+            # still inside the label's two-line cap. The header dot
+            # carries the state: green playing, amber open-but-
+            # paused, plain when Spotify is closed. (No art or
+            # progress: the window-title source has neither, and a
+            # fabricated bar would be a lie.)
             _fm = self.track.fontMetrics()
-            self.track.setText(_fm.elidedText(
-                _track_full, Qt.TextElideMode.ElideRight,
-                max(self.track.width(), 180) * 2))
-            chat = '\n\n'.join(f'{ts}  {sender}\n{text}' for ts, sender, text in frame.chat_entries(100))
+            _w = max(self.track.width(), 180)
+            _trk, _art = music.get('track') or '', music.get('artist') or ''
+            if _trk and _art:
+                self.track.setText(
+                    _fm.elidedText(_trk, Qt.TextElideMode.ElideRight, _w)
+                    + '\n' + _fm.elidedText(_art, Qt.TextElideMode.ElideRight, _w))
+            else:
+                self.track.setText(_fm.elidedText(
+                    _track_full, Qt.TextElideMode.ElideRight, _w * 2))
+            if music.get('playing'):
+                self.now_playing_title.setText('● NOW PLAYING')
+                self.now_playing_title.setStyleSheet('color: #2ee6a8;')
+            elif music.get('running'):
+                self.now_playing_title.setText('● NOW PLAYING')
+                self.now_playing_title.setStyleSheet('color: #ffb84d;')
+            else:
+                self.now_playing_title.setText('NOW PLAYING')
+                self.now_playing_title.setStyleSheet('')
+            # Vision tile: throttled worker-thread captures.
+            if (self.isVisible() and not self._cam_busy
+                    and time.time() - self._cam_at > 3
+                    and (self.video is None or not self.video.isVisible())):
+                self._cam_busy = True
+                self._cam_at = time.time()
+                threading.Thread(target=self._cam_work, daemon=True).start()
+            _entries = frame.chat_entries(100)
+            chat = '\n\n'.join(f'{ts}  {sender}\n{text}' for ts, sender, text in _entries)
             if chat != self._last_chat:
-                self._last_chat = chat; self.views['Conversation'].setPlainText(chat or 'Your conversation with ARIA appears here.'); self.views['Conversation'].verticalScrollBar().setValue(self.views['Conversation'].verticalScrollBar().maximum())
+                self._last_chat = chat
+                if _entries:
+                    self.views['Conversation'].setHtml(chat_html(_entries))
+                else:
+                    self.views['Conversation'].setPlainText('Your conversation with ARIA appears here.')
+                self.views['Conversation'].verticalScrollBar().setValue(self.views['Conversation'].verticalScrollBar().maximum())
             activity = '\n\n'.join(f'{ts}  {level}\n{message}' for ts, level, message, meta in frame.activity_events(100))
             if activity != self._last_activity:
                 self._last_activity = activity; self.views['Activity'].setPlainText(activity)

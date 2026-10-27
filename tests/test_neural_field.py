@@ -71,3 +71,17 @@ def test_advance_and_paint_every_state():
         assert not w.grab().isNull()
     w.advance('speaking', True)    # muted recolors, never crashes
     assert not w.grab().isNull()
+
+
+def test_grid_layer_and_accent_shift():
+    # LVI's canvas had the dot grid under the neurons; the field
+    # also follows the chosen accent like the bars and plaques.
+    import aria.neural_field as nf
+    w = _field()
+    assert w._grid is not None and w._grid_key[:2] == (640, 480)
+    ver = nf._PALETTE_VER
+    assert nf.apply_accent('#ff8800') is True
+    assert nf._PALETTE_VER == ver + 1 and nf.PRI != '#54d9e8'
+    w.grab()                       # grid rebuilds in the new palette
+    assert w._grid_key[2] == nf._PALETTE_VER
+    assert nf.apply_accent(None) is True and nf.PRI == '#54d9e8'
