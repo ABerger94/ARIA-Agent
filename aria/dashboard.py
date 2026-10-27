@@ -652,6 +652,15 @@ def create_dashboard(callbacks):
                 self._pet.hide()
                 self.show()
             else:
+                # Pet mode means ONLY the pet (Alek, 2026-10-27):
+                # close any open dialog first — Settings has its
+                # own Show/hide-pet button on the Pet tab, and the
+                # settings window used to stay open behind the
+                # hidden dashboard. Services / phone-pairing
+                # dialogs are QDialog children too; same sweep.
+                for dialog in self.findChildren(QDialog):
+                    if dialog.isVisible():
+                        dialog.close()
                 self._pet.show_at_saved_pos()
                 self.hide()
 

@@ -340,8 +340,14 @@ def test_pet_mode_hides_the_dashboard(monkeypatch, tmp_path):
     window = create_dashboard(callbacks)
     window.show(); app.processEvents()
     assert window.isVisible()
+    # An open dialog (Settings et al.) must close when pet mode
+    # starts — pet mode is ONLY the pet (Alek, 2026-10-27).
+    from PyQt6.QtWidgets import QDialog
+    stray = QDialog(window); stray.show(); app.processEvents()
+    assert stray.isVisible()
     window.toggle_pet(); app.processEvents()
     assert window._pet.isVisible() and not window.isVisible()
+    assert not stray.isVisible()
     window.toggle_pet(); app.processEvents()
     assert not window._pet.isVisible() and window.isVisible()
     window.toggle_pet(); app.processEvents()
