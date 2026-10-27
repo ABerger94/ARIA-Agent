@@ -82,8 +82,8 @@ def _services_status_text(subsystems) -> str:
         return 'Connecting to services'
     ok_n = sum(1 for _name, _status, ok in subs if ok)
     if ok_n == len(subs):
-        return 'All services online'
-    return f'{ok_n} of {len(subs)} services online'
+        return 'All services connected'
+    return f'{ok_n} of {len(subs)} services connected'
 
 
 def create_dashboard(callbacks):
@@ -141,7 +141,7 @@ def create_dashboard(callbacks):
             head = QHBoxLayout()
             brand = QLabel('A.R.I.A.'); brand.setObjectName('brand'); head.addWidget(brand)
             head.addWidget(QLabel('ADAPTIVE ROBOTIC INTELLIGENCE AGENT')); head.addStretch()
-            self.status = QLabel('Connecting to services'); self.status.setFixedWidth(200); head.addWidget(self.status)
+            self.status = QPushButton('Connecting to services'); self.status.setFixedWidth(200); self.status.setFlat(True); self.status.setCursor(Qt.CursorShape.PointingHandCursor); self.status.setToolTip('Click for service details'); self.status.setStyleSheet('QPushButton { text-align: right; border: none; background: transparent; } QPushButton:hover { text-decoration: underline; }'); self.status.clicked.connect(self.show_services_dialog); head.addWidget(self.status)
             self.clock = QLabel(); self.clock.setFixedWidth(190); head.addWidget(self.clock)
             self.settings_button = QPushButton('Settings'); self.settings_button.clicked.connect(self.settings); head.addWidget(self.settings_button)
             layout.addLayout(head)
@@ -436,6 +436,37 @@ def create_dashboard(callbacks):
         def settings(self):
             from aria.ui_panels import create_settings_dialog
             create_settings_dialog(self, callbacks).exec()
+
+        def show_services_dialog(self):
+            """The header status text is clickable (Alek, 2026-10-27):
+            show every service in the current report — connected
+            ones with a green dot and their live status, the rest
+            with a red dot and whatever state they're in — instead
+            of just the 'N of M' count. Data is re-read on click so
+            the dialog is never staler than the click itself."""
+            try:
+                subs = list(frame.strip_data().get('subsystems') or [])
+            except Exception:
+                subs = list(getattr(self, '_last_subsystems', []) or [])
+            dialog = QDialog(self); dialog.setWindowTitle('Services'); dialog.setMinimumWidth(430)
+            lay = QVBoxLayout(dialog)
+            title = QLabel('SERVICES'); title.setObjectName('title'); lay.addWidget(title)
+            if not subs:
+                lay.addWidget(QLabel('No service report yet — still connecting.'))
+            for name, status, ok in subs:
+                row = QHBoxLayout()
+                dot = QLabel('●')
+                dot.setStyleSheet(f"color: {'#35d465' if ok else '#e5484d'};")
+                row.addWidget(dot)
+                row.addWidget(QLabel(str(name)), 1)
+                state = QLabel(str(status))
+                state.setStyleSheet('color: #9fb4c8;')
+                row.addWidget(state)
+                lay.addLayout(row)
+            close_btn = QPushButton('Close'); close_btn.clicked.connect(dialog.close); lay.addWidget(close_btn)
+            self._services_dialog = dialog
+            dialog.show()
+            return dialog
 
         def open_remote(self):
             from aria import bridge
@@ -798,6 +829,7 @@ def create_dashboard(callbacks):
             self.plaque_state.set_value(str(hud.CURRENT_STATE).upper())
             self.plaque_tasks.set_value(f"{data.get('task_active', 0)} run / {data.get('task_pending', 0)} wait")
             self._set_subsystems(data['subsystems'])
+            self._last_subsystems = list(data.get('subsystems') or [])
             self.status.setText(_services_status_text(data.get('subsystems')))
             self.voice.setText('Voice on' if data['voice_enabled'] else 'Voice off')
             self.whisper.setText('Whisper on' if hud.WHISPER_MODE else 'Whisper off')
