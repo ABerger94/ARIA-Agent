@@ -147,10 +147,52 @@ def test_command_filter_and_example_only_drafts(tmp_path):
 def test_catalog_contains_registered_tools_only(monkeypatch):
     tools = types.ModuleType('aria.tools'); tools.__path__ = []
     dispatch = types.ModuleType('aria.tools.dispatch'); dispatch.get_registered_tools = lambda: {'read_email': lambda: None, 'mcp_test__tool': lambda: None}
+    dispatch.TOOL_TO_TOOLKIT = {}
     schemas = types.ModuleType('aria.tools.schemas')
     schemas.ALL_FUNCTION_DECLARATIONS = [{'name': 'read_email', 'description': 'Reads mail'}, {'name': 'missing', 'description': 'Not loaded'}]
-    schemas.COMMAND_GUIDE = [('Email', 'read_email', 'Show my inbox')]; schemas.TOOL_TO_TOOLKIT = {}
+    schemas.COMMAND_GUIDE = [('Email', 'read_email', 'Show my inbox')]
     for name, mod in [('aria.tools', tools), ('aria.tools.dispatch', dispatch), ('aria.tools.schemas', schemas)]: monkeypatch.setitem(sys.modules, name, mod)
     rows = command_rows()
     assert {r['name'] for r in rows} == {'read_email', 'mcp_test__tool'}
     assert next(r for r in rows if r['name'].startswith('mcp_'))['source'] == 'MCP'
+
+
+def test_catalog_against_the_real_schemas_and_dispatch(monkeypatch):
+    # The integration the stubbed test above cannot give: the
+    # REAL schemas + dispatch pair. command_rows imported
+    # TOOL_TO_TOOLKIT from schemas, where it does not exist —
+    # an ImportError on Alek's laptop (2026-10-27) while every
+    # stubbed test passed. Only leaf externals whose third-party
+    # packages are absent from the sandbox (speech_recognition
+    # via aria.speech, psutil, cv2) are stubbed — the modules
+    # under test stay real.
+    speech = types.ModuleType('aria.speech')
+    speech.speak = lambda t: None
+    speech.edge_tts_bytes = lambda text, whisper_mode=False: b''
+    speech.tts_bytes_for_bridge = lambda text: (b'', 'no speech in tests')
+    speech.transcribe_audio = lambda audio, mime: ''
+    speech._SPEECH_STOP = types.SimpleNamespace(is_set=lambda: False)
+    speech._SPEECH_QUEUE = types.SimpleNamespace(unfinished_tasks=0)
+    speech._AUDIO_PLAY_QUEUE = types.SimpleNamespace(unfinished_tasks=0)
+    monkeypatch.setitem(sys.modules, 'aria.speech', speech)
+    monkeypatch.setattr(pkg, 'speech', speech, raising=False)
+    psutil = types.ModuleType('psutil')
+    psutil.cpu_percent = lambda interval=0: 0.0
+    psutil.virtual_memory = lambda: types.SimpleNamespace(
+        percent=0.0, available=0, total=0, used=0, free=0)
+    psutil.disk_usage = lambda p: types.SimpleNamespace(
+        percent=0.0, total=0, used=0, free=0)
+    psutil.disk_partitions = lambda: []
+    psutil.sensors_battery = lambda: None
+    monkeypatch.setitem(sys.modules, 'psutil', psutil)
+    cv2 = types.ModuleType('cv2')
+    cv2.VideoCapture = lambda *a, **k: None
+    cv2.IMWRITE_JPEG_QUALITY = 1
+    cv2.resize = lambda img, size: img
+    cv2.imencode = lambda ext, img, params=None: (False, None)
+    cv2.imwrite = lambda path, img: True
+    monkeypatch.setitem(sys.modules, 'cv2', cv2)
+    rows = command_rows()
+    assert len(rows) > 50
+    assert all(r['category'] for r in rows)
+    assert any(r['name'] == 'read_email' for r in rows)

@@ -5,8 +5,12 @@ import os
 
 
 def command_rows():
-    from aria.tools.dispatch import get_registered_tools
-    from aria.tools.schemas import ALL_FUNCTION_DECLARATIONS, COMMAND_GUIDE, TOOL_TO_TOOLKIT
+    # TOOL_TO_TOOLKIT lives in dispatch (it inverts schemas'
+    # TOOLKITS there) — importing it from schemas was an
+    # ImportError on the laptop (Alek, 2026-10-27) that the
+    # stubbed tests masked for months.
+    from aria.tools.dispatch import get_registered_tools, TOOL_TO_TOOLKIT
+    from aria.tools.schemas import ALL_FUNCTION_DECLARATIONS, COMMAND_GUIDE
     registered = get_registered_tools()
     descriptions = {d['name']: d.get('description', '') for d in ALL_FUNCTION_DECLARATIONS}
     examples = {name: (category, example) for category, name, example in COMMAND_GUIDE}
