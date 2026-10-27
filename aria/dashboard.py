@@ -59,17 +59,64 @@ def style_for_accent(accent):
 
 # Conversation colours (Alek, 2026-10-27): her words and his in
 # different colours in the Conversation tab, not all-white text.
-CHAT_COLORS = {'aria': ('#54d9e8', '#c9f4fa'), 'user': ('#ffb84d', '#ffe3b3')}
+# Log colours (Alek, 2026-10-27 — Mark-LVI's LogWidget tagged
+# every line by kind; ours read as one flat yellow). The scheme:
+# ARIA speaks in the accent-cyan family; Alek is WHITE (that is
+# how LVI coloured "you" lines — the amber/yellow user side is
+# what he was complaining about); system lines drop to a muted
+# blue-grey you can read past. Activity levels earn their red /
+# amber / green; routine info stays muted.
+CHAT_COLORS = {'aria': ('#54d9e8', '#dff9ff'),
+               'user': ('#ffffff', '#f4f7fa'),
+               'sys': ('#8ea3b6', '#aebfd0')}
+ACTIVITY_COLORS = {'error': ('#ff6b6b', '#ffd9d9'),
+                   'warn': ('#ffb84d', '#ffedc9'),
+                   'ok': ('#2ee6a8', '#d3ffec'),
+                   'info': ('#8ea3b6', '#c2d2de')}
+
+
+def _activity_kind(level):
+    l = str(level).casefold()
+    if any(k in l for k in ('error', 'err', 'fail', 'critical')):
+        return 'error'
+    if 'warn' in l:
+        return 'warn'
+    if any(k in l for k in ('ok', 'success', 'done')):
+        return 'ok'
+    return 'info'
+
+
+def activity_html(events):
+    """Render activity events [(ts, level, message, meta)] as
+    coloured HTML, LVI-style: the level tag carries the colour
+    (red error, amber warn, green ok, muted info), the message in
+    a matching soft tint, timestamps dimmest. Escaped — a log
+    line is never markup."""
+    import html as _html
+    parts = []
+    for ts, level, message, *_rest in events:
+        lvl_col, msg_col = ACTIVITY_COLORS[_activity_kind(level)]
+        body = _html.escape(str(message)).replace('\n', '<br/>')
+        parts.append(
+            f'<p style="margin:0 0 8px 0">'
+            f'<span style="color:#5f7285">{_html.escape(str(ts))}</span> '
+            f'<b style="color:{lvl_col}">{_html.escape(str(level).upper())}</b><br/>'
+            f'<span style="color:{msg_col}">{body}</span></p>')
+    return ''.join(parts)
 
 
 def chat_html(entries):
     """Render chat entries [(ts, sender, text)] as coloured HTML:
-    ARIA in the accent cyan family, the user in warm amber,
-    timestamps dim. Text is escaped — chat content is not markup."""
+    ARIA in the accent cyan family, the user in white, system
+    lines muted, timestamps dim. Text is escaped — chat content
+    is not markup."""
     import html as _html
     parts = []
     for ts, sender, text in entries:
-        who = 'aria' if 'aria' in str(sender).casefold() else 'user'
+        _s = str(sender).casefold()
+        who = ('aria' if 'aria' in _s
+               else 'sys' if 'system' in _s or _s == 'sys'
+               else 'user')
         name_col, text_col = CHAT_COLORS[who]
         body = _html.escape(str(text)).replace('\n', '<br/>')
         parts.append(
@@ -982,9 +1029,11 @@ def create_dashboard(callbacks):
                 else:
                     self.views['Conversation'].setPlainText('Your conversation with ARIA appears here.')
                 self.views['Conversation'].verticalScrollBar().setValue(self.views['Conversation'].verticalScrollBar().maximum())
-            activity = '\n\n'.join(f'{ts}  {level}\n{message}' for ts, level, message, meta in frame.activity_events(100))
+            _events = frame.activity_events(100)
+            activity = '\n\n'.join(f'{ts}  {level}\n{message}' for ts, level, message, meta in _events)
             if activity != self._last_activity:
-                self._last_activity = activity; self.views['Activity'].setPlainText(activity)
+                self._last_activity = activity
+                self.views['Activity'].setHtml(activity_html(_events))
             try:
                 from aria.agent.taskqueue import get_queue
                 from aria.scheduler import sched_list

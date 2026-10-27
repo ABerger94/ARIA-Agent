@@ -284,16 +284,30 @@ def test_classic_layout_rollback(monkeypatch):
 
 
 def test_chat_html_colours_speakers_and_escapes():
-    # Alek, 2026-10-27: her lines and his in different colours in
-    # the Conversation tab, not all-white text. Chat content is
-    # escaped — a message is never markup.
-    from aria.dashboard import chat_html
+    # Alek, 2026-10-27, revised same day: Mark-LVI's LogWidget
+    # tagged lines by kind — ARIA in the accent family, "you" in
+    # WHITE, system muted. The first cut here made his side
+    # amber/pale-yellow and he called it "all text yellow". Chat
+    # content is escaped — a message is never markup.
+    from aria.dashboard import chat_html, activity_html
     out = chat_html([('10:00:01', 'ARIA', 'Hello <b>there</b>'),
-                     ('10:00:05', 'Alek', 'Hi ARIA')])
-    assert '#54d9e8' in out and '#c9f4fa' in out      # ARIA: name + text
-    assert '#ffb84d' in out and '#ffe3b3' in out      # Alek: name + text
+                     ('10:00:05', 'Alek', 'Hi ARIA'),
+                     ('10:00:09', 'System', 'Voice ready')])
+    assert '#54d9e8' in out and '#dff9ff' in out      # ARIA: name + text
+    assert '#ffffff' in out and '#f4f7fa' in out      # Alek: white, not yellow
+    assert '#ffe3b3' not in out and '#ffb84d' not in out
+    assert '#8ea3b6' in out                          # System: muted
     assert '&lt;b&gt;' in out and '<b>there</b>' not in out.replace(
         '<b style=', '')
+    # Activity: levels earn their colours (LVI's err/file/sys
+    # tags) — error red, warn amber, ok green, info muted.
+    act = activity_html([('10:01:00', 'error', 'Boom <i>x</i>', {}),
+                         ('10:01:01', 'warn', 'Careful', {}),
+                         ('10:01:02', 'ok', 'Done', {}),
+                         ('10:01:03', 'info', 'Routine', {})])
+    assert '#ff6b6b' in act and '#ffb84d' in act
+    assert '#2ee6a8' in act and '#c2d2de' in act
+    assert '&lt;i&gt;' in act
 
 
 def test_pet_mode_hides_the_dashboard(monkeypatch, tmp_path):
