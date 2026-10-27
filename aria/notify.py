@@ -711,10 +711,41 @@ def tool_notify_phone(args=None) -> str:
             f"the notification could not be delivered "
             f"({result.get('reason', 'unknown')})")
 
+    # Honesty gate (Alek, 2026-10-27): the old code reported
+    # done with pushed=0 — she told him "sent" while no device
+    # could possibly have received anything (he tested it and
+    # got silence). Zero pushes is a FAILURE with the reason,
+    # never a success. The message is still in the queue (the
+    # bridge page shows it), and a failed delivery does not
+    # spend rate-limit budget — nothing was delivered.
+    pushed = int(result.get("pushed", 0) or 0)
+    if pushed == 0:
+        if not result.get("webpush_available"):
+            return outcome.failed(
+                "notify_phone",
+                "the push transport (pywebpush) is not installed "
+                "on this machine, so no push can reach the phone "
+                "— the message was queued only")
+        if subscription_count() == 0:
+            return outcome.failed(
+                "notify_phone",
+                "no phone has notifications enabled yet, so no "
+                "device could be pushed — the message was queued "
+                "only. On the phone: open the bridge, then "
+                "Settings -> 'Enable phone notifications'. On "
+                "iPhone the bridge must be opened from a Home "
+                "Screen icon (Share -> Add to Home Screen) — iOS "
+                "does not deliver push to a Safari tab")
+        return outcome.failed(
+            "notify_phone",
+            "a phone is subscribed but every push attempt "
+            "failed — the message was queued only; see the OPS "
+            "log for the push error")
+
     record_model_call(now)
     return outcome.done(
         "notify_phone",
         title=title,
-        pushed=result.get("pushed", 0),
+        pushed=pushed,
         queued=bool(result.get("queued")),
     )

@@ -316,3 +316,37 @@ def test_tool_refuses_in_delegated_scope(monkeypatch):
     monkeypatch.setitem(sys.modules, 'aria.tools.dispatch', fake)
     out = notify.tool_notify_phone({'body': 'from a delegated task'})
     assert outcome.kind_of(out) == 'failed'
+
+
+# ── tool honesty: zero pushes is a failure, never a "done" ──────
+# Alek, 2026-10-27: he had ARIA test notify_phone and got
+# silence — no iOS notification, nothing on the bridge — while
+# the tool had reported success with pushed=0.
+
+def test_tool_zero_pushes_no_subscription_is_an_honest_failure(
+        isolated, monkeypatch):
+    monkeypatch.setattr(notify, 'clock', lambda: 20000.0)
+    _stub_delivery(monkeypatch, pushed=0)
+    out = notify.tool_notify_phone({'body': 'did you get this?'})
+    assert outcome.kind_of(out) == 'failed'
+    assert 'no phone has notifications enabled' in out
+    assert notify.model_call_times() == []  # undelivered: no budget spent
+
+
+def test_tool_zero_pushes_without_transport(isolated, monkeypatch):
+    monkeypatch.setattr(notify, 'clock', lambda: 20000.0)
+    _stub_delivery(monkeypatch, pushed=0, webpush_available=False)
+    out = notify.tool_notify_phone({'body': 'hello'})
+    assert outcome.kind_of(out) == 'failed' and 'pywebpush' in out
+
+
+def test_tool_zero_pushes_with_subscription_reports_push_failure(
+        isolated, monkeypatch):
+    monkeypatch.setattr(notify, 'clock', lambda: 20000.0)
+    assert notify.add_subscription({
+        'endpoint': 'https://push.example/x',
+        'keys': {'p256dh': 'a', 'auth': 'b'}})
+    _stub_delivery(monkeypatch, pushed=0)
+    out = notify.tool_notify_phone({'body': 'hello'})
+    assert outcome.kind_of(out) == 'failed'
+    assert 'every push attempt' in out

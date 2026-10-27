@@ -28,12 +28,12 @@ body.facemode #app>*:not([data-panel="vision"]){display:none!important}body.face
 <div class="eyebrow">Your assistant, within reach</div><h1>Remote control</h1><p class="muted">Talk to ARIA. Check your inbox. Pick up where you left off.</p>
 <div class="stats"><div class="stat"><small>ARIA is</small><strong id="state">Connecting</strong></div><div class="stat"><small>Active engine</small><strong id="provider">Checking connection</strong></div></div>
 <nav aria-label="Companion sections"><button data-tab="control" class="selected" aria-selected="true">Control</button><button data-tab="chat">Conversation</button><button data-tab="inbox">Inbox</button><button data-tab="briefing">Briefing</button><button data-tab="vision">Orb &amp; camera</button><button data-tab="settings">Settings</button></nav>
-<section data-panel="control" class="grid"><div class="panel"><div class="eyebrow">Voice connection</div><h2>What can I help with?</h2><p class="muted">Hold while you speak, or tap once to start and again to finish.</p><div class="talk-row"><button id="talk">Hold to talk</button><button id="ptt" type="button">Tap to talk</button></div><span id="astat" role="status">Audio: ready</span><button id="stop-speech" class="secondary" style="margin-top:16px">Stop speaking</button></div><div class="stack"><div class="panel"><div class="eyebrow">Latest from ARIA</div><p id="recent-reply">Your latest reply will appear here.</p></div><div class="panel"><h2>Start here</h2><div class="shortcuts"><button data-prompt="Give me my morning briefing">Daily briefing</button><button data-prompt="What tasks are running?">My tasks</button><button data-prompt="Check my calendar for today">Today's calendar</button></div></div><div class="tools"><a href="/upload">Send a file</a><a href="/commands">Command reference</a></div></div></section>
+<section data-panel="control" class="grid"><div class="panel"><div class="eyebrow">Voice connection</div><h2>What can I help with?</h2><p class="muted">Hold while you speak, or tap once to start and again to finish.</p><div class="talk-row"><button id="talk">Hold to talk</button><button id="ptt" type="button">Tap to talk</button></div><span id="astat" role="status">Audio: ready</span><button id="stop-speech" class="secondary" style="margin-top:16px">Stop speaking</button></div><div class="stack"><div id="notifs" class="panel" hidden><div class="eyebrow">Notifications</div><div id="notif-list"></div></div><div class="panel"><div class="eyebrow">Latest from ARIA</div><p id="recent-reply">Your latest reply will appear here.</p></div><div class="panel"><h2>Start here</h2><div class="shortcuts"><button data-prompt="Give me my morning briefing">Daily briefing</button><button data-prompt="What tasks are running?">My tasks</button><button data-prompt="Check my calendar for today">Today's calendar</button></div></div><div class="tools"><a href="/upload">Send a file</a><a href="/commands">Command reference</a></div></div></section>
 <section data-panel="chat" hidden><div class="section-head"><h2>Conversation</h2><span class="muted">Synced with your laptop</span></div><div id="log"></div></section>
 <section data-panel="briefing" hidden><div class="section-head"><div><h2>Daily briefing</h2><span id="brief-stamp" class="muted">Today, at a glance</span></div><button id="brief-refresh" class="secondary">Refresh</button></div><button id="brief-listen" class="secondary" disabled>Read aloud</button><div id="brief-report" class="stack" style="margin-top:16px">Your startup briefing will appear here. Select Refresh to generate one.</div></section>
 <section data-panel="inbox" hidden><div class="section-head"><div><h2>Inbox</h2><span id="mail-status">Refresh to load your email</span></div><button id="mail-refresh" class="secondary">Refresh</button></div><input id="mail-search" aria-label="Filter inbox" placeholder="Filter sender or subject…"><div id="mail-list" class="muted">Your messages appear here. Opening a message does not mark it read.</div><article id="mail-detail" class="panel" hidden><div class="section-head"><h2 id="mail-subject"></h2><button id="mail-close" class="secondary">Close</button></div><p id="mail-from"></p><div id="mail-body"></div></article></section>
 <section data-panel="vision" hidden><main id="stage"><img id="face" alt="ARIA waveform orb"><img id="eyes" alt="Phone camera" style="display:none"><div id="caption"></div></main><div class="modes"><button id="mode-face" class="mode-btn active">Waveform orb</button><button id="mode-eyes" class="mode-btn">Camera</button><button id="mode-full" class="mode-btn">Full screen</button></div><button id="lookbtn" type="button" style="display:none">Describe what you see</button></section>
-<section data-panel="settings" hidden><div id="settings" class="panel"><h2>Phone settings</h2><button id="spk" class="row-btn">Speak replies: ON</button><button id="testspk" class="row-btn">Test audio</button><button id="cam" class="row-btn">Camera: OFF</button><p class="muted">Your browser asks before microphone or camera access. On first use, tap a voice control to allow audio playback.</p><span id="transport"></span><button id="pushbtn" class="row-btn">Enable phone notifications</button><span id="pushstat" class="muted" role="status"></span><button id="signout" class="row-btn danger">Disconnect this phone</button><p class="muted">This phone is remembered for 30 days. You can disconnect all remembered phones from Remote Control on the laptop.</p></div></section>
+<section data-panel="settings" hidden><div id="settings" class="panel"><h2>Phone settings</h2><button id="spk" class="row-btn">Speak replies: ON</button><button id="testspk" class="row-btn">Test audio</button><button id="cam" class="row-btn">Camera: OFF</button><p class="muted">Your browser asks before microphone or camera access. On first use, tap a voice control to allow audio playback.</p><span id="transport"></span><button id="pushbtn" class="row-btn">Enable phone notifications</button><span id="pushstat" class="muted" role="status"></span><p class="muted">On iPhone, iOS delivers push only to an installed page: Share → Add to Home Screen, open ARIA from that icon, then tap Enable here — a Safari tab can't receive push. Notifications also appear on this page's home panel whether or not push is on.</p><button id="signout" class="row-btn danger">Disconnect this phone</button><p class="muted">This phone is remembered for 30 days. You can disconnect all remembered phones from Remote Control on the laptop.</p></div></section>
 <form id="msgform"><input id="t" aria-label="Message ARIA" placeholder="Message ARIA…" autocomplete="off"><button id="sendbtn" type="submit">Send</button></form>
 </div><audio id="aria-audio" playsinline preload="auto" hidden></audio><audio id="aria-bg" loop playsinline preload="auto" hidden src="/silent.wav"></audio>
 <script>
@@ -637,6 +637,29 @@ document.getElementById('mail-search').oninput=renderMail;
 document.getElementById('mail-close').onclick=()=>{mailRequest++;document.getElementById('mail-detail').hidden=true;};
 </script>
 <script>
+// The missed queue, rendered on the home panel: what she sent
+// while the phone was off (or before push was enabled) is listed,
+// not lost — this is the surface Alek checks ("anything on the
+// bridge?"), fed by /api/notifications, dismiss per entry.
+async function loadNotifs(){
+  try{
+    var r=await api('/api/notifications'); var j=await r.json();
+    var es=(j&&j.notifications)||[];
+    var box=document.getElementById('notifs');
+    var list=document.getElementById('notif-list');
+    box.hidden=!es.length; list.innerHTML='';
+    es.slice().reverse().forEach(function(e){
+      var row=document.createElement('div'); row.className='notif-row';
+      var txt=document.createElement('span');
+      var when=''; try{ when=new Date(e.ts*1000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}); }catch(_){}
+      txt.textContent=(e.title?e.title+' — ':'')+(e.body||'')+(when?'  ('+when+')':'');
+      var x=document.createElement('button'); x.className='secondary'; x.textContent='✕';
+      x.onclick=async()=>{ try{ await api('/api/notifications/dismiss',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:e.id})}); }catch(_){} loadNotifs(); };
+      row.appendChild(txt); row.appendChild(x); list.appendChild(row);
+    });
+  }catch(e){}
+}
+loadNotifs(); setInterval(loadNotifs, 30000);
 // Phone notifications (Web Push): register the service worker, ask
 // permission, and hand the subscription to the bridge, which stores
 // it for aria/notify.py's push sink.
