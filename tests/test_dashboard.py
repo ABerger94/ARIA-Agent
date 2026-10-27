@@ -148,7 +148,7 @@ def test_subsystems_all_rows_visible_in_scroll_area(monkeypatch, tmp_path):
     window = create_dashboard(callbacks)
     window.resize(1080, 720)               # the window's minimum size
     window.show(); app.processEvents(); window.render_once()
-    assert window.subsystems_scroll.widget() is window.subsystems
+    assert window.left_scroll.widget() is window.left_content
     assert len(window._subsystem_rows) == 8
     rendered = [(name_lbl.text(), status_lbl.text())
                 for _dot, name_lbl, status_lbl, _w in window._subsystem_rows]
@@ -160,6 +160,92 @@ def test_subsystems_all_rows_visible_in_scroll_area(monkeypatch, tmp_path):
     window._set_subsystems([('Semantic Memory', 'ERROR', False)])
     assert len(window._subsystem_rows) == 1
     assert '#ff6b6b' in window._subsystem_rows[0][0].styleSheet()
+    window.close()
+
+
+def test_now_playing_capped_and_panel_buttons_moved_to_settings(monkeypatch):
+    # Alek, 2026-10-27: (1) a long Spotify title wrapped unbounded
+    # and the NOW PLAYING text overran the subsystems — hard to
+    # read; (2) the Providers / Audio / Customize / Pet buttons
+    # leave the dashboard now that they live in Settings.
+    # Pins: no overlap among left-column widgets at minimum window
+    # size, the track label never exceeds two lines (full title on
+    # the tooltip), and the four buttons are gone from the window.
+    app = QApplication.instance() or QApplication([])
+    calls = []
+    long_title = ('An Extremely Long Spotify Track Title — '
+                  'Featuring Several Guest Artists (Live at Some '
+                  'Very Long Venue Name) [Remastered Edition] ') * 3
+    data = dict(cpu=25, mem=40, battery='80%', uptime_s=600,
+                active_provider='Ollama',
+                subsystems=[('Voice Pathway', 'ARMED', True),
+                            ('Vision Optics', 'READY', True),
+                            ('Screen Perception', 'IDLE', False),
+                            ('Semantic Memory', 'READY', True),
+                            ('Head Servos', 'VIRTUAL', False),
+                            ('Scheduler', 'ARMED (3)', True),
+                            ('GitHub Tools', 'OFFLINE', False),
+                            ('Autonomy & Workers', 'ACTIVE', True)],
+                task_active=0, scheduled=1, voice_enabled=True, volume=.5)
+    frame = types.ModuleType('aria.frame')
+    frame.strip_data = lambda: data
+    frame._fmt_uptime = lambda seconds: '10m'
+    frame.spotify_data = lambda: {'title': long_title}
+    frame.chat_entries = lambda n: []
+    frame.activity_events = lambda n: []
+    frame.toggle_voice = lambda: calls.append('voice')
+    frame.receive_file = lambda p: calls.append(p)
+    hud = types.ModuleType('aria.hud')
+    hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = 'Ready'; hud.WHISPER_MODE = False
+    hud._dispatch_spotify_action = calls.append
+    hud.set_hud_volume = calls.append
+    config = types.ModuleType('aria.config'); config.redact = str; config.log_silent = lambda *args: None; config.get_setting = lambda key, default=None: default
+    for name, mod in [('aria.frame', frame), ('aria.hud', hud), ('aria.config', config)]:
+        monkeypatch.setitem(sys.modules, name, mod)
+        monkeypatch.setattr(sys.modules['aria'], name.rsplit('.', 1)[1], mod, raising=False)
+    queue = types.ModuleType('aria.agent.taskqueue')
+    queue.get_queue = lambda: types.SimpleNamespace(get_all_statuses=lambda: [])
+    scheduler = types.ModuleType('aria.scheduler'); scheduler.sched_list = lambda: []
+    monkeypatch.setitem(sys.modules, 'aria.agent.taskqueue', queue)
+    monkeypatch.setitem(sys.modules, 'aria.scheduler', scheduler)
+    speech = types.ModuleType('aria.speech'); speech.VOICE_ENABLED = True
+    monkeypatch.setitem(sys.modules, 'aria.speech', speech)
+    monkeypatch.setattr(sys.modules['aria'], 'speech', speech, raising=False)
+    callbacks = types.SimpleNamespace(
+        ptt_press=lambda: None, ptt_release=lambda: None,
+        interrupt=lambda: None, toggle_whisper=lambda: None,
+        submit=calls.append, request_stop=lambda: calls.append('shutdown'),
+        is_running=lambda: True, housekeeping=lambda: None,
+        render_frame=lambda: np.zeros((800, 1280, 3), dtype=np.uint8))
+    window = create_dashboard(callbacks)
+    window.resize(1080, 720)
+    window.show(); app.processEvents(); window.render_once(); app.processEvents()
+    # (2) buttons: the four are gone; Commands / Add file remain.
+    from PyQt6.QtWidgets import QPushButton
+    texts = {b.text() for b in window.findChildren(QPushButton)}
+    for gone in ('Providers', 'Audio', 'Customize', 'Pet'):
+        assert gone not in texts, gone
+    assert 'Commands' in texts and 'Add file' in texts
+    # (1) the track label is capped at two lines, full title kept.
+    assert window.track.toolTip() == long_title
+    assert window.track.height() <= \
+        window.track.fontMetrics().lineSpacing() * 2 + 8
+    assert len(window.track.text()) < len(long_title)
+    # (1) no two left-column widgets overlap (mapped into the
+    # card's coordinates; the column may extend past the visible
+    # card — that is the scroll area doing its job, not overlap).
+    from PyQt6.QtCore import QPoint, QRect
+    widgets = [window.plaque_engine, window.plaque_state,
+               window.plaque_tasks, window.cpu, window.mem, window.net,
+               window.power, window.subsystems,
+               window.now_playing_title, window.track,
+               window.remote_button]
+    card = window.left_card
+    rects = [QRect(w.mapTo(card, QPoint(0, 0)), w.size())
+             for w in widgets]
+    for i, a in enumerate(rects):
+        for b in rects[i + 1:]:
+            assert not a.intersects(b), (a, b)
     window.close()
 
 

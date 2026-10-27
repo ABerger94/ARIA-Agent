@@ -131,6 +131,31 @@ def create_dashboard(callbacks):
             layout.addLayout(head)
             body = QSplitter(Qt.Orientation.Horizontal); layout.addWidget(body, 1)
             left, ll = self.card('SYSTEM MONITOR'); left.setMinimumWidth(220); left.setMaximumWidth(290)
+            self.left_card = left
+            # The whole column lives in ONE scroll area (Alek,
+            # 2026-10-27, second report): the stack's minimum height
+            # (3 plaques + 3 bars + subsystems + NOW PLAYING + volume
+            # + remote) exceeds the card at smaller heights / higher
+            # DPI, and a plain QVBoxLayout answers that overflow by
+            # OVERLAPPING its children — the NOW PLAYING / Spotify
+            # text painted over the subsystems and nothing was
+            # readable. Inside a scroll area the content always lays
+            # out at its full height: everything stays reachable and
+            # nothing can ever overlap; at full height it looks
+            # exactly as before.
+            self.left_scroll = QScrollArea()
+            self.left_scroll.setWidgetResizable(True)
+            self.left_scroll.setFrameShape(QFrame.Shape.NoFrame)
+            self.left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.left_scroll.setStyleSheet('QScrollArea { background: transparent; border: none; }')
+            self.left_content = QWidget()
+            self.left_content.setStyleSheet('background: transparent;')
+            _ll_inner = QVBoxLayout(self.left_content)
+            _ll_inner.setContentsMargins(0, 0, 0, 0)
+            _ll_inner.setSpacing(8)
+            self.left_scroll.setWidget(self.left_content)
+            ll.addWidget(self.left_scroll, 1)
+            ll = _ll_inner
             self.plaque_engine = StatusPlaque('ENGINE'); ll.addWidget(self.plaque_engine)
             self.plaque_state = StatusPlaque('STATE'); ll.addWidget(self.plaque_state)
             self.plaque_tasks = StatusPlaque('TASKS'); ll.addWidget(self.plaque_tasks)
@@ -139,28 +164,27 @@ def create_dashboard(callbacks):
             self.net = MetricBar('NET'); ll.addWidget(self.net)
             self.power = QLabel(); ll.addWidget(self.power)
             sub_title = QLabel('SUBSYSTEMS'); sub_title.setObjectName('title'); ll.addWidget(sub_title)
-            # One row per subsystem inside a scroll area (Alek,
-            # 2026-10-27: the old single wrapped QLabel was crushed
-            # by the column's fixed contents — bottom subsystems were
-            # clipped and never showed). Rows never wrap or clip; when
-            # vertical space runs out the list scrolls instead, and
-            # the NOW PLAYING block below always stays visible.
+            # One row per subsystem (Alek, 2026-10-27: the old
+            # single wrapped QLabel was crushed by the column's
+            # fixed contents — bottom subsystems were clipped and
+            # never showed). Rows never wrap or clip, and the column
+            # scroll area above guarantees they are all reachable.
             self.subsystems = QWidget()
             self._subsystems_layout = QVBoxLayout(self.subsystems)
             self._subsystems_layout.setContentsMargins(0, 0, 0, 0)
             self._subsystems_layout.setSpacing(3)
             self._subsystems_layout.addStretch()
             self._subsystem_rows = []
-            self.subsystems_scroll = QScrollArea()
-            self.subsystems_scroll.setWidgetResizable(True)
-            self.subsystems_scroll.setWidget(self.subsystems)
-            self.subsystems_scroll.setFrameShape(QFrame.Shape.NoFrame)
-            self.subsystems_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            self.subsystems_scroll.setStyleSheet('QScrollArea { background: transparent; border: none; }')
-            self.subsystems_scroll.setMinimumHeight(96)
-            ll.addWidget(self.subsystems_scroll, 1)
-            title = QLabel('NOW PLAYING'); title.setObjectName('title'); ll.addWidget(title)
-            self.track = QLabel('Spotify is not running'); self.track.setWordWrap(True); ll.addWidget(self.track)
+            ll.addWidget(self.subsystems)
+            self.now_playing_title = QLabel('NOW PLAYING'); self.now_playing_title.setObjectName('title'); ll.addWidget(self.now_playing_title)
+            self.track = QLabel('Spotify is not running'); self.track.setWordWrap(True)
+            # Two lines, ever (Alek, 2026-10-27: a long Spotify title
+            # wrapped unbounded, the column overflowed, and the NOW
+            # PLAYING text overran the subsystems). The refresh elides
+            # to fit these two lines; the full title is the tooltip.
+            self.track.setMaximumHeight(
+                self.track.fontMetrics().lineSpacing() * 2 + 6)
+            ll.addWidget(self.track)
             media = QHBoxLayout()
             for name, action in [('Prev', 'previous'), ('Play', 'play_pause'), ('Next', 'next')]:
                 b = QPushButton(name); b.clicked.connect(lambda checked=False, a=action: hud._dispatch_spotify_action(a)); media.addWidget(b)
@@ -168,7 +192,8 @@ def create_dashboard(callbacks):
             ll.addWidget(QLabel('SYSTEM VOLUME'))
             self.volume = QSlider(Qt.Orientation.Horizontal); self.volume.setRange(0, 100)
             self.volume.sliderMoved.connect(lambda value: hud.set_hud_volume(value / 100)); ll.addWidget(self.volume)
-            remote = QPushButton('REMOTE CONTROL'); remote.setObjectName('primary'); remote.clicked.connect(self.open_remote); ll.addWidget(remote)
+            self.remote_button = QPushButton('REMOTE CONTROL'); self.remote_button.setObjectName('primary'); self.remote_button.clicked.connect(self.open_remote); ll.addWidget(self.remote_button)
+            ll.addStretch()
             body.addWidget(left)
             center, cl = self.card('ARIA / LIVE')
             self.face = ResonanceOrb(); cl.addWidget(self.face, 1)
@@ -235,7 +260,10 @@ def create_dashboard(callbacks):
             self.news_result.connect(self._on_news_result)
             self.tabs.currentChanged.connect(self._on_tab_changed)
             row = QHBoxLayout()
-            for text, fn in [('Commands', self.commands), ('Add file', self.browse_file), ('Providers', self.open_providers), ('Audio', self.open_audio), ('Customize', self.open_customize), ('Pet', self.toggle_pet)]:
+            # Providers / Audio / Customize / Pet used to sit here too;
+            # they live in Settings now (Alek, 2026-10-27) — the
+            # open_* / toggle_pet methods stay for Settings' use.
+            for text, fn in [('Commands', self.commands), ('Add file', self.browse_file)]:
                 b = QPushButton(text); b.clicked.connect(fn); row.addWidget(b)
             rl.addLayout(row); body.addWidget(right); body.setSizes([250, 560, 550])
             command = QHBoxLayout()
@@ -755,7 +783,14 @@ def create_dashboard(callbacks):
             self.voice.setText('Voice on' if data['voice_enabled'] else 'Voice off')
             self.whisper.setText('Whisper on' if hud.WHISPER_MODE else 'Whisper off')
             if not self.volume.isSliderDown(): self.volume.setValue(int(data['volume'] * 100))
-            music = frame.spotify_data(); self.track.setText(music.get('title') or music.get('track') or 'Spotify is not running')
+            music = frame.spotify_data(); _track_full = music.get('title') or music.get('track') or 'Spotify is not running'
+            self.track.setToolTip(_track_full)
+            # Elide to the label's two-line cap (see __init__): the
+            # raw title used to wrap unbounded and overrun the column.
+            _fm = self.track.fontMetrics()
+            self.track.setText(_fm.elidedText(
+                _track_full, Qt.TextElideMode.ElideRight,
+                max(self.track.width(), 180) * 2))
             chat = '\n\n'.join(f'{ts}  {sender}\n{text}' for ts, sender, text in frame.chat_entries(100))
             if chat != self._last_chat:
                 self._last_chat = chat; self.views['Conversation'].setPlainText(chat or 'Your conversation with ARIA appears here.'); self.views['Conversation'].verticalScrollBar().setValue(self.views['Conversation'].verticalScrollBar().maximum())
