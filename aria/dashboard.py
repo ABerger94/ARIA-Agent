@@ -104,7 +104,13 @@ def create_dashboard(callbacks):
             self.setWindowTitle('A.R.I.A. | Command Center')
             self.resize(1440, 900)
             self.setMinimumSize(1080, 720)
-            self.apply_accent(_accent0 or config.get_setting("ui_accent", "#54d9e8"))
+            _init_accent = _accent0
+            if not _init_accent:
+                try:
+                    _init_accent = config.get_setting("ui_accent", "#54d9e8")
+                except Exception:
+                    _init_accent = "#54d9e8"
+            self.apply_accent(_init_accent)
             self.setAcceptDrops(True)
             self._loading = set()
             self._email_request = 0
