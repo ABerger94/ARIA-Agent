@@ -624,9 +624,13 @@ def _note_provider_failed(name: str, last_error: Optional[str] = None) -> None:
     # payload would fail everywhere, so cooling the provider down
     # would only hide the road. (Matches the no-quarantine rule for
     # 400 in OpenAICompatProvider.call.)
-    if last_error and last_error.startswith("HTTP 400"):
+    # Duration comes from the failure class (Gap fill 5; the class
+    # table lives with the per-model axis below — it is defined
+    # later in the module, resolved at call time).
+    cls = _classify_error(last_error)
+    if cls == "bad_request":
         return
-    _PROVIDER_COOLDOWN.mark_failed(name)
+    _PROVIDER_COOLDOWN.mark_failed(name, _FAILURE_DURATIONS[cls][0])
 
 
 def _note_provider_ok(name: str) -> None:
@@ -637,6 +641,70 @@ def clear_provider_cooldown() -> None:
     """Reset the provider cooldown registry (used by tests; also handy
     after swapping a key/model and wanting an immediate retry)."""
     _PROVIDER_COOLDOWN.clear()
+
+
+# --- Per-(provider, model) cooldown + failure classes (Gap fill 5) ---
+# The A5 registry above cools a whole PROVIDER for a flat 60 s.
+# Two gaps that left money on the table: (1) a 429 is usually a
+# per-MODEL quota — cooling all of Gemini because one model is
+# rate-limited throws away the models that would answer; (2) a
+# flat 60 s treats an auth failure (won't heal in a minute) the
+# same as a network blip (heals in seconds). This second axis
+# keys the shared registry by 'provider:model' and picks the
+# duration from the failure class read off last_error.
+# The HTTP-400 carve-out applies on BOTH axes (our malformed
+# payload is not a sick provider OR a sick model).
+_MODEL_COOLDOWN = CooldownRegistry(PROVIDER_COOLDOWN_S)
+
+# failure class -> (provider-axis seconds, model-axis seconds)
+_FAILURE_DURATIONS = {
+    "rate_limit": (60, 300),    # per-model quota: park the model long
+    "auth": (300, 300),         # key/permission: won't heal in a minute
+    "server": (60, 60),         # 5xx
+    "transient": (30, 30),      # network drop, timeout, raised, empty
+}
+
+
+def _classify_error(last_error: Optional[str]) -> str:
+    """Bucket a provider.last_error string into a failure class.
+    Anything unrecognized is 'transient' (shortest cooldown) —
+    unknown failures shouldn't park things for long."""
+    e = (last_error or "").strip()
+    if e.startswith("HTTP 400"):
+        return "bad_request"
+    if e.startswith("HTTP 429"):
+        return "rate_limit"
+    if e.startswith("HTTP 401") or e.startswith("HTTP 403"):
+        return "auth"
+    if e.startswith("HTTP 5"):
+        return "server"
+    return "transient"
+
+
+def _pair_key(name: str, model: Optional[str]) -> str:
+    return f"{name}:{(model or '').strip()}"
+
+
+def _model_in_cooldown(name: str, model: Optional[str]) -> bool:
+    return _MODEL_COOLDOWN.in_cooldown(_pair_key(name, model))
+
+
+def _note_model_failed(name: str, model: Optional[str],
+                       last_error: Optional[str] = None) -> None:
+    cls = _classify_error(last_error)
+    if cls == "bad_request":
+        return
+    _MODEL_COOLDOWN.mark_failed(
+        _pair_key(name, model), _FAILURE_DURATIONS[cls][1])
+
+
+def _note_model_ok(name: str, model: Optional[str]) -> None:
+    _MODEL_COOLDOWN.mark_ok(_pair_key(name, model))
+
+
+def clear_model_cooldown() -> None:
+    """Reset the per-(provider, model) registry (tests; key swaps)."""
+    _MODEL_COOLDOWN.clear()
 
 
 def chain_all_quarantined() -> bool:
@@ -682,6 +750,8 @@ def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
         add_log(f"provider {provider.name}: role model '{model_override}' failed "
                 f"({provider.last_error}); retrying default model (key NOT quarantined)")
         _note_role_model_failed(model_override)
+        _note_model_failed(provider.name, model_override,
+                           provider.last_error)
         provider.model = saved
         try:
             data = provider.call(
@@ -729,6 +799,20 @@ def provider_call(
                   and p.is_available()]
     ignore_cooldowns = bool(candidates) and all(
         _provider_in_cooldown(p.name) for p in candidates)
+
+    def _eff_model(p) -> Optional[str]:
+        # The model this walk would actually attempt on p: the
+        # role override applies to ollama_cloud only (mirrors
+        # _attempt_provider_call).
+        if model_override and p.name == "ollama_cloud":
+            return model_override
+        return getattr(p, "model", None)
+
+    # Gap fill 5: the per-(provider, model) axis gets the same
+    # escape hatch — skip cooling pairs unless EVERY candidate's
+    # pair is cooling, in which case walk them anyway.
+    ignore_pairs = bool(candidates) and all(
+        _model_in_cooldown(p.name, _eff_model(p)) for p in candidates)
     for provider in chain:
         if only_provider and provider.name != only_provider:
             continue
@@ -736,6 +820,11 @@ def provider_call(
             continue
         if not ignore_cooldowns and _provider_in_cooldown(provider.name):
             add_log(f"provider {provider.name} in failure cooldown, skipping")
+            continue
+        if not ignore_pairs and _model_in_cooldown(
+                provider.name, _eff_model(provider)):
+            add_log(f"model {_eff_model(provider)} on provider "
+                    f"{provider.name} in failure cooldown, skipping")
             continue
         _note_call(provider.name)
         try:
@@ -749,6 +838,7 @@ def provider_call(
             data = None
         if data and data.get("candidates"):
             _note_provider_ok(provider.name)
+            _note_model_ok(provider.name, _eff_model(provider))
             if ACTIVE_PROVIDER != provider.name:
                 note = " (fallback)"
                 add_log(f"provider now serving: {provider.name}{note}")
@@ -757,6 +847,8 @@ def provider_call(
         _note_failover(provider.name)
         _note_provider_failed(provider.name,
                               getattr(provider, "last_error", None))
+        _note_model_failed(provider.name, _eff_model(provider),
+                           getattr(provider, "last_error", None))
         add_log(f"provider {provider.name} returned nothing, trying next")
     add_log("provider_call: chain exhausted, all providers down")
     return None
