@@ -31,16 +31,18 @@ QSlider::handle:horizontal { background: #66dbe7; width: 12px; margin: -5px 0; b
 
 
 def create_dashboard(callbacks):
-    from PyQt6.QtCore import Qt, pyqtSignal
+    from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
     from PyQt6.QtGui import QImage, QPixmap
     from PyQt6.QtWidgets import (QMainWindow, QWidget, QFrame, QLabel, QPushButton,
                                 QVBoxLayout, QHBoxLayout, QSplitter, QTabWidget,
                                 QTextBrowser, QLineEdit, QProgressBar, QSlider,
-                                QFileDialog, QDialog, QApplication)
+                                QFileDialog, QDialog, QApplication, QListWidget, QListWidgetItem)
     from aria import frame, hud, config
+    from aria.resonance import ResonanceOrb
 
     class Dashboard(QMainWindow):
-        panel_result = pyqtSignal(str, str)
+        panel_result = pyqtSignal(str, object)
+        email_result = pyqtSignal(int, object)
 
         def __init__(self):
             super().__init__()
@@ -50,6 +52,7 @@ def create_dashboard(callbacks):
             self.setStyleSheet(STYLE)
             self.setAcceptDrops(True)
             self._loading = set()
+            self._email_request = 0
             self._last_chat = None
             self._last_activity = None
             self._last_refresh = 0.0
@@ -79,9 +82,10 @@ def create_dashboard(callbacks):
             remote = QPushButton('REMOTE CONTROL'); remote.setObjectName('primary'); remote.clicked.connect(self.open_remote); ll.addWidget(remote)
             body.addWidget(left)
             center, cl = self.card('ARIA / LIVE')
-            self.face = QLabel(); self.face.setMinimumSize(320, 380); self.face.setAlignment(Qt.AlignmentFlag.AlignCenter); cl.addWidget(self.face, 1)
+            self.face = ResonanceOrb(); cl.addWidget(self.face, 1)
+            self._last_orb_publish = 0.0
             self.state = QLabel('IDLE'); self.state.setAlignment(Qt.AlignmentFlag.AlignCenter); self.state.setObjectName('brand'); cl.addWidget(self.state)
-            self.subtitle = QLabel(); self.subtitle.setWordWrap(True); self.subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter); cl.addWidget(self.subtitle)
+            self.subtitle = QLabel(); self.subtitle.setTextFormat(Qt.TextFormat.PlainText); self.subtitle.setWordWrap(True); self.subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter); cl.addWidget(self.subtitle)
             controls = QHBoxLayout()
             self.mic = QPushButton('Hold to talk'); self.mic.pressed.connect(callbacks.ptt_press); self.mic.released.connect(callbacks.ptt_release); controls.addWidget(self.mic)
             self.voice = QPushButton('Voice on'); self.voice.clicked.connect(frame.toggle_voice); controls.addWidget(self.voice)
@@ -93,7 +97,20 @@ def create_dashboard(callbacks):
             for name in ('Conversation', 'Inbox', 'Calendar', 'Tasks', 'Activity'):
                 page = QWidget(); pl = QVBoxLayout(page)
                 view = QTextBrowser(); view.setOpenExternalLinks(False); self.views[name] = view
-                if name in ('Inbox', 'Calendar'):
+                if name == 'Inbox':
+                    toolbar = QHBoxLayout()
+                    self.mail_summary = QLabel('Your inbox'); toolbar.addWidget(self.mail_summary, 1)
+                    self.mail_refresh = QPushButton('Refresh'); self.mail_refresh.clicked.connect(lambda: self.load_panel('Inbox')); toolbar.addWidget(self.mail_refresh)
+                    pl.addLayout(toolbar)
+                    self.mail_search = QLineEdit(); self.mail_search.setPlaceholderText('Filter sender or subject…'); pl.addWidget(self.mail_search)
+                    self.mail_search.textChanged.connect(self.filter_mail)
+                    self.mail_list = QListWidget(); self.mail_list.setMinimumHeight(160)
+                    self.mail_list.currentItemChanged.connect(self.open_mail)
+                    mail_split = QSplitter(Qt.Orientation.Vertical); mail_split.addWidget(self.mail_list); mail_split.addWidget(view); mail_split.setSizes([320, 260]); pl.addWidget(mail_split, 1)
+                    view.setPlainText('Refresh your inbox, then select a message to read it. Messages stay unread until you mark them read in your mail app.')
+                    self.tabs.addTab(page, name)
+                    continue
+                if name == 'Calendar':
                     btn = QPushButton('Refresh ' + name.lower()); btn.clicked.connect(lambda checked=False, n=name: self.load_panel(n)); pl.addWidget(btn)
                     view.setPlainText('Select Refresh to load your connected ' + name.lower() + '.')
                 pl.addWidget(view); self.tabs.addTab(page, name)
@@ -108,6 +125,7 @@ def create_dashboard(callbacks):
             send = QPushButton('Send directive'); send.setObjectName('primary'); send.clicked.connect(self.submit); command.addWidget(send)
             layout.addLayout(command)
             self.panel_result.connect(self.panel_finished)
+            self.email_result.connect(self.mail_finished)
             self.entry.setFocus()
 
         def card(self, title):
@@ -139,18 +157,84 @@ def create_dashboard(callbacks):
 
         def load_panel(self, name):
             if name in self._loading: return
-            self._loading.add(name); self.views[name].setPlainText('Loading…')
+            self._loading.add(name)
+            if name == 'Inbox':
+                self._email_request += 1
+                self.mail_summary.setText('Refreshing inbox…'); self.mail_refresh.setEnabled(False)
+            else:
+                self.views[name].setPlainText('Loading…')
             def load():
                 try:
-                    from aria.tools import builtins
-                    result = builtins.tool_read_email(limit=15) if name == 'Inbox' else builtins.tool_check_calendar(days=7)
+                    if name == 'Inbox':
+                        from aria.mailview import fetch_messages
+                        result = fetch_messages(limit=30)
+                    else:
+                        from aria.tools import builtins
+                        result = builtins.tool_check_calendar(days=7)
                 except Exception as exc:
                     result = 'Could not load ' + name.lower() + ': ' + str(exc)
-                self.panel_result.emit(name, config.redact(str(result)))
+                self.panel_result.emit(name, result if isinstance(result, dict) else config.redact(str(result)))
             threading.Thread(target=load, daemon=True).start()
 
         def panel_finished(self, name, result):
-            self._loading.discard(name); self.views[name].setPlainText(result)
+            self._loading.discard(name)
+            if name != 'Inbox' or not isinstance(result, dict):
+                self.views[name].setPlainText(str(result))
+                if name == 'Inbox': self.mail_refresh.setEnabled(True)
+                return
+            self.mail_refresh.setEnabled(True)
+            if not result.get('ok'):
+                self.mail_summary.setText('Inbox unavailable')
+                self.views[name].setPlainText(result.get('error', 'Could not load inbox.'))
+                return
+            self._email_request += 1
+            self.mail_list.clear()
+            rows = result.get('messages', [])
+            for row in rows:
+                date = self.mail_date(row.get('date', ''))
+                unread = 'UNREAD  ' if row.get('unread') else ''
+                item = QListWidgetItem(f"{unread}{row['sender']}  ·  {date}\n{row['subject']}")
+                item.setData(Qt.ItemDataRole.UserRole, row)
+                item.setSizeHint(QSize(0, 70)); self.mail_list.addItem(item)
+            self.mail_summary.setText(f"{len(rows)} messages · {sum(bool(r.get('unread')) for r in rows)} unread in this list")
+            self.views[name].setPlainText('Select a message to read it.' if rows else 'Your inbox is empty.')
+            self.filter_mail(self.mail_search.text())
+
+        def mail_date(self, value):
+            try:
+                return datetime.fromisoformat(value).astimezone().strftime('%b %d, %I:%M %p')
+            except (ValueError, TypeError):
+                return ''
+
+        def filter_mail(self, query):
+            for i in range(self.mail_list.count()):
+                item = self.mail_list.item(i)
+                item.setHidden(query.casefold() not in item.text().casefold())
+
+        def open_mail(self, current, previous=None):
+            self._email_request += 1
+            if current is None: return
+            row = current.data(Qt.ItemDataRole.UserRole)
+            request_id = self._email_request
+            self.views['Inbox'].setPlainText('Opening message…')
+            def load():
+                try:
+                    from aria.mailview import fetch_message
+                    result = fetch_message(row['uid'])
+                except Exception as exc:
+                    result = {'ok': False, 'error': str(exc)}
+                self.email_result.emit(request_id, result)
+            threading.Thread(target=load, daemon=True).start()
+
+        def mail_finished(self, request_id, result):
+            if request_id != self._email_request: return
+            if not result.get('ok'):
+                self.views['Inbox'].setPlainText(result.get('error', 'Could not open message.')); return
+            row = result['message']
+            text = (f"{row['subject']}\n\n{row['sender']} <{row['address']}>\n"
+                    f"{self.mail_date(row['date'])}\n\n{row['body']}")
+            if row.get('truncated'): text += '\n\n[Large message: preview truncated]'
+            self.views['Inbox'].setPlainText(text)
 
         def commands(self):
             from aria.tools.schemas import COMMAND_GUIDE
@@ -169,6 +253,7 @@ def create_dashboard(callbacks):
             qr = QLabel(); qr.setAlignment(Qt.AlignmentFlag.AlignCenter); lay.addWidget(qr)
             url = QLineEdit(); url.setReadOnly(True); lay.addWidget(url)
             note = QLabel(); note.setWordWrap(True); lay.addWidget(note)
+            connected = QLabel('Waiting for your phone…'); lay.addWidget(connected)
             def refresh():
                 try:
                     if bridge._BRIDGE_SERVER is None:
@@ -179,22 +264,48 @@ def create_dashboard(callbacks):
                     raw = image.tobytes(); qimg = QImage(raw, image.width, image.height, image.width * 3, QImage.Format.Format_RGB888).copy()
                     qr.setPixmap(QPixmap.fromImage(qimg).scaled(280, 280, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation))
                     url.setText(link)
-                    note.setText('This QR code works once and expires after 5 minutes. Keep it private.\nOn first connection, your browser may ask you to trust the laptop’s local HTTPS certificate. If the page cannot load, check Windows Firewall and Wi-Fi client isolation.')
+                    note.setText('Scan to connect automatically. No token entry. This code expires after 5 minutes. Your phone stays paired for 30 days.\nOn first connection, your browser may ask you to trust the laptop’s local HTTPS certificate. If the page cannot load, check Windows Firewall and Wi-Fi client isolation.')
                 except Exception as exc:
                     qr.clear(); url.clear(); note.setText(str(exc))
             refresh()
-            row = QHBoxLayout(); retry = QPushButton('Refresh'); retry.clicked.connect(refresh); row.addWidget(retry)
+            row = QHBoxLayout(); retry = QPushButton('Refresh QR'); retry.clicked.connect(refresh); row.addWidget(retry)
             copy = QPushButton('Copy connection link'); copy.clicked.connect(lambda: QApplication.clipboard().setText(url.text())); row.addWidget(copy); lay.addLayout(row)
+            forget = QPushButton('Disconnect remembered phones')
+            def revoke():
+                try:
+                    bridge.revoke_phone_sessions(); refresh()
+                    connected.setText('Phones disconnected. Scan the new code to reconnect.')
+                except OSError as exc:
+                    connected.setText('Could not disconnect phones: ' + str(exc))
+            forget.clicked.connect(revoke); lay.addWidget(forget)
+            def connection_tick():
+                status = bridge.phone_connection_status()
+                connected.setText('Phone connected' if status['recent_connection'] else
+                                  f"{status['paired_devices']} remembered phone(s) · waiting for connection")
+            timer = QTimer(dialog); timer.timeout.connect(connection_tick); timer.start(1000)
             dialog.exec()
 
         def render_once(self):
             if not callbacks.is_running(): self.close(); return
-            canvas = callbacks.render_frame(); callbacks.housekeeping()
-            # Existing rendering continues publishing phone face frames. Only the
-            # avatar/waveform region is displayed in the native desktop layout.
-            crop = canvas[66:500, 340:940].copy()
-            image = QImage(crop.data, crop.shape[1], crop.shape[0], int(crop.strides[0]), QImage.Format.Format_BGR888).copy()
-            self.face.setPixmap(QPixmap.fromImage(image).scaled(self.face.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            callbacks.housekeeping()
+            from aria import audio_levels, speech
+            state = str(hud.CURRENT_STATE)
+            mic = getattr(hud, 'MIC_LEVEL', 0.0) if time.time() - getattr(hud, 'MIC_LEVEL_AT', 0.0) < .3 else 0.0
+            level = audio_levels.current() if state == 'speaking' else mic
+            self.face.advance(state, level, not getattr(speech, 'VOICE_ENABLED', True))
+            # Publish the same orb to the phone; the old pixel renderer is not
+            # run in the native dashboard. Limit JPEG production to 8 Hz.
+            if time.monotonic() - self._last_orb_publish >= .125:
+                self._last_orb_publish = time.monotonic()
+                try:
+                    import numpy as np
+                    from aria.vision import publish_face_frame
+                    image = self.face.grab().toImage().convertToFormat(QImage.Format.Format_BGR888)
+                    ptr = image.bits(); ptr.setsize(image.sizeInBytes())
+                    pixels = np.frombuffer(ptr, dtype=np.uint8).reshape(image.height(), image.bytesPerLine())[:, :image.width() * 3].reshape(image.height(), image.width(), 3).copy()
+                    publish_face_frame(pixels, (0, 0, image.width(), image.height()))
+                except Exception as exc:
+                    config.log_silent('dashboard.orb_publish', exc)
             if time.monotonic() - self._last_refresh < 0.8: return
             self._last_refresh = time.monotonic()
             data = frame.strip_data()

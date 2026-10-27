@@ -603,12 +603,19 @@ class SpeechManager:
                     try:
                         if hasattr(audio_buf, "seek"):
                             audio_buf.seek(0)
+                        from aria import audio_levels
+                        levels = audio_levels.mp3_envelope(audio_buf.getvalue(), pygame)
                         pygame.mixer.music.load(audio_buf)
                         pygame.mixer.music.play()
+                        playback_started = time.monotonic()
                         deadline = time.time() + max(10, len(text) * 0.15)
                         while pygame.mixer.music.get_busy() and time.time() < deadline and not self.speech_stop.is_set():
+                            index = int((time.monotonic() - playback_started) / .04)
+                            audio_levels.publish(levels[index] if index < len(levels) else 0.0)
                             time.sleep(0.04)
                     finally:
+                        from aria import audio_levels
+                        audio_levels.publish(0.0)
                         try:
                             pygame.mixer.music.unload()
                         except Exception as _e_silent:

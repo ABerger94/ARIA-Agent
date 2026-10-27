@@ -30,6 +30,7 @@ from aria.memory import (
     memory_save, spine_append, add_log, DB_PATH, DB_LOCK
 )
 from aria import config as _config_silent
+from aria.mailview import decode_mail_header
 
 try:
     from duckduckgo_search import DDGS
@@ -562,9 +563,9 @@ def tool_read_email(query: str = "", limit: int = 10, unread_only: bool = False,
             body = _imap_text_part(msg).strip()
             if len(body) > 4000:
                 body = body[:4000] + "\n[...truncated...]"
-            return (f"From: {msg.get('From', '?')}\n"
+            return (f"From: {decode_mail_header(msg.get('From', '?'))}\n"
                     f"Date: {msg.get('Date', '?')}\n"
-                    f"Subject: {msg.get('Subject', '(no subject)')}\n\n{body or '[no text body]'}")
+                    f"Subject: {decode_mail_header(msg.get('Subject', '(no subject)'))}\n\n{body or '[no text body]'}")
 
         criteria = []
         if unread_only:
@@ -597,8 +598,8 @@ def tool_read_email(query: str = "", limit: int = 10, unread_only: bool = False,
                 continue
             raw = data[0][1] if isinstance(data[0], tuple) else data[0]
             h = email.message_from_bytes(raw)
-            frm = (h.get("From") or "?").replace("\n", " ")[:60]
-            subj = (h.get("Subject") or "(no subject)").replace("\n", " ")[:80]
+            frm = decode_mail_header(h.get("From") or "?")[:60]
+            subj = decode_mail_header(h.get("Subject") or "(no subject)")[:160]
             dt = (h.get("Date") or "?")[:31]
             lines.append(f"[uid={u}] {dt} | {frm} | \"{subj}\"")
         add_log(f"Email read: {len(lines)} message(s) listed")

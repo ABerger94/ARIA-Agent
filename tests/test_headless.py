@@ -225,7 +225,9 @@ def test_bridge_auth():
     h.path = '/'
     assert h._authed() is False
     c = h._bridge_cookie()
-    assert 'HttpOnly' in c and 'SameSite=Strict' in c and c.startswith('aria_bridge_token='), c
+    assert 'HttpOnly' in c and 'SameSite=Lax' in c and 'Max-Age=2592000' in c and c.startswith('aria_phone_session='), c
+    assert tok not in c
+    assert bridge.phone_sessions().valid(c.split(';', 1)[0].split('=', 1)[1])
     assert '?token=' not in bridge.BRIDGE_HTML, 'media URLs must not carry the token'
     assert 'token' in bridge.BRIDGE_LOGIN_HTML.lower(), 'login page must ask for the token'
 
@@ -337,9 +339,10 @@ def test_body_protocol():
         assert 'publish_phone_frame' in vis and 'BridgeCamera' in vis
         assert 'describe_phone_view' in vis and 'get_phone_frame_status' in vis
         brg = open(os.path.join(PKG, 'bridge.py')).read()
-        assert '/api/camframe' in brg and 'facingMode' in brg and ('Camera: OFF' in brg)
+        phone = open(os.path.join(PKG, 'assets', 'phone.html')).read()
+        assert '/api/camframe' in brg and 'facingMode' in phone and 'Camera: OFF' in phone
         assert '/phone_cam.mjpg' in brg and '/api/camstatus' in brg and ('/api/look' in brg)
-        assert 'mode-eyes' in brg and 'mode-full' in brg and ('facemode' in brg)
+        assert 'mode-eyes' in phone and 'mode-full' in phone and 'facemode' in phone
         import ast
         tree = ast.parse(vis)
         fn_src = next((ast.get_source_segment(vis, n) for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == '_body_camera_source'), None)

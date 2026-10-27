@@ -285,8 +285,8 @@ def test_e_server_auth_flow():
         assert status == 200 and b"Bridge - Login" in body, status
         # The advertised ?token= form exchanges for the auth cookie.
         status, headers, _b = req(f"/?token={_TOKEN}")
-        assert status == 302, status
-        assert "aria_bridge_token=" in headers.get("Set-Cookie", "")
+        assert status == 303, status
+        assert "aria_phone_session=" in headers.get("Set-Cookie", "")
         # Authed API call works (header auth).
         status, _h, body = req("/api/log", {"X-Bridge-Token": _TOKEN})
         assert status == 200 and body == b"[]", (status, body)
@@ -338,7 +338,7 @@ def test_pairing_http_cookie_exchange(monkeypatch):
     conn = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=3)
     try:
         conn.request('GET', path); response = conn.getresponse()
-        assert response.status == 302
+        assert response.status == 303
         cookie = response.getheader('Set-Cookie').split(';', 1)[0]
         assert response.getheader('Cache-Control') == 'no-store'
         response.read()
@@ -348,3 +348,36 @@ def test_pairing_http_cookie_exchange(monkeypatch):
         assert response.status == 401; response.read()
     finally:
         conn.close(); server.shutdown(); server.server_close(); thread.join(timeout=2)
+
+
+def test_scan_opens_app_and_remembers_phone(monkeypatch):
+    import urllib.request
+    import http.cookiejar
+    from http.server import ThreadingHTTPServer
+    _setup_bridge()
+    server = ThreadingHTTPServer(('127.0.0.1', 0), bridge.BridgeHandler)
+    monkeypatch.setattr(bridge, '_BRIDGE_SERVER', server)
+    monkeypatch.setattr(bridge, '_BRIDGE_ACTUAL_SCHEME', 'http')
+    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+    base = f'http://127.0.0.1:{server.server_port}'
+    path = '/auto-login?pair=' + bridge.create_pairing_url().split('?pair=')[1]
+    jar = http.cookiejar.CookieJar()
+    browser = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    try:
+        with browser.open(base + path, timeout=3) as response:
+            assert response.url == base + '/'
+            assert b'<title>A.R.I.A. Bridge</title>' in response.read()
+        cookie = next(c for c in jar if c.name == 'aria_phone_session')
+        assert cookie.expires is not None and cookie.value != _TOKEN
+        # Restarting the session store and reopening the base URL requires no key.
+        monkeypatch.setattr(bridge, '_SESSION_STORE', None)
+        with browser.open(base + '/', timeout=3) as response:
+            assert b'<title>A.R.I.A. Bridge</title>' in response.read()
+        # A rescan from this phone reaches the app even though the key is spent.
+        with browser.open(base + path, timeout=3) as response:
+            assert b'<title>A.R.I.A. Bridge</title>' in response.read()
+        with browser.open(urllib.request.Request(base + '/api/logout', data=b''), timeout=3) as response:
+            assert b'Bridge - Login' in response.read()
+        assert not bridge.phone_sessions().valid(cookie.value)
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=2)
