@@ -440,7 +440,13 @@ class ResonanceOrb(QWidget):
             f = QFont("Courier New", fsz, QFont.Weight.Bold)
             f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, space)
             p.setFont(f)
-            p.setPen(QPen(blend(qcol(C.WHITE), 0.6 + 0.4 * min(1.0, amp * 2)), 1))
+            # The name is INK, not light (Alek, 2026-10-27): it
+            # sits on the bright core, where the old near-white
+            # washed out — near-black blue-grey instead. Not an
+            # accent-linked colour: it stays dark under every
+            # accent, by design.
+            p.setPen(QPen(blend(qcol('#0a111c'),
+                                0.82 + 0.18 * min(1.0, amp * 2)), 1))
             p.drawText(QRectF(cx - r, cy - fsz, r * 2, fsz * 2),
                        Qt.AlignmentFlag.AlignCenter, name)
 

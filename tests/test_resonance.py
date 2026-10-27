@@ -33,3 +33,25 @@ def test_measured_level_expires(monkeypatch):
     audio_levels.publish(.8); assert audio_levels.current() == .8
     now[0] += .3; assert audio_levels.current() == 0
     assert audio_levels.mp3_envelope(b'bad data', None) == []
+
+
+def test_orb_name_is_dark_ink_on_the_core():
+    # Alek, 2026-10-27: the A.R.I.A. name in the orb's centre
+    # is black / dark grey, not white — it sits on the bright
+    # core and the white washed out. Render the real orb and
+    # measure the glyph band: plenty of near-black pixels where
+    # the name is drawn, in the middle of a bright core.
+    app = QApplication.instance() or QApplication([])
+    orb = ResonanceOrb(); orb.resize(800, 800)
+    for _ in range(60):
+        orb.advance('idle', 0.0)
+    img = orb.grab().toImage()
+    cx, cy = 400, 400
+    dark = 0
+    for x in range(cx - 90, cx + 90, 2):
+        for y in range(cy - 16, cy + 16, 2):
+            c = img.pixelColor(x, y)
+            if c.red() < 45 and c.green() < 45 and c.blue() < 45:
+                dark += 1
+    assert dark > 40, dark
+    orb.close(); app.processEvents()
