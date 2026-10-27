@@ -194,7 +194,7 @@ def create_dashboard(callbacks):
             self.news_result.connect(self._on_news_result)
             self.tabs.currentChanged.connect(self._on_tab_changed)
             row = QHBoxLayout()
-            for text, fn in [('Commands', self.commands), ('Add file', self.browse_file), ('Providers', self.open_providers), ('Audio', self.open_audio), ('Customize', self.open_customize)]:
+            for text, fn in [('Commands', self.commands), ('Add file', self.browse_file), ('Providers', self.open_providers), ('Audio', self.open_audio), ('Customize', self.open_customize), ('Pet', self.toggle_pet)]:
                 b = QPushButton(text); b.clicked.connect(fn); row.addWidget(b)
             rl.addLayout(row); body.addWidget(right); body.setSizes([250, 560, 550])
             command = QHBoxLayout()
@@ -408,6 +408,32 @@ def create_dashboard(callbacks):
                                     else 0.0)
             self.views['News'].setHtml(html_text)
 
+        def toggle_pet(self):
+            """Show/hide the desktop pet (Port 7). Created lazily; the
+            pet mirrors the dashboard's voice state and follows the
+            saved centerpiece as its starting form."""
+            if getattr(self, '_pet', None) is None:
+                from aria.pet_window import PetWindow
+                self._pet = PetWindow(
+                    None, provider=self._voice_state,
+                    on_raise=self._raise_from_pet,
+                    on_exit=self._raise_from_pet)
+            if self._pet.isVisible():
+                self._pet.hide()
+            else:
+                self._pet.show_at_saved_pos()
+
+        def _raise_from_pet(self):
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+        def closeEvent(self, event):
+            pet = getattr(self, '_pet', None)
+            if pet is not None:
+                pet.hide()
+            super().closeEvent(event)
+
         def open_customize(self):
             from aria import ui_prefs
             from aria.customize_panel import build_customize_dialog
@@ -555,14 +581,19 @@ def create_dashboard(callbacks):
 
             threading.Thread(target=work, daemon=True).start()
 
-        def render_once(self):
-            if not callbacks.is_running(): self.close(); return
-            callbacks.housekeeping()
+        def _voice_state(self):
+            """(state, level, muted) — the render loop's triple, shared
+            with the desktop pet so both show the same ARIA."""
             from aria import audio_levels, speech
             state = str(hud.CURRENT_STATE)
             mic = getattr(hud, 'MIC_LEVEL', 0.0) if time.time() - getattr(hud, 'MIC_LEVEL_AT', 0.0) < .3 else 0.0
             level = audio_levels.current() if state == 'speaking' else mic
-            _muted = not getattr(speech, 'VOICE_ENABLED', True)
+            return state, level, not getattr(speech, 'VOICE_ENABLED', True)
+
+        def render_once(self):
+            if not callbacks.is_running(): self.close(); return
+            callbacks.housekeeping()
+            state, level, _muted = self._voice_state()
             if self.holo is not None and self.holo.isVisible():
                 self.holo.advance(state, level, _muted)
             else:

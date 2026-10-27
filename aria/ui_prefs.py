@@ -57,6 +57,38 @@ def set_centerpiece(name: str) -> str:
     return f"Centerpiece: {name}."
 
 
+def get_pet_pos():
+    """Saved desktop-pet position [x, y], or None (default corner)."""
+    try:
+        with open(_ui_file(), encoding="utf-8") as f:
+            pos = (json.load(f) or {}).get("pet_pos")
+        if (isinstance(pos, list) and len(pos) == 2
+                and all(isinstance(v, (int, float)) for v in pos)):
+            return [int(pos[0]), int(pos[1])]
+    except Exception:
+        pass
+    return None
+
+
+def set_pet_pos(pos) -> None:
+    """Persist the pet's parked position (soft-fail like the rest of
+    this module — a preference must never break the window)."""
+    try:
+        payload = {}
+        try:
+            with open(_ui_file(), encoding="utf-8") as f:
+                payload = json.load(f) or {}
+        except Exception:
+            payload = {}
+        payload["pet_pos"] = [int(pos[0]), int(pos[1])]
+        payload["updated"] = datetime.now(timezone.utc).isoformat()
+        os.makedirs(os.path.dirname(_ui_file()), exist_ok=True)
+        with open(_ui_file(), "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+    except Exception:
+        pass
+
+
 def set_accent(accent) -> str:
     """Persist the accent (None resets to the default palette)."""
     os.makedirs(os.path.dirname(_ui_file()), exist_ok=True)
