@@ -215,7 +215,8 @@ def _services_status_text(subsystems) -> str:
 
 def create_dashboard(callbacks):
     from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
-    from PyQt6.QtGui import QImage, QPixmap, QColor, QShortcut, QKeySequence
+    from PyQt6.QtGui import (QImage, QPixmap, QColor, QShortcut,
+                             QKeySequence, QIcon, QPainter, QPen)
     from PyQt6.QtWidgets import (QMainWindow, QWidget, QFrame, QLabel, QPushButton,
                                 QVBoxLayout, QHBoxLayout, QSplitter, QTabWidget,
                                 QTextBrowser, QLineEdit, QSlider, QGridLayout,
@@ -239,6 +240,31 @@ def create_dashboard(callbacks):
         from aria.holo_face import HoloFace
     except Exception:
         HoloFace = None
+
+    def _x_icon(size=28):
+        """A white × as PAINTED PIXELS (Alek, 2026-10-27).
+
+        Two text-glyph attempts failed on his Windows build —
+        the buttons showed as bare outlined squares. Root cause
+        found in the app stylesheet: the global QPushButton
+        rule carries padding 9px/12px, which on a 22px button
+        leaves ~0px for the glyph; the letter was clipped to
+        nothing no matter its colour. A QPainter-drawn icon has
+        no font, no glyph, and (with the buttons' padding
+        zeroed) nothing left to clip it."""
+        pm = QPixmap(size, size)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(QColor('#ffffff'))
+        pen.setWidth(max(3, size // 7))
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        m = size * 0.26
+        p.drawLine(int(m), int(m), int(size - m), int(size - m))
+        p.drawLine(int(size - m), int(m), int(m), int(size - m))
+        p.end()
+        return QIcon(pm)
 
     class VisionPip(QFrame):
         """On-demand picture-in-picture, Mark-LVI style (Alek,
@@ -267,7 +293,9 @@ def create_dashboard(callbacks):
             self.title.setObjectName('pipTitle')
             hdr.addWidget(self.title)
             hdr.addStretch()
-            close = QPushButton('×')
+            close = QPushButton('')
+            close.setIcon(_x_icon())
+            close.setIconSize(QSize(10, 10))
             close.setObjectName('pipClose')
             close.setFixedSize(16, 16)
             close.clicked.connect(self.hide)
@@ -481,12 +509,13 @@ def create_dashboard(callbacks):
             # top-right corner that hands the center back to
             # the normal centerpiece — the orb. A child of the
             # map widget, so it exists exactly when the map does.
-            self.map_close = QPushButton('×', self.mem_map_center)
+            self.map_close = QPushButton('', self.mem_map_center)
+            self.map_close.setIcon(_x_icon())
+            self.map_close.setIconSize(QSize(15, 15))
             self.map_close.setFixedSize(26, 26)
             self.map_close.setToolTip('Close memory map')
             self.map_close.setStyleSheet(
-                'background: rgba(10, 20, 30, 190); color: #ffffff;'
-                'font-weight: bold; font-size: 15px;'
+                'background: rgba(10, 20, 30, 190); padding: 0;'
                 'border: 1px solid #1b3042; border-radius: 4px;')
             self.map_close.clicked.connect(
                 lambda: self.set_centerpiece('orb'))
@@ -933,12 +962,13 @@ def create_dashboard(callbacks):
                 meta = QLabel(f"{r['category']} · {r['updated']}")
                 meta.setStyleSheet('color: #829aaf;')
                 row.addWidget(meta)
-                rm = QPushButton('×'); rm.setFixedSize(22, 22)
-                # White and bold, pinned inline (Alek, 2026-10-27:
-                # under the app style he could see only the
-                # button's outline — the glyph itself was lost).
-                # '×' (U+00D7) not '✕': every system font has it.
-                rm.setStyleSheet('color: #ffffff; font-weight: bold; font-size: 14px;')
+                rm = QPushButton(); rm.setFixedSize(22, 22)
+                rm.setIcon(_x_icon()); rm.setIconSize(QSize(13, 13))
+                rm.setToolTip('Forget this')
+                # Zero padding (Alek, 2026-10-27): the global
+                # button padding (9px/12px) left no room for any
+                # glyph on a 22px button — he saw bare outlines.
+                rm.setStyleSheet('padding: 0;')
                 rm.setToolTip('Forget this')
                 rm.clicked.connect(
                     lambda checked=False, k=r['key']: self._forget_memory(k))

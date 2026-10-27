@@ -186,11 +186,15 @@ def test_dashboard_memory_tab_lists_and_forgets(monkeypatch):
     assert 'Memory' in names
     assert window.mem_count.text().startswith('2 stored facts')
     rms = [b for b in window.mem_rows.findChildren(QPushButton)
-           if b.text() == '×']
+           if not b.icon().isNull()]
     assert len(rms) == 2
-    # The glyph is pinned WHITE inline (Alek, 2026-10-27: he
-    # could see only the buttons' outlines).
-    assert '#ffffff' in rms[0].styleSheet()
+    # The × is PAINTED PIXELS, not a font glyph (Alek,
+    # 2026-10-27: two glyph attempts rendered as bare
+    # outlines on his build — the global button padding left
+    # the letter no room). The icon's centre pixel is white.
+    px = rms[0].icon().pixmap(28, 28).toImage().pixelColor(14, 14)
+    assert px.alpha() > 200 and px.red() > 200 and px.blue() > 200
+    assert rms[0].styleSheet() == 'padding: 0;'
     rms[0].click(); app.processEvents()
     assert [r['key'] for r in store] == ['job']   # first row forgotten
     assert window.mem_count.text().startswith('1 stored facts')
