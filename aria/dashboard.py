@@ -369,7 +369,9 @@ def create_dashboard(callbacks):
             brand = QLabel('A.R.I.A.'); brand.setObjectName('brand'); head.addWidget(brand)
             head.addWidget(QLabel('ADAPTIVE ROBOTIC INTELLIGENCE AGENT')); head.addStretch()
             self.status = QPushButton('Connecting to services'); self.status.setFixedWidth(200); self.status.setFlat(True); self.status.setCursor(Qt.CursorShape.PointingHandCursor); self.status.setToolTip('Click for service details'); self.status.setStyleSheet('QPushButton { text-align: right; border: none; background: transparent; } QPushButton:hover { text-decoration: underline; }'); self.status.clicked.connect(self.show_services_dialog); head.addWidget(self.status)
-            self.clock = QLabel(); self.clock.setFixedWidth(190); head.addWidget(self.clock)
+            self.clock = QLabel(); self.clock.setFixedWidth(250)
+            self.clock.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            head.addWidget(self.clock)
             self.settings_button = QPushButton('Settings'); self.settings_button.clicked.connect(self.settings); head.addWidget(self.settings_button)
             layout.addLayout(head)
             body = QSplitter(Qt.Orientation.Horizontal); layout.addWidget(body, 1)
@@ -1465,7 +1467,18 @@ def create_dashboard(callbacks):
                 self._brief_stamp = briefing['generated_at']
                 self.views['Briefing'].setPlainText(report_text(briefing)); self.brief_speak.setEnabled(True)
             data = frame.strip_data()
-            self.clock.setText(datetime.now().strftime('%H:%M  |  %a %d %b'))
+            # The header clock (Alek, 2026-10-27): BIGGER, time
+            # and date in the theme accent — the | between them
+            # stays white, per his spec.
+            _accent = _current_accent() or DEFAULT_ACCENT
+            _now = datetime.now()
+            self.clock.setText(
+                f'<span style="font-size: 15pt; font-weight: 600; '
+                f'color: {_accent};">{_now:%H:%M}</span>'
+                f'<span style="font-size: 15pt; color: #ffffff;">'
+                f' | </span>'
+                f'<span style="font-size: 15pt; font-weight: 600; '
+                f'color: {_accent};">{_now:%a %d %b}</span>')
             self.state.setText(str(hud.CURRENT_STATE).upper())
             self.cpu.set_value(int(data['cpu']), f"{int(data['cpu'])}%")
             self.mem.set_value(int(data['mem']), f"{int(data['mem'])}%")

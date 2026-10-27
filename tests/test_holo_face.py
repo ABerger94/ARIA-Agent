@@ -350,3 +350,29 @@ def test_escape_is_the_stop_talking_key(monkeypatch):
     assert hits == ['stop']
     window.close()
     app.processEvents()
+
+
+def test_header_clock_is_big_accent_with_white_separator(monkeypatch):
+    # Alek, 2026-10-27: the top-right time/date goes bigger, in
+    # the theme accent — with the | between them WHITE.
+    app = _app()
+    callbacks, _calls = _dashboard_stubs(monkeypatch)
+    # this file's earlier tests leave a stub aria.frame without
+    # media_data in sys.modules; the clock is written before the
+    # media section of render_once, but give the stub the one
+    # function so the render can run its course
+    _frame = sys.modules.get('aria.frame')
+    if _frame is not None and not hasattr(_frame, 'media_data'):
+        _frame.media_data = lambda: {}
+    from aria.dashboard import create_dashboard
+    window = create_dashboard(callbacks)
+    window.show(); app.processEvents()
+    window.render_once()
+    text = window.clock.text()
+    assert '15pt' in text
+    assert '#ffffff' in text and ' | ' in text
+    # time AND date both wear the currently-resolved accent
+    from aria.dashboard import _current_accent, DEFAULT_ACCENT
+    accent = (_current_accent() or DEFAULT_ACCENT).lower()
+    assert text.lower().count(accent) == 2
+    window.close(); app.processEvents()
