@@ -39,14 +39,16 @@ def _name_band_bright_count(orb):
     """Near-white pixels in the name's glyph band. At idle the
     core behind the name is dark teal, so dark-pixel counts
     measure the background, not the ink — the WHITE name is
-    the bright signal (first version of this test learned
-    that by failing on a correct build)."""
+    the bright signal. The ink colour (#d8f8ff at 60% over the
+    dark core) puts its weakest channel at ~133, hence the
+    130 threshold — measured on the real render: the white
+    name scores ~245 samples in the band, the dark name 0."""
     img = orb.grab().toImage()
     bright = 0
     for x in range(400 - 90, 400 + 90, 2):
         for y in range(400 - 16, 400 + 16, 2):
             c = img.pixelColor(x, y)
-            if c.red() > 150 and c.green() > 150 and c.blue() > 150:
+            if min(c.red(), c.green(), c.blue()) > 130:
                 bright += 1
     return bright
 
