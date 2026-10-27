@@ -23,14 +23,35 @@ the watched set:
 Everything else is refused: traversal, absolute paths outside the
 repo, non-.py targets other than SOUL, repo-root files other than
 the launcher. Writes are atomic-ish (temp file + os.replace in
-the same directory). The tools deliberately do NOT restart or
-validate anything themselves — the post-turn watcher owns that,
-and the return text says so, so the brain can tell the user what
-happens next.
+the same directory). The tools deliberately do NOT restart
+anything themselves — the post-turn watcher owns that, and the
+return text says so, so the brain can tell the user what happens
+next.
+
+Pre-write validation (2026-10-27 hardening — Alek asked ARIA to
+change her pet's name colour herself; the edit corrupted a file
+and a recovery had to restore it, on a one-line change): the
+watcher was the ONLY net, and it only catches files that fail to
+compile or import — a truncated rewrite that still parses, or
+one that quietly drops a function other code calls, sails
+through it and the corruption is discovered by the user. So the
+tools now refuse a bad write BEFORE the file on disk changes:
+
+  * the new source must compile;
+  * it must not DROP any top-level function or class the file
+    had before (the lost-helper class of corruption);
+  * a full rewrite may not shrink a substantial file below 60%
+    of its current size — the truncated-regeneration class, and
+    the refusal steers to patch_own_code, which is the right
+    tool for almost every real change anyway.
+
+The watcher remains as the second net (import smoke + git
+restore), unchanged.
 """
 
 from __future__ import annotations
 
+import ast
 import os
 from typing import Optional, Tuple
 
@@ -88,13 +109,81 @@ def _rel(path: str) -> str:
     return os.path.relpath(path, _repo_root())
 
 
+def _top_level_names(source: str) -> Optional[set]:
+    """Top-level function/class names in a source string, or
+    None when it does not parse."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    return {node.name for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                ast.ClassDef))}
+
+
+def _validate_new_source(target: str, current: str, new: str) -> Optional[str]:
+    """Refusal text when writing `new` over `current` at a .py
+    target would corrupt the file, else None. The two checks
+    that catch what the restart watcher's net cannot: the new
+    source must compile, and it must keep every top-level
+    function/class the file had (other modules call those)."""
+    try:
+        compile(new, target, "exec")
+    except SyntaxError as e:
+        return (f"the new content does not compile ({e.msg} at "
+                f"line {e.lineno}) — the file was NOT changed. Fix "
+                f"the content and try again, or use patch_own_code "
+                f"for a smaller, exact change")
+    old_names = _top_level_names(current)
+    new_names = _top_level_names(new)
+    if old_names is not None and new_names is not None:
+        dropped = sorted(old_names - new_names)
+        if dropped:
+            return ("the new content DROPS top-level definitions "
+                    "the file had before: " + ", ".join(dropped)
+                    + " — other code may call those, so the file "
+                    "was NOT changed. Keep every existing function "
+                    "and class, or use patch_own_code for a "
+                    "smaller, exact change")
+    return None
+
+
+def _read_current(target: str) -> Optional[str]:
+    try:
+        with open(target, "r", encoding="utf-8") as f:
+            return f.read()
+    except (FileNotFoundError, OSError):
+        return None
+
+
 def tool_edit_own_code(path: str, content: str) -> str:
     """Rewrite one of ARIA's own source files in full."""
     target, refusal = _resolve_target(path)
     if refusal:
         return f"[Self-edit refused: {refusal}.]"
+    content = content or ""
+    if target.endswith(".py"):
+        current = _read_current(target)
+        if current is not None:
+            # The truncated-regeneration guard: a "rewrite" that
+            # comes back far smaller than the file it replaces
+            # is almost never a deliberate rewrite — it is a
+            # generation that trailed off, and writing it would
+            # corrupt the file. Steer to the patch tool.
+            if len(current) > 1500 and len(content) < 0.6 * len(current):
+                return ("[Self-edit refused: the new content is "
+                        f"{len(content)} characters against the "
+                        f"file's current {len(current)} — a full "
+                        "rewrite that much smaller would gut the "
+                        "file. For a change smaller than the whole "
+                        "file use patch_own_code with exact "
+                        "old_text/new_text instead. The file was "
+                        "NOT changed.]")
+            problem = _validate_new_source(target, current, content)
+            if problem:
+                return f"[Self-edit refused: {problem}.]"
     try:
-        _atomic_write(target, content or "")
+        _atomic_write(target, content)
     except Exception as e:
         return f"[Self-edit failed: {type(e).__name__}: {e}]"
     add_log(f"Self-edit: rewrote {_rel(target)} "
@@ -129,8 +218,13 @@ def tool_patch_own_code(path: str, old_text: str, new_text: str) -> str:
         return (f"[Self-edit failed: old_text matches {n} places in "
                 f"{_rel(target)} — include more surrounding context "
                 f"so it matches exactly one. No change made.]")
+    new_content = current.replace(old_text, new_text, 1)
+    if target.endswith(".py"):
+        problem = _validate_new_source(target, current, new_content)
+        if problem:
+            return f"[Self-edit refused: {problem}.]"
     try:
-        _atomic_write(target, current.replace(old_text, new_text, 1))
+        _atomic_write(target, new_content)
     except Exception as e:
         return f"[Self-edit failed: {type(e).__name__}: {e}]"
     add_log(f"Self-edit: patched {_rel(target)} "

@@ -215,3 +215,52 @@ def test_d_selfedit_changes_brain_snapshot_hash():
         assert others == [], others
     finally:
         _restore()
+
+
+# ------------------------------------------- pre-write validation (2026-10-27)
+def test_e_prewrite_validation_refuses_corruption():
+    """Alek specimen: ARIA's own attempt at a one-line change
+    corrupted a file and a recovery had to restore it. The tools
+    now refuse the corrupt write BEFORE the file changes:
+    truncated rewrites, non-compiling content, and content that
+    drops a top-level definition all leave the file untouched —
+    while good patches and good rewrites still land."""
+    root = _layout()
+    try:
+        mod = os.path.join(root, "aria", "mod2.py")
+        original = ("def keep_me():\n    return 1\n\n"
+                    "def helper():\n    return 2\n\n"
+                    + "# filler line\n" * 120)
+        with open(mod, "w", encoding="utf-8") as f:
+            f.write(original)
+        # 1. truncated rewrite (shrink guard)
+        out = selfedit.tool_edit_own_code(
+            "aria/mod2.py", "def keep_me():\n    return 1\n")
+        assert "refused" in out.lower() and _read(mod) == original
+        # 2. rewrite that does not compile
+        out = selfedit.tool_edit_own_code(
+            "aria/mod2.py", original + "\ndef broken(:\n")
+        assert "does not compile" in out and _read(mod) == original
+        # 3. rewrite that drops a definition
+        out = selfedit.tool_edit_own_code(
+            "aria/mod2.py",
+            original.replace("def helper():\n    return 2\n", "# gone\n"))
+        assert "helper" in out and _read(mod) == original
+        # 4. patch that breaks the syntax
+        out = selfedit.tool_patch_own_code(
+            "aria/mod2.py", "def keep_me():", "def keep_me(:")
+        assert "refused" in out.lower() and _read(mod) == original
+        # 5. patch that deletes a whole function
+        out = selfedit.tool_patch_own_code(
+            "aria/mod2.py", "def helper():\n    return 2\n", "")
+        assert "helper" in out and _read(mod) == original
+        # 6. a good patch still lands
+        out = selfedit.tool_patch_own_code(
+            "aria/mod2.py", "return 1", "return 42")
+        assert out.startswith("Patched") and "return 42" in _read(mod)
+        # 7. a good rewrite (surface kept, size kept) still lands
+        out = selfedit.tool_edit_own_code(
+            "aria/mod2.py", _read(mod) + "\n# tail\n")
+        assert out.startswith("Rewrote")
+    finally:
+        _restore()

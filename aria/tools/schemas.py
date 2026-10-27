@@ -129,18 +129,24 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
     {   'description': 'Lists all workspace files.',
         'name': 'list_workspace',
         'parameters': {'properties': {}, 'type': 'OBJECT'}},
-    {   'description': 'Rewrites one of YOUR OWN source files in full (self-editing). Only .py files inside the '
-                       'aria/ package, the aria.py launcher, or soul.md — anything else is refused. write_file '
-                       'CANNOT change your code (it saves to the workspace). After your turn the change is '
-                       'validated, announced, and you restart to load it; broken code is restored from git.',
+    {   'description': 'Rewrites one of YOUR OWN source files in full (self-editing). LAST RESORT: regenerating a '
+                       'whole file is how code gets corrupted — for anything smaller than a deliberate full '
+                       'rewrite use patch_own_code. Only .py files inside the aria/ package, the aria.py '
+                       'launcher, or soul.md — anything else is refused. write_file CANNOT change your code '
+                       '(it saves to the workspace). Writes are validated BEFORE they land: the new content '
+                       'must compile, must keep every top-level function/class the file had, and may not '
+                       'shrink a large file below 60% of its size — a refused write changes nothing, so fix '
+                       'the content or switch to patch_own_code. After your turn the change is announced and '
+                       'you restart to load it; code that still fails is restored from git.',
         'name': 'edit_own_code',
         'parameters': {   'properties': {'content': {'type': 'STRING'}, 'path': {'type': 'STRING'}},
                           'required': ['path', 'content'],
                           'type': 'OBJECT'}},
-    {   'description': 'Patches one of YOUR OWN source files by exact text replacement (self-editing). '
-                       'old_text must match exactly one place in the file or the patch is refused. Same '
-                       'allowlist and post-turn validate/announce/restart behaviour as edit_own_code. '
-                       'Prefer this over edit_own_code for small changes.',
+    {   'description': 'Patches one of YOUR OWN source files by exact text replacement (self-editing) — THE '
+                       'DEFAULT TOOL for changing your code, including one-line changes. old_text must match '
+                       'exactly one place in the file or the patch is refused. Same allowlist as '
+                       'edit_own_code; the patched result is validated BEFORE it lands (must compile, must '
+                       'not drop any top-level function/class), and a refused patch changes nothing.',
         'name': 'patch_own_code',
         'parameters': {   'properties': {   'new_text': {'type': 'STRING'},
                                             'old_text': {'type': 'STRING'},
