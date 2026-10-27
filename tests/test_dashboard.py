@@ -95,6 +95,74 @@ def test_dashboard_routes_controls_and_refreshes(monkeypatch, tmp_path):
     window.close(); assert 'shutdown' in calls
 
 
+def test_subsystems_all_rows_visible_in_scroll_area(monkeypatch, tmp_path):
+    # Regression (Alek, 2026-10-27): the left column's subsystems
+    # were one wrapped QLabel — crushed by the column's fixed
+    # contents, the bottom entries were clipped and never showed.
+    # Pins: every subsystem gets its own row inside a scroll area,
+    # statuses render verbatim, and shrinking the window to its
+    # minimum keeps every row (the area scrolls; nothing is cut).
+    app = QApplication.instance() or QApplication([])
+    calls = []
+    subs = [('Voice Pathway', 'ARMED', True),
+            ('Vision Optics', 'READY [Body Camera]', True),
+            ('Screen Perception', 'IDLE', False),
+            ('Semantic Memory', 'READY', True),
+            ('Head Servos', 'VIRTUAL', False),
+            ('Scheduler', 'ARMED (3)', True),
+            ('GitHub Tools', 'OFFLINE', False),
+            ('Autonomy & Workers', 'ACTIVE', True)]
+    data = dict(cpu=25, mem=40, battery='80%', uptime_s=600,
+                active_provider='Ollama', subsystems=subs,
+                task_active=0, scheduled=1, voice_enabled=True, volume=.5)
+    frame = types.ModuleType('aria.frame')
+    frame.strip_data = lambda: data
+    frame._fmt_uptime = lambda seconds: '10m'
+    frame.spotify_data = lambda: {'title': 'Test track'}
+    frame.chat_entries = lambda n: []
+    frame.activity_events = lambda n: []
+    frame.toggle_voice = lambda: calls.append('voice')
+    frame.receive_file = lambda p: calls.append(p)
+    hud = types.ModuleType('aria.hud')
+    hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = 'Ready'; hud.WHISPER_MODE = False
+    hud._dispatch_spotify_action = calls.append
+    hud.set_hud_volume = calls.append
+    config = types.ModuleType('aria.config'); config.redact = str; config.log_silent = lambda *args: None; config.get_setting = lambda key, default=None: default
+    for name, mod in [('aria.frame', frame), ('aria.hud', hud), ('aria.config', config)]:
+        monkeypatch.setitem(sys.modules, name, mod)
+        monkeypatch.setattr(sys.modules['aria'], name.rsplit('.', 1)[1], mod, raising=False)
+    queue = types.ModuleType('aria.agent.taskqueue')
+    queue.get_queue = lambda: types.SimpleNamespace(get_all_statuses=lambda: [])
+    scheduler = types.ModuleType('aria.scheduler'); scheduler.sched_list = lambda: []
+    monkeypatch.setitem(sys.modules, 'aria.agent.taskqueue', queue)
+    monkeypatch.setitem(sys.modules, 'aria.scheduler', scheduler)
+    speech = types.ModuleType('aria.speech'); speech.VOICE_ENABLED = True
+    monkeypatch.setitem(sys.modules, 'aria.speech', speech)
+    monkeypatch.setattr(sys.modules['aria'], 'speech', speech, raising=False)
+    callbacks = types.SimpleNamespace(
+        ptt_press=lambda: None, ptt_release=lambda: None,
+        interrupt=lambda: None, toggle_whisper=lambda: None,
+        submit=calls.append, request_stop=lambda: calls.append('shutdown'),
+        is_running=lambda: True, housekeeping=lambda: None,
+        render_frame=lambda: np.zeros((800, 1280, 3), dtype=np.uint8))
+    window = create_dashboard(callbacks)
+    window.resize(1080, 720)               # the window's minimum size
+    window.show(); app.processEvents(); window.render_once()
+    assert window.subsystems_scroll.widget() is window.subsystems
+    assert len(window._subsystem_rows) == 8
+    rendered = [(name_lbl.text(), status_lbl.text())
+                for _dot, name_lbl, status_lbl, _w in window._subsystem_rows]
+    assert rendered == [(n, s) for n, s, _ok in subs]
+    # Colour coding: ok rows green, non-ok rows amber/red.
+    assert '#2ee6a8' in window._subsystem_rows[0][0].styleSheet()
+    assert '#ffb84d' in window._subsystem_rows[2][0].styleSheet()
+    # Error status renders red; refresh with a changed count rebuilds.
+    window._set_subsystems([('Semantic Memory', 'ERROR', False)])
+    assert len(window._subsystem_rows) == 1
+    assert '#ff6b6b' in window._subsystem_rows[0][0].styleSheet()
+    window.close()
+
+
 def test_classic_layout_rollback(monkeypatch):
     monkeypatch.delenv('ARIA_UI_LAYOUT', raising=False)
     assert dashboard_enabled()

@@ -51,6 +51,65 @@ def test_settings_validate_persist_and_apply(monkeypatch, tmp_path):
     dialog.grab().save(str(tmp_path / 'settings.png')); dialog.close(); parent.close()
 
 
+def test_settings_hosts_providers_audio_customize_pet(monkeypatch, tmp_path):
+    # Alek, 2026-10-27: the Providers / Audio / Customize / Pet
+    # functions belong in Settings too. Pins: the tabs exist, the
+    # audio + providers widgets are the panels' own shared widgets,
+    # the Customize wheel drives the saved accent, and the Pet
+    # controls reach the host window.
+    app = QApplication.instance() or QApplication(['aria-settings-test'])
+    saved = {}; calls = []
+    config = types.ModuleType('aria.config'); config._KEYS = {}
+    config.get_setting = lambda key, default=None: saved.get(key, default)
+    config.settings_load = lambda: dict(saved)
+    def save(values): saved.update(values); return True
+    config.settings_save = save; config.key_get = lambda key, fallback='': ('', 'script default')
+    config.save_keys = lambda: True; config.is_safe_mode = lambda: False
+    speech = types.ModuleType('aria.speech'); speech.VOICE_ENABLED = True
+    speech._set_session_voice = lambda v: None
+    hud = types.ModuleType('aria.hud'); hud.WHISPER_MODE = False
+    hud.get_hud_volume = lambda: .5; hud.set_hud_volume = calls.append
+    approval = types.ModuleType('aria.approval'); approval.MODES = ('auto', 'confirm-risky', 'confirm-all')
+    approval.get_mode = lambda: 'confirm-risky'; approval.set_mode = calls.append
+    for name, mod in [('config', config), ('speech', speech), ('hud', hud), ('approval', approval)]:
+        monkeypatch.setitem(sys.modules, 'aria.' + name, mod); monkeypatch.setattr(pkg, name, mod, raising=False)
+    import aria.ui_prefs as ui_prefs
+    monkeypatch.setattr(ui_prefs, '_ui_file', lambda: str(tmp_path / 'ui.json'))
+    class Parent(QMainWindow):
+        def apply_accent(self, value): calls.append(('accent', value))
+        def open_remote(self): calls.append('remote')
+        def toggle_pet(self): calls.append('pet')
+    parent = Parent(); parent.setStyleSheet(STYLE)
+    callbacks = types.SimpleNamespace(speak=calls.append, toggle_whisper=lambda: calls.append('whisper'))
+    dialog = create_settings_dialog(parent, callbacks); dialog.show(); app.processEvents()
+    from PyQt6.QtWidgets import QTabWidget
+    tabs = dialog.findChild(QTabWidget)
+    titles = [tabs.tabText(i) for i in range(tabs.count())]
+    for wanted in ('Providers', 'Customize', 'Pet'):
+        assert wanted in titles, titles
+    # Audio: the shared device widget is embedded in Voice/audio.
+    assert dialog.audio_widget is not None
+    assert dialog.audio_widget._inputs.count() >= 1
+    # Providers: the shared readout widget, refreshable.
+    assert dialog.providers_widget is not None
+    dialog.providers_widget._refresh()
+    # Customize: the wheel pick wins the saved accent.
+    assert dialog.customize_wheel is not None
+    dialog.customize_wheel.hue_picked.emit('#ff3366')
+    assert dialog._customize_hex == '#ff3366'
+    assert ('accent', '#ff3366') in calls          # live preview
+    # Pet: toggle reaches the host; the form persists via ui_prefs.
+    assert dialog.pet_toggle.isEnabled()
+    dialog.pet_toggle.click(); assert 'pet' in calls
+    dialog.pet_form.setCurrentIndex(1)
+    assert ui_prefs.get_centerpiece() == 'holo'
+    # Save persists the wheel's accent over the preset combo.
+    dialog.name.setText('Alek'); dialog.city.setText('Dundalk, Maryland'); dialog.zone.setText('America/New_York')
+    dialog.save.click()
+    assert saved['ui_accent'] == '#ff3366', saved.get('ui_accent')
+    dialog.close(); parent.close()
+
+
 def test_command_filter_and_example_only_drafts(tmp_path):
     app = QApplication.instance() or QApplication(['aria-commands-test'])
     parent = QMainWindow(); parent.setStyleSheet(STYLE); choices = []

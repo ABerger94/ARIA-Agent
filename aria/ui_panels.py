@@ -70,6 +70,9 @@ def create_settings_dialog(parent, callbacks):
     def page(name):
         w = QWidget(); form = QFormLayout(w); form.setContentsMargins(18, 22, 18, 22); form.setSpacing(18)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(w); tabs.addTab(scroll, name); return form
+    def vpage(name):
+        w = QWidget(); lay = QVBoxLayout(w); lay.setContentsMargins(18, 22, 18, 22); lay.setSpacing(14)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(w); tabs.addTab(scroll, name); return lay
     general = page('General')
     dialog.startup = QCheckBox('Read a daily briefing when ARIA starts'); dialog.startup.setChecked(bool(config.get_setting('startup_briefing', True))); general.addRow(dialog.startup)
     dialog.safe = QCheckBox('Safe mode — block shell, GUI control, email sending, and robot motion'); dialog.safe.setChecked(config.is_safe_mode()); general.addRow(dialog.safe)
@@ -86,9 +89,88 @@ def create_settings_dialog(parent, callbacks):
     dialog.whisper = QCheckBox('Whisper mode'); dialog.whisper.setChecked(bool(hud.WHISPER_MODE)); audio.addRow(dialog.whisper)
     dialog.volume = QSlider(Qt.Orientation.Horizontal); dialog.volume.setRange(0, 100); dialog.volume.setValue(int(hud.get_hud_volume() * 100)); audio.addRow('System volume', dialog.volume)
     dialog.tts = QComboBox()
-    for name in ('en-US-AriaNeural', 'en-US-JennyNeural', 'en-US-GuyNeural', 'en-GB-SoniaNeural', 'en-GB-RyanNeural'): dialog.tts.addItem(name)
+    for name in ('en-US-AriaNeural', 'en-US-MichelleNeural', 'en-US-JennyNeural', 'en-US-GuyNeural', 'en-GB-SoniaNeural', 'en-GB-RyanNeural'): dialog.tts.addItem(name)
     dialog.tts.setCurrentText(config.get_setting('tts_voice', 'en-US-AriaNeural')); audio.addRow('Edge voice', dialog.tts)
     test_voice = QPushButton('Test saved voice'); test_voice.clicked.connect(lambda: callbacks.speak('ARIA is connected. Your voice settings are ready.')); audio.addRow(test_voice)
+    # The Audio panel's device chooser, embedded (Alek, 2026-10-27:
+    # the Providers / Audio / Customize / Pet functions belong in
+    # Settings too, not only behind the dashboard's bottom-row
+    # buttons). One shared widget builder — no second implementation.
+    try:
+        from aria.audio_panel import build_audio_widget
+        dialog.audio_widget = build_audio_widget(dialog)
+        audio.addRow(dialog.audio_widget)
+    except Exception:
+        dialog.audio_widget = None
+    prov_lay = vpage('Providers')
+    prov_note = QLabel('Read-only: the live provider chain, each provider’s state and model, and failover stats. Keys live on the Connections tab; chain order lives in config.'); prov_note.setWordWrap(True); prov_lay.addWidget(prov_note)
+    try:
+        from aria.providers_panel import build_providers_widget
+        dialog.providers_widget = build_providers_widget(dialog)
+        prov_lay.addWidget(dialog.providers_widget, 1)
+    except Exception:
+        dialog.providers_widget = None
+        prov_lay.addWidget(QLabel('Provider chain unavailable.'))
+    cust_lay = vpage('Customize')
+    cust_note = QLabel('UI accent — one colour re-derives the whole family (hue shift). Picking previews live; Apply settings saves it. The General tab’s preset combo sets the same accent.'); cust_note.setWordWrap(True); cust_lay.addWidget(cust_note)
+    dialog._customize_hex = None
+    try:
+        from aria.hue_wheel import HueWheel
+        from aria.customize_panel import PRESETS
+        dialog.customize_wheel = HueWheel(str(config.get_setting('ui_accent', '#54d9e8')), dialog)
+        cust_lay.addWidget(dialog.customize_wheel, 0, Qt.AlignmentFlag.AlignCenter)
+        dialog.customize_hex_label = QLabel(dialog.customize_wheel.color()); dialog.customize_hex_label.setAlignment(Qt.AlignmentFlag.AlignCenter); cust_lay.addWidget(dialog.customize_hex_label)
+        def _cust_picked(hex_str):
+            dialog._customize_hex = hex_str
+            dialog.customize_hex_label.setText(hex_str)
+            try:
+                parent.apply_accent(hex_str)
+            except Exception:
+                pass
+        dialog.customize_wheel.hue_picked.connect(_cust_picked)
+        presets = QHBoxLayout()
+        for pname, phex in PRESETS:
+            btn = QPushButton(pname)
+            btn.clicked.connect(lambda checked=False, h=phex: (dialog.customize_wheel.set_color(h), _cust_picked(h)))
+            presets.addWidget(btn)
+        cust_lay.addLayout(presets)
+    except Exception:
+        dialog.customize_wheel = None
+        cust_lay.addWidget(QLabel('Customize wheel unavailable — use the accent presets on the General tab.'))
+    cust_lay.addStretch()
+    pet_lay = vpage('Pet')
+    pet_note = QLabel('Desktop pet — the floating mini-ARIA. The same controls as the dashboard’s Pet button and the pet’s right-click menu.'); pet_note.setWordWrap(True); pet_lay.addWidget(pet_note)
+    dialog.pet_toggle = QPushButton('Show / hide pet')
+    _toggle_pet = getattr(parent, 'toggle_pet', None)
+    if callable(_toggle_pet):
+        dialog.pet_toggle.clicked.connect(lambda: _toggle_pet())
+    else:
+        dialog.pet_toggle.setEnabled(False)
+    pet_lay.addWidget(dialog.pet_toggle)
+    pet_form_row = QHBoxLayout(); pet_form_row.addWidget(QLabel('Pet form'))
+    dialog.pet_form = QComboBox(); dialog.pet_form.addItem('Waveform orb', 'orb'); dialog.pet_form.addItem('Character', 'holo')
+    try:
+        from aria import ui_prefs as _uprefs
+        _cur_form = _uprefs.get_centerpiece()
+    except Exception:
+        _cur_form = 'orb'
+    dialog.pet_form.setCurrentIndex(1 if _cur_form == 'holo' else 0)
+    def _pet_form_changed(idx):
+        form = dialog.pet_form.itemData(idx)
+        try:
+            from aria import ui_prefs as _up2
+            _up2.set_centerpiece(form)
+        except Exception:
+            pass
+        pet = getattr(parent, '_pet', None)
+        if pet is not None:
+            try:
+                pet.set_form(form)
+            except Exception:
+                pass
+    dialog.pet_form.currentIndexChanged.connect(_pet_form_changed)
+    pet_form_row.addWidget(dialog.pet_form, 1); pet_lay.addLayout(pet_form_row)
+    pet_lay.addStretch()
     brief = page('Daily briefing')
     dialog.name = QLineEdit(str(config.get_setting('briefing_name', 'Alek'))); brief.addRow('Your name', dialog.name)
     dialog.city = QLineEdit(str(config.get_setting('briefing_city', 'Dundalk, Maryland'))); brief.addRow('Local news & weather', dialog.city)
@@ -130,8 +212,11 @@ def create_settings_dialog(parent, callbacks):
                     config._KEYS.clear(); config._KEYS.update(previous)
                     raise OSError('Connection settings could not be saved.')
             values = config.settings_load()
+            # The Customize wheel (when touched) wins over the
+            # General tab's preset combo — both set the same accent.
+            final_accent = getattr(dialog, '_customize_hex', None) or dialog.accent.currentData()
             values.update(startup_briefing=dialog.startup.isChecked(), safe_mode=dialog.safe.isChecked(),
-                          voice_enabled=dialog.voice.isChecked(), ui_accent=dialog.accent.currentData(),
+                          voice_enabled=dialog.voice.isChecked(), ui_accent=final_accent,
                           tts_voice=dialog.tts.currentText(), briefing_name=dialog.name.text().strip(),
                           briefing_city=dialog.city.text().strip(), briefing_timezone=dialog.zone.text().strip(),
                           briefing_world_topics=[t.strip() for t in dialog.topics.text().split(',') if t.strip()][:4])
@@ -139,9 +224,25 @@ def create_settings_dialog(parent, callbacks):
             approval.set_mode(dialog.approval.currentText())
             speech.VOICE_ENABLED = dialog.voice.isChecked()
             speech.EDGE_TTS_VOICE = dialog.tts.currentText()
+            # Drop the probe-proven session voice so the just-saved
+            # choice takes effect on the next utterance, not only
+            # after a restart (synthesis reads the configured voice
+            # until the next probe proves one).
+            try:
+                speech._set_session_voice(None)
+            except Exception:
+                pass
             if hud.WHISPER_MODE != dialog.whisper.isChecked(): callbacks.toggle_whisper()
             hud.set_hud_volume(dialog.volume.value() / 100)
-            parent.apply_accent(dialog.accent.currentData())
+            parent.apply_accent(final_accent)
+            # Boot reads the accent from ui_prefs BEFORE settings, so
+            # sync it too — otherwise a Settings-chosen accent would
+            # silently revert on the next launch.
+            try:
+                from aria import ui_prefs as _up3
+                _up3.set_accent(final_accent)
+            except Exception:
+                pass
             for key, field in connection_fields.items():
                 if key != 'GMAIL_USER': field.clear()
             dialog.message.setText('Settings saved. Provider key changes apply after restarting ARIA.' if any(k.endswith('_API_KEY') for k in updates) else 'Settings saved and applied.')

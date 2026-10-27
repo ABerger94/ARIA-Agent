@@ -75,7 +75,7 @@ def create_dashboard(callbacks):
     from PyQt6.QtGui import QImage, QPixmap, QColor, QShortcut, QKeySequence
     from PyQt6.QtWidgets import (QMainWindow, QWidget, QFrame, QLabel, QPushButton,
                                 QVBoxLayout, QHBoxLayout, QSplitter, QTabWidget,
-                                QTextBrowser, QLineEdit, QSlider,
+                                QTextBrowser, QLineEdit, QSlider, QScrollArea,
                                 QFileDialog, QDialog, QApplication, QListWidget, QListWidgetItem)
     from aria import frame, hud, config
     from aria.resonance import ResonanceOrb
@@ -138,8 +138,27 @@ def create_dashboard(callbacks):
             self.mem = MetricBar('MEM'); ll.addWidget(self.mem)
             self.net = MetricBar('NET'); ll.addWidget(self.net)
             self.power = QLabel(); ll.addWidget(self.power)
-            self.subsystems = QLabel(); self.subsystems.setWordWrap(True); ll.addWidget(self.subsystems)
-            ll.addStretch()
+            sub_title = QLabel('SUBSYSTEMS'); sub_title.setObjectName('title'); ll.addWidget(sub_title)
+            # One row per subsystem inside a scroll area (Alek,
+            # 2026-10-27: the old single wrapped QLabel was crushed
+            # by the column's fixed contents — bottom subsystems were
+            # clipped and never showed). Rows never wrap or clip; when
+            # vertical space runs out the list scrolls instead, and
+            # the NOW PLAYING block below always stays visible.
+            self.subsystems = QWidget()
+            self._subsystems_layout = QVBoxLayout(self.subsystems)
+            self._subsystems_layout.setContentsMargins(0, 0, 0, 0)
+            self._subsystems_layout.setSpacing(3)
+            self._subsystems_layout.addStretch()
+            self._subsystem_rows = []
+            self.subsystems_scroll = QScrollArea()
+            self.subsystems_scroll.setWidgetResizable(True)
+            self.subsystems_scroll.setWidget(self.subsystems)
+            self.subsystems_scroll.setFrameShape(QFrame.Shape.NoFrame)
+            self.subsystems_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.subsystems_scroll.setStyleSheet('QScrollArea { background: transparent; border: none; }')
+            self.subsystems_scroll.setMinimumHeight(96)
+            ll.addWidget(self.subsystems_scroll, 1)
             title = QLabel('NOW PLAYING'); title.setObjectName('title'); ll.addWidget(title)
             self.track = QLabel('Spotify is not running'); self.track.setWordWrap(True); ll.addWidget(self.track)
             media = QHBoxLayout()
@@ -461,6 +480,49 @@ def create_dashboard(callbacks):
                                     else 0.0)
             self.views['News'].setHtml(html_text)
 
+        def _set_subsystems(self, rows):
+            """Refresh the SYSTEM MONITOR subsystem rows: one row per
+            (name, status, ok) — coloured dot (green ok, red on
+            ERROR, amber otherwise), name left, status right, full
+            text on the tooltip. Rows are reused across refreshes
+            (rebuilt only when the count changes) so the 1 Hz refresh
+            doesn't churn widgets."""
+            rows = list(rows or [])
+            if len(rows) != len(self._subsystem_rows):
+                for dot, name_lbl, status_lbl, row_w in self._subsystem_rows:
+                    self._subsystems_layout.removeWidget(row_w)
+                    row_w.deleteLater()
+                self._subsystem_rows = []
+                for _ in rows:
+                    row_w = QWidget()
+                    hl = QHBoxLayout(row_w)
+                    hl.setContentsMargins(0, 0, 0, 0)
+                    hl.setSpacing(6)
+                    dot = QLabel('●')
+                    name_lbl = QLabel()
+                    status_lbl = QLabel()
+                    status_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+                    hl.addWidget(dot)
+                    hl.addWidget(name_lbl, 1)
+                    hl.addWidget(status_lbl)
+                    self._subsystems_layout.insertWidget(
+                        self._subsystems_layout.count() - 1, row_w)
+                    self._subsystem_rows.append(
+                        (dot, name_lbl, status_lbl, row_w))
+            for (dot, name_lbl, status_lbl, row_w), (name, status, ok) \
+                    in zip(self._subsystem_rows, rows):
+                name_lbl.setText(str(name))
+                status_lbl.setText(str(status))
+                if ok:
+                    color = '#2ee6a8'
+                elif 'ERROR' in str(status).upper():
+                    color = '#ff6b6b'
+                else:
+                    color = '#ffb84d'
+                dot.setStyleSheet(f'color: {color};')
+                status_lbl.setStyleSheet(f'color: {color};')
+                row_w.setToolTip(f'{name} — {status}')
+
         def toggle_pet(self):
             """Show/hide the desktop pet (Port 7). Created lazily; the
             pet mirrors the dashboard's voice state and follows the
@@ -689,7 +751,7 @@ def create_dashboard(callbacks):
             self.plaque_engine.set_value(data['active_provider'] or 'Waiting')
             self.plaque_state.set_value(str(hud.CURRENT_STATE).upper())
             self.plaque_tasks.set_value(f"{data.get('task_active', 0)} run / {data.get('task_pending', 0)} wait")
-            self.subsystems.setText('\n'.join(f'{name}   {status}' for name, status, ok in data['subsystems']))
+            self._set_subsystems(data['subsystems'])
             self.voice.setText('Voice on' if data['voice_enabled'] else 'Voice off')
             self.whisper.setText('Whisper on' if hud.WHISPER_MODE else 'Whisper off')
             if not self.volume.isSliderDown(): self.volume.setValue(int(data['volume'] * 100))

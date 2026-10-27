@@ -14,25 +14,18 @@ panel says so instead of offering a control that does nothing.
 from __future__ import annotations
 
 
-def build_audio_dialog(parent):
-    """The Audio Devices dialog (not exec'd — the caller decides)."""
+def build_audio_widget(parent=None):
+    """The Audio Devices content as an embeddable widget — shared by
+    the standalone dialog and the Settings dialog's Voice/audio tab,
+    so the microphone choice exists in exactly one implementation."""
     from PyQt6.QtCore import Qt
-    from PyQt6.QtWidgets import (QDialog, QLabel, QListWidget,
-                                 QListWidgetItem, QPushButton, QVBoxLayout)
+    from PyQt6.QtWidgets import (QLabel, QListWidget, QListWidgetItem,
+                                 QVBoxLayout, QWidget)
     from aria import audio_prefs
-    from aria.dashboard import STYLE
 
-    dlg = QDialog(parent)
-    dlg.setWindowTitle('Audio Devices')
-    dlg.setStyleSheet(
-        parent.styleSheet() if parent is not None and parent.styleSheet()
-        else STYLE)
-    dlg.resize(520, 460)
-    lay = QVBoxLayout(dlg)
-
-    title = QLabel('AUDIO DEVICES')
-    title.setObjectName('title')
-    lay.addWidget(title)
+    w = QWidget(parent)
+    lay = QVBoxLayout(w)
+    lay.setContentsMargins(0, 0, 0, 0)
 
     lay.addWidget(QLabel('MICROPHONE (applies at the next mic open)'))
     inputs = QListWidget()
@@ -73,9 +66,35 @@ def build_audio_dialog(parent):
         outputs.addItem(QListWidgetItem('No output devices found'))
     lay.addWidget(outputs)
 
+    w._inputs = inputs
+    w._note = note
+    w._outputs = outputs
+    return w
+
+
+def build_audio_dialog(parent):
+    """The Audio Devices dialog (not exec'd — the caller decides)."""
+    from PyQt6.QtWidgets import (QDialog, QLabel, QPushButton, QVBoxLayout)
+    from aria.dashboard import STYLE
+
+    dlg = QDialog(parent)
+    dlg.setWindowTitle('Audio Devices')
+    dlg.setStyleSheet(
+        parent.styleSheet() if parent is not None and parent.styleSheet()
+        else STYLE)
+    dlg.resize(520, 460)
+    lay = QVBoxLayout(dlg)
+
+    title = QLabel('AUDIO DEVICES')
+    title.setObjectName('title')
+    lay.addWidget(title)
+
+    widget = build_audio_widget(dlg)
+    lay.addWidget(widget, 1)
+    dlg._inputs = widget._inputs
+    dlg._note = widget._note
+
     close_btn = QPushButton('Close')
     close_btn.clicked.connect(dlg.accept)
     lay.addWidget(close_btn)
-    dlg._inputs = inputs
-    dlg._note = note
     return dlg
