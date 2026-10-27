@@ -186,8 +186,11 @@ def test_dashboard_memory_tab_lists_and_forgets(monkeypatch):
     assert 'Memory' in names
     assert window.mem_count.text().startswith('2 stored facts')
     rms = [b for b in window.mem_rows.findChildren(QPushButton)
-           if b.text() == '✕']
+           if b.text() == '×']
     assert len(rms) == 2
+    # The glyph is pinned WHITE inline (Alek, 2026-10-27: he
+    # could see only the buttons' outlines).
+    assert '#ffffff' in rms[0].styleSheet()
     rms[0].click(); app.processEvents()
     assert [r['key'] for r in store] == ['job']   # first row forgotten
     assert window.mem_count.text().startswith('1 stored facts')

@@ -15,7 +15,7 @@ QWidget { background: #080d14; color: #dce6ef; font: 12px 'Segoe UI'; }
 QFrame#card { background: #0d1520; border: 1px solid #1b3042; border-radius: 10px; }
 QFrame#visionPip { background: rgba(0, 6, 10, 242); border: 1px solid #54d9e8; border-radius: 6px; }
 QLabel#pipTitle { color: #54d9e8; font: bold 9px 'Consolas'; letter-spacing: 1px; }
-QPushButton#pipClose { background: transparent; border: none; padding: 0; color: #829aaf; }
+QPushButton#pipClose { background: transparent; border: none; padding: 0; color: #ffffff; font-weight: bold; }
 QLabel { background: transparent; border: none; }
 QLabel#title { color: #54d9e8; font: bold 11px 'Consolas'; letter-spacing: 2px; }
 QLabel#brand { color: #77e7ef; font: bold 28px 'Consolas'; letter-spacing: 4px; }
@@ -267,7 +267,7 @@ def create_dashboard(callbacks):
             self.title.setObjectName('pipTitle')
             hdr.addWidget(self.title)
             hdr.addStretch()
-            close = QPushButton('✕')
+            close = QPushButton('×')
             close.setObjectName('pipClose')
             close.setFixedSize(16, 16)
             close.clicked.connect(self.hide)
@@ -481,11 +481,12 @@ def create_dashboard(callbacks):
             # top-right corner that hands the center back to
             # the normal centerpiece — the orb. A child of the
             # map widget, so it exists exactly when the map does.
-            self.map_close = QPushButton('✕', self.mem_map_center)
+            self.map_close = QPushButton('×', self.mem_map_center)
             self.map_close.setFixedSize(26, 26)
             self.map_close.setToolTip('Close memory map')
             self.map_close.setStyleSheet(
-                'background: rgba(10, 20, 30, 190); color: #cfe3ee;'
+                'background: rgba(10, 20, 30, 190); color: #ffffff;'
+                'font-weight: bold; font-size: 15px;'
                 'border: 1px solid #1b3042; border-radius: 4px;')
             self.map_close.clicked.connect(
                 lambda: self.set_centerpiece('orb'))
@@ -932,7 +933,12 @@ def create_dashboard(callbacks):
                 meta = QLabel(f"{r['category']} · {r['updated']}")
                 meta.setStyleSheet('color: #829aaf;')
                 row.addWidget(meta)
-                rm = QPushButton('✕'); rm.setFixedSize(22, 22)
+                rm = QPushButton('×'); rm.setFixedSize(22, 22)
+                # White and bold, pinned inline (Alek, 2026-10-27:
+                # under the app style he could see only the
+                # button's outline — the glyph itself was lost).
+                # '×' (U+00D7) not '✕': every system font has it.
+                rm.setStyleSheet('color: #ffffff; font-weight: bold; font-size: 14px;')
                 rm.setToolTip('Forget this')
                 rm.clicked.connect(
                     lambda checked=False, k=r['key']: self._forget_memory(k))
