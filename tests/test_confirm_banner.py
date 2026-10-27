@@ -132,6 +132,37 @@ def test_pending_entries_approve_executes_via_dispatch(monkeypatch):
     approval._PENDING.clear()
 
 
+def test_approve_token_logs_every_outcome(monkeypatch):
+    # Alek, 2026-10-27: "I click confirm and it didn't do
+    # anything." The dashboard's click path discards
+    # approve_token's return value, so the OPS log is the only
+    # place an outcome can surface — pin that EVERY outcome
+    # lands there: executed, and unknown/expired.
+    import importlib
+    approval = importlib.import_module('aria.approval')
+    lines = []
+    stub = types.SimpleNamespace(
+        redact=str, add_log=lambda *a: lines.append(' '.join(map(str, a))),
+        log_silent=lambda *a: None)
+    monkeypatch.setattr(approval, 'config', stub)
+    approval._PENDING.clear()
+    tools_pkg = types.ModuleType('aria.tools'); tools_pkg.__path__ = []
+    dispatch = types.ModuleType('aria.tools.dispatch')
+    dispatch.execute_tool = lambda tool, args, preauthorized=False: \
+        ('WROTE-THE-FILE', True)
+    monkeypatch.setitem(sys.modules, 'aria.tools', tools_pkg)
+    monkeypatch.setitem(sys.modules, 'aria.tools.dispatch', dispatch)
+    approval.request_approval('write_file', {'filename': 'z.txt'})
+    token = approval.pending_entries()[0]['token']
+    assert approval.approve_token(token) == 'WROTE-THE-FILE'
+    assert any('executed' in ln and 'WROTE-THE-FILE' in ln
+               for ln in lines), lines
+    lines.clear()
+    assert 'unknown or expired' in approval.approve_token('deadbeef')
+    assert any('FAILED' in ln for ln in lines), lines
+    approval._PENDING.clear()
+
+
 # ---------------- dashboard wiring ----------------
 
 def _dashboard_stubs(monkeypatch):

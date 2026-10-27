@@ -254,11 +254,23 @@ def purge_expired() -> int:
 
 
 def approve_token(token: str) -> str:
-    """Execute the stashed call with preauthorized=True. Returns its result."""
+    """Execute the stashed call with preauthorized=True. Returns its result.
+
+    Every outcome is logged (Alek, 2026-10-27: "I click confirm
+    and it didn't do anything"): the dashboard's click path
+    discards this return value, so before this logging an
+    approval whose replay errored — or whose effect simply
+    wasn't visible on screen — left NO trace anywhere and was
+    indistinguishable from a dead button. The OPS log now
+    carries the verdict for every token: executed (with the
+    result), failed, or unknown/expired.
+    """
     purge_expired()
     t = str(token or "").strip()
     entry = _PENDING.pop(t, None)
     if entry is None:
+        config.add_log(
+            f"[approval] approve FAILED token={t}: unknown or expired")
         return (f"[Approval error: unknown or expired token '{t}'. "
                 f"Call list_pending_approvals() to see open requests.]")
     config.add_log(f"[approval] approved token={t} tool={entry['tool']} — executing")
@@ -267,8 +279,11 @@ def approve_token(token: str) -> str:
         from aria.tools import dispatch as _dispatch  # lazy: no import cycle
         result, _ok = _dispatch.execute_tool(
             entry["tool"], entry["args"], preauthorized=True)
+        config.add_log(
+            f"[approval] token={t} executed: {str(result)[:200]}")
         return str(result)
     except Exception as e:
+        config.add_log(f"[approval] token={t} execution ERROR: {e}")
         return f"[Approval error: failed to execute approved call: {e}]"
     finally:
         _replay_local.current = None
