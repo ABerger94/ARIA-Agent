@@ -66,7 +66,7 @@ def style_for_accent(accent):
 # Activity levels earn their red / amber / green; routine info
 # stays muted.
 DEFAULT_ACCENT = '#54d9e8'
-CHAT_COLORS = {'aria': ('#54d9e8', '#dff9ff'),
+CHAT_COLORS = {'aria': ('#54d9e8', '#54d9e8'),
                'user': ('#ffffff', '#f4f7fa'),
                'sys': ('#8ea3b6', '#aebfd0')}
 
@@ -81,15 +81,6 @@ def _valid_accent(accent):
     except Exception:
         pass
     return None
-
-
-def _tint(accent, frac=0.82):
-    """`accent` mixed `frac` of the way toward white — the soft
-    body-text tint that rides under the full-strength name colour,
-    the way #dff9ff rides under the default #54d9e8."""
-    r, g, b = (int(accent[i:i + 2], 16) for i in (1, 3, 5))
-    mix = lambda c: round(c + frac * (255 - c))
-    return '#%02x%02x%02x' % (mix(r), mix(g), mix(b))
 
 
 def _current_accent():
@@ -111,18 +102,16 @@ def _current_accent():
 
 
 def chat_colors(accent=None):
-    """The Conversation tab's colour pairs for a given accent
-    (default: whatever accent is currently set). ARIA's pair
-    follows the accent — name in the accent itself, text in its
-    tint; at the default accent the pair is the exact legacy
-    (#54d9e8, #dff9ff). The user is always white; system muted."""
+    """The Conversation tab's colours for a given accent
+    (default: whatever accent is currently set). ARIA's name AND
+    text are the accent itself, at full strength — the first cut
+    mixed her text 82% of the way toward white, which read as
+    white text whatever colour was set (Alek, 2026-10-27); the
+    name is told apart by bold alone. The user is always white;
+    system muted."""
     resolved = _valid_accent(accent) or _current_accent() \
         or DEFAULT_ACCENT
-    if resolved == DEFAULT_ACCENT:
-        aria_pair = CHAT_COLORS['aria']
-    else:
-        aria_pair = (resolved, _tint(resolved))
-    return {'aria': aria_pair,
+    return {'aria': (resolved, resolved),
             'user': CHAT_COLORS['user'],
             'sys': CHAT_COLORS['sys']}
 ACTIVITY_COLORS = {'error': ('#ff6b6b', '#ffd9d9'),

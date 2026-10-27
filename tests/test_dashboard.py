@@ -303,7 +303,8 @@ def test_chat_html_colours_speakers_and_escapes():
     out = chat_html([('10:00:01', 'ARIA', 'Hello <b>there</b>'),
                      ('10:00:05', 'Alek', 'Hi ARIA'),
                      ('10:00:09', 'System', 'Voice ready')])
-    assert '#54d9e8' in out and '#dff9ff' in out      # ARIA: name + text
+    assert out.count('#54d9e8') >= 2                 # ARIA: name AND text, full accent
+    assert '#dff9ff' not in out                      # no near-white tint
     assert '#ffffff' in out and '#f4f7fa' in out      # Alek: white, not yellow
     assert '#ffe3b3' not in out and '#ffb84d' not in out
     assert '#8ea3b6' in out                          # System: muted
@@ -324,18 +325,18 @@ def test_chat_html_aria_follows_the_set_accent_user_stays_white():
     # Alek, 2026-10-27, final say: ARIA's responses in the chat
     # log take the SYSTEM colour — whatever accent is set — and
     # the user's text stays white. A violet accent must repaint
-    # her name AND her text (a tint of the accent); his side
-    # must not move at all.
-    from aria.dashboard import chat_html, chat_colors, _tint
+    # her name AND her text in the accent itself, full strength
+    # (the first cut tinted her text 82% toward white and he
+    # reported it as still-white text); his side must not move.
+    from aria.dashboard import chat_html, chat_colors
     out = chat_html([('10:00:01', 'ARIA', 'In violet now'),
                      ('10:00:05', 'Alek', 'Still white')],
                     accent='#bd93f9')
-    assert '#bd93f9' in out                       # her name: the accent itself
-    assert _tint('#bd93f9') in out                # her text: its tint
+    assert out.count('#bd93f9') >= 2              # her name AND her text
     assert '#54d9e8' not in out and '#dff9ff' not in out
     assert '#ffffff' in out and '#f4f7fa' in out  # his side: unchanged white
     colors = chat_colors('#bd93f9')
-    assert colors['aria'] == ('#bd93f9', _tint('#bd93f9'))
+    assert colors['aria'] == ('#bd93f9', '#bd93f9')
     assert colors['user'] == ('#ffffff', '#f4f7fa')
     # A junk accent can never cost the log its colours: it falls
     # back to whatever is set, ultimately the default pair.
