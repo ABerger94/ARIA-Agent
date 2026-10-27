@@ -1,33 +1,54 @@
 # A.R.I.A. — Adaptive Robotic Intelligence Agent
 
-A Python desktop AI companion. She lives on your Windows laptop as an animated
-face in an OpenCV HUD: she talks (natural Edge TTS voice), listens (mic +
+A Python desktop AI companion. She lives on your Windows laptop behind a
+native Qt dashboard: she talks (natural Edge TTS voice), listens (mic +
 speech recognition), remembers, and acts through a multi-provider agent loop
-(Ollama Cloud → Groq → OpenRouter → Mistral) with 95 tools across 16 toolkits. Her phone bridge turns any phone into her
-face, voice, and eyes; she connects to MCP servers and uses their tools as her
-own; an Arduino robot body gives her a pan/tilt head and differential-drive
-wheels; and a tabbed OPS command center puts her log, tasks, sensors, and
-routines one keypress away.
+(Gemini → Ollama Cloud → Groq → OpenRouter → Mistral) with **120 tools**
+across progressive toolkits. Her phone bridge turns any phone into her
+face, voice, and eyes — and, with the Android node app, into a phone she
+can drive. She connects to MCP servers and uses their tools as her own; an
+Arduino robot body gives her a pan/tilt head and differential-drive wheels.
 
 Built by Alek Berger. Not a framework, not a demo — a finished companion.
 
 ## Native desktop command center
 
-The default Qt window now uses native resizable panels: a system and Spotify
-sidebar, Mark's Resonance waveform orb in the center, and Conversation / Inbox / Calendar /
-Tasks / Activity tabs. Type Unicode text directly in the command bar. Voice,
-push-to-talk, interruption, whisper, volume, file browsing, and file drops use
-the existing backend. Inbox and Calendar load on Refresh in background threads;
-missing connections display the existing setup instructions.
+The default Qt window is a three-column command center:
 
-Click **REMOTE CONTROL** in the sidebar to connect a phone on the same Wi-Fi.
-Scan the QR code or copy its link. It works once, expires in five minutes, and
-Refresh replaces it. Scanning opens the controls directly with no token form.
-The phone is remembered for 30 days, including across laptop app restarts, using
-a per-phone HttpOnly cookie. Session hashes are stored in the workspace, not
-raw phone credentials. Reopen the same address in the same browser to reconnect.
-Disconnect one phone in its Settings, or all remembered phones from the laptop's
-Remote Control dialog. Existing master-token API clients remain compatible.
+- **Left — system monitor + media.** Per-subsystem status rows (voice,
+  vision, memory, servos, scheduler, GitHub, autonomy — green / amber / red,
+  live), the **NOW PLAYING** panel (below), and the system volume.
+- **Center — her face.** A neural-field background behind Mark's Resonance
+  waveform orb or the holo face (with a viseme-driven mouth when she
+  speaks), swapped for the video player while media plays in-app. The same
+  centerpiece is what the phone bridge publishes.
+- **Right — tabs.** Conversation, Briefing, News, Inbox, Calendar, Tasks,
+  Activity. Type Unicode text directly in the command bar. Voice,
+  push-to-talk, interruption, whisper, file browsing, and drag-and-drop
+  file drops use the existing backend. Inbox and Calendar load on Refresh
+  in background threads; missing connections display setup instructions.
+
+The header carries a live services summary (click it for per-service
+detail), the clock, and **Settings** — the only header button. Conversation
+and Activity are colour-coded by kind, Mark-LVI style: ARIA in the accent
+cyan family, you in white, system lines muted; activity entries earn red /
+amber / green by level, routine info stays muted.
+
+**Pet mode** (the Pet button, or Settings → Pet) replaces the whole UI —
+dashboard and any open dialogs close, leaving just the floating desktop
+pet; leaving pet mode brings the dashboard back. There is deliberately
+**no ambient camera tile** on the dashboard: her camera works on demand
+(ask her to look), never as a always-on picture-in-picture.
+
+**Remote Control** lives in Settings → Connections. Open it to connect a
+phone on the same Wi-Fi: scan the QR code or copy its link. It works once,
+expires in five minutes, and Refresh replaces it. Scanning opens the
+controls directly with no token form. The phone is remembered for 30 days,
+including across laptop app restarts, using a per-phone HttpOnly cookie.
+Session hashes are stored in the workspace, not raw phone credentials.
+Reopen the same address in the same browser to reconnect. Disconnect one
+phone in its Settings, or all remembered phones from the laptop's Remote
+Control dialog. Existing master-token API clients remain compatible.
 
 The mobile companion has Control, Conversation, Inbox, Orb & Camera, and Settings
 sections, live connection status, stop-speech, voice/text controls, file uploads,
@@ -55,17 +76,47 @@ For the previous canvas layout, set `ARIA_UI_LAYOUT=classic` before launching.
 
 ## Settings and commands
 
-**Settings** is visible in the window header (`Ctrl+,`). General settings cover
-startup briefings, safe mode, action approval mode, and the UI accent. Voice &
-Audio covers the voice gate, whisper, volume, and Edge voice. Daily Briefing sets
-your name, local area, timezone, and optional world topics. Connections configures
-Gmail, calendar and provider credentials without placing secrets into the chat.
-Blank password/key fields retain existing values; provider changes require a
-restart. General settings are saved atomically.
+**Settings** is in the window header. Its tabs: **General** (startup
+briefings, safe mode, action approval mode, UI accent presets), **Voice /
+audio** (voice gate, whisper, volume, Edge voice, and the microphone device
+chooser), **Providers** (read-only: the live provider chain, each
+provider's state and model, failover stats), **Extensions** (read-only:
+configured MCP servers and the built-in tool count — manage servers by
+asking ARIA), **Customize** (the accent hue wheel; picking previews live
+and re-derives the whole colour family), **Pet** (show/hide the desktop
+pet, pet form), **Daily briefing** (your name, local area, timezone,
+optional world topics), and **Connections** (Gmail, calendar and provider
+credentials — never through the chat — plus Remote Control). Blank
+password/key fields retain existing values; provider changes require a
+restart. Settings are saved atomically.
 
-**Commands** (`Ctrl+K`) lists tools from the live registry, including connected
-MCP tools. Search names, descriptions and examples, or filter by category.
-Selecting an example drafts it in the command bar; Send executes your request.
+**Commands** (`Ctrl+K`) lists tools from the live registry, including
+connected MCP tools. Search names, descriptions and examples, or filter by
+category. Selecting an example drafts it in the command bar; Send executes
+your request.
+
+## Media: the NOW PLAYING panel
+
+The left column's media panel shows and controls **whatever is actually
+playing — not just Spotify**:
+
+- **Source, in order:** ARIA's own video player when it has media loaded
+  (exact position/duration, shown as a real progress bar); the active
+  Windows media session via **SMTC** (`aria/smtc.py`, backed by the
+  `winsdk` wheel in `requirements.txt`) — Spotify, Movies & TV, the
+  Media Player app, VLC, a browser, anything Windows knows about; then
+  by-process window-title fallbacks (Spotify and known players) for when
+  SMTC is unavailable. Without `winsdk` everything still works, with
+  title-grade state (a title can't prove paused vs playing).
+- **Real state:** playing shows `● NOW PLAYING` (green, with the app named
+  for non-Spotify sources), paused shows `❚❚ PAUSED` — with the track or
+  movie still named. No standby placeholders, no fabricated progress.
+- **Explicit Play and Pause buttons** (plus Prev / Next). Transport is
+  *closed-loop*: the command aims at the specific media session (no focus
+  stealing, no blind global toggle), the state is re-read, and if the
+  session ignored the call — some do — it escalates to the system media
+  key and verifies again. Voice control (`tool_spotify`, the unified
+  `media_control` tool) follows the same rules.
 
 ## Source-backed daily briefings
 
@@ -132,7 +183,7 @@ sub-day recurrence reports an error instead of expanding without a bound.
   per call; specialist toolkits (autonomy, Gmail, Spotify, scheduler, GitHub,
   vision/hardware, Windows control, MTG, memory/notes, admin, MCP, routines,
   files, monitor, user) unlock on demand via `load_toolkit` or automatically
-  from keywords in your request. 95 tools total across 16 toolkits, with
+  from keywords in your request. 120 tools total, with
   duplicate-call blocking, argument repair, and parallel execution of
   independent calls.
 - **MCP Client** — she connects to Model Context Protocol servers and uses
@@ -222,6 +273,15 @@ sub-day recurrence reports an error instead of expanding without a bound.
   The **/upload page** lets you send files from the phone straight into her
   inbox — a background watcher picks them up and she can read, describe, or
   act on them (`inbox_list`, `inbox_describe`, `inbox_read`).
+- **Phone Node (Android)** — the ARIA Node app connects to the bridge over
+  a WebSocket (`/node/ws`, authenticated with the bridge's own credentials)
+  and ARIA gains nine `phone_*` tools: `phone_status`, `phone_list_apps`,
+  `phone_open_app`, `phone_read_screen` (the accessibility tree, with
+  tap targets), `phone_notifications`, `phone_tap`, `phone_swipe`,
+  `phone_type`, `phone_key`. Hub and protocol in `aria/node_hub.py` /
+  `aria/phone_node.py`. Safety rule: phone *control* never runs inside a
+  routine replay or a delegated/preauthorized call — reads are unrestricted,
+  taps are for live conversation only.
 - **Robot Body** — Arduino Nano firmware (`arduino/aria_body/aria_body.ino`)
   driving a pan/tilt head (`P<pos>T<pos>`) and differential-drive wheels
   (`W<l>,<r>`) over a no-solder Nano + sensor shield, with a dedicated stop
@@ -244,6 +304,10 @@ sub-day recurrence reports an error instead of expanding without a bound.
   Mistral / Gemini keys are optional fallbacks. Screenshot vision runs natively
   through Ollama Cloud /api/chat (gemma4:31b-cloud), then the provider chain.
 - Microphone + speakers (webcam optional, used for face tracking / vision)
+- `winsdk` (installed from `requirements.txt`; Windows-only wheel) powers
+  the SMTC media feed — real now-playing titles and play/pause state for
+  every media app. It is optional at runtime: without it, media readout
+  falls back to window titles and transport to the system media keys.
 
 ## Quick start
 
@@ -313,7 +377,21 @@ aria/                    Modular system package
     self_healing.py      Incident log, error diagnosis, auto-heal attempts
     shortcuts.py         Voice/text shortcuts
   hud.py                 OpenCV HUD: subsystem status rows, optic PIP,
-                         collapsible context tiles, overlay renderer
+                         collapsible context tiles, overlay renderer;
+                         Spotify/media telemetry (SMTC-first, then
+                         by-process window titles)
+  dashboard.py           The native Qt command center (three columns,
+                         tabs, pet mode, services dialog)
+  ui_panels.py           Settings + Commands dialogs (live tool catalog)
+  smtc.py                Windows SMTC sessions: now-playing for every
+                         media app + closed-loop explicit transport
+  media_control.py       One media tool over the HUD player / system
+  node_hub.py            Phone-node hub (WebSocket command routing)
+  phone_node.py          The nine phone_* tools over the hub
+  pet_window.py          The floating desktop pet
+  neural_field.py        The dashboard's animated neural background
+  presence.py            Idle/away presence gating for proactive speech
+  live.py                Gemini Live voice mode (opt-in, settings file)
   pixel_avatar.py        Full-body pixel-person avatar, reactive cognitive
                          expressions, ear antennae
   theme.cfg              HUD color theme definitions
@@ -341,7 +419,7 @@ aria/                    Modular system package
   vision.py              Camera capture (USB / IP / bridge), face tracking,
                          screen analysis, phone-frame ingest
   tools/                 Core tools & on-demand specialist toolkits
-    schemas.py           Tool declarations + 16 progressive toolkits
+    schemas.py           Tool declarations + progressive toolkits
     dispatch.py          Registry, execution, parallel calls, dedup
     sandbox.py           Risky-tool gating, argument validation
     builtins.py          Tool implementations
@@ -371,6 +449,20 @@ tools/                   Helper scripts (key manager)
 
 ### Latest
 
+- **The Mark-LVI wave + media overhaul (October 2026)** — the Qt dashboard
+  absorbed Mark-LVI's UI (ten ports: resonance orb, holo face with viseme
+  mouth, neural-field background, video panel, pet window, customize
+  wheel, panels) and the six architecture gap fills (presence gating,
+  Gemini Live mode, durable task journal with resume + verifier, memory
+  consolidation with a contradiction queue, per-provider/model cooldowns,
+  unified `media_control`). On top: the **phone node** (Android app +
+  nine `phone_*` tools), the **SMTC media overhaul** (NOW PLAYING covers
+  every media app with explicit, closed-loop-verified Play/Pause), the
+  briefing overhaul (cross-source story dedupe — one story, once),
+  colour-coded Conversation/Activity logs, pet mode that replaces the
+  whole UI, and Settings absorbing the Providers / Extensions /
+  Customize / Pet surfaces. 120 registered tools; the test suite runs
+  per-file in CI (`.github/workflows/tests.yml`).
 - **Self-restart hardening** — the hot-restart watcher now import-smoke-tests
   changed files in a fresh interpreter (catches bad imports `py_compile`
   misses, e.g. cross-repo contamination), auto-restores broken edits from git
