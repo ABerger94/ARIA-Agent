@@ -476,6 +476,19 @@ def create_dashboard(callbacks):
                 self.holo.hide(); _stack.addWidget(self.holo, 0, 0)
             self.mem_map_center = ConstellationWidget()
             self.mem_map_center.hide(); _stack.addWidget(self.mem_map_center, 0, 0)
+            # The map's ✕ (Alek, 2026-10-27): while the map is
+            # the centerpiece it carries a close button in its
+            # top-right corner that hands the center back to
+            # the normal centerpiece — the orb. A child of the
+            # map widget, so it exists exactly when the map does.
+            self.map_close = QPushButton('✕', self.mem_map_center)
+            self.map_close.setFixedSize(26, 26)
+            self.map_close.setToolTip('Close memory map')
+            self.map_close.setStyleSheet(
+                'background: rgba(10, 20, 30, 190); color: #cfe3ee;'
+                'border: 1px solid #1b3042; border-radius: 4px;')
+            self.map_close.clicked.connect(
+                lambda: self.set_centerpiece('orb'))
             cl.addWidget(self.center_stack, 1)
             self._last_orb_publish = 0.0
             self.state = QLabel('IDLE'); self.state.setAlignment(Qt.AlignmentFlag.AlignCenter); self.state.setObjectName('brand'); cl.addWidget(self.state)
@@ -645,6 +658,9 @@ def create_dashboard(callbacks):
                 self._sync_neural_geometry()
             if getattr(self, '_pip', None) is not None and self._pip.isVisible():
                 self._pip.place()
+            if getattr(self, 'mem_map_center', None) is not None \
+                    and self.mem_map_center.isVisible():
+                self._place_map_close()
 
         def dragEnterEvent(self, event):
             if event.mimeData().hasUrls(): event.acceptProposedAction()
@@ -1157,8 +1173,19 @@ def create_dashboard(callbacks):
                 self.holo.show()
             elif self._centerpiece == 'map':
                 self.mem_map_center.show()
+                self._place_map_close()
             else:
                 self.face.show()
+
+        def _place_map_close(self):
+            """Keep the memory map's ✕ in its top-right corner
+            as the center card resizes."""
+            host = getattr(self, 'mem_map_center', None)
+            btn = getattr(self, 'map_close', None)
+            if host is None or btn is None:
+                return
+            btn.move(max(2, host.width() - btn.width() - 8), 8)
+            btn.raise_()
 
         def show_video(self, source, title='', muted=False):
             """Play a file/direct URL in the center card, orb swapped out.

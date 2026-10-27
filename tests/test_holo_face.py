@@ -220,6 +220,16 @@ def test_dashboard_centerpiece_memory_map(monkeypatch):
     assert window.mem_map_center.isVisible()
     assert not window.face.isVisible()
     assert ('cp', 'map') in calls
+    # The map's ✕ (Alek, 2026-10-27): visible only while the
+    # map owns the center, and clicking it hands the center
+    # back to the normal centerpiece — the orb.
+    assert window.map_close.isVisible()
+    window.map_close.click()
+    app.processEvents()
+    assert window._centerpiece == 'orb'
+    assert window.face.isVisible()
+    assert not window.mem_map_center.isVisible()
+    assert not window.map_close.isVisible()
     window.set_centerpiece('orb')
     app.processEvents()
     assert window.face.isVisible()
