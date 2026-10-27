@@ -36,6 +36,23 @@ _PET_ORB_SCALE = 0.35
 _PET_HOLO_SCALE = 0.23
 _DRAG_THRESHOLD = 4          # px of movement before a press is a drag
 
+# The right-click menu's own colours, set on the menu itself. The
+# pet's translucency fix (2026-10-27) put an UNSCOPED
+# 'background: transparent' stylesheet on the window; stylesheets
+# cascade to children, so the QMenu inherited it and rendered black
+# with unreadable text until hover (Alek's witness, same day). The
+# window's style is now ID-scoped (see __init__) and the menu pins
+# explicit light-on-dark colours that no parent style can wash out.
+PET_MENU_QSS = (
+    'QMenu { background-color: #232733; color: #eef1f8;'
+    ' border: 1px solid #59617a; padding: 4px 0; }'
+    'QMenu::item { background-color: transparent; color: #eef1f8;'
+    ' padding: 6px 26px 6px 14px; }'
+    'QMenu::item:selected { background-color: #3d5a96;'
+    ' color: #ffffff; }'
+    'QMenu::item:disabled { color: #828aa0; }'
+)
+
 
 def clamp_pet_pos(x, y, w, h, screen_w, screen_h):
     """Keep the whole pet on screen (the source's clamp, verbatim
@@ -66,7 +83,11 @@ class PetWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground,
                           True)
         self.setAutoFillBackground(False)
-        self.setStyleSheet('background: transparent;')
+        # ID-scoped ONLY: an unscoped 'background: transparent' here
+        # cascades into every child widget — it is what turned the
+        # right-click menu black-on-black (see PET_MENU_QSS).
+        self.setObjectName('petWindow')
+        self.setStyleSheet('#petWindow { background: transparent; }')
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setFixedSize(*PET_SIZE)
         self._provider = provider or (lambda: ('idle', 0.0, False))
@@ -216,9 +237,11 @@ class PetWindow(QWidget):
         self._on_exit()
         super().mouseDoubleClickEvent(e)
 
-    def contextMenuEvent(self, e):
+    def _build_menu(self):
+        """The right-click menu, built WITHOUT showing it (the split
+        lets tests pin its contents and colours; exec() blocks)."""
         menu = QMenu(self)
-        self._menu = menu
+        menu.setStyleSheet(PET_MENU_QSS)
         act_open = menu.addAction('Open ARIA')
         act_open.triggered.connect(self._on_raise)
         self._act_form_holo = menu.addAction('Pet form: Character')
@@ -227,4 +250,9 @@ class PetWindow(QWidget):
         self._act_form_orb.triggered.connect(lambda: self.set_form('orb'))
         act_hide = menu.addAction('Hide pet')
         act_hide.triggered.connect(self.hide)
+        return menu
+
+    def contextMenuEvent(self, e):
+        menu = self._build_menu()
+        self._menu = menu
         menu.exec(e.globalPos())

@@ -149,6 +149,27 @@ def test_pet_click_raises_drag_parks_doubleclick_exits(monkeypatch,
     pet.close(); app.processEvents()
 
 
+def test_pet_menu_readable_and_window_style_scoped(monkeypatch, tmp_path):
+    # Regression (Alek, 2026-10-27): after the translucency fix the
+    # right-click menu rendered all black — text invisible until
+    # hover. Cause: the window's UNSCOPED 'background: transparent'
+    # stylesheet cascaded into the QMenu child. Pins: the window
+    # style is ID-scoped to the window itself, and the menu carries
+    # its own explicit light-text-on-dark colours.
+    app = _app()
+    pet, _calls, _prefs = _pet(monkeypatch, tmp_path)
+    assert pet.styleSheet().startswith('#petWindow'), pet.styleSheet()
+    menu = pet._build_menu()
+    assert [a.text() for a in menu.actions()] == [
+        'Open ARIA', 'Pet form: Character', 'Pet form: Waveform orb',
+        'Hide pet']
+    qss = menu.styleSheet()
+    assert 'background-color: #232733' in qss     # menu background
+    assert 'color: #eef1f8' in qss                # menu text
+    assert 'QMenu::item:selected' in qss         # hover stays visible
+    pet.close(); app.processEvents()
+
+
 def test_clamp_pet_pos():
     from aria.pet_window import clamp_pet_pos
     assert clamp_pet_pos(-50, 5000, 240, 260, 1920, 1080) == (0, 820)

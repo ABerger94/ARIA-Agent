@@ -22,12 +22,55 @@ import speech_recognition as sr
 from aria.config import WORKSPACE_DIR
 from aria import config as _config_silent
 
-# The pipeline's Edge voice. Since the Gemini Live port (aria/live.py)
-# her Live voice is Kore; MichelleNeural is Kore's closest Edge
-# stand-in, so the fallback pipeline no longer changes her voice
-# identity when Live is resting (Alek's pick, 2026-10-27). The
-# 'tts_voice' setting still overrides this per install.
-EDGE_TTS_VOICE = "en-US-MichelleNeural"
+# The pipeline's Edge voice: AriaNeural — her verified voice on the
+# laptop (standalone synthesis witness, 2026-10-20: "It sounded like
+# her"). A 2026-10-27 experiment made MichelleNeural (Kore's closest
+# Edge stand-in for the Gemini Live mode in aria/live.py) the pipeline
+# default; Alek's witness the same morning was "still using fallback
+# voice — it doesn't sound like ARIA," so the default is AriaNeural
+# again and Michelle is only a rung on the ladder below. The
+# 'tts_voice' setting still overrides this per install; her Live
+# voice (Kore) lives in aria/live.py and is unaffected.
+EDGE_TTS_VOICE = "en-US-AriaNeural"
+
+# If the configured voice cannot synthesize (a retired/renamed voice,
+# a bad saved setting, a Microsoft-side change), the probe walks this
+# ladder instead of giving up on Edge entirely — one bad voice name
+# must never mean a whole session on the SAPI fallback.
+EDGE_VOICE_LADDER = ("en-US-AriaNeural", "en-US-JennyNeural",
+                     "en-US-MichelleNeural")
+EDGE_PROBE_RETRY_SLEEP_S = 3.0
+
+_SESSION_VOICE: Optional[str] = None   # set by the probe on success
+
+
+def _configured_edge_voice() -> str:
+    try:
+        v = _config_silent.get_setting("tts_voice", EDGE_TTS_VOICE)
+    except Exception:
+        v = None
+    return v.strip() if isinstance(v, str) and v.strip() else EDGE_TTS_VOICE
+
+
+def edge_voice_candidates() -> List[str]:
+    """Probe order: the configured voice first (the user's Settings
+    choice wins), then the ladder, duplicates removed."""
+    out: List[str] = []
+    for v in (_configured_edge_voice(),) + EDGE_VOICE_LADDER:
+        if v not in out:
+            out.append(v)
+    return out
+
+
+def active_edge_voice() -> str:
+    """The voice synthesis actually uses: the probe-proven session
+    voice once one exists, else the configured voice."""
+    return _SESSION_VOICE or _configured_edge_voice()
+
+
+def _set_session_voice(voice: Optional[str]) -> None:
+    global _SESSION_VOICE
+    _SESSION_VOICE = voice
 WHISPER_EDGE_KWARGS = {"rate": "-10%", "pitch": "-8Hz", "volume": "-60%"}
 
 # A2: Edge availability supervision — re-probe cadence while Edge is
@@ -509,21 +552,44 @@ class SpeechManager:
                 self.log(f"Voice: system fallback (mixer init failed: {e})")
                 return False
 
-            last_err: Optional[Exception] = None
-            for attempt in range(1, 4):
-                try:
-                    if _edge_tts_bytes_strict("Voice check."):
-                        self.edge_ready = True
-                        with self._edge_fail_lock:
-                            self._edge_fail_streak = 0
-                        self.log("Voice: Edge TTS (AriaNeural)")
-                        return True
-                except Exception as e:
-                    last_err = e
-                    if attempt < 3:
-                        time.sleep(3)
+            # Walk the voice ladder: the configured voice gets the
+            # historical 3 attempts; each ladder voice gets one. A
+            # voice-name failure (retired voice, bad saved setting)
+            # fails fast and deterministically, so the ladder costs
+            # almost nothing when the configured voice is healthy —
+            # and a single bad name can no longer latch the whole
+            # session onto SAPI (2026-10-27 witness: "still using
+            # fallback voice — it's not using the edge voice").
+            configured = _configured_edge_voice()
+            failures: List[Tuple[str, Optional[Exception]]] = []
+            for idx, voice in enumerate(edge_voice_candidates()):
+                attempts = 3 if idx == 0 else 1
+                last_err: Optional[Exception] = None
+                for attempt in range(1, attempts + 1):
+                    try:
+                        if _edge_tts_bytes_strict("Voice check.",
+                                                   voice=voice):
+                            self.edge_ready = True
+                            _set_session_voice(voice)
+                            with self._edge_fail_lock:
+                                self._edge_fail_streak = 0
+                            if voice == configured:
+                                self.log(f"Voice: Edge TTS ({voice})")
+                            else:
+                                self.log(
+                                    f"Voice: Edge TTS ({voice}) — "
+                                    f"configured voice {configured} "
+                                    f"failed: {failures[0][1]}")
+                            return True
+                    except Exception as e:
+                        last_err = e
+                        if attempt < attempts:
+                            time.sleep(EDGE_PROBE_RETRY_SLEEP_S)
+                failures.append((voice, last_err))
 
-            self.log(f"Voice: system fallback (synthesis failed: {last_err})")
+            detail = "; ".join(f"{v}: {e}" for v, e in failures)
+            self.log(f"Voice: system fallback (Edge synthesis failed "
+                     f"for every voice — {detail})")
             return False
 
     def _edge_supervisor(self):
@@ -729,16 +795,22 @@ class SpeechManager:
             time.sleep(0.05)
 
 
-def _edge_tts_bytes_strict(text: str, whisper_mode: bool = False) -> bytes:
-    """Edge TTS synthesis that raises on failure (ImportError, network, timeout)."""
+def _edge_tts_bytes_strict(text: str, whisper_mode: bool = False,
+                           voice: Optional[str] = None) -> bytes:
+    """Edge TTS synthesis that raises on failure (ImportError, network,
+    timeout). Voice: the probe-proven session voice by default (see
+    active_edge_voice) — NOT re-read from settings per sentence, so a
+    configured voice the probe already proved broken is never retried
+    sentence by sentence."""
     import asyncio
     import edge_tts  # raises ImportError when the package is missing
 
     kwargs = WHISPER_EDGE_KWARGS if whisper_mode else {}
+    voice = voice or active_edge_voice()
 
     async def _gen():
         chunks = []
-        async for chunk in edge_tts.Communicate(text, _config_silent.get_setting("tts_voice", EDGE_TTS_VOICE), **kwargs).stream():
+        async for chunk in edge_tts.Communicate(text, voice, **kwargs).stream():
             if chunk.get("type") == "audio":
                 chunks.append(chunk["data"])
         return b"".join(chunks)
