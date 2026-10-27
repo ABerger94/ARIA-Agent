@@ -1056,10 +1056,10 @@ def create_dashboard(callbacks):
 
             def work():
                 try:
-                    from aria.news_feed import (fetch_headlines,
-                                                format_headlines_html)
+                    from aria.news_feed import (fetch_grouped,
+                                                format_grouped_html)
                     self.news_result.emit(
-                        format_headlines_html(fetch_headlines()))
+                        format_grouped_html(fetch_grouped()))
                 except Exception as exc:
                     config.log_silent('dashboard.news', exc)
                     self.news_result.emit(

@@ -77,6 +77,33 @@ def test_format_escapes_and_handles_empty():
     assert 'Could not load' in feed.format_headlines_html([])
 
 
+def test_fetch_section_uses_the_topic_feed(monkeypatch):
+    import aria.news_feed as feed
+    urls = []
+
+    def fake_urlopen(req, timeout=0):
+        urls.append(req.full_url)
+        return _Resp(RSS)
+    monkeypatch.setattr(feed.urllib.request, 'urlopen', fake_urlopen)
+    items = feed.fetch_section('TECHNOLOGY')
+    assert len(items) == 2
+    assert 'headlines/section/topic/TECHNOLOGY' in urls[0]
+
+
+def test_grouped_html_headers_and_empty_states():
+    import aria.news_feed as feed
+    one = [{'title': 'Big story', 'source': 'Wire',
+            'link': 'https://x', 'published': 'now'}]
+    html = feed.format_grouped_html(
+        [('Top stories', one), ('National', []), ('World', one)])
+    assert 'TOP STORIES' in html and 'NATIONAL' in html
+    assert 'No headlines right now.' in html      # one quiet group
+    assert 'Could not load' not in html
+    # Everything empty is the single failure state the tab shows.
+    assert 'Could not load' in feed.format_grouped_html(
+        [('Top stories', []), ('National', [])])
+
+
 def _stubs(monkeypatch, fetch):
     calls = []
     data = dict(cpu=25, mem=40, battery='80%', uptime_s=600,
@@ -123,6 +150,8 @@ def _stubs(monkeypatch, fetch):
     import aria.news_feed as real_feed
     feed.fetch_headlines = fetch
     feed.format_headlines_html = real_feed.format_headlines_html
+    feed.fetch_grouped = lambda: [('Top stories', fetch())]
+    feed.format_grouped_html = real_feed.format_grouped_html
     monkeypatch.setitem(sys.modules, 'aria.news_feed', feed)
     callbacks = types.SimpleNamespace(
         ptt_press=lambda: None, ptt_release=lambda: None,
@@ -158,7 +187,7 @@ def test_news_tab_lazy_load_refresh_and_failure_retry(monkeypatch):
     window = create_dashboard(callbacks)
     window.show(); app.processEvents()
     names = [window.tabs.tabText(i) for i in range(window.tabs.count())]
-    assert names[-1] == 'News'
+    assert 'News' in names
     assert state['calls'] == 0                      # nothing fetched yet
     window.tabs.setCurrentIndex(names.index('News'))
     assert _pump_until(

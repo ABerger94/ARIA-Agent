@@ -11,9 +11,18 @@ Dentist (3 PM to 4 PM).' for the calendar, 'On email: N unread —
 notable: Sender regarding 'Subject'' for the inbox (automated
 senders counted, never named; Google's own security alerts
 skipped), 'In Dundalk it's 61 degrees and clear, with a high of…'
-for the weather, and a single 'In the news:' line of headline
-titles instead of both news sections read aloud. The full
-per-section texts remain in the report for the Briefing tab.
+for the weather.
+
+The news (Alek, 2026-10-27 — full National/World/Tech sections
+'like yours' plus the hybrid): the Briefing tab carries full
+Local / National / World / Tech sections, three headlines each,
+and the greeting speaks a condensed set of categorized beats —
+'Locally: …', 'Nationally: …', 'Around the world: …', 'In
+tech: …', two headlines per beat. National/World/Tech are built
+from aria/news_feed.py's section feeds — the same source the
+News tab renders — so what she says is what the tab shows. (His
+saved world topics, when set, still merge into World as a
+supplement.) Local stays the city search feed.
 """
 from __future__ import annotations
 
@@ -32,19 +41,31 @@ _LAST = None
 _CACHE_LOCK = threading.Lock()
 _BUILD_LOCK = threading.Lock()
 _TITLES = {'schedule': 'Today’s schedule', 'email': 'Important email',
-           'weather': 'Local weather', 'local_news': 'Local news', 'world_news': 'World news'}
+           'weather': 'Local weather', 'local_news': 'Local news',
+           'national_news': 'National news', 'world_news': 'World news',
+           'tech_news': 'Tech news'}
+# The news keys in briefing order, with their spoken beat labels
+# and the adjective their empty note uses.
+_NEWS_KEYS = ('local_news', 'national_news', 'world_news', 'tech_news')
+_NEWS_BEATS = {'local_news': 'Locally', 'national_news': 'Nationally',
+               'world_news': 'Around the world', 'tech_news': 'In tech'}
+_NEWS_ADJ = {'local_news': 'local', 'national_news': 'national',
+             'world_news': 'world', 'tech_news': 'tech'}
 # Per-section bounds, Mark-LVI style: sections run concurrently and
 # each is abandoned at its OWN bound (a slow inbox no longer shares
 # one deadline with everything else), landing its timeout note in
 # the greeting instead of stalling or vanishing.
 _SECTION_TIMEOUTS = {'schedule': 8.0, 'email': 12.0, 'weather': 10.0,
-                     'local_news': 10.0, 'world_news': 10.0}
+                     'local_news': 10.0, 'national_news': 10.0,
+                     'world_news': 10.0, 'tech_news': 10.0}
 _TIMEOUT_NOTES = {
     'schedule': "Your calendar is taking too long to check, so I've skipped it this time.",
     'email': "Your email is taking too long to check, so I've skipped it this time.",
     'weather': "The weather is taking too long to load, so I've skipped it this time.",
     'local_news': "The news is taking too long to load, so I've skipped it this time.",
+    'national_news': "The news is taking too long to load, so I've skipped it this time.",
     'world_news': "The news is taking too long to load, so I've skipped it this time.",
+    'tech_news': "The news is taking too long to load, so I've skipped it this time.",
 }
 
 
@@ -207,25 +228,33 @@ def _same_story(a, b):
     return inter / min(len(a), len(b)) >= .75
 
 
+def _clean_title(title):
+    """A headline as a headline: no wire section prefix, no
+    publisher tail. Shared by the RSS parser and the News tab's
+    section items (which arrive pre-parsed)."""
+    title = ' '.join(str(title or '').split())
+    # Wire copy carries its section as a prefix ('Insight:
+    # Fashion's AI era...' — Reuters, in Alek's 2026-10-27
+    # greeting). The label is not part of the headline.
+    title = _WIRE_PREFIX.sub('', title)
+    # Google News titles arrive as 'Headline - Publisher'
+    # ('… - WBAL-TV', '… - Reuters'). Alek (2026-10-27):
+    # headlines only, no source names in the briefing. Strip
+    # the LAST ' - ' tail only when it is short and
+    # sentence-free, so a dash inside a real headline survives.
+    if ' - ' in title:
+        head, _, tail = title.rpartition(' - ')
+        if (head and '.' not in tail and len(tail.split()) <= 6
+                and (tail[0].isupper() or tail.isupper())):
+            title = head
+    return title
+
+
 def parse_headlines(xml, now, limit=3):
     root = ET.fromstring(xml)
     results = []; seen = set()
     for item in root.findall('.//item'):
-        title = ' '.join((item.findtext('title') or '').split())
-        # Wire copy carries its section as a prefix ('Insight:
-        # Fashion's AI era...' — Reuters, in Alek's 2026-10-27
-        # greeting). The label is not part of the headline.
-        title = _WIRE_PREFIX.sub('', title)
-        # Google News titles arrive as 'Headline - Publisher'
-        # ('… - WBAL-TV', '… - Reuters'). Alek (2026-10-27):
-        # headlines only, no source names in the briefing. Strip
-        # the LAST ' - ' tail only when it is short and
-        # sentence-free, so a dash inside a real headline survives.
-        if ' - ' in title:
-            head, _, tail = title.rpartition(' - ')
-            if (head and '.' not in tail and len(tail.split()) <= 6
-                    and (tail[0].isupper() or tail.isupper())):
-                title = head
+        title = _clean_title(item.findtext('title') or '')
         link = (item.findtext('link') or '').strip()
         try:
             published = parsedate_to_datetime(item.findtext('pubDate') or '')
@@ -250,36 +279,97 @@ def parse_headlines(xml, now, limit=3):
     return [{k: v for k, v in row.items() if not k.startswith('_')} for row in results]
 
 
+_NEWS_FEED_MOD = None
+
+
+def _news_feed_module():
+    """aria/news_feed.py — the News tab's source. Imported as a
+    package module in production; the test loader runs this file
+    standalone, so fall back to loading the sibling by path."""
+    global _NEWS_FEED_MOD
+    if _NEWS_FEED_MOD is not None:
+        return _NEWS_FEED_MOD
+    try:
+        from aria import news_feed
+        _NEWS_FEED_MOD = news_feed
+    except Exception:
+        import importlib.util
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location(
+            'aria_news_feed_sibling',
+            Path(__file__).with_name('news_feed.py'))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _NEWS_FEED_MOD = mod
+    return _NEWS_FEED_MOD
+
+
+def _section_items(topic, now, limit=3):
+    """Briefing items from one News-tab section feed: titles
+    cleaned, stale dropped (the parser's 48h window), same-story
+    dupes removed — parse_headlines' rules over pre-parsed items."""
+    feed = _news_feed_module()
+    results = []; seen = set()
+    for row in feed.fetch_section(topic, limit=10):
+        title = _clean_title(row.get('title', ''))
+        link = str(row.get('link', '')).strip()
+        try:
+            published = parsedate_to_datetime(str(row.get('published', '') or ''))
+            if published.tzinfo is None:
+                published = published.replace(tzinfo=timezone.utc)
+            age = now.astimezone(timezone.utc) - published.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        if not timedelta(minutes=-5) <= age <= timedelta(hours=48):
+            continue
+        if not title or not link.startswith(('http://', 'https://')):
+            continue
+        normalized = re.sub(r'[^\w]+', ' ', title.casefold()).strip()
+        words = set(normalized.split())
+        content = _content_words(title)
+        if normalized in seen or any(len(words & r['_words']) / max(1, len(words | r['_words'])) > .65 or _same_story(content, r['_content']) for r in results):
+            continue
+        seen.add(normalized)
+        results.append({'title': title[:250], 'url': link, 'published': published.isoformat(), '_words': words, '_content': content})
+        if len(results) >= limit:
+            break
+    return [{k: v for k, v in row.items() if not k.startswith('_')} for row in results]
+
+
+def _section_from_items(kind, label, items):
+    if not items:
+        return section('No recent ' + _NEWS_ADJ[kind] + ' headlines were returned by the news source.', 'empty')
+    result = section(label + ': ' + '; '.join(row['title'] for row in items) + '.', sources=items)
+    result['label'] = label
+    return result
+
+
 def news_section(now, kind, city, topics):
     if kind == 'local_news':
         query = city + ' Baltimore County local news when:1d'
         url = 'https://news.google.com/rss/search?' + urllib.parse.urlencode({'q': query, 'hl': 'en-US', 'gl': 'US', 'ceid': 'US:en'})
-        label = 'Local headlines'
-        items = parse_headlines(_get(url), now, limit=4)
-    else:
-        label = 'World headlines'
-        items = []
-        if topics:
-            # His topics AND the general world feed: topics alone
-            # made 'world news' a niche wire (the 2026-10-27
-            # greeting's lone Reuters fashion item); the BBC feed
-            # guarantees a real world story is in the pool.
-            url = 'https://news.google.com/rss/search?' + urllib.parse.urlencode({'q': '(' + ' OR '.join(topics[:4]) + ') world news when:1d', 'hl': 'en-US', 'gl': 'US', 'ceid': 'US:en'})
-            items += parse_headlines(_get(url), now, limit=3)
-        items += parse_headlines(_get('https://feeds.bbci.co.uk/news/world/rss.xml'), now, limit=4 if topics else 5)
-        deduped, kept = [], []
-        for row in items:
+        return _section_from_items(kind, 'Local headlines',
+                                   parse_headlines(_get(url), now, limit=3))
+    if kind == 'national_news':
+        return _section_from_items(kind, 'National headlines',
+                                   _section_items('NATION', now, limit=3))
+    if kind == 'tech_news':
+        return _section_from_items(kind, 'Tech headlines',
+                                   _section_items('TECHNOLOGY', now, limit=3))
+    # world_news: the News tab's WORLD section feed leads; his
+    # saved topics (Settings → Daily briefing) still merge in as
+    # a supplement, deduped against the section's own stories.
+    items = _section_items('WORLD', now, limit=3)
+    if topics:
+        url = 'https://news.google.com/rss/search?' + urllib.parse.urlencode({'q': '(' + ' OR '.join(topics[:4]) + ') world news when:1d', 'hl': 'en-US', 'gl': 'US', 'ceid': 'US:en'})
+        kept = [_content_words(r['title']) for r in items]
+        for row in parse_headlines(_get(url), now, limit=2):
             cw = _content_words(row['title'])
             if any(_same_story(cw, k) for k in kept):
                 continue
             kept.append(cw)
-            deduped.append(row)
-        items = deduped[:5]
-    if not items:
-        return section('No recent ' + ('local' if kind == 'local_news' else 'world') + ' headlines were returned by the news source.', 'empty')
-    result = section(label + ': ' + '; '.join(row['title'] for row in items) + '.', sources=items)
-    result['label'] = label
-    return result
+            items.append(row)
+    return _section_from_items(kind, 'World headlines', items)
 
 
 def compose(now, sources, name='Alek', timeout=14):
@@ -318,21 +408,22 @@ def compose(now, sources, name='Alek', timeout=14):
     for key, title in _TITLES.items():
         value = results.get(key, section(_TIMEOUT_NOTES[key], 'timeout'))
         sections.append({'key': key, 'title': title, **value})
-    # The SPOKEN text follows Mark-LVI's composition: calendar,
-    # email, weather, then ONE 'In the news:' line of headline
-    # titles (local first, three total). The full local/world
-    # sections stay in 'sections' for the Briefing tab — speaking
-    # both blocks verbatim made the greeting a five-part report.
+    # The SPOKEN text: calendar, email, weather, then the news
+    # as categorized beats (Alek, 2026-10-27 — full sections
+    # 'like yours' plus the hybrid): 'Locally: …', 'Nationally:
+    # …', 'Around the world: …', 'In tech: …', two headlines per
+    # beat. The full three-per-section texts stay in 'sections'
+    # for the Briefing tab.
     by = {s['key']: s for s in sections}
     spoken = [by[k]['text'] for k in ('schedule', 'email', 'weather')]
-    # Cross-section dedupe (Alek, 2026-10-27 — 'the news section
-    # sucks'): the same story in both feeds, or twice via two
-    # outlets, is ONE story. Local wins; the world section's text
-    # is rebuilt from what survives so the Briefing tab agrees
+    # Cross-section dedupe across ALL FOUR news sections (the
+    # same story in two feeds, or twice via two outlets, is ONE
+    # story; earlier sections win). Every sourced section's tab
+    # text is rebuilt from what survives, so the tab agrees
     # with what was spoken.
     pools = {}
     kept_words = []
-    for key in ('local_news', 'world_news'):
+    for key in _NEWS_KEYS:
         pool = []
         for item in by[key].get('sources', []):
             t = str(item.get('title', '')).strip()
@@ -344,39 +435,27 @@ def compose(now, sources, name='Alek', timeout=14):
             kept_words.append(cw)
             pool.append(t)
         pools[key] = pool
-    world = by['world_news']
-    if world.get('status') == 'ok' and world.get('sources') \
-            and len(pools['world_news']) != len(world['sources']):
-        world['sources'] = [it for it in world['sources']
-                            if str(it.get('title', '')).strip() in pools['world_news']]
-        if pools['world_news']:
-            world['text'] = (world.get('label', 'World headlines') + ': '
-                             + '; '.join(pools['world_news']) + '.')
-    # Spoken picks diversify: local lead, world lead, then the
-    # remaining headline least like either — never two phrasings
-    # of one story, never a single feed's leftovers by default.
-    picks = []
-    if pools['local_news']:
-        picks.append(pools['local_news'][0])
-    if pools['world_news']:
-        picks.append(pools['world_news'][0])
-    rest = pools['local_news'][1:] + pools['world_news'][1:]
-    while rest and len(picks) < 3:
-        def _dist(t, _picks=picks):
-            cw = _content_words(t)
-            return min(1.0 - len(cw & _content_words(p)) / max(1, len(cw | _content_words(p))) for p in _picks) if _picks else 1.0
-        nxt = max(rest, key=_dist)
-        picks.append(nxt)
-        rest.remove(nxt)
-    titles = picks
-    if titles:
-        spoken.append('In the news: ' + '. '.join(titles[:3]) + '.')
+        sec = by[key]
+        if sec.get('sources') and len(pool) != len(sec['sources']):
+            sec['sources'] = [it for it in sec['sources']
+                              if str(it.get('title', '')).strip() in pool]
+            if pool:
+                sec['text'] = (sec.get('label', _TITLES[key]) + ': '
+                               + '; '.join(pool) + '.')
+            else:
+                sec['text'] = ('No recent ' + _NEWS_ADJ[key]
+                               + ' headlines were returned by the news source.')
+                sec['status'] = 'empty'
+    beats = [_NEWS_BEATS[key] + ': ' + '. '.join(pools[key][:2]) + '.'
+             for key in _NEWS_KEYS if pools[key]]
+    if beats:
+        spoken.extend(beats)
     else:
-        ok_texts = [by[k]['text'] for k in ('local_news', 'world_news')
+        ok_texts = [by[k]['text'] for k in _NEWS_KEYS
                     if by[k]['status'] == 'ok' and by[k]['text']]
         if ok_texts:
             spoken.extend(ok_texts)
-        elif any(by[k]['status'] != 'ok' for k in ('local_news', 'world_news')):
+        elif any(by[k]['status'] != 'ok' for k in _NEWS_KEYS):
             spoken.append("I couldn't fetch the news right now.")
     return {'generated_at': now.isoformat(), 'text': intro + ' ' + ' '.join(spoken), 'sections': sections}
 
@@ -407,7 +486,9 @@ def build_briefing(force=False):
         sources = {'schedule': lambda: calendar_section(now), 'email': lambda: email_section(now),
                    'weather': lambda: weather_section(city),
                    'local_news': lambda: news_section(now, 'local_news', city, topics),
-                   'world_news': lambda: news_section(now, 'world_news', city, topics)}
+                   'national_news': lambda: news_section(now, 'national_news', city, topics),
+                   'world_news': lambda: news_section(now, 'world_news', city, topics),
+                   'tech_news': lambda: news_section(now, 'tech_news', city, topics)}
         report = compose(now, sources, name=str(config.get_setting('briefing_name', 'Alek')))
         with _CACHE_LOCK:
             _LAST = report
@@ -420,7 +501,7 @@ def report_text(report):
     blocks = ['DAILY BRIEFING  ·  ' + report['generated_at'], report['text'].split('. ', 2)[0] + '.']
     for item in report['sections']:
         blocks.append(item['title'].upper() + '\n' + item['text'])
-        if item['key'] in ('local_news', 'world_news'):
+        if item['key'] in _NEWS_KEYS:
             # Alek (2026-10-27): no source listings in the
             # briefing — the headlines are the content; repeating
             # each one as a title+URL block under its section is

@@ -104,7 +104,9 @@ def test_report_text_lists_headlines_not_news_sources():
     assert 'news.example' not in text          # no source URL blocks
 
 
-def test_spoken_text_merges_news_into_one_line():
+def test_spoken_news_speaks_categorized_beats():
+    # Alek, 2026-10-27: full sections in the tab, categorized
+    # beats in the greeting — never the old single merged line.
     funcs = sources()
     funcs['local_news'] = lambda: b.section(
         'Local headlines: A; B.',
@@ -115,12 +117,38 @@ def test_spoken_text_merges_news_into_one_line():
         sources=[{'title': 'World one', 'url': 'https://x/3'},
                  {'title': 'World two', 'url': 'https://x/4'}])
     report = b.compose(NOW, funcs)
-    # Diversified picks (Alek, 2026-10-27): local lead, world
-    # lead, then the most-different remainder.
-    assert 'In the news: Local one. World one. Local two.' in report['text']
+    assert 'Locally: Local one. Local two.' in report['text']
+    assert 'Around the world: World one. World two.' in report['text']
+    assert 'In the news:' not in report['text']
     assert 'Local headlines:' not in report['text']
     by_key = {s['key']: s for s in report['sections']}
     assert by_key['local_news']['text'] == 'Local headlines: A; B.'
+
+
+def test_beats_condense_but_sections_keep_three():
+    funcs = sources()
+    stories = {
+        'national_news': ('National', ['Senate passes budget bill',
+                                       'Storm lashes the Gulf Coast',
+                                       'Markets rally on jobs report']),
+        'tech_news': ('Tech', ['New chip doubles battery life',
+                               'AI lab open-sources its model',
+                               'Rocket lands itself at sea'])}
+    for key, (label, titles) in stories.items():
+        funcs[key] = lambda lb=label, ts=titles: b.section(
+            f'{lb} headlines: x.',
+            sources=[{'title': t, 'url': 'https://x/' + t[:8].replace(' ', '-')}
+                     for t in ts])
+    report = b.compose(NOW, funcs)
+    # Spoken: two per beat. Tab section keeps all three sources.
+    assert ('Nationally: Senate passes budget bill. '
+            'Storm lashes the Gulf Coast.') in report['text']
+    assert ('In tech: New chip doubles battery life. '
+            'AI lab open-sources its model.') in report['text']
+    assert 'Markets rally on jobs report' not in report['text']
+    by_key = {s['key']: s for s in report['sections']}
+    assert len(by_key['national_news']['sources']) == 3
+    assert len(by_key['tech_news']['sources']) == 3
 
 
 def test_news_rejects_old_undated_and_duplicate_headlines():
@@ -193,12 +221,51 @@ def test_weather_uses_observed_values(monkeypatch):
     assert 'Dundalk' in result['text'] and '59 degrees' in result['text'] and '66' in result['text']
 
 
-def test_feed_urls_include_local_area_and_separate_world_source(monkeypatch):
+def _fake_feed(monkeypatch, items_by_topic):
+    asked = []
+    fake = types.SimpleNamespace(
+        fetch_section=lambda topic, limit=10: asked.append(topic)
+        or list(items_by_topic.get(topic, [])))
+    monkeypatch.setattr(b, '_NEWS_FEED_MOD', fake)
+    return asked
+
+
+def _feed_item(title, pub='Tue, 27 Oct 2026 07:00:00 +0000'):
+    return {'title': title, 'source': 'Wire',
+            'link': 'https://news.example/' + title[:12].replace(' ', '-'),
+            'published': pub}
+
+
+def test_news_sources_local_search_and_tab_section_feeds(monkeypatch):
+    # Local still searches the city feed; National/World/Tech
+    # come from the News tab's section feeds (Alek, 2026-10-27).
     seen = []
     def fetch(url):
         seen.append(url); return b'<rss><channel/></rss>'
     monkeypatch.setattr(b, '_get', fetch)
+    asked = _fake_feed(monkeypatch, {
+        'WORLD': [_feed_item('Summit reaches deal - Reuters')],
+        'NATION': [_feed_item('Senate passes bill - AP')],
+        'TECHNOLOGY': [_feed_item('New chip unveiled - The Verge')]})
     b.news_section(NOW, 'local_news', 'Dundalk, Maryland', [])
-    b.news_section(NOW, 'world_news', 'Dundalk, Maryland', [])
     assert 'Dundalk' in seen[0] and 'Baltimore' in seen[0]
-    assert 'feeds.bbci.co.uk/news/world' in seen[1]
+    world = b.news_section(NOW, 'world_news', 'Dundalk, Maryland', [])
+    nation = b.news_section(NOW, 'national_news', 'Dundalk, Maryland', [])
+    tech = b.news_section(NOW, 'tech_news', 'Dundalk, Maryland', [])
+    assert asked == ['WORLD', 'NATION', 'TECHNOLOGY']
+    # Titles arrive cleaned: the publisher tail never reaches
+    # the briefing.
+    assert world['text'] == 'World headlines: Summit reaches deal.'
+    assert nation['text'] == 'National headlines: Senate passes bill.'
+    assert tech['text'] == 'Tech headlines: New chip unveiled.'
+
+
+def test_section_items_drop_stale_dupes_and_bad_links(monkeypatch):
+    _fake_feed(monkeypatch, {'NATION': [
+        _feed_item('Bridge reopens downtown - AP'),
+        _feed_item('Bridge reopens downtown - AP'),
+        _feed_item('Old bridge news - AP', 'Fri, 23 Oct 2026 07:00:00 +0000'),
+        {'title': 'No scheme - AP', 'source': 'AP', 'link': 'ftp://x',
+         'published': 'Tue, 27 Oct 2026 07:00:00 +0000'}]})
+    items = b._section_items('NATION', NOW, limit=3)
+    assert [i['title'] for i in items] == ['Bridge reopens downtown']
