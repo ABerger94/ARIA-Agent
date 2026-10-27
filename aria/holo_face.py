@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import time
 
-from PyQt6.QtCore import QRectF
+from PyQt6.QtCore import QRectF, Qt
 from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import QWidget
 
@@ -28,8 +28,18 @@ class HoloFace(QWidget):
 
     PRIMARY = _PRIMARY_DEFAULT
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, transparent_background=False,
+                 radius_scale=0.36):
         super().__init__(parent)
+        self._transparent_background = bool(transparent_background)
+        self._radius_scale = float(radius_scale)
+        if self._transparent_background:
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground,
+                              True)
+            self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground,
+                              True)
+            self.setAutoFillBackground(False)
+            self.setStyleSheet('background: transparent;')
         self._avatar = HoloAvatar()
         self._last = time.monotonic()
         self.setMinimumSize(280, 280)
@@ -53,8 +63,9 @@ class HoloFace(QWidget):
             return
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
-        p.fillRect(QRectF(0, 0, w, h), QColor(_BG))
-        r = min(w, h) * 0.36
+        if not self._transparent_background:
+            p.fillRect(QRectF(0, 0, w, h), QColor(_BG))
+        r = min(w, h) * self._radius_scale
         self._avatar.paint(p, w / 2, h / 2 + r * 0.12, r,
                            QColor(self.PRIMARY), QColor(_ACCENT),
                            QColor(_BG))

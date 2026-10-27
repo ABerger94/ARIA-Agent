@@ -23,7 +23,17 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QApplication, QMenu, QVBoxLayout, QWidget
 
-PET_SIZE = (240, 260)
+PET_SIZE = (288, 288)
+_PET_MARGIN = 4              # transparent breathing room around the face
+# Scale factors chosen so EVERY painted element fits the 280px
+# face slot: the orb's widest transient (emission rings reach
+# 1.27x the core radius) peaks at 0.35 * 1.27 = 0.44 of the face —
+# inside the half-width with margin; the holo aura spans 1.95x
+# its head radius, so 0.23 keeps the aura inside too. At the old
+# 240x260 the faces' 280px minimum silently overflowed the window
+# (anchored top-left), which is what cut the orb's right side.
+_PET_ORB_SCALE = 0.35
+_PET_HOLO_SCALE = 0.23
 _DRAG_THRESHOLD = 4          # px of movement before a press is a drag
 
 
@@ -49,6 +59,14 @@ class PetWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating,
                           True)
         self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
+        # Translucent: the desktop shows through everywhere the
+        # centerpiece itself does not paint. The faces are created
+        # transparent-aware for the same reason (their painters
+        # otherwise fill an opaque HUD background).
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground,
+                          True)
+        self.setAutoFillBackground(False)
+        self.setStyleSheet('background: transparent;')
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setFixedSize(*PET_SIZE)
         self._provider = provider or (lambda: ('idle', 0.0, False))
@@ -58,7 +76,9 @@ class PetWindow(QWidget):
         self._dragging = False
         self._menu = None
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setContentsMargins(_PET_MARGIN, _PET_MARGIN,
+                               _PET_MARGIN, _PET_MARGIN)
+        lay.setSpacing(0)
         self._face = None
         self._form = None
         self.set_form(form or self._saved_form())
@@ -87,14 +107,20 @@ class PetWindow(QWidget):
         if form == 'holo':
             try:
                 from aria.holo_face import HoloFace
-                self._face = HoloFace(self)
+                self._face = HoloFace(
+                    self, transparent_background=True,
+                    radius_scale=_PET_HOLO_SCALE)
             except Exception:
                 from aria.resonance import ResonanceOrb
-                self._face = ResonanceOrb(self)
+                self._face = ResonanceOrb(
+                    self, transparent_background=True,
+                    core_scale=_PET_ORB_SCALE)
                 form = 'orb'
         else:
             from aria.resonance import ResonanceOrb
-            self._face = ResonanceOrb(self)
+            self._face = ResonanceOrb(
+                self, transparent_background=True,
+                core_scale=_PET_ORB_SCALE)
         self._form = form
         self.layout().addWidget(self._face)
 

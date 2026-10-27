@@ -31,8 +31,18 @@ def qcol(value):
 
 
 class ResonanceOrb(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, transparent_background=False,
+                 core_scale=0.41):
         super().__init__(parent)
+        self._transparent_background = bool(transparent_background)
+        self._core_scale = float(core_scale)
+        if self._transparent_background:
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground,
+                              True)
+            self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground,
+                              True)
+            self.setAutoFillBackground(False)
+            self.setStyleSheet('background: transparent;')
         self.setMinimumSize(280, 280)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._assistant_name = 'A.R.I.A.'
@@ -66,9 +76,11 @@ class ResonanceOrb(QWidget):
         painter = QPainter(self)
         try:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            painter.fillRect(self.rect(), QColor(C.BG))
+            if not self._transparent_background:
+                painter.fillRect(self.rect(), QColor(C.BG))
             self._paint_wave_core(painter, self.width() / 2, self.height() / 2,
-                                  min(self.width(), self.height()) * .41,
+                                  min(self.width(), self.height())
+                                  * self._core_scale,
                                   self.width(), self.height())
         finally:
             painter.end()
@@ -181,6 +193,14 @@ class ResonanceOrb(QWidget):
 
         def blend(col: QColor, a: float) -> QColor:
             k = max(0.0, min(1.0, a))
+            if self._transparent_background:
+                # Alpha-blend instead of pre-mixing onto the opaque
+                # HUD background: on the desktop pet there IS no
+                # background — elements must fade to transparent,
+                # never to a dark disc.
+                out = QColor(col)
+                out.setAlphaF(k)
+                return out
             return QColor(int(bg.red()   + (col.red()   - bg.red())   * k),
                           int(bg.green() + (col.green() - bg.green()) * k),
                           int(bg.blue()  + (col.blue()  - bg.blue())  * k))
@@ -201,7 +221,9 @@ class ResonanceOrb(QWidget):
         p.setBrush(Qt.BrushStyle.NoBrush)
 
         # 2. Frame marks at the corners of the whole canvas.
-        if W > 40 and H > 40:
+        # (Skipped on the transparent pet: they belong to the HUD
+        # canvas, and their lines would hang in empty air.)
+        if W > 40 and H > 40 and not self._transparent_background:
             m, arm = min(W, H) * 0.035, min(W, H) * 0.055
             p.setPen(QPen(blend(main, 0.45), 1.4))
             for sx, sy in ((1, 1), (-1, 1), (1, -1), (-1, -1)):
@@ -210,15 +232,17 @@ class ResonanceOrb(QWidget):
                 p.drawLine(QLineF(x, y, x - sx * arm, y))
                 p.drawLine(QLineF(x, y, x, y - sy * arm))
 
-        # 3. Crosshair, broken around the core.
-        p.setPen(QPen(blend(main, 0.16), 1))
-        gap = r * 0.62
-        if W > 40:
-            p.drawLine(QLineF(cx - W / 2, cy, cx - gap, cy))
-            p.drawLine(QLineF(cx + gap, cy, cx + W / 2, cy))
-        if H > 40:
-            p.drawLine(QLineF(cx, cy - H / 2, cx, cy - gap))
-            p.drawLine(QLineF(cx, cy + gap, cx, cy + H / 2))
+        # 3. Crosshair, broken around the core. (HUD canvas only,
+        # like the frame marks above.)
+        if not self._transparent_background:
+            p.setPen(QPen(blend(main, 0.16), 1))
+            gap = r * 0.62
+            if W > 40:
+                p.drawLine(QLineF(cx - W / 2, cy, cx - gap, cy))
+                p.drawLine(QLineF(cx + gap, cy, cx + W / 2, cy))
+            if H > 40:
+                p.drawLine(QLineF(cx, cy - H / 2, cx, cy - gap))
+                p.drawLine(QLineF(cx, cy + gap, cx, cy + H / 2))
 
         # 4. Two thin outer circles + sparse graduations, as the reactor's.
         for rr, a in ((1.00, 0.34), (0.93, 0.16)):

@@ -63,7 +63,35 @@ def test_pet_window_flags_and_size(monkeypatch, tmp_path):
     assert flags & Qt.WindowType.Tool
     assert pet.focusPolicy() == Qt.FocusPolicy.NoFocus
     assert not pet.testAttribute(Qt.WidgetAttribute.WA_QuitOnClose)
-    assert (pet.width(), pet.height()) == (240, 260)
+    assert (pet.width(), pet.height()) == (288, 288)
+    pet.close(); app.processEvents()
+
+
+def test_pet_translucent_and_face_fully_inside(monkeypatch, tmp_path):
+    # The two witnessed defects (2026-10-27): an opaque background,
+    # and the orb's right side cut off because the face's 280px
+    # minimum overflowed the old 240x260 window (anchored
+    # top-left). Pin both shut: translucency attributes on the
+    # window AND the face, and the face geometry fully inside.
+    app = _app()
+    pet, _calls, _prefs = _pet(monkeypatch, tmp_path)
+    assert pet.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    assert not pet.autoFillBackground()
+    pet.show(); app.processEvents()
+    for form in ('orb', 'holo'):
+        pet.set_form(form)
+        app.processEvents()
+        face = pet.face
+        assert face.testAttribute(
+            Qt.WidgetAttribute.WA_TranslucentBackground)
+        assert pet.rect().contains(face.geometry()), (
+            form, face.geometry(), pet.rect())
+        assert face.geometry() == pet.rect().adjusted(4, 4, -4, -4)
+    # The rendered corners are actually transparent pixels.
+    img = pet.grab().toImage()
+    assert img.hasAlphaChannel()
+    assert img.pixelColor(0, 0).alpha() == 0
+    assert img.pixelColor(img.width() - 1, 0).alpha() == 0
     pet.close(); app.processEvents()
 
 
