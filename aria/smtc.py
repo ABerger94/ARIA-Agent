@@ -135,15 +135,21 @@ def app_label(app_id: str) -> str:
 
 def _session_info(session) -> Optional[dict]:
     try:
-        props = session.try_get_media_properties_async().get()
         info = session.get_playback_info()
         status = _STATUS.get(int(info.playback_status), "open")
-        track = (props.title or "").strip()
-        artist = (props.artist or "").strip()
-        album = (props.album_title or "").strip()
         app_id = session.source_app_user_model_id or ""
     except Exception:
         return None
+    try:
+        props = session.try_get_media_properties_async().get()
+        track = (props.title or "").strip()
+        artist = (props.artist or "").strip()
+        album = (props.album_title or "").strip()
+    except Exception:
+        # Some apps' properties call fails while their playback
+        # info is fine — a session with a state but no title
+        # still beats no session at all.
+        track = artist = album = ""
     title = f"{artist} - {track}" if artist and track else track
     return {
         "running": True,

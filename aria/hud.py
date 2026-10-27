@@ -182,17 +182,10 @@ def _parse_spotify_title(title):
             "title": txt, "artist": "", "track": ""}
 
 
-def _spotify_window_title():
-    """The title of Spotify's main window, found by PROCESS, not
-    by title text. The old matcher searched titles for the word
-    'spotify' — but a PLAYING Spotify's window title IS the track
-    ('Artist - Track', no 'spotify' anywhere), so the scrape only
-    ever matched the idle window and reported standby / not
-    running while music played (Alek's witness, 2026-10-27:
-    'nothing playing but Spotify is playing', and every
-    telemetry-gated play/pause path refused as 'not running').
-    Windows-only; returns None off Windows or when Spotify has
-    no window."""
+def _visible_windows_by_process():
+    """[(exe_name_lower, window_title)] for every visible
+    top-level window, found by PROCESS. Windows-only; [] off
+    Windows. One enumeration shared by the media fallbacks."""
     import ctypes
     from ctypes import wintypes
     user32 = ctypes.windll.user32
@@ -201,6 +194,9 @@ def _spotify_window_title():
 
     def enum_cb(hwnd, _extra):
         if not user32.IsWindowVisible(hwnd):
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
             return True
         pid = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
@@ -212,22 +208,107 @@ def _spotify_window_title():
             size = wintypes.DWORD(len(buf))
             if kernel32.QueryFullProcessImageNameW(
                     handle, 0, buf, ctypes.byref(size)):
-                if buf.value.lower().endswith("spotify.exe"):
-                    length = user32.GetWindowTextLengthW(hwnd)
-                    if length > 0:
-                        tbuf = ctypes.create_unicode_buffer(length + 1)
-                        user32.GetWindowTextW(hwnd, tbuf, length + 1)
-                        found.append(tbuf.value.strip())
+                exe = buf.value.replace("\\", "/").rsplit("/", 1)[-1].lower()
+                tbuf = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, tbuf, length + 1)
+                found.append((exe, tbuf.value.strip()))
         finally:
             kernel32.CloseHandle(handle)
         return True
 
     WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
     user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
+    return found
+
+
+def _spotify_window_title(windows=None):
+    """The title of Spotify's main window, found by PROCESS, not
+    by title text. The old matcher searched titles for the word
+    'spotify' — but a PLAYING Spotify's window title IS the track
+    ('Artist - Track', no 'spotify' anywhere), so the scrape only
+    ever matched the idle window and reported standby / not
+    running while music played (Alek's witness, 2026-10-27:
+    'nothing playing but Spotify is playing', and every
+    telemetry-gated play/pause path refused as 'not running')."""
+    if windows is None:
+        windows = _visible_windows_by_process()
+    found = [t for exe, t in windows if exe == "spotify.exe" and t]
     for title in found:
         if " - " in title:
             return title
     return found[0] if found else None
+
+
+# Known media players for the window-title fallback: exe → the
+# app label the dashboard shows. (Browsers are deliberately
+# absent — a browser window title is a page title, not media.)
+_MEDIA_PROCS = {
+    "vlc.exe": "VLC",
+    "mediaplayer.exe": "Media Player",
+    "video.ui.exe": "Movies & TV",
+    "wmplayer.exe": "Windows Media Player",
+    "mpc-hc.exe": "MPC-HC",
+    "mpc-hc64.exe": "MPC-HC",
+    "potplayer64.exe": "PotPlayer",
+    "potplayermini64.exe": "PotPlayer",
+}
+_MEDIA_BARE = {"VLC media player", "Media Player", "Movies & TV",
+               "Windows Media Player", "MPC-HC", "PotPlayer"}
+_MEDIA_SUFFIXES = (" - VLC media player", " - Windows Media Player",
+                   " - Media Player", " - Movies & TV")
+
+
+def _parse_media_title(app, title):
+    """(track, status) from a media player's window title, or
+    None for no title. Players put the content in the title
+    ('clip.mp4 - VLC media player'); a bare app name means the
+    player is open with nothing loaded. 'playing' is a guess —
+    a paused player keeps the title; only SMTC knows."""
+    if not title:
+        return None
+    txt = str(title).strip()
+    if not txt or txt in _MEDIA_BARE:
+        return ("", "open")
+    for suffix in _MEDIA_SUFFIXES:
+        if txt.endswith(suffix):
+            txt = txt[: -len(suffix)].strip()
+            break
+    return (txt, "playing")
+
+
+def media_window_telemetry(windows=None):
+    """NOW PLAYING from window titles, for when SMTC is dark
+    (Alek, 2026-10-27: controls worked for his Media Player
+    movie via the key fallback, but the panel said nothing —
+    the display had no non-SMTC source for non-Spotify apps).
+    Spotify via its parser; known players via _MEDIA_PROCS.
+    A window with content beats an idle one."""
+    if windows is None:
+        try:
+            windows = _visible_windows_by_process()
+        except Exception:
+            return None
+    spot = _parse_spotify_title(_spotify_window_title(windows))
+    candidates = []
+    if spot:
+        candidates.append({"running": True, "source": "title",
+                           "app": "Spotify", **spot})
+    for exe, title in windows:
+        app = _MEDIA_PROCS.get(exe)
+        if not app:
+            continue
+        parsed = _parse_media_title(app, title)
+        if parsed is None:
+            continue
+        track, status = parsed
+        candidates.append({
+            "running": True, "source": "title", "app": app,
+            "playing": status == "playing", "status": status,
+            "title": track or app, "track": track, "artist": ""})
+    for cand in candidates:
+        if cand["track"]:
+            return cand
+    return candidates[0] if candidates else None
 
 
 def _get_volume_client():

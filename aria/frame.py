@@ -453,6 +453,12 @@ def media_data() -> Dict[str, Any]:
             return dict(live)
     except Exception:
         pass
+    try:
+        win = _hud.media_window_telemetry()
+        if win:
+            return dict(win)
+    except Exception:
+        pass
     data = spotify_data()
     data.setdefault("app", "Spotify")
     return data

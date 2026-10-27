@@ -22,7 +22,7 @@ speech.VOICE_ENABLED = True
 sys.modules['aria.speech'] = speech
 pkg.speech = speech
 
-from aria.hud import _parse_spotify_title
+from aria.hud import _parse_spotify_title, media_window_telemetry
 
 
 def test_no_window_means_not_running():
@@ -48,3 +48,31 @@ def test_bare_app_title_is_open_not_playing():
 def test_unstructured_title_is_a_loaded_something():
     out = _parse_spotify_title('Some Podcast Episode')
     assert out['running'] is True and out['title'] == 'Some Podcast Episode'
+
+
+def test_media_player_movie_shows_from_its_window():
+    # Alek, 2026-10-27: SMTC dark, Media Player playing a movie —
+    # the panel said nothing. The window title is the fallback.
+    out = media_window_telemetry(
+        windows=[('mediaplayer.exe', 'Dune Part Two.mp4'),
+                 ('explorer.exe', 'Dune Part Two.mp4 - File Explorer')])
+    assert out['app'] == 'Media Player'
+    assert out['track'] == 'Dune Part Two.mp4'
+    assert out['playing'] is True and out['source'] == 'title'
+
+
+def test_vlc_suffix_is_stripped_and_idle_player_is_open():
+    out = media_window_telemetry(
+        windows=[('vlc.exe', 'clip.mkv - VLC media player')])
+    assert out['app'] == 'VLC' and out['track'] == 'clip.mkv'
+    idle = media_window_telemetry(windows=[('vlc.exe', 'VLC media player')])
+    assert idle['status'] == 'open' and idle['track'] == ''
+
+
+def test_content_beats_idle_and_unknown_processes_are_ignored():
+    out = media_window_telemetry(
+        windows=[('vlc.exe', 'VLC media player'),
+                 ('mediaplayer.exe', 'Movie.mkv'),
+                 ('notepad.exe', 'Movie.mkv - Notepad')])
+    assert out['app'] == 'Media Player' and out['track'] == 'Movie.mkv'
+    assert media_window_telemetry(windows=[('notepad.exe', 'x')]) is None
