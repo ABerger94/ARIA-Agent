@@ -561,6 +561,12 @@ class SpeechManager:
             except Exception as e:
                 self.log(f"Voice: system fallback (edge-tts import broken: {e})")
                 return False
+            _etts_ver = str(getattr(edge_tts, "__version__", "") or "unknown")
+            try:
+                _etts_tuple = tuple(int(p) for p in _etts_ver.split(".")[:3]
+                                      if p.isdigit())
+            except Exception:
+                _etts_tuple = ()
 
             # NOTE: the mixer is deliberately NOT probed here. It
             # used to be step 2 of this probe, and a mixer-init
@@ -596,7 +602,8 @@ class SpeechManager:
                             with self._edge_fail_lock:
                                 self._edge_fail_streak = 0
                             if voice == configured:
-                                self.log(f"Voice: Edge TTS ({voice})")
+                                self.log(f"Voice: Edge TTS ({voice}, "
+                                         f"edge-tts {_etts_ver})")
                             else:
                                 self.log(
                                     f"Voice: Edge TTS ({voice}) — "
@@ -610,8 +617,21 @@ class SpeechManager:
                 failures.append((voice, last_err))
 
             detail = "; ".join(f"{v}: {e}" for v, e in failures)
+            hint = ""
+            if _etts_tuple and _etts_tuple < (7, 3):
+                # Microsoft retired the v1 Sec-MS-GEC token in
+                # Oct 2026 (edge-tts issue #490): pre-7.3 clients
+                # 403 on EVERY handshake, whatever the voice or the
+                # clock. Alek's 2026-10-27 startup line showed the
+                # v1 token (64 hex chars, version 1-143) while
+                # requirements.txt already pins 7.3.1 — the install
+                # had not reached the interpreter ARIA runs on.
+                # Name the way out in the log itself.
+                hint = (f" — edge-tts {_etts_ver} predates Microsoft's "
+                        "v2 token format; fix: py -3.12 -m pip "
+                        "install -U edge-tts, then restart")
             self.log(f"Voice: system fallback (Edge synthesis failed "
-                     f"for every voice — {detail})")
+                     f"for every voice — {detail}){hint}")
             return False
 
     def _edge_supervisor(self):
