@@ -35,28 +35,33 @@ def test_measured_level_expires(monkeypatch):
     assert audio_levels.mp3_envelope(b'bad data', None) == []
 
 
-def _name_band_dark_count(orb):
+def _name_band_bright_count(orb):
+    """Near-white pixels in the name's glyph band. At idle the
+    core behind the name is dark teal, so dark-pixel counts
+    measure the background, not the ink — the WHITE name is
+    the bright signal (first version of this test learned
+    that by failing on a correct build)."""
     img = orb.grab().toImage()
-    dark = 0
+    bright = 0
     for x in range(400 - 90, 400 + 90, 2):
         for y in range(400 - 16, 400 + 16, 2):
             c = img.pixelColor(x, y)
-            if c.red() < 45 and c.green() < 45 and c.blue() < 45:
-                dark += 1
-    return dark
+            if c.red() > 150 and c.green() > 150 and c.blue() > 150:
+                bright += 1
+    return bright
 
 
 def test_orb_name_ink_is_per_surface():
     # Alek, 2026-10-27 (corrected same morning): the PET's orb
     # name is dark ink; the DASHBOARD's orb name stays white.
-    # dark_name is the pet-only switch — render both and
-    # measure the glyph band over the bright core.
+    # dark_name is the pet-only switch — render both and count
+    # the white glyph strokes in the name band.
     app = QApplication.instance() or QApplication([])
     dash = ResonanceOrb(); dash.resize(800, 800)
     pet = ResonanceOrb(dark_name=True); pet.resize(800, 800)
     for _ in range(60):
         dash.advance('idle', 0.0)
         pet.advance('idle', 0.0)
-    assert _name_band_dark_count(pet) > 40
-    assert _name_band_dark_count(dash) < 15
+    assert _name_band_bright_count(dash) > 40
+    assert _name_band_bright_count(pet) < 15
     dash.close(); pet.close(); app.processEvents()
