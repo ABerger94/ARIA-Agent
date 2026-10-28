@@ -34,13 +34,18 @@ sys.modules["aria.tools"] = _tools_pkg
 gap = importlib.import_module("aria.tools.gaptools")
 
 
-class _FakeBuiltins:
+class _FakeWriteDispatch:
+    """The gated save seam (2026-10-28): dev_agent's write routes
+    through the dispatcher as write_file. Records writes and
+    answers with write_file's success line."""
+
     def __init__(self):
         self.writes = {}
 
-    def tool_write_file(self, filename, content):
-        self.writes[filename] = content
-        return f"Successfully wrote {len(content)} characters to {filename}."
+    def __call__(self, path, content):
+        self.writes[path] = content
+        return (f"Successfully wrote {len(content)} characters "
+                f"to {path}."), False
 
 
 @pytest.fixture
@@ -55,8 +60,8 @@ def no_exec(monkeypatch):
         raise AssertionError("dev_agent executed generated code")
 
     monkeypatch.setattr(gap, "_run_python", _boom)
-    fake = _FakeBuiltins()
-    monkeypatch.setattr(gap, "_builtins", lambda: fake)
+    fake = _FakeWriteDispatch()
+    monkeypatch.setattr(gap, "_write_file_via_dispatch", fake)
     return fake
 
 

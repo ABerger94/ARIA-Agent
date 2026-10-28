@@ -450,14 +450,36 @@ def test_code_helper_reads_file_and_caps(tmp_path, fake_provider):
     assert out.startswith("status=failed")
 
 
-def test_code_helper_write_saves_via_builtins(fake_provider,
-                                             fake_builtins):
+class _FakeWriteDispatch:
+    """The gated save seam (2026-10-28): generated writes route
+    through the dispatcher as write_file so they carry write_file's
+    approval gate. Records (path, content) and answers with
+    write_file's success line."""
+
+    def __init__(self):
+        self.writes = {}
+
+    def __call__(self, path, content):
+        self.writes[path] = content
+        return (f"Successfully wrote {len(content)} characters "
+                f"to {path}."), False
+
+
+@pytest.fixture
+def fake_write_dispatch(monkeypatch):
+    fake = _FakeWriteDispatch()
+    monkeypatch.setattr(gap, "_write_file_via_dispatch", fake)
+    return fake
+
+
+def test_code_helper_write_saves_via_dispatch(fake_provider,
+                                              fake_write_dispatch):
     out = gap.tool_code_helper({"action": "write",
                                 "description": "print generated",
                                 "output_path": "gen.py"})
     assert out.startswith("status=done") and "path=gen.py" in out
     # Markdown fences from the provider are stripped before saving.
-    assert fake_builtins.writes["gen.py"] == "print('generated')"
+    assert fake_write_dispatch.writes["gen.py"] == "print('generated')"
     assert gap.tool_code_helper(
         {"action": "write", "description": "x"}
     ).startswith("status=failed")  # output_path is required
@@ -472,12 +494,15 @@ def test_code_helper_provider_failure(monkeypatch, fake_builtins):
     assert "provider down" in out
 
 
-def test_dev_agent_saves_and_never_runs(monkeypatch, fake_builtins):
+def test_dev_agent_saves_and_never_runs(monkeypatch, fake_builtins,
+                                        fake_write_dispatch):
     # Security, 2026-10-27: dev_agent saves but NEVER executes. Its
     # old run path executed generated code while the dispatcher
     # checked policy only against the outer name 'dev_agent' — in
     # neither SAFE_MODE_BLOCKED_TOOLS nor DESTRUCTIVE_TOOLS — so
     # run=true bypassed safe mode and approval outright.
+    # 2026-10-28: the save itself now routes through the gated
+    # write_file dispatch seam (fake_write_dispatch), not builtins.
     monkeypatch.setattr(gap, "_provider_text",
                         lambda s, p, role="code":
                         "```python\nprint('hi from dev')\n```")
@@ -488,13 +513,13 @@ def test_dev_agent_saves_and_never_runs(monkeypatch, fake_builtins):
     out = gap.tool_dev_agent({"description": "say hi",
                               "output_path": "hi.py"})
     assert out.startswith("status=done") and "path=hi.py" in out
-    assert fake_builtins.writes["hi.py"] == "print('hi from dev')"
+    assert fake_write_dispatch.writes["hi.py"] == "print('hi from dev')"
     assert ran == []  # not run unless asked
 
     out = gap.tool_dev_agent({"description": "say hi",
                               "output_path": "hi.py", "run": True})
     assert out.startswith("status=failed")  # saved, NOT executed
-    assert fake_builtins.writes["hi.py"] == "print('hi from dev')"
+    assert fake_write_dispatch.writes["hi.py"] == "print('hi from dev')"
     assert ran == []  # execution must never happen from here
     assert "NOT executed" in out
     assert "run_python_code" in out  # the gated route for running it

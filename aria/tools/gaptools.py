@@ -35,7 +35,9 @@ HONEST SCOPE — what these tools deliberately do NOT do:
     dev_agent never executes generated code: its run flag is
     refused (security, 2026-10-27) and execution goes through
     run_python_code, which carries the safe-mode and approval
-    checks.
+    checks. Their saves route through the dispatcher as
+    write_file, so a generated write carries the same approval
+    gate as a direct write_file call (security, 2026-10-28).
 
 Every handler takes one args dict and returns a string, typed with
 aria.outcome (done / unverified / failed + facts) when that module
@@ -543,6 +545,57 @@ def _open_url_via_dispatch(url: str):
                                   preauthorized=preauthorized)
 
 
+def _write_file_via_dispatch(path: str, content: str):
+    """Save a file through the dispatcher so the write gets the
+    normal approval gate for write_file (it sits in
+    DESTRUCTIVE_TOOLS, so confirm-risky / confirm-all hold it for
+    the user's tap).
+
+    Returns execute_tool's (result, ok) pair. Lazy import and
+    preauthorized ride-through exactly as _open_url_via_dispatch:
+    an outer call that is already trusted (routine replay,
+    approve-token replay) is not re-held on its own write; a
+    normal model call gets the full gate.
+    """
+    from aria.tools import dispatch as _dispatch
+    try:
+        preauthorized = bool(_dispatch.in_preauthorized_scope())
+    except Exception:
+        preauthorized = False
+    return _dispatch.execute_tool(
+        "write_file", {"filename": path, "content": content},
+        preauthorized=preauthorized)
+
+
+# Dispatcher results that mean "the gated call did NOT run — the
+# gate's own text is the answer." They pass through to the model
+# unchanged: wrapping them would mangle the AWAITING_APPROVAL
+# token text the user taps on, and reporting one as a save would
+# be a lie — nothing was written.
+_GATE_RESULT_PREFIXES = ("[Safe mode:", "[AWAITING_APPROVAL",
+                         "[Duplicate call blocked:", "[Argument error:")
+
+
+def _save_generated(output_path: str, code: str):
+    """Save generated code through the gated write_file route.
+
+    Returns (outcome, text): 'saved' (text is write_file's success
+    line), 'gated' (text is a gate result from _GATE_RESULT_PREFIXES
+    — return it UNCHANGED; nothing was written), or 'failed' (text
+    is the failure reason for _failed).
+    """
+    try:
+        result, _ok = _write_file_via_dispatch(output_path, code)
+    except Exception as exc:
+        return "failed", f"saving the file failed: {exc}"
+    result = str(result)
+    if result.startswith(_GATE_RESULT_PREFIXES):
+        return "gated", result
+    if not result.startswith("Successfully wrote"):
+        return "failed", f"saving the file failed: {result}"
+    return "saved", result
+
+
 def tool_browser_control(args) -> str:
     args = args or {}
     action = str(args.get("action") or "").strip().lower()
@@ -921,14 +974,18 @@ def tool_code_helper(args) -> str:
         if not code:
             return _failed("code_helper",
                            "the provider returned no code")
-        try:
-            result = str(_builtins().tool_write_file(output_path, code))
-        except Exception as exc:
-            return _failed("code_helper",
-                           f"saving the file failed: {exc}")
-        if result.startswith(("Error", "[Could not")):
-            return _failed("code_helper",
-                           f"saving the file failed: {result}")
+        # Security (2026-10-28): the save goes through the
+        # dispatcher as write_file, not straight to the builtins
+        # writer — code_helper is in neither policy set, so the
+        # direct call wrote with NO approval while a direct
+        # write_file call is held under confirm-risky. A held
+        # write returns the gate text unchanged (nothing saved
+        # yet); the user's tap replays the exact write_file call.
+        outcome, result = _save_generated(output_path, code)
+        if outcome == "gated":
+            return result
+        if outcome == "failed":
+            return _failed("code_helper", result)
         return _done("code_helper", action="write", path=output_path,
                      chars=len(code)) + f"\n{result}"
 
@@ -990,12 +1047,17 @@ def tool_dev_agent(args) -> str:
         return _failed("dev_agent", f"the code provider failed: {exc}")
     if not code:
         return _failed("dev_agent", "the provider returned no code")
-    try:
-        result = str(_builtins().tool_write_file(output_path, code))
-    except Exception as exc:
-        return _failed("dev_agent", f"saving the file failed: {exc}")
-    if result.startswith(("Error", "[Could not")):
-        return _failed("dev_agent", f"saving the file failed: {result}")
+    # Security (2026-10-28): same gated save as code_helper — the
+    # write routes through the dispatcher as write_file, whose
+    # approval gate a direct call must pass, instead of straight
+    # to the builtins writer. A held write returns the gate text
+    # unchanged: nothing is saved yet, and the run=true refusal
+    # below is only reached once the write actually lands.
+    outcome, result = _save_generated(output_path, code)
+    if outcome == "gated":
+        return result
+    if outcome == "failed":
+        return _failed("dev_agent", result)
 
     facts = {"path": output_path, "language": language,
              "chars": len(code)}
