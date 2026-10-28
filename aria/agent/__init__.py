@@ -7,11 +7,36 @@ and persistent worker threads.
 
 from aria.agent.brain import (
     run_agent,
-    build_system_instruction,
-    CONVERSATION_HISTORY,
-    BUSY_PROCESSING,
-    LAST_ACTIVITY
+    build_system_instruction
 )
+
+# Live brain state — BUSY_PROCESSING, LAST_ACTIVITY,
+# CONVERSATION_HISTORY — is deliberately NOT from-imported here.
+# A from-import snapshots the value at package import, but brain
+# REBINDS all three as she runs (busy on/off around a turn, the
+# activity stamp, history compaction), so package readers saw the
+# import-time values forever: main's scheduler / heartbeat /
+# consolidation callbacks read busy as permanently False, the
+# activity stamp diverged between brain and package (main writes
+# it too), and history-hook appends went to a stale list after a
+# compaction. PEP 562 delegation instead: attribute access on the
+# package returns brain's CURRENT binding. Writers must write to
+# aria.agent.brain directly (a package-level assignment would
+# shadow this delegation) — main.py does.
+_LIVE_STATE_NAMES = frozenset(
+    {"BUSY_PROCESSING", "LAST_ACTIVITY", "CONVERSATION_HISTORY"})
+
+
+def __getattr__(name):
+    if name in _LIVE_STATE_NAMES:
+        from aria.agent import brain as _brain
+        return getattr(_brain, name)
+    raise AttributeError(
+        f"module 'aria.agent' has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | _LIVE_STATE_NAMES)
 from aria.agent.shortcuts import check_voice_shortcut, normalize_shortcut
 from aria.agent.proactive import (
     proactive_say,

@@ -26,6 +26,13 @@ int16 down to a sounddevice output stream. While presence says
 AWAY (aria/presence.py), the mic pump does not stream — an open
 session in an empty room is not a listening post.
 
+App lock (aria/applock.py): Live is a LAPTOP voice path, so the
+lock covers it fully — while locked, the mic pump drops every
+chunk, the play sink drops every sample, tool calls are refused
+without reaching the dispatcher, and a lock watcher shuts the
+session down outright. (The phone bridge is the exempt path;
+Live is not it.)
+
 Session-resumption handles are in: a resumable handle captured
 from the server is handed back on the next connect, a rejected
 handle is dropped for one fresh retry on the same model, and the
@@ -100,12 +107,31 @@ def build_live_config(types_mod, *, voice: str, system_instruction: str,
     )
 
 
+def _app_locked() -> bool:
+    """Current app-lock state (aria/applock.py). Lazy import and
+    fail-open on any error, mirroring speech.py's gates: a broken
+    lock module must not kill her voice, and in the test harness
+    (this file loaded standalone) there is no package to import."""
+    try:
+        from aria import applock as _applock_lv
+        return bool(_applock_lv.is_locked())
+    except Exception:
+        return False
+
+
 async def _execute_tool_call(tool_runner, fc) -> Dict[str, Any]:
     """Run one Live function call through the shared dispatcher
     (in an executor — dispatch is synchronous and may wait on a
     human approval) and shape the result as a FunctionResponse
-    payload dict: {id, name, response: {result}}."""
+    payload dict: {id, name, response: {result}}.
+
+    App lock: while locked the call is refused HERE, before the
+    dispatcher — Live never passes through handle_action's locked
+    guard, so this is the gate that covers it."""
     name = getattr(fc, "name", "") or ""
+    if _app_locked():
+        return {"id": getattr(fc, "id", None), "name": name,
+                "response": {"result": "ARIA is locked."}}
     args = dict(getattr(fc, "args", None) or {})
     loop = asyncio.get_running_loop()
     try:
@@ -272,8 +298,18 @@ class LiveManager:
         try:
             while not self._stop.is_set():
                 try:
-                    data = chunks.get(timeout=0.25)
+                    data = chunks.get_nowait()
                 except Exception:
+                    # Poll, never block: a blocking Queue.get here
+                    # starved the whole Live event loop (run_session
+                    # included) whenever the mic was quiet.
+                    await asyncio.sleep(0.05)
+                    continue
+                if _app_locked():
+                    # App lock: nothing leaves the machine while
+                    # locked (the lock watcher also shuts the
+                    # session down; this drop covers the window
+                    # before it fires).
                     continue
                 if self._presence_check is not None:
                     try:
@@ -300,12 +336,35 @@ class LiveManager:
         stream.start()
 
         def _sink(data: bytes) -> None:
+            if _app_locked():
+                # App lock: the laptop stays silent — Live audio
+                # bypasses speech.py's gates, so it is gated here.
+                return
             try:
                 stream.write(data)
             except Exception:
                 pass
 
         return _sink, stream
+
+    async def _lock_watch(self, session_task) -> None:
+        """App lock shutdown: poll the lock while a session lives.
+        On lock, stop the manager and cancel the session task —
+        a locked laptop does not keep a Live session open. (The
+        mic/audio/tool gates cover the sub-second window before
+        this fires; on_state('ended') then re-arms the pipeline,
+        whose wake loop is itself lock-aware, so voice unlock
+        keeps working.)"""
+        try:
+            while not self._stop.is_set():
+                if _app_locked():
+                    self._log("App locked — shutting Gemini Live down")
+                    self._stop.set()
+                    session_task.cancel()
+                    return
+                await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            pass
 
     async def _run(self) -> None:
         client = self._make_client()
@@ -354,14 +413,27 @@ class LiveManager:
                         mic_task = asyncio.create_task(
                             self._mic_pump(
                                 session, asyncio.get_running_loop()))
+                        session_task = asyncio.create_task(run_session(
+                            session, tool_runner=self._tool_runner,
+                            on_user_text=self._on_user_text,
+                            on_assistant_text=self._on_assistant_text,
+                            on_audio=sink,
+                            on_resumption=self._store_resumption))
+                        lock_task = asyncio.create_task(
+                            self._lock_watch(session_task))
                         try:
-                            await run_session(
-                                session, tool_runner=self._tool_runner,
-                                on_user_text=self._on_user_text,
-                                on_assistant_text=self._on_assistant_text,
-                                on_audio=sink,
-                                on_resumption=self._store_resumption)
+                            await session_task
+                        except asyncio.CancelledError:
+                            # The lock watcher cancels the session
+                            # task when the app locks — that is a
+                            # clean end, not a failure. Any other
+                            # cancellation propagates.
+                            if not self._stop.is_set():
+                                raise
+                            self._log("Gemini Live session ended "
+                                      "(app lock)")
                         finally:
+                            lock_task.cancel()
                             mic_task.cancel()
                             try:
                                 stream.stop()

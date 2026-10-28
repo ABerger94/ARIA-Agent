@@ -253,7 +253,7 @@ def _ptt_rising_edge():
     _PTT_RECORDING = True
     _PTT_STOP = False
     _PTT_STARTED_AT = time.time()
-    agent.LAST_ACTIVITY = time.time()
+    agent.brain.LAST_ACTIVITY = time.time()  # write-through: brain owns the live value (package attr would shadow it)
     hud.set_hud_state("listening")
     hud.draw_hud()
     add_log("Push-to-talk started (listening)...")
@@ -1026,7 +1026,7 @@ def _handle_keypress(key, key_raw, is_ctrl=False, is_shift=False,
         hud.TYPING_ACTIVE = True
         if pasted:
             hud.TYPING_BUFFER += pasted
-            agent.LAST_ACTIVITY = time.time()
+            agent.brain.LAST_ACTIVITY = time.time()  # write-through: brain owns the live value (package attr would shadow it)
             add_log(f"Pasted from clipboard ({len(pasted)} chars).")
         else:
             add_log("Clipboard empty or non-text.")
@@ -1037,12 +1037,12 @@ def _handle_keypress(key, key_raw, is_ctrl=False, is_shift=False,
         hud.set_hud_state("idle")
         add_log("Speech cut off." if not drained
                 else f"Speech cut off ({drained} queued cleared).")
-        agent.LAST_ACTIVITY = time.time()
+        agent.brain.LAST_ACTIVITY = time.time()  # write-through: brain owns the live value (package attr would shadow it)
     elif key in (ord('c'), ord('C')) and not hud.TYPING_ACTIVE:
         # C: cycle HUD color theme. Guarded so typing 'c' is unaffected.
         name = pixel_avatar.cycle_theme()
         add_log(f"Color theme: {name}.")
-        agent.LAST_ACTIVITY = time.time()
+        agent.brain.LAST_ACTIVITY = time.time()  # write-through: brain owns the live value (package attr would shadow it)
     elif hud.SHOW_COMMANDS:
         if is_left or is_up:
             hud.commands_prev_page()
@@ -1068,7 +1068,7 @@ def _handle_keypress(key, key_raw, is_ctrl=False, is_shift=False,
             hud.TYPING_BUFFER = ""
         elif 32 <= key_raw <= 126 and not is_ctrl:  # Printable character (including space)
             hud.TYPING_BUFFER += chr(key_raw)
-            agent.LAST_ACTIVITY = time.time()
+            agent.brain.LAST_ACTIVITY = time.time()  # write-through: brain owns the live value (package attr would shadow it)
     else:
         if key in (ord('q'), ord('Q'), 27):  # ESC or Q
             add_log("Shutdown requested by user.")
