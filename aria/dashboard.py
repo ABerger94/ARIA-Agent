@@ -444,9 +444,17 @@ def create_dashboard(callbacks):
             # playing (hud._dispatch_media_action — HUD panel,
             # else the active SMTC session, else media keys).
             self.media_buttons = {}
-            for name, action in [('Prev', 'previous'), ('Play', 'play'),
-                                 ('Pause', 'pause'), ('Next', 'next')]:
-                b = QPushButton(name); b.clicked.connect(lambda checked=False, a=action: hud._dispatch_media_action(a)); media.addWidget(b)
+            # Symbols, not words (Alek, 2026-10-28): ⏮ ▶ ⏸ ⏭ —
+            # Segoe UI Symbol carries all four on Windows; the
+            # header's ❚❚ PAUSED glyph already proves the font
+            # path. Tooltips keep the words for clarity.
+            for name, action, tip in [('⏮', 'previous', 'Previous'),
+                                      ('▶', 'play', 'Play'),
+                                      ('⏸', 'pause', 'Pause'),
+                                      ('⏭', 'next', 'Next')]:
+                b = QPushButton(name); b.setToolTip(tip)
+                b.setStyleSheet('font-size: 15px;')
+                b.clicked.connect(lambda checked=False, a=action: hud._dispatch_media_action(a)); media.addWidget(b)
                 self.media_buttons[action] = b
             ll.addLayout(media)
             # AUDIO (Alek, 2026-10-28, revised same evening): ONE
