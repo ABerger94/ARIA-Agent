@@ -201,12 +201,22 @@ def _fetch_art(ref) -> Optional[bytes]:
         n = int(reader.unconsumed_buffer_length)
         if n <= 0:
             return None
-        data = reader.read_bytes(n)
-        if not data:
-            data = bytearray(n)
-            reader.read_bytes(data)
-        return bytes(data) or None
-    except Exception:
+        # WinRT array parameters are FILL arrays: pass a bytearray
+        # of the right length and read it back (the first version
+        # passed the length as an int, which the projection
+        # rejects — the likely reason no artwork ever arrived,
+        # Alek's witness 2026-10-28). Some projections return the
+        # filled array instead; accept either.
+        arr = bytearray(n)
+        got = reader.read_bytes(arr)
+        data = bytes(got) if got else bytes(arr)
+        return data if any(data) else None
+    except Exception as exc:
+        try:
+            from aria import config as _config_silent
+            _config_silent.log_silent("smtc._fetch_art", exc)
+        except Exception:
+            pass
         return None
 
 
@@ -219,6 +229,7 @@ def _art_for(props, key) -> Optional[bytes]:
     now = time.monotonic()
     if now - _ART_FAIL.get(key, -_ART_RETRY_S - 1) < _ART_RETRY_S:
         return None
+    first_try = key not in _ART_FAIL
     data = _fetch_art(ref)
     if data:
         _ART_CACHE[key] = data
@@ -226,6 +237,19 @@ def _art_for(props, key) -> Optional[bytes]:
             _ART_CACHE.pop(next(iter(_ART_CACHE)))
         return data
     _ART_FAIL[key] = now
+    if first_try:
+        # A silent art failure is how "no artwork" shipped the
+        # first time — say it ONCE per track, where Alek can see
+        # it (the Activity tab), with the exception attached.
+        try:
+            from aria import config as _config
+            _config.add_log(
+                "Album art unavailable for this track "
+                "(thumbnail read failed — see log_silent for the "
+                "exception). The tile stays a placeholder.",
+                level="warn")
+        except Exception:
+            pass
     return None
 
 
