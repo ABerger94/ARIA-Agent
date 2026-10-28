@@ -449,10 +449,13 @@ def create_dashboard(callbacks):
             # presentation on his Windows build. These are plain
             # geometric text glyphs instead (monochrome in Segoe
             # UI Symbol; ❚❚ already rides the PAUSED header as
-            # text). Tooltips keep the words for clarity.
+            # text). Pause is ❙❙ (medium bars): the heavy ❚ bars
+            # rendered too wide with too much space between them
+            # (Alek's screenshot, 2026-10-28). Tooltips keep the
+            # words for clarity.
             for name, action, tip in [('◀◀', 'previous', 'Previous'),
                                       ('▶', 'play', 'Play'),
-                                      ('❚❚', 'pause', 'Pause'),
+                                      ('❙❙', 'pause', 'Pause'),
                                       ('▶▶', 'next', 'Next')]:
                 b = QPushButton(name); b.setToolTip(tip)
                 b.setStyleSheet('font-size: 15px;')
