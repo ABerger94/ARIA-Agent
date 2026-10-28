@@ -159,3 +159,97 @@ def test_private_url_refused_before_any_session():
     assert "refused" in out
     assert not fake.started                       # refused pre-launch
     print("ok private_refused")
+
+
+def _fake_approval_with_replay(replay_pred):
+    """A fake aria.approval carrying both seams _guarded_click
+    uses: request_approval (stash recorder) and in_approve_replay
+    (the marker approve_token sets while replaying a confirmed
+    call). Returns (module, stashed list)."""
+    stashed = []
+    mod = types.ModuleType("aria.approval")
+    mod.request_approval = lambda tool, args, desc=None: \
+        stashed.append((tool, args, desc)) or \
+        "[AWAITING_APPROVAL token=t2] confirm?"
+    mod.in_approve_replay = replay_pred
+    sys.modules["aria.approval"] = mod
+    return mod, stashed
+
+
+def test_irreversible_click_executes_on_approve_replay():
+    # The bug (2026-10-28): _guarded_click never checked the
+    # approve-replay marker, so approve_token's replay of a held
+    # click re-probed the irreversible label and stashed a FRESH
+    # approval — a confirmed irreversible click could never
+    # complete. With the marker set for this exact call, the
+    # click goes through and nothing is re-stashed.
+    fake = _install_fake()
+    _mod, stashed = _fake_approval_with_replay(
+        lambda tool, args: tool == "browser_agent"
+        and args == {"action": "click", "target": "index:0"})
+    ba.tool_browser_agent({"action": "open",
+                           "url": "https://shop.example/"})
+    out = ba.tool_browser_agent({"action": "click",
+                                 "target": "index:0"})
+    assert fake.clicks == ["index:0"]
+    assert "Clicked 'Place order'" in out
+    assert stashed == []
+    print("ok irreversible_replay_executes")
+
+
+def test_irreversible_click_replay_for_other_args_still_stashed():
+    # The marker is bound to the exact (tool, args): a replay of
+    # some OTHER call must not open this click's guard.
+    fake = _install_fake()
+    _mod, stashed = _fake_approval_with_replay(
+        lambda tool, args: False)
+    ba.tool_browser_agent({"action": "open",
+                           "url": "https://shop.example/"})
+    out = ba.tool_browser_agent({"action": "click",
+                                 "target": "index:0"})
+    assert fake.clicks == []
+    assert "AWAITING_APPROVAL" in out
+    assert stashed and stashed[0][1] == {"action": "click",
+                                          "target": "index:0"}
+    print("ok irreversible_replay_mismatch_stashed")
+
+
+def test_irreversible_click_replay_with_real_approval_module():
+    # End to end against the REAL aria/approval.py: set the exact
+    # thread-local marker approve_token() sets around its replay
+    # and the held click completes; clear it and the same click
+    # is stashed by the real request_approval instead.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "aria.approval", os.path.join(PKG, "approval.py"))
+    real = importlib.util.module_from_spec(spec)
+    prev = sys.modules.get("aria.approval")
+    sys.modules["aria.approval"] = real
+    spec.loader.exec_module(real)
+    try:
+        fake = _install_fake()
+        ba.tool_browser_agent({"action": "open",
+                               "url": "https://shop.example/"})
+        real._replay_local.current = (
+            "browser_agent", {"action": "click", "target": "index:0"})
+        try:
+            out = ba.tool_browser_agent({"action": "click",
+                                         "target": "index:0"})
+        finally:
+            real._replay_local.current = None
+        assert fake.clicks == ["index:0"]
+        assert "Clicked 'Place order'" in out
+        assert real.pending_entries() == []
+        out = ba.tool_browser_agent({"action": "click",
+                                     "target": "index:0"})
+        assert fake.clicks == ["index:0"]          # not clicked again
+        assert "AWAITING_APPROVAL" in out
+        held = real.pending_entries()
+        assert held and held[0]["tool"] == "browser_agent"
+        assert "Place order" in held[0]["desc"]
+    finally:
+        if prev is not None:
+            sys.modules["aria.approval"] = prev
+        else:
+            sys.modules.pop("aria.approval", None)
+    print("ok irreversible_replay_real_module")

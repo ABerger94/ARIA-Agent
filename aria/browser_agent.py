@@ -12,7 +12,10 @@ Safety shape (the design Alek approved):
   * Irreversible actions HALT: a click whose label matches pay /
     place order / buy / send / post / delete / book / confirm is
     never executed cold — it is stashed as a pending approval for
-    the exact browser_agent call, and runs only if he approves it.
+    the exact browser_agent call, and runs only if he approves it
+    (the approved replay is recognized through
+    approval.in_approve_replay, so the confirmed click completes
+    instead of re-stashing itself).
   * Private / loopback URLs are refused (router admin pages, the
     phone bridge itself) unless the browser_agent_allow_lan
     setting is on.
@@ -254,7 +257,8 @@ def set_runner_for_tests(runner) -> None:
 
 def _guarded_click(target: str, *, approve_fn=None) -> str:
     """Resolve + label-check a click on the session thread; if the
-    label is irreversible, stash an approval and DO NOT click."""
+    label is irreversible, stash an approval and DO NOT click —
+    unless this call IS the approved replay of that exact click."""
     def _probe(runner):
         session = runner.ensure_session()
         _loc, label = session._resolve(target)
@@ -262,11 +266,30 @@ def _guarded_click(target: str, *, approve_fn=None) -> str:
     label = _RUNNER.call(_probe)
     if _is_irreversible(label):
         from aria import approval as _approval
-        request = approve_fn or _approval.request_approval
-        return request(
-            "browser_agent", {"action": "click", "target": target},
-            desc=f"Browser agent is about to click '{label}' "
-                 f"({target}) — this looks irreversible.")
+        # Approve replay (2026-10-28): approve_token() stashes
+        # exactly {"action": "click", "target": target} for
+        # browser_agent and sets its replay marker while replaying
+        # it — the user already confirmed THIS click on screen, so
+        # it goes through. Without this check the replay re-probed
+        # the label and stashed a FRESH approval instead of
+        # clicking, so a confirmed irreversible click could never
+        # complete. Same marker run_shell_command checks
+        # (aria/tools/shelltool.py); read defensively so a partial
+        # approval module can never turn the guard off.
+        try:
+            _in_replay = getattr(_approval, "in_approve_replay", None)
+            in_replay = bool(_in_replay(
+                "browser_agent",
+                {"action": "click", "target": target})) \
+                if callable(_in_replay) else False
+        except Exception:
+            in_replay = False
+        if not in_replay:
+            request = approve_fn or _approval.request_approval
+            return request(
+                "browser_agent", {"action": "click", "target": target},
+                desc=f"Browser agent is about to click '{label}' "
+                     f"({target}) — this looks irreversible.")
     def _do(runner):
         session = runner.ensure_session()
         clicked = session.click(target)
