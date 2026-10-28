@@ -909,6 +909,17 @@ def start_all():
 
     _start_presence()
 
+    # Event triggers (Alek, 2026-10-28): the poll loop that fires
+    # journaled tasks on email / folder / presence-return events.
+    # Guarded like everything else here — a broken trigger engine
+    # never blocks boot.
+    try:
+        if _config_silent.get_setting('triggers_enabled', True):
+            from aria import triggers as _triggers
+            _triggers.start_triggers()
+    except Exception:
+        pass
+
     # 4c. Persistent autonomous workers (jobs supervisor, downloads watcher, system resource monitor)
     agent.workers.start_all_workers()
 

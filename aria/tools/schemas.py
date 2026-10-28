@@ -488,6 +488,22 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
                                             'priority': {'type': 'STRING'}},
                           'required': ['goal'],
                           'type': 'OBJECT'}},
+    {   'description': 'Event triggers: when something happens, run a delegated task. Actions: create (needs '
+                       'name, source, task; rule is an object; mode is auto or ask — ask stashes the firing '
+                       'as a pending approval, nothing runs unapproved), list, delete/enable/disable (need id). '
+                       'Sources: email (rule matchers from_contains / subject_contains / any_contains), folder '
+                       '(rule.path, default her inbox; rule.pattern glob), presence_return (rule.min_away_s). '
+                       'Only create a trigger when the user asks for one.',
+        'name': 'event_trigger',
+        'parameters': {   'properties': {   'action': {'type': 'STRING'},
+                                            'name': {'type': 'STRING'},
+                                            'source': {'type': 'STRING'},
+                                            'task': {'type': 'STRING'},
+                                            'rule': {'type': 'OBJECT'},
+                                            'mode': {'type': 'STRING'},
+                                            'id': {'type': 'STRING'}},
+                          'required': [],
+                          'type': 'OBJECT'}},
     {   'description': 'Reports the status (pending/running/completed/failed/cancelled) and result of a delegated '
                        'background task by its task_id.',
         'name': 'task_status',
@@ -616,7 +632,7 @@ TOOLS_DECLARATION = [
 
 TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persistent background jobs, system health audit, self-healing diagnostics, delegated background tasks, update status, code help, dev agent',
                  'tools': ['manage_autonomous_goal', 'manage_background_job', 'system_health_audit', 'self_heal_diagnose',
-                           'delegate_task', 'task_status', 'task_cancel', 'task_resume', 'update_status', 'code_helper', 'dev_agent']},
+                           'delegate_task', 'task_status', 'task_cancel', 'task_resume', 'update_status', 'code_helper', 'dev_agent', 'event_trigger']},
     'admin': {   'summary': 'API keys, bridge token, command guide, volume, approval controls, personas, user tools, shell commands, backup mirror, game updates',
                  'tools': ['bridge_token', 'show_commands', 'hide_commands', 'volume',
                            'approve', 'deny', 'list_pending_approvals', 'set_approval_mode', 'get_approval_mode',
