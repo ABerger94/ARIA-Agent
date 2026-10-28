@@ -1069,8 +1069,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send(200, MANIFEST_JSON.encode("utf-8"),
                        "application/manifest+json; charset=utf-8")
             return
-        if _clean_path in ("/icon-180.png", "/icon-192.png", "/icon-512.png"):
-            _icon = _ICON_BYTES.get(_clean_path.lstrip("/"))
+        if _clean_path in ("/icon-180.png", "/icon-192.png", "/icon-512.png",
+                           "/apple-touch-icon.png",
+                           "/apple-touch-icon-precomposed.png"):
+            # iOS also probes the well-known /apple-touch-icon.png at
+            # the root on its own; answer it with the 180 icon so the
+            # orb lands even if the page's link tag was cached stale.
+            _icon_name = ("icon-180.png" if _clean_path.startswith("/apple")
+                          else _clean_path.lstrip("/"))
+            _icon = _ICON_BYTES.get(_icon_name)
             if _icon:
                 self._send(200, _icon, "image/png")
             else:

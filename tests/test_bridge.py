@@ -542,6 +542,12 @@ def test_pwa_icons_and_manifest_served():
             assert headers.get("Content-Type") == "image/png", headers
             assert body[:8] == b"\x89PNG\r\n\x1a\n", name
             assert len(body) > 10000, (name, len(body))
+        # iOS's well-known root probe gets the same 180 icon.
+        status, headers, body = req("/apple-touch-icon.png")
+        assert status == 200, status
+        assert body[:8] == b"\x89PNG\r\n\x1a\n"
+        _s180, _h180, body180 = req("/icon-180.png")
+        assert body == body180
         status, headers, body = req("/manifest.webmanifest")
         assert status == 200, status
         import json as _json
