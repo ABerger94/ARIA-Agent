@@ -831,7 +831,18 @@ def create_dashboard(callbacks):
             self._loading.discard(name)
             if name == 'Briefing' and isinstance(result, dict):
                 from aria.briefing import report_text
-                self.views[name].setPlainText(report_text(result))
+                text = report_text(result)
+                try:
+                    # Research briefs ride along under the briefing
+                    # (Alek, 2026-10-28). Guarded: research can never
+                    # break the briefing render.
+                    from aria.research import research_section_text
+                    section = research_section_text()
+                    if section:
+                        text += "\n" + section
+                except Exception:
+                    pass
+                self.views[name].setPlainText(text)
                 self.brief_speak.setEnabled(True)
                 return
             if name != 'Inbox' or not isinstance(result, dict):

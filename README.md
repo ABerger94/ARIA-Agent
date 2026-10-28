@@ -112,7 +112,7 @@ remedy.
 
 ## Capabilities
 
-**130 tools** on a desktop install, organised into progressive toolkits:
+**131 tools** on a desktop install, organised into progressive toolkits:
 only the core schemas ride along per call, and specialist toolkits unlock
 on demand (`load_toolkit`) or automatically from keywords in your request.
 Tools from connected MCP servers join on top of that, namespaced per

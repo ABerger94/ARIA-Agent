@@ -593,6 +593,7 @@ from aria import hud
 # ARIA ULTIMATE modules — top-level imports are stdlib + aria.config only,
 # so these are cycle-safe here (same position as the scheduler/vision imports).
 from aria import approval as approval_mod
+from aria import research as research_mod
 from aria import routines as routines_mod
 from aria import phone_node as phone_mod
 from aria import screenwatch as screenwatch_mod
@@ -630,6 +631,7 @@ def _tool_restart_program(args: dict) -> str:
 
 def _init_default_registry():
     _REGISTRY["web_search"] = lambda a: builtins.tool_web_search(a.get("query", ""))
+    _REGISTRY["research"] = lambda a: research_mod.tool_research(a)
     _REGISTRY["run_python_code"] = lambda a: tool_run_python(
         a.get("code", ""), log_callback=_LOG_HOOK
     )

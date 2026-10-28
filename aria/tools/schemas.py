@@ -9,6 +9,16 @@ from typing import Dict, List, Any, Set
 ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for facts, docs, news, or answers.',
         'name': 'web_search',
         'parameters': {'properties': {'query': {'type': 'STRING'}}, 'required': ['query'], 'type': 'OBJECT'}},
+    {   'description': 'Deep research: searches, reads the top sources in full, synthesizes a cited brief, '
+                       'cross-checks it, and files it (Briefing tab, Research section). action=run needs a '
+                       'question; action=list shows filed briefs; action=read with an id returns one brief. '
+                       'Use for questions that deserve more than a quick search snippet.',
+        'name': 'research',
+        'parameters': {   'properties': {   'action': {'type': 'STRING'},
+                                            'question': {'type': 'STRING'},
+                                            'id': {'type': 'STRING'}},
+                          'required': [],
+                          'type': 'OBJECT'}},
     {   'description': 'Executes Python code in the robot workspace..',
         'name': 'run_python_code',
         'parameters': {'properties': {'code': {'type': 'STRING'}}, 'required': ['code'], 'type': 'OBJECT'}},
@@ -629,6 +639,7 @@ TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persiste
     'core': {   'summary': 'everyday tools: web search, open apps/URLs, run Python code, click/type, screenshots, '
                            'screen reading, clipboard, files, memory save/search, bounded workflow skills',
                 'tools': [   'web_search',
+                             'research',
                              'open_app_or_url',
                              'run_python_code',
                              'gui_click',
