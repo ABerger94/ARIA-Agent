@@ -215,7 +215,10 @@ def get_last_tool_executed() -> Tuple[Optional[str], float]:
 
 def _closest_tool(name: str) -> Optional[str]:
     """Fuzzy-match a hallucinated/typo'd tool name to the closest real tool.
-    (Self-repair Part 1.) Returns None when nothing is close enough."""
+    SUGGESTION ONLY — the match is returned to the caller as a hint and is
+    never executed by the dispatcher (executing it would bypass argument
+    validation, safe mode, and approval, which all check the requested
+    name). Returns None when nothing is close enough."""
     try:
         import difflib
         cands = difflib.get_close_matches(name or "", list(_REGISTRY.keys()),
@@ -395,29 +398,30 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
         if handler:
             r = handler(args or {})
         else:
-            # Self-repair Part 1: hallucinated tool name -> closest real tool,
-            # executed once directly (no recursion into execute_tool).
+            # Unknown tool name: NEVER execute a fuzzy match directly.
+            # Argument validation, safe mode, and approval above all ran
+            # against the REQUESTED name, so running the closest real tool
+            # here would bypass every one of those checks (a typo'd
+            # destructive tool is not in DESTRUCTIVE_TOOLS, not in
+            # SAFE_MODE_BLOCKED_TOOLS, and has no schema to validate
+            # against). _closest_tool is suggestion-only: the model must
+            # re-issue the corrected call through execute_tool so it gets
+            # the full validation/policy path. (Security fix, 2026-10-27.)
             match = _closest_tool(fn_name)
+            try:
+                from aria.agent.failures import surface_failure
+                surface_failure(f"tool:{fn_name}",
+                                f"Unknown tool: {fn_name}",
+                                unknown_tool=True)
+            except Exception:
+                pass
             if match:
-                try:
-                    _LOG_HOOK(f"Self-Heal: unknown tool '{fn_name}' -> '{match}'")
-                    r = _REGISTRY[match](args or {})
-                    r = f"{r}\n[Self-Heal: '{fn_name}' is not a tool; ran '{match}' instead]"
-                except Exception as e2:
-                    try:
-                        from aria.agent.failures import surface_failure
-                        surface_failure(f"tool:{fn_name}", e2, unknown_tool=True)
-                    except Exception:
-                        pass
-                    r = f"Unknown tool: {fn_name} (closest match '{match}' also failed: {e2})"
+                _LOG_HOOK(f"Unknown tool '{fn_name}' rejected; "
+                          f"suggested '{match}' (not executed)")
+                r = (f"Unknown tool: {fn_name}. Did you mean '{match}'? "
+                     f"Call '{match}' directly if that is the tool you "
+                     f"want — it was NOT run.")
             else:
-                try:
-                    from aria.agent.failures import surface_failure
-                    surface_failure(f"tool:{fn_name}",
-                                    f"Unknown tool: {fn_name}",
-                                    unknown_tool=True)
-                except Exception:
-                    pass
                 r = f"Unknown tool: {fn_name}"
     except Exception as e:
         try:
