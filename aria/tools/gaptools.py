@@ -24,6 +24,9 @@ HONEST SCOPE — what these tools deliberately do NOT do:
     builtins fetcher), not a rendered page — JavaScript-heavy pages
     may come back thin, and the tool says so by returning exactly
     what it got.
+  * browser_control go_to opens absolute http(s) URLs only and
+    launches them through open_app_or_url's dispatcher gates, so it
+    cannot be used to launch local programs (security, 2026-10-28).
   * os_reminder registers with the OS scheduler (schtasks /
     systemd-run / at) precisely so it fires even if ARIA is closed;
     the in-app set_reminder cannot promise that.
@@ -48,6 +51,7 @@ import subprocess
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 # ── Outcome plumbing ────────────────────────────────────────────────
 # aria.outcome is imported lazily inside every call. If it is absent
@@ -520,6 +524,25 @@ def tool_game_updater(args) -> str:
 # ── 3) Browser control ──────────────────────────────────────────────
 
 
+def _open_url_via_dispatch(url: str):
+    """Open a web URL through the dispatcher so the launch gets the
+    normal safe-mode / approval gates for open_app_or_url.
+
+    Returns execute_tool's (result, ok) pair. Lazy import: the
+    dispatcher loads this module lazily, so an eager import would
+    cycle. A preauthorized outer call (trusted routine replay) rides
+    through, matching every other tool; a normal model call gets the
+    full gates.
+    """
+    from aria.tools import dispatch as _dispatch
+    try:
+        preauthorized = bool(_dispatch.in_preauthorized_scope())
+    except Exception:
+        preauthorized = False
+    return _dispatch.execute_tool("open_app_or_url", {"target": url},
+                                  preauthorized=preauthorized)
+
+
 def tool_browser_control(args) -> str:
     args = args or {}
     action = str(args.get("action") or "").strip().lower()
@@ -531,12 +554,38 @@ def tool_browser_control(args) -> str:
     if not url:
         return _failed("browser_control", "a url is required")
     if action == "go_to":
+        # Security (2026-10-28): go_to used to hand its argument
+        # straight to tool_open_app_or_url, which os.startfile()s ANY
+        # target — so browser_control, which is in neither
+        # SAFE_MODE_BLOCKED_TOOLS nor DESTRUCTIVE_TOOLS, launched
+        # local programs (.cmd / .exe / UNC paths) with no safe-mode
+        # block and no approval, including code dev_agent had just
+        # saved. Two gates now, in order: only absolute http(s)
+        # URLs with a hostname get through, and the launch itself
+        # goes through the dispatcher as open_app_or_url, so its
+        # safe-mode block and confirm-risky approval apply.
+        parsed = urlparse(url)
+        if parsed.scheme.lower() not in ("http", "https") \
+                or not parsed.hostname:
+            return _failed(
+                "browser_control",
+                "go_to opens web URLs only — give an absolute "
+                "http:// or https:// URL with a hostname; local "
+                "paths, UNC paths, and other schemes are refused",
+                url=url)
         try:
-            result = _builtins().tool_open_app_or_url(url)
+            result, _ok = _open_url_via_dispatch(url)
         except Exception as exc:
             return _failed("browser_control",
                            f"opening the browser failed: {exc}",
                            url=url)
+        # Blocked / held / duplicate results pass through unchanged:
+        # wrapping them would hide the safe-mode block and, worse,
+        # mangle the AWAITING_APPROVAL token text the user taps on.
+        if result.startswith(("[Safe mode:", "[AWAITING_APPROVAL",
+                              "[Duplicate call blocked:",
+                              "[Argument error:")):
+            return result
         return _unverified(
             "browser_control",
             "a browser was asked to open the URL; what is on screen "

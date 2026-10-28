@@ -260,7 +260,14 @@ def test_game_updater_no_steam_is_honest_failure(tmp_path):
 # ── browser_control ─────────────────────────────────────────────────
 
 
-def test_browser_go_to_and_get_text(fake_builtins):
+def test_browser_go_to_and_get_text(fake_builtins, monkeypatch):
+    # 2026-10-28: go_to no longer calls the builtins launcher directly;
+    # it routes through the dispatcher as open_app_or_url. Pin the new
+    # seam: the dispatch helper is what receives the URL.
+    def _launch(url):
+        fake_builtins.opened.append(url)
+        return f"Opened URL: {url}", False
+    monkeypatch.setattr(gap, "_open_url_via_dispatch", _launch)
     out = gap.tool_browser_control({"action": "go_to",
                                     "url": "https://example.com"})
     assert out.startswith("status=unverified")
