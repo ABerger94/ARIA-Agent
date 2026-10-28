@@ -770,4 +770,4 @@ def test_media_panel_single_slider_target_switch_and_art(monkeypatch, tmp_path):
     assert window.vol_target_btn.text() == 'COMPUTER'
     assert window.volume.value() == 50
     assert window.art.text() == '♪'               # no art -> placeholder
-    assert window.art_caption.text() == 'The Artist — The Album'
+    assert not hasattr(window, 'art_caption')     # no text under the art

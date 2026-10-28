@@ -509,8 +509,6 @@ def create_dashboard(callbacks):
                 'background: #14171d; color: #39415a;'
                 ' font-size: 72px; border-radius: 10px;')
             ll.addWidget(self.art, 1)
-            self.art_caption = QLabel('')
-            ll.addWidget(self.art_caption)
             self._art_key = None
             self._art_pixmap = None
             self._art_scaled_size = None
@@ -1722,14 +1720,9 @@ def create_dashboard(callbacks):
                     self.art.setPixmap(self._art_pixmap.scaled(
                         _asz, Qt.AspectRatioMode.KeepAspectRatio,
                         Qt.TransformationMode.SmoothTransformation))
-            _cap = ' — '.join(x for x in (music.get('artist') or '',
-                                          music.get('album') or '') if x)
-            if _cap:
-                _cap = self.art_caption.fontMetrics().elidedText(
-                    _cap, Qt.TextElideMode.ElideRight,
-                    max(self.art_caption.width(), 180))
-            if self.art_caption.text() != _cap:
-                self.art_caption.setText(_cap)
+            # No caption under the artwork (Alek, 2026-10-28:
+            # "I don't need the text under the album artwork") —
+            # the tile takes the freed height too.
             _entries = frame.chat_entries(100)
             chat = '\n\n'.join(f'{ts}  {sender}\n{text}' for ts, sender, text in _entries)
             if chat != self._last_chat:
