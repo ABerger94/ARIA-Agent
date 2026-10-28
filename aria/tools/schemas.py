@@ -579,6 +579,22 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
                                             'url': {'type': 'STRING'}},
                           'required': ['action', 'url'],
                           'type': 'OBJECT'}},
+    {   'description': 'Supervised browser driver: a real Chromium window (her own profile — never the '
+                       'user\'s browser or logins) driven one action at a time. Actions: open (url), read '
+                       '(page text + numbered interactive elements), click (target: "index:N" from read, a '
+                       'CSS selector, or "text=..."), type (target + text), press (key), scroll (direction), '
+                       'back, screenshot, close. A click whose label looks irreversible (pay, place order, '
+                       'send, delete, book...) is NOT executed — it returns a pending approval to show the '
+                       'user. Private/loopback URLs are refused.',
+        'name': 'browser_agent',
+        'parameters': {   'properties': {   'action': {'type': 'STRING'},
+                                            'url': {'type': 'STRING'},
+                                            'target': {'type': 'STRING'},
+                                            'text': {'type': 'STRING'},
+                                            'key': {'type': 'STRING'},
+                                            'direction': {'type': 'STRING'}},
+                          'required': ['action'],
+                          'type': 'OBJECT'}},
     {   'description': 'Registers a reminder with the Windows Task Scheduler, so it fires even when ARIA '
                        'is closed — unlike set_reminder, which is an in-app spoken reminder that only '
                        'fires while ARIA is running. Give at (YYYY-MM-DDTHH:MM local time) or delay_minutes.',
@@ -678,7 +694,7 @@ TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persiste
                              'inbox_list',
                              'inbox_describe',
                              'inbox_read',
-                             'run_skill', 'flight_finder', 'browser_control']},
+                             'run_skill', 'flight_finder', 'browser_control', 'browser_agent']},
     'github': {'summary': 'push files and create GitHub repos', 'tools': ['github_push_file', 'github_create_repo']},
     'memory_plus': {   'summary': 'notes, journal, forgetting memories, morning briefing',
                        'tools': ['forget_memory', 'journal_write', 'take_note', 'read_notes', 'morning_briefing']},

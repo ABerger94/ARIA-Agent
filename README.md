@@ -112,7 +112,7 @@ remedy.
 
 ## Capabilities
 
-**132 tools** on a desktop install, organised into progressive toolkits:
+**133 tools** on a desktop install, organised into progressive toolkits:
 only the core schemas ride along per call, and specialist toolkits unlock
 on demand (`load_toolkit`) or automatically from keywords in your request.
 Tools from connected MCP servers join on top of that, namespaced per
@@ -123,7 +123,7 @@ suite:
 
 | Area | What's there |
 |---|---|
-| Computer & files | `launch_app`, `open_app_or_url`, window control (`list_windows`, `focus_window`, `minimize_window`, `close_window`, `window_snap`), GUI control (`gui_click`, `gui_type`), clipboard (`clipboard_read`, `clipboard_write`), `run_python_code` (sandboxed), `run_shell_command` (a real shell behind an on-screen CONFIRM of the exact command — never from routines or delegated tasks), `browser_control` (open a URL, or fetch a page's text), the File Commander (`file_organize` — dry-run plan first, always; `file_find_advanced`, `find_file`, `file_duplicates`, `disk_usage`), `process_file`, `fetch_url`, `web_search`, `research` (deep multi-source briefs — reads the sources, cites them, cross-checks its own claims, files the brief to the Briefing tab) |
+| Computer & files | `launch_app`, `open_app_or_url`, window control (`list_windows`, `focus_window`, `minimize_window`, `close_window`, `window_snap`), GUI control (`gui_click`, `gui_type`), clipboard (`clipboard_read`, `clipboard_write`), `run_python_code` (sandboxed), `run_shell_command` (a real shell behind an on-screen CONFIRM of the exact command — never from routines or delegated tasks), `browser_control` (open a URL, or fetch a page's text), `browser_agent` (a supervised real-browser driver in her own profile — one action per call, irreversible clicks like pay/send/delete are stashed for approval instead of executed, private addresses refused), the File Commander (`file_organize` — dry-run plan first, always; `file_find_advanced`, `find_file`, `file_duplicates`, `disk_usage`), `process_file`, `fetch_url`, `web_search`, `research` (deep multi-source briefs — reads the sources, cites them, cross-checks its own claims, files the brief to the Briefing tab) |
 | Travel & games | `flight_finder` (builds and opens a Google Flights search — prices live on the page and are never invented), `game_updater` (Steam: list installed games, report flagged updates, queue a validate/update; Epic honestly unsupported) |
 | Media | `media_control` (one tool over her own video player and the system: play/pause, seek by fraction or seconds, volume), `spotify`, `media_key`, `volume`, `dj` — transport is explicit and verified, aimed at the real media session (see NOW PLAYING, below) |
 | Phone node | `phone_status`, `phone_list_apps`, `phone_open_app`, `phone_read_screen` (accessibility tree with tap targets), `phone_notifications`, `phone_tap`, `phone_swipe`, `phone_type`, `phone_key` — via the ARIA Node Android app |
