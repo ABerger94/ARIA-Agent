@@ -582,6 +582,30 @@ with open(os.path.join(os.path.dirname(__file__), 'assets', 'phone.html'), encod
     BRIDGE_HTML = _phone_page.read()
 
 
+# Home-screen / PWA icons (Alek, 2026-10-28): the SAME waveform-orb art
+# as the desktop shortcut icon (aria.ico), rendered to PNG and
+# composited on the page's own #080d14. Served unauthenticated like
+# /sw.js — iOS fetches the apple-touch-icon outside the pairing flow,
+# and an icon is not a secret.
+def _load_asset_bytes(name):
+    try:
+        with open(os.path.join(os.path.dirname(__file__), 'assets', name), 'rb') as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+_ICON_BYTES = {name: _load_asset_bytes(name)
+               for name in ('icon-180.png', 'icon-192.png', 'icon-512.png')}
+
+MANIFEST_JSON = (
+    '{"name":"A.R.I.A. Bridge","short_name":"A.R.I.A.","display":"standalone",'
+    '"background_color":"#080d14","theme_color":"#080d14","start_url":"/",'
+    '"icons":[{"src":"/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},'
+    '{"src":"/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"}]}'
+)
+
+
 
 PAIR_EXPIRED_HTML = """<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ARIA | Pairing link expired</title><body style="background:#080d14;color:#e2edf5;font:16px system-ui;padding:40px;line-height:1.6">
@@ -1038,6 +1062,19 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if self.path.split("?", 1)[0] == "/sw.js":
             self._send(200, SW_JS.encode("utf-8"),
                        "application/javascript; charset=utf-8")
+            return
+
+        _clean_path = self.path.split("?", 1)[0]
+        if _clean_path == "/manifest.webmanifest":
+            self._send(200, MANIFEST_JSON.encode("utf-8"),
+                       "application/manifest+json; charset=utf-8")
+            return
+        if _clean_path in ("/icon-180.png", "/icon-192.png", "/icon-512.png"):
+            _icon = _ICON_BYTES.get(_clean_path.lstrip("/"))
+            if _icon:
+                self._send(200, _icon, "image/png")
+            else:
+                self._send(404, b'{"error":"icon missing"}')
             return
 
         if self.path.startswith("/silent.wav"):

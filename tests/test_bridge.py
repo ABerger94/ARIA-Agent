@@ -496,3 +496,68 @@ def test_lock_endpoint_flow():
         else:
             sys.modules["aria.applock"] = old_applock
     print("ok lock_endpoint_flow")
+
+
+def test_pwa_icons_and_manifest_served():
+    """The Home-screen icon is the desktop waveform-orb art (Alek,
+    2026-10-28): the PNG icons and the web manifest are served
+    unauthenticated (iOS fetches the touch icon outside the pairing
+    flow), and the page links them."""
+    _setup_bridge()
+    _SETTINGS["phone_bridge_host"] = "127.0.0.1"
+
+    def fake_ensure():
+        bridge.BRIDGE_SCHEME = "http"
+        bridge.BRIDGE_CERT = None
+        bridge.BRIDGE_KEY = None
+
+    real_ensure = bridge.ensure_bridge_cert
+    bridge.ensure_bridge_cert = fake_ensure
+    bridge._BRIDGE_SERVER = None
+    t = threading.Thread(target=bridge.start_bridge_server,
+                         kwargs={"port": 0}, daemon=True)
+    t.start()
+    try:
+        deadline = time.time() + 10
+        while bridge._BRIDGE_SERVER is None and time.time() < deadline:
+            time.sleep(0.05)
+        srv = bridge._BRIDGE_SERVER
+        assert srv is not None, "bridge server did not start"
+        port = srv.server_address[1]
+
+        def req(path, headers=None):
+            conn = http.client.HTTPConnection("127.0.0.1", port,
+                                              timeout=5)
+            try:
+                conn.request("GET", path, headers=headers or {})
+                resp = conn.getresponse()
+                body = resp.read()
+                return resp.status, dict(resp.getheaders()), body
+            finally:
+                conn.close()
+
+        for name in ("icon-180.png", "icon-192.png", "icon-512.png"):
+            status, headers, body = req("/" + name)  # no auth on purpose
+            assert status == 200, (name, status)
+            assert headers.get("Content-Type") == "image/png", headers
+            assert body[:8] == b"\x89PNG\r\n\x1a\n", name
+            assert len(body) > 10000, (name, len(body))
+        status, headers, body = req("/manifest.webmanifest")
+        assert status == 200, status
+        import json as _json
+        manifest = _json.loads(body.decode("utf-8"))
+        sizes = {i["sizes"] for i in manifest["icons"]}
+        assert {"192x192", "512x512"} <= sizes, sizes
+        # The page itself links the touch icon + manifest.
+        status, _h, body = req(
+            "/", {"Cookie": f"aria_bridge_token={_TOKEN}"})
+        assert status == 200
+        assert b'rel="apple-touch-icon" href="/icon-180.png"' in body
+        assert b'rel="manifest" href="/manifest.webmanifest"' in body
+    finally:
+        bridge.ensure_bridge_cert = real_ensure
+        if bridge._BRIDGE_SERVER is not None:
+            bridge._BRIDGE_SERVER.shutdown()
+            bridge._BRIDGE_SERVER.server_close()
+            bridge._BRIDGE_SERVER = None
+    print("ok pwa_icons_and_manifest")
