@@ -449,33 +449,46 @@ def create_dashboard(callbacks):
                 b = QPushButton(name); b.clicked.connect(lambda checked=False, a=action: hud._dispatch_media_action(a)); media.addWidget(b)
                 self.media_buttons[action] = b
             ll.addLayout(media)
-            # AUDIO (Alek, 2026-10-28): two explicit sliders —
-            # the computer and the playing app — each with its own
-            # mute. This replaces the single slider + hidden target
-            # toggle the panel used to have: both sources' levels
-            # are visible and grabbable at once. The PLAYER row's
-            # label names the app (Spotify, VLC, ...) and the row
-            # disables when no session for it exists.
-            def _vol_row(label_text, target):
-                row = QHBoxLayout()
-                lab = QLabel(label_text); lab.setFixedWidth(92)
-                row.addWidget(lab)
-                s = QSlider(Qt.Orientation.Horizontal); s.setRange(0, 100)
-                s.sliderMoved.connect(
-                    lambda value, t=target: hud.set_volume_for(t, value / 100))
-                row.addWidget(s, 1)
-                m = QPushButton('Mute'); m.setCheckable(True)
-                m.setFixedWidth(50)
-                m.toggled.connect(
-                    lambda checked, t=target: hud.set_mute_for(t, checked))
-                row.addWidget(m)
-                return row, s, m, lab
-            _vr, self.volume, self.mute_device, _sys_lab = _vol_row(
-                'COMPUTER', 'device')
-            ll.addLayout(_vr)
-            _vr2, self.volume_player, self.mute_player, \
-                self.player_vol_label = _vol_row('PLAYER', 'player')
-            ll.addLayout(_vr2)
+            # AUDIO (Alek, 2026-10-28, revised same evening): ONE
+            # slider + a switch button, like the panel used to
+            # have — the button flips the slider between COMPUTER
+            # and PLAYER (whatever app is playing; the button
+            # names it). The backend player session follows the
+            # active app (aria/comhost.py), so the PLAYER side is
+            # no longer Spotify-only. The freed row's height goes
+            # to the album-art tile below.
+            self._vol_target = 'device'
+            _vol = QHBoxLayout()
+            self.vol_target_btn = QPushButton('COMPUTER')
+            self.vol_target_btn.setFixedWidth(104)
+            _vol.addWidget(self.vol_target_btn)
+            self.volume = QSlider(Qt.Orientation.Horizontal)
+            self.volume.setRange(0, 100)
+            self.volume.sliderMoved.connect(
+                lambda value: hud.set_volume_for(self._vol_target,
+                                                 value / 100))
+            _vol.addWidget(self.volume, 1)
+            ll.addLayout(_vol)
+
+            def _toggle_vol_target():
+                self._vol_target = ('player'
+                                    if self._vol_target == 'device'
+                                    else 'device')
+                self._sync_vol_button()
+                if not self.volume.isSliderDown():
+                    self.volume.setValue(int(
+                        hud.get_volume_for(self._vol_target) * 100))
+            self._toggle_vol_target = _toggle_vol_target
+
+            def _sync_vol_button():
+                if self._vol_target == 'device':
+                    self.vol_target_btn.setText('COMPUTER')
+                else:
+                    _app = str(getattr(self, '_player_app_now', '')
+                               or '').upper()
+                    self.vol_target_btn.setText(_app or 'PLAYER')
+            self._sync_vol_button = _sync_vol_button
+            self.vol_target_btn.clicked.connect(_toggle_vol_target)
             # REMOTE CONTROL used to sit here; it lives in Settings
             # (Connections tab, 'Open Remote Control') now (Alek,
             # 2026-10-27). open_remote() stays for Settings' use.
@@ -1627,21 +1640,14 @@ def create_dashboard(callbacks):
             self._last_subsystems = list(data.get('subsystems') or [])
             self.status.setText(_services_status_text(data.get('subsystems')))
             self.voice.setText('Voice on' if data['voice_enabled'] else 'Voice off')
-            if not self.volume.isSliderDown(): self.volume.setValue(int(data.get('volume_device', data.get('volume', 0)) * 100))
-            if not self.volume_player.isSliderDown(): self.volume_player.setValue(int((data.get('volume_player') or 0) * 100))
-            _papp = str(data.get('player_app') or '').upper()
-            _plabel = _papp if _papp else 'PLAYER'
-            if self.player_vol_label.text() != _plabel:
-                self.player_vol_label.setText(self.player_vol_label.fontMetrics().elidedText(_plabel, Qt.TextElideMode.ElideRight, 92))
-            _present = bool(data.get('player_present'))
-            self.volume_player.setEnabled(_present)
-            self.mute_player.setEnabled(_present)
-            for _btn, _muted in ((self.mute_device, data.get('muted_device')),
-                                 (self.mute_player, data.get('muted_player'))):
-                if _btn.isChecked() != bool(_muted):
-                    _btn.blockSignals(True)
-                    _btn.setChecked(bool(_muted))
-                    _btn.blockSignals(False)
+            self._player_app_now = str(data.get('player_app') or '')
+            self._sync_vol_button()
+            _sel = (data.get('volume_player')
+                    if self._vol_target == 'player'
+                    else data.get('volume_device',
+                                  data.get('volume', 0)))
+            if not self.volume.isSliderDown():
+                self.volume.setValue(int((_sel or 0) * 100))
             music = frame.media_data(); _track_full = music.get('title') or music.get('track') or 'Nothing playing'
             self.track.setToolTip(_track_full)
             # NOW PLAYING panel: track on one line, artist under it

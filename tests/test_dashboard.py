@@ -705,10 +705,10 @@ def test_orb_publish_falls_back_when_composite_fails(monkeypatch, tmp_path):
     window.close()
 
 
-def test_media_panel_player_slider_and_art_tile(monkeypatch, tmp_path):
-    # Alek, 2026-10-28: two explicit volume sliders (computer +
-    # playing app, each with a mute) and a big album-art tile in
-    # the left column's leftover space.
+def test_media_panel_single_slider_target_switch_and_art(monkeypatch, tmp_path):
+    # Alek, 2026-10-28 (revised same evening): ONE volume slider
+    # with a switch button flipping it between COMPUTER and the
+    # playing app, plus the big album-art tile.
     app = QApplication.instance() or QApplication([])
     data = dict(cpu=25, mem=40, battery='80%', uptime_s=600,
                 active_provider='Ollama', subsystems=[],
@@ -729,12 +729,14 @@ def test_media_panel_player_slider_and_art_tile(monkeypatch, tmp_path):
     frame.activity_events = lambda n: []
     frame.toggle_voice = lambda: None
     frame.receive_file = lambda p: None
+    levels = {'device': .5, 'player': .8}
     hud = types.ModuleType('aria.hud')
     hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = ''; hud.WHISPER_MODE = False
     hud._dispatch_spotify_action = lambda a: None
     hud._dispatch_media_action = lambda a: None
     hud.set_hud_volume = lambda v: None
-    hud.set_volume_for = lambda t, v: None
+    hud.set_volume_for = lambda t, v: levels.__setitem__(t, v)
+    hud.get_volume_for = lambda t: levels[t]
     hud.set_mute_for = lambda t, m: None
     config = types.ModuleType('aria.config'); config.redact = str
     config.log_silent = lambda *args: None
@@ -758,10 +760,14 @@ def test_media_panel_player_slider_and_art_tile(monkeypatch, tmp_path):
         render_frame=lambda: np.zeros((800, 1280, 3), dtype=np.uint8))
     window = create_dashboard(callbacks)
     window.show(); app.processEvents(); window.render_once(); app.processEvents()
-    assert window.volume.value() == 50            # computer slider
-    assert window.volume_player.value() == 80     # player slider
-    assert window.volume_player.isEnabled()       # session present
-    assert window.mute_player.isChecked()         # player muted state
-    assert window.player_vol_label.text() == 'VLC'
+    assert not hasattr(window, 'volume_player')   # one slider only
+    assert window.volume.value() == 50            # computer by default
+    assert window.vol_target_btn.text() == 'COMPUTER'
+    window._toggle_vol_target()
+    assert window.vol_target_btn.text() == 'VLC'  # names the app
+    assert window.volume.value() == 80            # now the player's
+    window._toggle_vol_target()
+    assert window.vol_target_btn.text() == 'COMPUTER'
+    assert window.volume.value() == 50
     assert window.art.text() == '♪'               # no art -> placeholder
     assert window.art_caption.text() == 'The Artist — The Album'
