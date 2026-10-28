@@ -92,9 +92,12 @@ def in_approve_replay(tool, args) -> bool:
         return False
 
 
-# Approval-control tools must never gate: gating them would make it impossible
-# to resolve a pending request (approve -> AWAITING_APPROVAL -> deadlock).
-# They change no world state themselves.
+# Approval-control names must never gate. Since 2026-10-28 the
+# resolvers (approve / deny / set_approval_mode) are not model
+# tools at all — see aria/tools/dispatch.py — so this set now
+# serves the read-only views that remain, plus defence in depth:
+# if a resolver name were ever re-registered by mistake, gating
+# it would deadlock resolution (approve -> AWAITING_APPROVAL).
 NEVER_GATED = frozenset({
     "approve",
     "deny",
@@ -239,8 +242,9 @@ def request_approval(tool: str, args=None, desc=None) -> str:
     # Surfaces in the OPS Log tab via add_log.
     config.add_log(f"[approval] AWAITING_APPROVAL token={token} tool={tool}: {desc}")
     return (f"[AWAITING_APPROVAL token={token}] {desc}. Tell the user what you "
-            f"are about to do and wait. Call approve(token) when they say yes, "
-            f"deny(token) to cancel.")
+            f"are about to do and wait for them to tap Confirm (or Deny) on "
+            f"the approval banner. You cannot approve or deny it yourself — "
+            f"those are not tools you have; only the user's tap resolves it.")
 
 
 def purge_expired() -> int:
@@ -334,8 +338,15 @@ def list_pending() -> str:
 
 
 # ---------------- Tool wrappers (builtins-style) ----------------
-# Registry names (wired by coordinator): approve, deny, list_pending_approvals,
-# set_approval_mode, get_approval_mode.
+# Only list_pending_approvals and get_approval_mode are wired into
+# the tool registry (aria/tools/dispatch.py). tool_approve,
+# tool_deny and tool_set_approval_mode remain as module API for
+# TRUSTED callers only — the dashboard banner and the Settings
+# dialog call the underlying functions on a human click, and
+# tests drive the wrappers directly. They are NOT model-callable
+# (removed from the registry + schemas 2026-10-28, ChatGPT pass 2
+# runner-up 2: the model could approve its own pending calls and
+# set its own mode to auto).
 
 
 def tool_approve(token: str) -> str:

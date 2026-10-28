@@ -112,7 +112,7 @@ remedy.
 
 ## Capabilities
 
-**133 tools** on a desktop install, organised into progressive toolkits:
+**130 tools** on a desktop install, organised into progressive toolkits:
 only the core schemas ride along per call, and specialist toolkits unlock
 on demand (`load_toolkit`) or automatically from keywords in your request.
 Tools from connected MCP servers join on top of that, namespaced per
@@ -133,7 +133,7 @@ suite:
 | Scheduling & watches | `set_timer`, `set_reminder`, `set_recurring_task`, `list_scheduled_tasks`, `cancel_scheduled_task`, `break_reminders`; `os_reminder` (registered with the Windows Task Scheduler, so it fires even when ARIA is closed — `set_reminder` cannot promise that); price watches (`watch_price`, `check_price_watches`, `list_price_watches`, `unwatch_price` — the hourly checker actually fires), screen watches (`watch_screen`, `list_screen_watches`, `unwatch_screen`) |
 | Delegation & autonomy | `delegate_task`, `task_status`, `task_cancel`, `task_resume`; `event_trigger` (when-this-then-task: email rules, folder drops, presence return — auto, or ask-first via a pending approval; per-trigger cooldown, every firing logged); `manage_autonomous_goal`, `manage_background_job`, `system_health_audit`, `self_heal_diagnose`; `update_status` (git HEAD + live fleet/task state), `code_helper` (explain / fix / write code via the code model), `dev_agent` (plan + write a complete single-file program) |
 | Notes, memory & cards | `take_note`, `read_notes`, `journal_write`; `save_memory`, `search_memory`, `forget_memory`, `memory_review`; `mtg_card`, `mtg_advice` (Scryfall, keyless) |
-| Herself | `morning_briefing`, personas (`set_persona`, `get_persona`, `list_personas`), the approval layer (`set_approval_mode`, `get_approval_mode`, `list_pending_approvals`, `approve`, `deny`), self-edit (`edit_own_code`, `patch_own_code`), `restart_program` (relaunch herself on a direct command — never the computer, never from a routine or delegated task), `notify_phone` (toast + Web Push + missed queue; rate-limited, and never sent from delegated work), `set_backup_mirror` (mirror the memory DB, settings, and chat history to a folder you choose — keys never mirror), `reload_user_tools`, `show_commands`, `hide_commands`, `bridge_token` |
+| Herself | `morning_briefing`, personas (`set_persona`, `get_persona`, `list_personas`), the approval layer's read-only views (`get_approval_mode`, `list_pending_approvals` — approvals themselves resolve only from the dashboard's confirm banner and the mode only in Settings, never by the model), self-edit (`edit_own_code`, `patch_own_code`), `restart_program` (relaunch herself on a direct command — never the computer, never from a routine or delegated task), `notify_phone` (toast + Web Push + missed queue; rate-limited, and never sent from delegated work), `set_backup_mirror` (mirror the memory DB, settings, and chat history to a folder you choose — keys never mirror), `reload_user_tools`, `show_commands`, `hide_commands`, `bridge_token` |
 
 **Startup briefing.** Her greeting and the `morning_briefing` tool compose
 the same source-backed report in code: today's calendar (recurring events
@@ -306,12 +306,14 @@ boot and restarts her if she crashes.
 
 ## Safety model
 
-- **Approval layer.** `set_approval_mode`: `auto`, `confirm-risky`, or
-  `confirm-all`. In the confirm modes a destructive action pauses with a
-  token and waits — approve or deny by voice, or from the dashboard's
-  confirm banner (the same execution path, so a click and a spoken "yes"
-  can never diverge). Approvals expire after 10 minutes and surface in
-  the Activity log.
+- **Approval layer.** The mode (`auto`, `confirm-risky`, or
+  `confirm-all`) is set by you in Settings. In the confirm modes a
+  destructive action pauses with a token and waits — and only your
+  tap on the dashboard's confirm banner resolves it. The model has
+  no approve/deny tools and cannot set its own mode: a spoken "yes"
+  to ARIA does not execute anything, by design, so a model turn can
+  never grant itself permission. Approvals expire after 10 minutes
+  and surface in the Activity log.
 - **App lock.** Settings → General sets a lock password (salted PBKDF2;
   spoken passwords are normalized — no case, no trailing punctuation)
   and **Lock ARIA** grays out the dashboard and silences local voice,

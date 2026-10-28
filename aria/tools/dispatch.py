@@ -781,10 +781,17 @@ def _init_default_registry():
     _REGISTRY["hide_commands"] = lambda a: hud.tool_hide_commands()
 
     # ---- ARIA ULTIMATE (Module 4): approval / safety layer ----
-    _REGISTRY["approve"] = lambda a: approval_mod.tool_approve(a.get("token", ""))
-    _REGISTRY["deny"] = lambda a: approval_mod.tool_deny(a.get("token", ""))
+    # approve / deny / set_approval_mode are deliberately NOT
+    # registered (ChatGPT pass 2 runner-up 2, fixed 2026-10-28):
+    # as model-callable tools they let the model grant its own
+    # approvals and relax its own policy — the only "gate" was a
+    # prompt instruction not to. Resolutions now happen ONLY
+    # out-of-band, where a model turn cannot reach: the dashboard
+    # confirm banner and the Settings dialog call aria.approval's
+    # functions directly on a human click. The model keeps the
+    # two read-only views so it can tell the user what is waiting
+    # and which mode is active.
     _REGISTRY["list_pending_approvals"] = lambda a: approval_mod.tool_list_pending_approvals()
-    _REGISTRY["set_approval_mode"] = lambda a: approval_mod.tool_set_approval_mode(a.get("mode", ""))
     _REGISTRY["get_approval_mode"] = lambda a: approval_mod.tool_get_approval_mode()
 
     # ---- ARIA ULTIMATE (Module 1): routines ----
