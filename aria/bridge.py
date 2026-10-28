@@ -601,8 +601,8 @@ _ICON_BYTES = {name: _load_asset_bytes(name)
 MANIFEST_JSON = (
     '{"name":"A.R.I.A. Bridge","short_name":"A.R.I.A.","display":"standalone",'
     '"background_color":"#080d14","theme_color":"#080d14","start_url":"/",'
-    '"icons":[{"src":"/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},'
-    '{"src":"/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"}]}'
+    '"icons":[{"src":"/icon-192.png?v=orb1","sizes":"192x192","type":"image/png","purpose":"any"},'
+    '{"src":"/icon-512.png?v=orb1","sizes":"512x512","type":"image/png","purpose":"any"}]}'
 )
 
 

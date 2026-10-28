@@ -558,8 +558,8 @@ def test_pwa_icons_and_manifest_served():
         status, _h, body = req(
             "/", {"Cookie": f"aria_bridge_token={_TOKEN}"})
         assert status == 200
-        assert b'rel="apple-touch-icon" href="/icon-180.png"' in body
-        assert b'rel="manifest" href="/manifest.webmanifest"' in body
+        assert b'rel="apple-touch-icon" href="/icon-180.png?v=orb1"' in body
+        assert b'rel="manifest" href="/manifest.webmanifest?v=orb1"' in body
     finally:
         bridge.ensure_bridge_cert = real_ensure
         if bridge._BRIDGE_SERVER is not None:
