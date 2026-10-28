@@ -601,8 +601,8 @@ _ICON_BYTES = {name: _load_asset_bytes(name)
 MANIFEST_JSON = (
     '{"name":"A.R.I.A. Bridge","short_name":"A.R.I.A.","display":"standalone",'
     '"background_color":"#080d14","theme_color":"#080d14","start_url":"/",'
-    '"icons":[{"src":"/icon-192.png?v=orb1","sizes":"192x192","type":"image/png","purpose":"any"},'
-    '{"src":"/icon-512.png?v=orb1","sizes":"512x512","type":"image/png","purpose":"any"}]}'
+    '"icons":[{"src":"/icon-192.png?v=orb2","sizes":"192x192","type":"image/png","purpose":"any"},'
+    '{"src":"/icon-512.png?v=orb2","sizes":"512x512","type":"image/png","purpose":"any"}]}'
 )
 
 
@@ -1065,6 +1065,35 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
 
         _clean_path = self.path.split("?", 1)[0]
+        if _clean_path == "/aria-cert.pem":
+            # The bridge's PUBLIC certificate, for iOS full trust
+            # (Alek, 2026-10-28): Safari's tap-through exception is
+            # not inherited by the Home Screen icon fetcher, so the
+            # orb never landed until the cert is trusted system-wide.
+            # A public cert is not a secret — served unauthenticated
+            # like the icons. Read at request time so a cert refresh
+            # is honoured without a restart.
+            _cert_bytes = None
+            if BRIDGE_SCHEME == "https" and BRIDGE_CERT:
+                try:
+                    with open(BRIDGE_CERT, "rb") as _cf:
+                        _cert_bytes = _cf.read()
+                except OSError:
+                    _cert_bytes = None
+            if _cert_bytes:
+                self.send_response(200)
+                self.send_header("Content-Type",
+                                 "application/x-x509-ca-cert")
+                self.send_header("Content-Disposition",
+                                 'attachment; filename="aria-bridge-cert.pem"')
+                self.send_header("Content-Length", str(len(_cert_bytes)))
+                self.send_header("Cache-Control",
+                                 "no-cache, no-store, must-revalidate")
+                self.end_headers()
+                self.wfile.write(_cert_bytes)
+            else:
+                self._send(404, b'{"error":"no bridge certificate"}')
+            return
         if _clean_path == "/manifest.webmanifest":
             self._send(200, MANIFEST_JSON.encode("utf-8"),
                        "application/manifest+json; charset=utf-8")

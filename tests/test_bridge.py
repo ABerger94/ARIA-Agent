@@ -558,8 +558,8 @@ def test_pwa_icons_and_manifest_served():
         status, _h, body = req(
             "/", {"Cookie": f"aria_bridge_token={_TOKEN}"})
         assert status == 200
-        assert b'rel="apple-touch-icon" href="/icon-180.png?v=orb1"' in body
-        assert b'rel="manifest" href="/manifest.webmanifest?v=orb1"' in body
+        assert b'rel="apple-touch-icon" href="/icon-180.png?v=orb2"' in body
+        assert b'rel="manifest" href="/manifest.webmanifest?v=orb2"' in body
     finally:
         bridge.ensure_bridge_cert = real_ensure
         if bridge._BRIDGE_SERVER is not None:
@@ -567,3 +567,67 @@ def test_pwa_icons_and_manifest_served():
             bridge._BRIDGE_SERVER.server_close()
             bridge._BRIDGE_SERVER = None
     print("ok pwa_icons_and_manifest")
+
+
+def test_cert_download_route(tmp_path):
+    """GET /aria-cert.pem serves the bridge's public cert so the
+    phone can fully trust it (fixes the Home Screen icon fetcher,
+    which does not inherit Safari's tap-through exception)."""
+    _setup_bridge()
+    _SETTINGS["phone_bridge_host"] = "127.0.0.1"
+
+    def fake_ensure():
+        bridge.BRIDGE_SCHEME = "http"
+        bridge.BRIDGE_CERT = None
+        bridge.BRIDGE_KEY = None
+
+    real_ensure = bridge.ensure_bridge_cert
+    bridge.ensure_bridge_cert = fake_ensure
+    bridge._BRIDGE_SERVER = None
+    t = threading.Thread(target=bridge.start_bridge_server,
+                         kwargs={"port": 0}, daemon=True)
+    t.start()
+    pem = (b"-----BEGIN CERTIFICATE-----\nFAKECERTBYTES\n"
+           b"-----END CERTIFICATE-----\n")
+    cert_file = tmp_path / "bridge-cert.pem"
+    cert_file.write_bytes(pem)
+    real_cert, real_scheme = bridge.BRIDGE_CERT, bridge.BRIDGE_SCHEME
+    try:
+        deadline = time.time() + 10
+        while bridge._BRIDGE_SERVER is None and time.time() < deadline:
+            time.sleep(0.05)
+        srv = bridge._BRIDGE_SERVER
+        assert srv is not None, "bridge server did not start"
+        port = srv.server_address[1]
+
+        def req(path):
+            conn = http.client.HTTPConnection("127.0.0.1", port,
+                                              timeout=5)
+            try:
+                conn.request("GET", path)
+                resp = conn.getresponse()
+                return resp.status, dict(resp.getheaders()), resp.read()
+            finally:
+                conn.close()
+
+        # No cert configured -> honest 404.
+        bridge.BRIDGE_CERT, bridge.BRIDGE_SCHEME = None, "https"
+        status, _h, _b = req("/aria-cert.pem")
+        assert status == 404, status
+        # Cert configured -> served unauthenticated, exact bytes.
+        bridge.BRIDGE_CERT = str(cert_file)
+        status, headers, body = req("/aria-cert.pem")
+        assert status == 200, status
+        assert body == pem
+        assert headers.get("Content-Type") == \
+            "application/x-x509-ca-cert", headers
+        assert "aria-bridge-cert.pem" in \
+            headers.get("Content-Disposition", "")
+    finally:
+        bridge.BRIDGE_CERT, bridge.BRIDGE_SCHEME = real_cert, real_scheme
+        bridge.ensure_bridge_cert = real_ensure
+        if bridge._BRIDGE_SERVER is not None:
+            bridge._BRIDGE_SERVER.shutdown()
+            bridge._BRIDGE_SERVER.server_close()
+            bridge._BRIDGE_SERVER = None
+    print("ok cert_download_route")
