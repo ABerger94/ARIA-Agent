@@ -100,12 +100,18 @@ def _sru(resumable, new_handle):
 
 
 class _FakeSession:
+    """One script = one receive() pass, consumed as served —
+    matching the real SDK (each receive() yields one turn, then
+    returns). A second receive() yields nothing (clean end), so
+    run_session's multi-turn loop terminates."""
+
     def __init__(self, script):
-        self._script = script
+        self._script = list(script)
         self.tool_responses = []
 
     async def receive(self):
-        for item in self._script:
+        items, self._script = self._script, []
+        for item in items:
             yield item
 
     async def send_tool_response(self, function_responses):

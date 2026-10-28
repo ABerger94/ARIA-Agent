@@ -150,8 +150,29 @@ async def run_session(session, *, tool_runner,
                       on_audio: Optional[Callable] = None,
                       on_turn: Optional[Callable] = None,
                       on_resumption: Optional[Callable] = None) -> None:
-    """Drive one connected Live session until its receive stream
-    ends. Audio chunks go to on_audio (24 kHz int16 bytes);
+    """Drive one connected Live session across ALL its turns.
+
+    The google-genai SDK's ``session.receive()`` yields exactly
+    ONE model turn per call — its loop breaks the moment a
+    turn_complete / interaction-complete message arrives (verified
+    in the installed SDK source, google-genai live.py
+    ``AsyncSession.receive``). The first version of this function
+    consumed a single receive() pass, so a Live session silently
+    ended after its first completed turn and the manager handed
+    control back to the wake-word pipeline (ChatGPT improvement
+    pass 2 runner-up, verified + fixed 2026-10-28). The receive
+    loop below re-enters receive() on the SAME connection after
+    every completed turn, which is the SDK's documented multi-turn
+    pattern.
+
+    Endings keep their old meanings: a receive() pass that yields
+    nothing at all ends the session cleanly (and guards against
+    spinning on an empty stream); a genuine disconnect raises out
+    of receive() (the SDK raises APIError when the websocket
+    closes) and propagates to LiveManager exactly as before; the
+    app-lock watcher still cancels the session task from outside.
+
+    Audio chunks go to on_audio (24 kHz int16 bytes);
     transcriptions accumulate per turn and flush to the callbacks
     on turn_complete; function calls are answered in-line through
     tool_runner and replied with send_tool_response.
@@ -164,51 +185,59 @@ async def run_session(session, *, tool_runner,
     conversation instead of starting fresh."""
     in_buf: List[str] = []
     out_buf: List[str] = []
-    async for response in session.receive():
-        if on_resumption is not None:
-            try:
-                _sru = getattr(response, "session_resumption_update", None)
-                if _sru is not None:
-                    _new_handle = getattr(_sru, "new_handle", None)
-                    if getattr(_sru, "resumable", False) and _new_handle:
-                        try:
-                            on_resumption(_new_handle)
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-        content = getattr(response, "server_content", None)
-        if content is not None:
-            model_turn = getattr(content, "model_turn", None)
-            if model_turn is not None:
-                for part in getattr(model_turn, "parts", None) or []:
-                    inline = getattr(part, "inline_data", None)
-                    data = getattr(inline, "data", None) if inline else None
-                    if data and on_audio is not None:
-                        on_audio(data)
-            it = getattr(content, "input_transcription", None)
-            if it is not None and getattr(it, "text", None):
-                in_buf.append(it.text)
-            ot = getattr(content, "output_transcription", None)
-            if ot is not None and getattr(ot, "text", None):
-                out_buf.append(ot.text)
-            if getattr(content, "turn_complete", False):
-                if in_buf and on_user_text is not None:
-                    on_user_text("".join(in_buf).strip())
-                if out_buf and on_assistant_text is not None:
-                    on_assistant_text("".join(out_buf).strip())
-                in_buf, out_buf = [], []
-                if on_turn is not None:
-                    on_turn()
-        tool_call = getattr(response, "tool_call", None)
-        if tool_call is not None:
-            responses = []
-            for fc in getattr(tool_call, "function_calls", None) or []:
-                responses.append(
-                    await _execute_tool_call(tool_runner, fc))
-            if responses:
-                await session.send_tool_response(
-                    function_responses=responses)
+    while True:
+        got_any = False
+        async for response in session.receive():
+            got_any = True
+            if on_resumption is not None:
+                try:
+                    _sru = getattr(response, "session_resumption_update", None)
+                    if _sru is not None:
+                        _new_handle = getattr(_sru, "new_handle", None)
+                        if getattr(_sru, "resumable", False) and _new_handle:
+                            try:
+                                on_resumption(_new_handle)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+            content = getattr(response, "server_content", None)
+            if content is not None:
+                model_turn = getattr(content, "model_turn", None)
+                if model_turn is not None:
+                    for part in getattr(model_turn, "parts", None) or []:
+                        inline = getattr(part, "inline_data", None)
+                        data = getattr(inline, "data", None) if inline else None
+                        if data and on_audio is not None:
+                            on_audio(data)
+                it = getattr(content, "input_transcription", None)
+                if it is not None and getattr(it, "text", None):
+                    in_buf.append(it.text)
+                ot = getattr(content, "output_transcription", None)
+                if ot is not None and getattr(ot, "text", None):
+                    out_buf.append(ot.text)
+                if getattr(content, "turn_complete", False):
+                    if in_buf and on_user_text is not None:
+                        on_user_text("".join(in_buf).strip())
+                    if out_buf and on_assistant_text is not None:
+                        on_assistant_text("".join(out_buf).strip())
+                    in_buf, out_buf = [], []
+                    if on_turn is not None:
+                        on_turn()
+            tool_call = getattr(response, "tool_call", None)
+            if tool_call is not None:
+                responses = []
+                for fc in getattr(tool_call, "function_calls", None) or []:
+                    responses.append(
+                        await _execute_tool_call(tool_runner, fc))
+                if responses:
+                    await session.send_tool_response(
+                        function_responses=responses)
+        if not got_any:
+            # An empty pass = the stream is over. Never re-enter
+            # receive() in a hot loop waiting for a turn that is
+            # not coming.
+            break
 
 
 class LiveManager:

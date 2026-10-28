@@ -82,8 +82,13 @@ def test_run_session_tool_call_refused_while_locked():
         class _Session:
             def __init__(self):
                 self.tool_responses = []
+                self._served = False
 
             async def receive(self):
+                if self._served:
+                    return
+                    yield  # unreachable — async generator marker
+                self._served = True
                 fc = types.SimpleNamespace(
                     id='c9', name='write_file', args={'path': 'x'})
                 yield types.SimpleNamespace(
