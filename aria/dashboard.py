@@ -478,6 +478,12 @@ def create_dashboard(callbacks):
                     _pf.setLetterSpacing(
                         QFont.SpacingType.AbsoluteSpacing, -5)
                     b.setFont(_pf)
+                # All four the pause button's skinny profile
+                # (Alek's screenshot, 2026-10-28: the tracked
+                # pause button shrank narrower + shorter than the
+                # 18px-bold three — "make them all skinny like
+                # that pause button"). One fixed size for the row.
+                b.setFixedSize(64, 30)
                 b.clicked.connect(lambda checked=False, a=action: hud._dispatch_media_action(a)); media.addWidget(b)
                 self.media_buttons[action] = b
             ll.addLayout(media)
