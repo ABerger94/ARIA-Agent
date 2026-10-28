@@ -47,13 +47,39 @@ _ACTIONS = {
 }
 
 
+def _await(op):
+    """Complete a WinRT async operation from synchronous code.
+
+    Older winsdk builds expose .get() on IAsyncOperation; Alek's
+    build does NOT (witnessed 2026-10-28: "has get: False", and the
+    AttributeError took the whole SMTC backend down — every media
+    read silently fell back to window titles, which carry no album
+    and no artwork). There the operations are awaitable only, so
+    drive them through a private event loop. Prefer .get() when it
+    exists; it is cheaper and it is what the fakes in the tests
+    model."""
+    get = getattr(op, "get", None)
+    if callable(get):
+        return get()
+    import asyncio
+
+    async def _wrap():
+        return await op
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_wrap())
+    finally:
+        loop.close()
+
+
 def _load_manager():
     """The SMTC session manager, or None when WinRT / winsdk is
     unavailable. Imported lazily: this module must import cleanly
     on any platform."""
     from winsdk.windows.media.control import (
         GlobalSystemMediaTransportControlsSessionManager)
-    return GlobalSystemMediaTransportControlsSessionManager.request_async().get()
+    return _await(GlobalSystemMediaTransportControlsSessionManager.request_async())
 
 
 def _manager():
@@ -70,10 +96,12 @@ def _manager():
         try:
             from aria import config as _config
             _config.add_log(
-                f"Media sessions (SMTC) unavailable ({exc.__class__.__name__}) "
+                f"Media sessions (SMTC) unavailable "
+                f"({exc.__class__.__name__}: {exc}) "
                 f"— media readout is on the window fallback. If winsdk "
                 f"was meant to be installed, the install did not take.",
                 level="warn")
+            _config.log_silent("smtc._load_manager", exc)
         except Exception:
             pass
     return _MANAGER
@@ -185,7 +213,7 @@ def _fetch_art(ref) -> Optional[bytes]:
     """Open an SMTC thumbnail reference and read its bytes.
     Windows/WinRT only; every failure is a quiet None."""
     try:
-        stream = ref.open_read_async().get()
+        stream = _await(ref.open_read_async())
         size = int(stream.size)
         if size <= 0 or size > _ART_MAX_BYTES:
             return None
@@ -196,7 +224,7 @@ def _fetch_art(ref) -> Optional[bytes]:
             options = InputStreamOptions.NONE
         except Exception:
             options = InputStreamOptions.PARTIAL
-        stream.read_async(buf, size, options).get()
+        _await(stream.read_async(buf, size, options))
         reader = DataReader.from_buffer(buf)
         n = int(reader.unconsumed_buffer_length)
         if n <= 0:
@@ -262,7 +290,7 @@ def _session_info(session) -> Optional[dict]:
         return None
     props = None
     try:
-        props = session.try_get_media_properties_async().get()
+        props = _await(session.try_get_media_properties_async())
         track = (props.title or "").strip()
         artist = (props.artist or "").strip()
         album = (props.album_title or "").strip()
@@ -432,7 +460,7 @@ def _control_on(session, action: str) -> bool:
     if method is None or session is None:
         return False
     try:
-        return bool(getattr(session, method)().get())
+        return bool(_await(getattr(session, method)()))
     except Exception:
         return False
 

@@ -270,3 +270,32 @@ def test_app_process_mapping():
     assert smtc.app_process(
         'Microsoft.Media.Player_8wekyb3d8bbwe!App') == 'MediaPlayer.exe'
     assert smtc.app_process('') == ''
+
+
+class _AwaitOnlyOp:
+    """A WinRT async op as Alek's winsdk build exposes it: NO
+    .get() method, awaitable only (witnessed 2026-10-28 — this
+    shape took the whole SMTC backend down)."""
+
+    def __init__(self, value):
+        self._value = value
+
+    def __await__(self):
+        if False:
+            yield
+        return self._value
+
+
+def test_await_drives_ops_without_get():
+    assert smtc._await(_AwaitOnlyOp(42)) == 42
+    assert smtc._await(_Op(7)) == 7      # .get() builds still work
+
+
+def test_session_info_reads_props_through_await_only_ops(monkeypatch):
+    session = _Session('SpotifyAB.SpotifyMusic_beta')
+    session.try_get_media_properties_async = lambda: _AwaitOnlyOp(
+        _Props('The Song', 'The Artist', 'The Album'))
+    _install(monkeypatch, _Manager([session], current=session))
+    info = smtc.refresh_now()['spotify']
+    assert info['track'] == 'The Song'
+    assert info['album'] == 'The Album'
