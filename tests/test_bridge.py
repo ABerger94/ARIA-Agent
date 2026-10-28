@@ -542,6 +542,10 @@ def test_pwa_icons_and_manifest_served():
             assert headers.get("Content-Type") == "image/png", headers
             assert body[:8] == b"\x89PNG\r\n\x1a\n", name
             assert len(body) > 10000, (name, len(body))
+            # Cacheable, NOT no-store: the Home Screen installer has
+            # to persist the icon (no-store left it the letter tile).
+            assert "max-age=86400" in headers.get("Cache-Control", ""), \
+                headers
         # iOS's well-known root probe gets the same 180 icon.
         status, headers, body = req("/apple-touch-icon.png")
         assert status == 200, status

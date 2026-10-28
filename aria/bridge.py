@@ -1065,6 +1065,37 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
 
         _clean_path = self.path.split("?", 1)[0]
+        if _clean_path in ("/manifest.webmanifest", "/icon-180.png",
+                           "/icon-192.png", "/icon-512.png",
+                           "/apple-touch-icon.png",
+                           "/apple-touch-icon-precomposed.png"):
+            # Static PWA assets, served CACHEABLE on purpose: the
+            # Add-sheet preview is a transient fetch and showed the
+            # orb even when these went out no-store, but the Home
+            # Screen installer has to PERSIST the icon — no-store
+            # responses left it with nothing to install, so iOS fell
+            # back to the letter tile (Alek's witness, 2026-10-28).
+            # The URLs are versioned (?v=...), so a long cache is
+            # safe. (Same pattern as /silent.wav.)
+            if _clean_path == "/manifest.webmanifest":
+                _body, _ctype = MANIFEST_JSON.encode("utf-8"), \
+                    "application/manifest+json; charset=utf-8"
+            else:
+                _icon_name = ("icon-180.png" if _clean_path.startswith("/apple")
+                              else _clean_path.lstrip("/"))
+                _body = _ICON_BYTES.get(_icon_name)
+                _ctype = "image/png"
+            if _body:
+                self.send_response(200)
+                self.send_header("Content-Type", _ctype)
+                self.send_header("Content-Length", str(len(_body)))
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(_body)
+            else:
+                self._send(404, b'{"error":"icon missing"}')
+            return
         if _clean_path == "/aria-cert.pem":
             # The bridge's PUBLIC certificate, for iOS full trust
             # (Alek, 2026-10-28): Safari's tap-through exception is
@@ -1094,24 +1125,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             else:
                 self._send(404, b'{"error":"no bridge certificate"}')
             return
-        if _clean_path == "/manifest.webmanifest":
-            self._send(200, MANIFEST_JSON.encode("utf-8"),
-                       "application/manifest+json; charset=utf-8")
-            return
-        if _clean_path in ("/icon-180.png", "/icon-192.png", "/icon-512.png",
-                           "/apple-touch-icon.png",
-                           "/apple-touch-icon-precomposed.png"):
-            # iOS also probes the well-known /apple-touch-icon.png at
-            # the root on its own; answer it with the 180 icon so the
-            # orb lands even if the page's link tag was cached stale.
-            _icon_name = ("icon-180.png" if _clean_path.startswith("/apple")
-                          else _clean_path.lstrip("/"))
-            _icon = _ICON_BYTES.get(_icon_name)
-            if _icon:
-                self._send(200, _icon, "image/png")
-            else:
-                self._send(404, b'{"error":"icon missing"}')
-            return
+
 
         if self.path.startswith("/silent.wav"):
             if not self._authed():
