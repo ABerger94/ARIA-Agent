@@ -456,12 +456,12 @@ def create_dashboard(callbacks):
             # keep the words for clarity.
             for name, action, tip, style in [
                     ('◀◀', 'previous', 'Previous',
-                     'font-size: 16px; font-weight: bold;'),
+                     'font-size: 18px; font-weight: bold;'),
                     ('▶', 'play', 'Play',
-                     'font-size: 16px; font-weight: bold;'),
+                     'font-size: 18px; font-weight: bold;'),
                     ('❚❚', 'pause', 'Pause', 'font-size: 15px;'),
                     ('▶▶', 'next', 'Next',
-                     'font-size: 16px; font-weight: bold;')]:
+                     'font-size: 18px; font-weight: bold;')]:
                 b = QPushButton(name); b.setToolTip(tip)
                 b.setStyleSheet(style)
                 b.clicked.connect(lambda checked=False, a=action: hud._dispatch_media_action(a)); media.addWidget(b)
