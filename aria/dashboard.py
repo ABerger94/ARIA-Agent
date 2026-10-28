@@ -449,16 +449,21 @@ def create_dashboard(callbacks):
             # presentation on his Windows build. These are plain
             # geometric text glyphs instead (monochrome in Segoe
             # UI Symbol; ❚❚ already rides the PAUSED header as
-            # text). Pause is ❙❙ (medium bars): the heavy ❚ bars
-            # rendered too wide with too much space between them
-            # (Alek's screenshot, 2026-10-28). Tooltips keep the
-            # words for clarity.
-            for name, action, tip in [('◀◀', 'previous', 'Previous'),
-                                      ('▶', 'play', 'Play'),
-                                      ('❙❙', 'pause', 'Pause'),
-                                      ('▶▶', 'next', 'Next')]:
+            # text). Pause stays the heavy ❚❚ — the medium ❙❙
+            # swap looked worse (Alek, 2026-10-28) — and the
+            # triangle buttons go bold + a point larger instead,
+            # to carry weight closer to the pause bars. Tooltips
+            # keep the words for clarity.
+            for name, action, tip, style in [
+                    ('◀◀', 'previous', 'Previous',
+                     'font-size: 16px; font-weight: bold;'),
+                    ('▶', 'play', 'Play',
+                     'font-size: 16px; font-weight: bold;'),
+                    ('❚❚', 'pause', 'Pause', 'font-size: 15px;'),
+                    ('▶▶', 'next', 'Next',
+                     'font-size: 16px; font-weight: bold;')]:
                 b = QPushButton(name); b.setToolTip(tip)
-                b.setStyleSheet('font-size: 15px;')
+                b.setStyleSheet(style)
                 b.clicked.connect(lambda checked=False, a=action: hud._dispatch_media_action(a)); media.addWidget(b)
                 self.media_buttons[action] = b
             ll.addLayout(media)
