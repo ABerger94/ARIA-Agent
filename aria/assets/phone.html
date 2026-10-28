@@ -32,7 +32,7 @@ body.facemode #app>*:not([data-panel="vision"]){display:none!important}body.face
 <section data-panel="chat" hidden><div class="section-head"><h2>Conversation</h2><span class="muted">Synced with your laptop</span></div><div id="log"></div></section>
 <section data-panel="briefing" hidden><div class="section-head"><div><h2>Daily briefing</h2><span id="brief-stamp" class="muted">Today, at a glance</span></div><button id="brief-refresh" class="secondary">Refresh</button></div><button id="brief-listen" class="secondary" disabled>Read aloud</button><div id="brief-report" class="stack" style="margin-top:16px">Your startup briefing will appear here. Select Refresh to generate one.</div></section>
 <section data-panel="inbox" hidden><div class="section-head"><div><h2>Inbox</h2><span id="mail-status">Refresh to load your email</span></div><button id="mail-refresh" class="secondary">Refresh</button></div><input id="mail-search" aria-label="Filter inbox" placeholder="Filter sender or subject…"><div id="mail-list" class="muted">Your messages appear here. Opening a message does not mark it read.</div><article id="mail-detail" class="panel" hidden><div class="section-head"><h2 id="mail-subject"></h2><button id="mail-close" class="secondary">Close</button></div><p id="mail-from"></p><div id="mail-body"></div></article></section>
-<section data-panel="vision" hidden><main id="stage"><img id="face" alt="ARIA waveform orb"><img id="eyes" alt="Phone camera" style="display:none"><div id="caption"></div></main><div class="modes"><button id="mode-face" class="mode-btn active">Waveform orb</button><button id="mode-eyes" class="mode-btn">Camera</button><button id="mode-full" class="mode-btn">Full screen</button></div><button id="lookbtn" type="button" style="display:none">Describe what you see</button></section>
+<section data-panel="vision" hidden><main id="stage"><img id="face" alt="ARIA waveform orb"><img id="eyes" alt="Phone camera" style="display:none"><div id="caption"></div></main><div class="modes"><button id="mode-face" class="mode-btn active">Waveform orb</button><button id="mode-eyes" class="mode-btn">Camera</button><button id="mode-full" class="mode-btn">Full screen</button></div><button id="lookbtn" type="button" style="display:none">Describe what you see</button><button id="flipcam2" type="button" style="display:none;margin-top:8px">Flip camera</button></section>
 <section data-panel="settings" hidden><div id="settings" class="panel"><h2>Phone settings</h2><button id="spk" class="row-btn">Speak replies: ON</button><button id="testspk" class="row-btn">Test audio</button><button id="cam" class="row-btn">Camera: OFF</button><p class="muted">Your browser asks before microphone or camera access. On first use, tap a voice control to allow audio playback.</p><span id="transport"></span><button id="pushbtn" class="row-btn">Enable phone notifications</button><span id="pushstat" class="muted" role="status"></span><p class="muted">On iPhone, iOS delivers push only to an installed page: Share → Add to Home Screen, open ARIA from that icon, then tap Enable here — a Safari tab can't receive push. Notifications also appear on this page's home panel whether or not push is on.</p><button id="signout" class="row-btn danger">Disconnect this phone</button><p class="muted">This phone is remembered for 30 days. You can disconnect all remembered phones from Remote Control on the laptop.</p></div></section>
 <form id="msgform"><input id="t" aria-label="Message ARIA" placeholder="Message ARIA…" autocomplete="off"><button id="sendbtn" type="submit">Send</button></form>
 </div><audio id="aria-audio" playsinline preload="auto" hidden></audio><audio id="aria-bg" loop playsinline preload="auto" hidden src="/silent.wav"></audio>
@@ -435,6 +435,8 @@ function updateCamBtn(){
   const fc=document.getElementById('flipcam');
   fc.style.display=camOn?'':'none';
   fc.innerText=camFacingName()+' ⇄';
+  const fc2=document.getElementById('flipcam2');
+  if(fc2){fc2.style.display=camOn?'':'none';fc2.innerText='Flip camera ('+camFacingName()+' ⇄ '+(camFacing==='user'?'rear':'front')+')';}
 }
 async function startCamStream(){
   if(camStream){camStream.getTracks().forEach(t=>t.stop());camStream=null;}
@@ -479,6 +481,7 @@ async function flipCam(){
   catch(err){alert('Camera flip failed ('+err+').');}
 }
 document.getElementById('flipcam').addEventListener('click',()=>{unlockAudio();flipCam();});
+document.getElementById('flipcam2').addEventListener('click',()=>{unlockAudio();flipCam();});
 
 // ---- view modes: face / eyes / fullscreen ----
 const stageEl=document.getElementById('stage');
