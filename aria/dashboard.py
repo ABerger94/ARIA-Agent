@@ -215,7 +215,7 @@ def _services_status_text(subsystems) -> str:
 
 def create_dashboard(callbacks):
     from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
-    from PyQt6.QtGui import (QImage, QPixmap, QColor, QShortcut,
+    from PyQt6.QtGui import (QFont, QImage, QPixmap, QColor, QShortcut,
                              QKeySequence, QIcon, QPainter, QPen)
     from PyQt6.QtWidgets import (QMainWindow, QWidget, QFrame, QLabel, QPushButton,
                                 QVBoxLayout, QHBoxLayout, QSplitter, QTabWidget,
@@ -459,11 +459,25 @@ def create_dashboard(callbacks):
                      'font-size: 18px; font-weight: bold;'),
                     ('▶', 'play', 'Play',
                      'font-size: 18px; font-weight: bold;'),
-                    ('❚❚', 'pause', 'Pause', 'font-size: 15px;'),
+                    ('❚❚', 'pause', 'Pause', ''),
                     ('▶▶', 'next', 'Next',
                      'font-size: 18px; font-weight: bold;')]:
                 b = QPushButton(name); b.setToolTip(tip)
                 b.setStyleSheet(style)
+                if action == 'pause':
+                    # The ❚ glyph's cell is wide: two bars render
+                    # 5px each with an 8px gap at 15px — wider
+                    # apart than a pause icon should be (Alek:
+                    # "They're far apart"). Negative letter
+                    # spacing pulls the pair together: -5px
+                    # spacing -> 3px gap, measured by render probe
+                    # 2026-10-28. QFont, not the stylesheet, since
+                    # QSS has no letter-spacing.
+                    _pf = QFont(b.font())
+                    _pf.setPixelSize(15)
+                    _pf.setLetterSpacing(
+                        QFont.SpacingType.AbsoluteSpacing, -5)
+                    b.setFont(_pf)
                 b.clicked.connect(lambda checked=False, a=action: hud._dispatch_media_action(a)); media.addWidget(b)
                 self.media_buttons[action] = b
             ll.addLayout(media)
