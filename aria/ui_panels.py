@@ -200,6 +200,26 @@ def create_settings_dialog(parent, callbacks):
     except Exception:
         dialog.lock_btn = None
         dialog.lock_password_btn = None
+    # Console window (Alek, 2026-10-27): ARIA launches with
+    # console python, so a command window opens with her. It is
+    # hidden by default at startup; this toggle brings it back
+    # for the live log output. Acts IMMEDIATELY (and persists
+    # itself), like the App lock row — not via Apply.
+    try:
+        from aria import console_window as _console_window
+        dialog.console = QCheckBox('Show console window (live log output)')
+        dialog.console.setChecked(bool(config.get_setting('show_console', False)))
+        def _console_toggled(checked):
+            try:
+                config.set_setting('show_console', bool(checked))
+                _console_window.set_console_visible(bool(checked))
+                dialog.message.setText('Console window shown.' if checked else 'Console window hidden.')
+            except Exception as exc:
+                dialog.message.setText(f'Console toggle failed — {exc}')
+        dialog.console.toggled.connect(_console_toggled)
+        general.addRow(dialog.console)
+    except Exception:
+        dialog.console = None
     audio = page('Voice / audio')
     dialog.voice = QCheckBox('Voice and wake-word listening enabled'); dialog.voice.setChecked(bool(speech.VOICE_ENABLED)); audio.addRow(dialog.voice)
     dialog.whisper = QCheckBox('Whisper mode'); dialog.whisper.setChecked(bool(hud.WHISPER_MODE)); audio.addRow(dialog.whisper)

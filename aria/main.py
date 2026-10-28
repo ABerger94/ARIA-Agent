@@ -1189,6 +1189,16 @@ def main():
         except Exception:
             pass
 
+    # Console window (Alek, 2026-10-27): hidden by default — she
+    # launches with console python, and he doesn't need the
+    # command window on his desktop. The Settings -> General
+    # 'show_console' toggle brings it back, live.
+    try:
+        from aria import console_window as _console_window
+        _console_window.apply_from_settings()
+    except Exception:
+        pass
+
     # ARIA ULTIMATE (Module 10): first-run wizard — checks the environment and
     # API keys before subsystems boot. Fully skippable, never blocks startup.
     _maybe_run_first_run_wizard()
