@@ -32,6 +32,18 @@ settings wins over the default). Failures are classified per
 and the walk skips resting rungs instead of hammering them. There is no
 arbitrary turn cap: a request gets a 30-minute reasoning budget, and on
 timeout she asks "Should I keep going?" — "yes" resumes the same chain.
+Tool names are never fuzzy-matched into execution: an unknown or
+misspelled name is refused, the closest real tool is only *suggested*,
+and a corrected call re-enters the same approval and safe-mode gates as
+any other call.
+
+**Gemini key pool.** `aria_keys.json` may carry `GEMINI_API_KEYS` as a
+list — the chain then expands into one Gemini rung per key
+(`gemini`, `gemini_2`, …), so the failover walk *is* the rotation and
+each key keeps its own cooldowns. Live mode and embeddings ride the
+first key. One caveat that matters: free-tier quota is per Google
+*project*, so pool keys only add headroom when they were minted in
+separate projects.
 
 **Task-based routing.** The conversation stays on the chain's front rung
 while heavy roles route by name, never hard-coded: vision runs on
@@ -62,7 +74,9 @@ up where you left off. A nightly **consolidation** pass reconciles the
 store — duplicates are skipped, and contradictions are never overwritten:
 they queue in `memory_contradictions.json` for the `memory_review` tool,
 with the losing version archived to `memory_retired.json`. Nothing is ever
-silently deleted.
+silently deleted. The dashboard's **Memory tab** shows the store
+directly — every fact, newest first, with a per-row forget (✕) that
+removes exactly that fact.
 
 **Delegated tasks, journaled.** `delegate_task` runs multi-step work in the
 background through a durable journal (`aria/agent/taskstore.py`): every
@@ -161,17 +175,21 @@ A native PyQt6 command center in three columns — no browser, no web view.
 - **Centre — her face.** A **neural field** — precomputed nodes and wiring
   with signal pulses travelling the edges, in her state colours — spans
   the whole centre card on a black backdrop, top to bottom: behind the
-  centrepiece, the state line, the subtitle and the Hold to talk buttons.
-  The centrepiece cycles between the **Resonance orb** (her voice drawn
-  as a polar waveform ribbon around her name, driven by her live audio
-  level history) and the **holo face** (real measured geometry —
-  MediaPipe's canonical face model, 468 vertices, Apache-2.0 — with a
-  viseme mouth shaped by the speech itself). A video panel takes the
-  centre while media plays in-app. The classic OpenCV HUD (pixel avatar,
+  centrepiece, the state line and the Hold to talk buttons.
+  The centrepiece is one of four, chosen in Settings → Customize: the
+  **Resonance orb** (her voice drawn as a polar waveform ribbon around
+  her name, driven by her live audio level history), the **holo face**
+  (real measured geometry — MediaPipe's canonical face model, 468
+  vertices, Apache-2.0 — with a viseme mouth shaped by the speech
+  itself), the **memory map** (a constellation of her stored facts —
+  hover a node to read the fact; the Memory tab can jump it into the
+  centre, and its ✕ returns to the orb), and the **3D waveform orb**
+  (the orb rendered as a rotating 3D wireframe). A video panel takes
+  the centre while media plays in-app. The classic OpenCV HUD (pixel avatar,
   context tiles) remains as a fallback layout
   (`ARIA_UI_LAYOUT=classic`).
-- **Right — tabs:** **Conversation | Briefing | News | Inbox | Calendar |
-  Tasks | Activity**. Inbox is a real mail client (subjects and senders
+- **Right — the Workspace, eight tabs:** **Conversation | Inbox |
+  Calendar | Tasks | Activity | Briefing | News | Memory**. Inbox is a real mail client (subjects and senders
   decoded, local dates, bodies in a reading pane; IMAP reads use
   BODY.PEEK — reading never marks mail as seen). Conversation and
   Activity are colour-coded Mark-LVI style: ARIA in cyan, you in white,
@@ -179,7 +197,10 @@ A native PyQt6 command center in three columns — no browser, no web view.
 - **Header:** a live services summary — click it for the per-service
   dialog — the clock, and **Settings**, the only header button.
 - **Settings** (`aria/ui_panels.py`) has eight tabs: **General** (startup
-  briefing, safe mode, approval mode, accent presets), **Voice / audio**
+  briefing, safe mode, approval mode, accent presets, the **app lock** —
+  set/change the lock password, Lock ARIA — and the **console window**
+  toggle: the black log window is hidden by default and can be shown
+  here), **Voice / audio**
   (voice gate, whisper, volume, Edge voice, microphone chooser),
   **Providers** (read-only: the live chain, each rung's state and model,
   failover stats), **Extensions** (read-only: MCP servers and the
@@ -194,32 +215,38 @@ A native PyQt6 command center in three columns — no browser, no web view.
   the waveform orb at pet size, switchable from its right-click menu.
   Drag her anywhere (the spot is remembered); pet mode is sticky across
   restarts.
-- **Subtitles** (the line under the state readout) pass through
-  `hud_ascii`, which maps typographic characters to ASCII lookalikes —
-  the full hyphen family included — and folds accents; a `?` is never
-  the answer.
 - **Talking to her:** voice (wake word or push-to-talk — hold the mic
   button or SPACE), typing in the command bar (Unicode welcome), or
-  dropping a file on the window.
+  dropping a file on the window. **Esc** stops her speech mid-sentence.
+  There is deliberately no live speech subtitle under the state line.
 
-There is deliberately **no ambient camera tile**: her camera works on
-demand — ask her to look — never as an always-on picture-in-picture.
+Her camera works on demand — ask her to look, and the view appears as a
+small picture-in-picture in the centre card while she's looking. There
+is no ambient, always-on camera tile.
 
 ---
 
 ## Phone bridge & node
 
 **The bridge** (`aria/bridge.py`) is an HTTPS server on your local network
-(TLS on **8001**, per-machine self-signed certificate; a first-visit
+(TLS on **8777**, per-machine self-signed certificate; a first-visit
 certificate warning per device is expected). **Remote Control** in
 Settings → Connections shows a QR code: scan it and the phone is paired —
 no token form — remembered for 30 days via a per-phone HttpOnly cookie
-(session *hashes* are stored, never raw credentials). The phone gets her
-centrepiece (the bridge publishes the same composited frame the desktop
-shows), Face / Eyes views with its own camera streaming back as her eyes,
-hold-to-talk voice, the conversation, inbox, briefing, a **Send a file**
-page (uploads land in her inbox for `inbox_list` / `inbox_describe` /
-`inbox_read`), and a Commands page. Expiring the QR does not sign out an
+(session *hashes* are stored, never raw credentials). The phone page has
+six tabs — **Control**, **Conversation**, **Inbox**, **Briefing**,
+**Orb & camera**, **Settings**. Control carries hold-to-talk voice,
+**Stop speaking**, and a **Lock ARIA** button (below, under Safety).
+Orb & camera switches between her centrepiece (the bridge publishes the
+same composited frame the desktop shows), the **Camera** view — the
+phone's own camera streaming back as her eyes, flippable between front
+and rear from the header or the in-tab **Flip camera** button, with a
+**Describe what you see** button under it — and Full screen. Inbox takes
+uploads (files land in her inbox for `inbox_list` / `inbox_describe` /
+`inbox_read`). Phone Settings hold speak-replies, the camera toggle and
+**phone notifications** (Web Push; on iPhone, iOS only delivers push to
+an installed page — Share → Add to Home Screen, open ARIA from that
+icon, then enable). Expiring the QR does not sign out an
 already-paired phone; disconnect phones individually or all at once from
 the laptop.
 
@@ -285,6 +312,17 @@ boot and restarts her if she crashes.
   confirm banner (the same execution path, so a click and a spoken "yes"
   can never diverge). Approvals expire after 10 minutes and surface in
   the Activity log.
+- **App lock.** Settings → General sets a lock password (salted PBKDF2;
+  spoken passwords are normalized — no case, no trailing punctuation)
+  and **Lock ARIA** grays out the dashboard and silences local voice,
+  typed input and speech. Unlock by typing the password or by voice —
+  "hey Aria" plus the password. The **phone stays exempt on purpose**:
+  it keeps working while she's locked, and its Control tab carries a
+  **Lock ARIA** button so you can lock the laptop from the couch (it
+  refuses when no password is set — locking then would strand the
+  laptop until restart). A Gemini Live session ends the moment the
+  lock engages; the wake-word pipeline re-arms after unlock. The lock
+  is per-session: restarting her starts unlocked, the password persists.
 - **Delegation inherits the gates.** A delegated task runs the same tools
   through the same dispatch and the same verifier; work that needs you
   parks as blocked instead of bypassing anything, and a delegated or
@@ -313,7 +351,8 @@ boot and restarts her if she crashes.
   `py -3.12`; the default `python` on the machine will not do.
 - **Gemini Live is settings-file only.** There is no UI toggle yet;
   `"voice_mode": "live"` in the settings file is the switch, and a
-  restart applies it.
+  restart applies it. Locking the app ends a Live session (above);
+  Live itself returns on the next restart.
 - **The bridge is LAN-only** with a self-signed certificate — expect a
   one-time browser warning per device, and Wi-Fi client isolation can
   block phone access entirely.
@@ -348,10 +387,12 @@ provider loop, task journal, consolidation, workers, self-healing),
 `aria/tools/` (schemas for the progressive toolkits, dispatch, sandbox,
 builtins), `aria/dashboard.py` + `aria/ui_panels.py` (the Qt command
 center and its dialogs), `aria/bridge.py` (the phone bridge),
+`aria/applock.py` (the app lock), `aria/console_window.py` (the
+console window show/hide),
 `aria/node_hub.py` + `aria/phone_node.py` (the Android node),
 `aria/smtc.py` + `aria/media_control.py` (media), `aria/presence.py`,
 `aria/live.py`, `aria/neural_field.py`, `aria/resonance.py`,
-`aria/holo_face.py`, `aria/pet_window.py` (centrepieces and pet),
+`aria/holo_face.py`, `aria/orb3d.py`, `aria/pet_window.py` (centrepieces and pet),
 `aria/briefing.py`, `aria/memory.py`, `aria/routines.py`,
 `aria/approval.py`, `aria/scheduler.py`, `aria/mcp.py`, `aria/hud.py`
 (the classic OpenCV HUD + shared telemetry), `arduino/` (robot body
