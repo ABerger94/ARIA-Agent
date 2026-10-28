@@ -465,7 +465,12 @@ def test_code_helper_provider_failure(monkeypatch, fake_builtins):
     assert "provider down" in out
 
 
-def test_dev_agent_saves_and_runs(monkeypatch, fake_builtins):
+def test_dev_agent_saves_and_never_runs(monkeypatch, fake_builtins):
+    # Security, 2026-10-27: dev_agent saves but NEVER executes. Its
+    # old run path executed generated code while the dispatcher
+    # checked policy only against the outer name 'dev_agent' — in
+    # neither SAFE_MODE_BLOCKED_TOOLS nor DESTRUCTIVE_TOOLS — so
+    # run=true bypassed safe mode and approval outright.
     monkeypatch.setattr(gap, "_provider_text",
                         lambda s, p, role="code":
                         "```python\nprint('hi from dev')\n```")
@@ -481,13 +486,16 @@ def test_dev_agent_saves_and_runs(monkeypatch, fake_builtins):
 
     out = gap.tool_dev_agent({"description": "say hi",
                               "output_path": "hi.py", "run": True})
-    assert out.startswith("status=unverified")  # saved+ran != verified
-    assert ran == ["print('hi from dev')"]
-    assert "hi from dev" in out
+    assert out.startswith("status=failed")  # saved, NOT executed
+    assert fake_builtins.writes["hi.py"] == "print('hi from dev')"
+    assert ran == []  # execution must never happen from here
+    assert "NOT executed" in out
+    assert "run_python_code" in out  # the gated route for running it
 
     out = gap.tool_dev_agent({"description": "say hi",
                               "language": "rust",
                               "output_path": "hi.rs", "run": True})
-    assert out.startswith("status=done")
-    assert "only python" in out
+    assert out.startswith("status=failed")
+    assert "NOT executed" in out
+    assert ran == []
     assert gap.tool_dev_agent({}).startswith("status=failed")

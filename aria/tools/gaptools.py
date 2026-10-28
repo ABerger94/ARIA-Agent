@@ -29,6 +29,10 @@ HONEST SCOPE — what these tools deliberately do NOT do:
     the in-app set_reminder cannot promise that.
   * dev_agent / code_helper are thin delegations to the provider
     chain. A saved file is reported as saved — never as working.
+    dev_agent never executes generated code: its run flag is
+    refused (security, 2026-10-27) and execution goes through
+    run_python_code, which carries the safe-mode and approval
+    checks.
 
 Every handler takes one args dict and returns a string, typed with
 aria.outcome (done / unverified / failed + facts) when that module
@@ -950,18 +954,24 @@ def tool_dev_agent(args) -> str:
             f"{output_path}. Saved is not the same as working — it "
             f"has not been verified beyond this.")
     if args.get("run"):
-        if language == "python":
-            try:
-                out = str(_run_python(code) or "")
-            except Exception as exc:
-                out = f"(running it raised: {exc})"
-            return _unverified(
-                "dev_agent",
-                "the program was saved and executed once; whether "
-                "its output is CORRECT is not verified from here",
-                ran=True, **facts) + body + (
-                    f"\nRun output:\n{out[:1000]}")
-        return _done("dev_agent", **facts) + body + (
-            "\nRun was requested but skipped: only python output "
-            "can be run from here.")
+        # Security (2026-10-27): dev_agent NEVER executes generated
+        # code itself. Its old run path called _run_python directly,
+        # so a dev_agent(run=true) call executed arbitrary code while
+        # the dispatcher checked policy only against the outer name
+        # 'dev_agent' — which is in neither SAFE_MODE_BLOCKED_TOOLS
+        # nor DESTRUCTIVE_TOOLS — bypassing both the safe-mode block
+        # and the approval gate that a direct run_python_code call
+        # must pass (and sandbox execution is process isolation only,
+        # with ARIA's own filesystem permissions). Generation and
+        # execution stay separate: the file is saved here, and
+        # execution happens only through run_python_code, whose own
+        # dispatcher checks (safe mode + approval, bound to the exact
+        # code) then apply.
+        return _failed(
+            "dev_agent",
+            "the program was saved but NOT executed: dev_agent "
+            "never runs generated code. To run it, call "
+            "run_python_code with the saved file's contents — that "
+            "call passes safe-mode and approval checks.",
+            ran=False, **facts) + body
     return _done("dev_agent", **facts) + body
