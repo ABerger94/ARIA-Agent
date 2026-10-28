@@ -497,9 +497,25 @@ def is_safe_mode() -> bool:
 # ~/ARIA/logs/silent-errors.log (capped at 200KB) instead of vanishing.
 # Debug visibility without spamming the user-facing event ring.
 _SILENT_LOG_MAX = 200 * 1024
+_log_silent_active = False
 
 
 def log_silent(context: str, exc: BaseException) -> None:
+    # NEVER recurse, NEVER raise (root-caused 2026-10-28 on Alek's
+    # laptop): the previous version handled a failed log write by
+    # calling log_silent on its own failure, so a persistent write
+    # failure (locked / unwritable silent-errors.log) recursed to
+    # RecursionError and killed the process. It fired at EVERY boot:
+    # memory.init_databases' routine duplicate-column ALTER error is
+    # the first log_silent caller in start_all, so ARIA died during
+    # "Initializing OS subsystems..." on every launch, on every
+    # build, once the log write started failing. A logger that can
+    # kill the process is worse than no logger: if the write fails,
+    # the error is dropped, quietly, and life goes on.
+    global _log_silent_active
+    if _log_silent_active:
+        return
+    _log_silent_active = True
     try:
         logdir = os.path.join(os.path.expanduser("~"), "ARIA", "logs")
         os.makedirs(logdir, exist_ok=True)
@@ -510,5 +526,7 @@ def log_silent(context: str, exc: BaseException) -> None:
         with open(p, "a", encoding="utf-8") as f:
             f.write(f"{datetime.now().isoformat(timespec='seconds')} "
                     f"[{context}] {type(exc).__name__}: {exc}\n")
-    except Exception as _e_silent:
-        log_silent("log_silent", _e_silent)
+    except Exception:
+        pass
+    finally:
+        _log_silent_active = False
