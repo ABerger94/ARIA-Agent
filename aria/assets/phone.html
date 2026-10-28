@@ -28,7 +28,7 @@ body.facemode #app>*:not([data-panel="vision"]){display:none!important}body.face
 <div class="eyebrow">Your assistant, within reach</div><h1>Remote control</h1><p class="muted">Talk to ARIA. Check your inbox. Pick up where you left off.</p>
 <div class="stats"><div class="stat"><small>ARIA is</small><strong id="state">Connecting</strong></div><div class="stat"><small>Active engine</small><strong id="provider">Checking connection</strong></div></div>
 <nav aria-label="Companion sections"><button data-tab="control" class="selected" aria-selected="true">Control</button><button data-tab="chat">Conversation</button><button data-tab="inbox">Inbox</button><button data-tab="briefing">Briefing</button><button data-tab="vision">Orb &amp; camera</button><button data-tab="settings">Settings</button></nav>
-<section data-panel="control" class="grid"><div class="panel"><div class="eyebrow">Voice connection</div><h2>What can I help with?</h2><p class="muted">Hold while you speak, or tap once to start and again to finish.</p><div class="talk-row"><button id="talk">Hold to talk</button><button id="ptt" type="button">Tap to talk</button></div><span id="astat" role="status">Audio: ready</span><button id="stop-speech" class="secondary" style="margin-top:16px">Stop speaking</button></div><div class="stack"><div id="notifs" class="panel" hidden><div class="eyebrow">Notifications</div><div id="notif-list"></div></div><div class="panel"><div class="eyebrow">Latest from ARIA</div><p id="recent-reply">Your latest reply will appear here.</p></div><div class="panel"><h2>Start here</h2><div class="shortcuts"><button data-prompt="Give me my morning briefing">Daily briefing</button><button data-prompt="What tasks are running?">My tasks</button><button data-prompt="Check my calendar for today">Today's calendar</button></div></div><div class="tools"><a href="/upload">Send a file</a><a href="/commands">Command reference</a></div></div></section>
+<section data-panel="control" class="grid"><div class="panel"><div class="eyebrow">Voice connection</div><h2>What can I help with?</h2><p class="muted">Hold while you speak, or tap once to start and again to finish.</p><div class="talk-row"><button id="talk">Hold to talk</button><button id="ptt" type="button">Tap to talk</button></div><span id="astat" role="status">Audio: ready</span><button id="stop-speech" class="secondary" style="margin-top:16px">Stop speaking</button><button id="lock-aria" class="secondary" style="margin-top:16px;margin-left:8px">Lock ARIA</button></div><div class="stack"><div id="notifs" class="panel" hidden><div class="eyebrow">Notifications</div><div id="notif-list"></div></div><div class="panel"><div class="eyebrow">Latest from ARIA</div><p id="recent-reply">Your latest reply will appear here.</p></div><div class="panel"><h2>Start here</h2><div class="shortcuts"><button data-prompt="Give me my morning briefing">Daily briefing</button><button data-prompt="What tasks are running?">My tasks</button><button data-prompt="Check my calendar for today">Today's calendar</button></div></div><div class="tools"><a href="/upload">Send a file</a><a href="/commands">Command reference</a></div></div></section>
 <section data-panel="chat" hidden><div class="section-head"><h2>Conversation</h2><span class="muted">Synced with your laptop</span></div><div id="log"></div></section>
 <section data-panel="briefing" hidden><div class="section-head"><div><h2>Daily briefing</h2><span id="brief-stamp" class="muted">Today, at a glance</span></div><button id="brief-refresh" class="secondary">Refresh</button></div><button id="brief-listen" class="secondary" disabled>Read aloud</button><div id="brief-report" class="stack" style="margin-top:16px">Your startup briefing will appear here. Select Refresh to generate one.</div></section>
 <section data-panel="inbox" hidden><div class="section-head"><div><h2>Inbox</h2><span id="mail-status">Refresh to load your email</span></div><button id="mail-refresh" class="secondary">Refresh</button></div><input id="mail-search" aria-label="Filter inbox" placeholder="Filter sender or subject…"><div id="mail-list" class="muted">Your messages appear here. Opening a message does not mark it read.</div><article id="mail-detail" class="panel" hidden><div class="section-head"><h2 id="mail-subject"></h2><button id="mail-close" class="secondary">Close</button></div><p id="mail-from"></p><div id="mail-body"></div></article></section>
@@ -553,6 +553,8 @@ async function statusTick(){
     const r=await api('/api/status');if(!r.ok)throw Error();const d=await r.json();
     badge.textContent='Connected';badge.className='online';
     document.getElementById('state').textContent=d.state;
+    const lockBtn=document.getElementById('lock-aria');
+    if(lockBtn&&typeof d.locked==='boolean'){lockBtn.disabled=d.locked;lockBtn.textContent=d.locked?'ARIA is locked':'Lock ARIA';}
     document.getElementById('provider').textContent=d.provider;
     document.getElementById('transport').textContent=d.transport==='https'?'HTTPS · local network':'HTTP · local network';
   }catch(e){badge.textContent='Reconnecting…';badge.className='offline';}
@@ -561,6 +563,16 @@ statusTick();setInterval(statusTick,5000);window.addEventListener('online',statu
 document.getElementById('stop-speech').onclick=async()=>{
   stopVoicePlayback();
   try{await api('/api/interrupt',{method:'POST'});}catch(e){}
+};
+document.getElementById('lock-aria').onclick=async()=>{
+  const btn=document.getElementById('lock-aria');
+  try{
+    const r=await api('/api/lock',{method:'POST'});
+    if(r.status===409){document.getElementById('astat').textContent='Set a lock password on the laptop first (Settings → General).';return;}
+    if(!r.ok)throw Error();
+    btn.textContent='ARIA is locked';btn.disabled=true;
+    document.getElementById('astat').textContent='Laptop locked. Unlock it on the laptop.';
+  }catch(e){document.getElementById('astat').textContent='Lock failed — check the connection and try again.';}
 };
 let briefPlayGeneration=0;
 function stopVoicePlayback(){

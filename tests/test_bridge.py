@@ -409,3 +409,90 @@ def test_bridge_pages_share_the_homepage_theme():
         assert '#ff5fa2' not in page
     assert 'Send a file' in bridge.UPLOAD_HTML
     assert 'Command reference' in bridge._commands_html()
+
+
+def test_lock_endpoint_flow():
+    """POST /api/lock (Alek, 2026-10-27): the phone can lock the
+    laptop app. Pins: unauthed -> 401 and no lock; authed with a
+    lock password set -> 200 and applock.lock() actually called;
+    authed with NO password set -> 409 and no lock (locking with
+    no password would strand the laptop). applock is faked in
+    sys.modules — the handler imports it per request."""
+    import json as _json
+    _setup_bridge()
+    _SETTINGS["phone_bridge_host"] = "127.0.0.1"
+
+    fake = types.ModuleType("aria.applock")
+    state = {"password": True, "locked": False, "lock_calls": 0}
+    fake.password_is_set = lambda: state["password"]
+    fake.is_locked = lambda: state["locked"]
+
+    def _lock():
+        state["lock_calls"] += 1
+        state["locked"] = True
+    fake.lock = _lock
+    old_applock = sys.modules.get("aria.applock")
+    sys.modules["aria.applock"] = fake
+
+    def fake_ensure():
+        bridge.BRIDGE_SCHEME = "http"
+        bridge.BRIDGE_CERT = None
+        bridge.BRIDGE_KEY = None
+
+    real_ensure = bridge.ensure_bridge_cert
+    bridge.ensure_bridge_cert = fake_ensure
+    bridge._BRIDGE_SERVER = None
+    t = threading.Thread(target=bridge.start_bridge_server,
+                         kwargs={"port": 0}, daemon=True)
+    t.start()
+    try:
+        deadline = time.time() + 10
+        while bridge._BRIDGE_SERVER is None and time.time() < deadline:
+            time.sleep(0.05)
+        srv = bridge._BRIDGE_SERVER
+        assert srv is not None, "bridge server did not start"
+        port = srv.server_address[1]
+
+        def req(method, path, headers=None):
+            conn = http.client.HTTPConnection("127.0.0.1", port,
+                                              timeout=5)
+            try:
+                conn.request(method, path, headers=headers or {})
+                resp = conn.getresponse()
+                return resp.status, resp.read()
+            finally:
+                conn.close()
+
+        # Unauthed: refused, nothing locked.
+        status, _b = req("POST", "/api/lock")
+        assert status == 401, status
+        assert state["lock_calls"] == 0 and state["locked"] is False
+        # Authed, password set: locks.
+        status, body = req("POST", "/api/lock",
+                           {"X-Bridge-Token": _TOKEN})
+        assert status == 200, (status, body)
+        assert _json.loads(body)["locked"] is True
+        assert state["lock_calls"] == 1 and state["locked"] is True
+        # (No /api/status assertion here: that handler imports the
+        # real hud module, which this harness's vision stub cannot
+        # satisfy — a pre-existing harness limit, unchanged by the
+        # lock work. The 'locked' status field is a guarded
+        # three-line addition on that handler.)
+        # No password set: 409, no lock — never strand the laptop.
+        state["password"] = False
+        state["locked"] = False
+        status, _b = req("POST", "/api/lock",
+                         {"X-Bridge-Token": _TOKEN})
+        assert status == 409, status
+        assert state["lock_calls"] == 1 and state["locked"] is False
+    finally:
+        bridge.ensure_bridge_cert = real_ensure
+        if bridge._BRIDGE_SERVER is not None:
+            bridge._BRIDGE_SERVER.shutdown()
+            bridge._BRIDGE_SERVER.server_close()
+            bridge._BRIDGE_SERVER = None
+        if old_applock is None:
+            sys.modules.pop("aria.applock", None)
+        else:
+            sys.modules["aria.applock"] = old_applock
+    print("ok lock_endpoint_flow")

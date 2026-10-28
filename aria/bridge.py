@@ -963,9 +963,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 from aria import hud
                 from aria.agent import providers
                 state = str(getattr(hud, 'CURRENT_STATE', 'idle'))
+                try:
+                    from aria import applock as _applock_st
+                    _locked = bool(_applock_st.is_locked())
+                except Exception:
+                    _locked = False
                 self._send(200, json.dumps({'connected': True, 'state': state,
                     'provider': providers.get_active_provider() or 'Waiting for first response',
-                    'transport': _BRIDGE_ACTUAL_SCHEME or BRIDGE_SCHEME}).encode('utf-8'))
+                    'transport': _BRIDGE_ACTUAL_SCHEME or BRIDGE_SCHEME,
+                    'locked': _locked}).encode('utf-8'))
                 return
             if self.path.split('?', 1)[0] == '/api/mail':
                 from aria.mailview import fetch_message, fetch_messages
@@ -1163,6 +1169,25 @@ class BridgeHandler(BaseHTTPRequestHandler):
             from aria.speech import interrupt_speech
             interrupt_speech()
             self._send(200, b'{"ok":true}')
+            return
+        if self.path == '/api/lock':
+            if not self._authed():
+                self._send(401, b'{"error":"not connected"}')
+                return
+            # Phone-initiated app lock (Alek, 2026-10-27): the
+            # phone is the exempt path, so it can also LOCK the
+            # laptop — this flips the same shared state as the
+            # Settings Lock button, and the dashboard's lock
+            # watcher does the gray-out. Refused when no lock
+            # password is set: unlocking needs that password, so
+            # locking without one would strand the laptop until a
+            # restart (the Settings flow never allows it either).
+            from aria import applock as _applock_br
+            if not _applock_br.password_is_set():
+                self._send(409, b'{"error":"no lock password set"}')
+                return
+            _applock_br.lock()
+            self._send(200, b'{"ok":true,"locked":true}')
             return
         if self.path == '/api/logout':
             if not self._authed():
