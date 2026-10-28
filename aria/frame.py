@@ -320,6 +320,9 @@ def strip_data() -> Dict[str, Any]:
         "cpu": 0.0, "mem": 0.0, "battery": "PWR",
         "net_up_kbs": 0.0, "net_down_kbs": 0.0,
         "uptime_s": 0.0, "volume": 0.0, "volume_target": "device",
+        "volume_device": 0.0, "volume_player": 0.0,
+        "muted_device": False, "muted_player": False,
+        "player_app": "", "player_present": False,
         "active_provider": "", "providers": [],
         "voice_ready": False, "voice_enabled": True,
         "subsystems": [], "jobs_running": 0, "jobs_total": 0,
@@ -345,6 +348,17 @@ def strip_data() -> Dict[str, Any]:
     try:
         d["volume"] = float(_hud.get_hud_volume())
         d["volume_target"] = _hud._VOL_MGR.target
+    except Exception:
+        pass
+    try:
+        # The dashboard's two explicit sliders (Alek, 2026-10-28):
+        # the computer and the playing app, each with its mute.
+        d["volume_device"] = float(_hud.get_volume_for("device"))
+        d["volume_player"] = float(_hud.get_volume_for("player"))
+        d["muted_device"] = bool(_hud.get_muted_for("device"))
+        d["muted_player"] = bool(_hud.get_muted_for("player"))
+        d["player_app"] = str(_hud.player_label() or "")
+        d["player_present"] = bool(_hud.player_present())
     except Exception:
         pass
     try:

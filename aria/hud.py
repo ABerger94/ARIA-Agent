@@ -361,6 +361,13 @@ class VolumeManager:
         self.spotify_vol = 1.0
         self.device_muted = False
         self.spotify_muted = False
+        # The PLAYER target (Alek, 2026-10-28): the playing app's
+        # own session, Spotify or otherwise. spotify_* above stays
+        # as the legacy mirror of these values.
+        self.player_vol = 1.0
+        self.player_muted = False
+        self.player_label = ""
+        self.player_present = False
         self._lock = threading.Lock()
         self._started = False
         self._running = False
@@ -392,9 +399,26 @@ class VolumeManager:
         while self._running:
             client = self._client_now()
             if client is not None:
+                # Name the playing app's process so the host aims
+                # its player session at the right app (the SMTC
+                # read is cached + background-refreshed — cheap).
+                payload = {}
+                label = ""
                 try:
-                    state = client.request("volume.get_state",
-                                           timeout=3.0)
+                    from aria import smtc as _smtc
+                    live = _smtc.now_playing_any()
+                    if live:
+                        proc = _smtc.app_process(
+                            live.get("app_id") or "")
+                        if proc:
+                            payload["player_process"] = proc
+                        label = str(live.get("app") or "")
+                except Exception:
+                    label = ""
+                try:
+                    state = client.request(
+                        "volume.get_state", payload or None,
+                        timeout=3.0)
                 except Exception:
                     state = None  # host down: cached state holds
                 if isinstance(state, dict):
@@ -404,6 +428,20 @@ class VolumeManager:
                             val = state.get(attr)
                             if val is not None:
                                 setattr(self, attr, val)
+                        pvol = state.get("player_vol",
+                                         state.get("spotify_vol"))
+                        if pvol is not None:
+                            self.player_vol = pvol
+                            self.spotify_vol = pvol
+                        pmut = state.get("player_muted",
+                                         state.get("spotify_muted"))
+                        if pmut is not None:
+                            self.player_muted = pmut
+                            self.spotify_muted = pmut
+                        if state.get("player_present") is not None:
+                            self.player_present = bool(
+                                state["player_present"])
+                        self.player_label = label
                     errors = state.get("errors")
                     if errors:
                         # As the old in-process worker did (Merger
@@ -470,6 +508,39 @@ class VolumeManager:
         self._forward("volume.set_mute",
                       {"target": target, "muted": muted})
 
+    # -- explicit targets (the dashboard's two sliders) ----------
+
+    def get_level_for(self, target: str) -> float:
+        return self.device_vol if target == "device" else self.player_vol
+
+    def set_level_for(self, target: str, level: float):
+        level = max(0.0, min(1.0, float(level)))
+        with self._lock:
+            if target == "device":
+                self.device_vol = level
+            else:
+                self.player_vol = level
+                self.spotify_vol = level
+        self._forward(
+            "volume.set_device" if target == "device"
+            else "volume.set_player",
+            {"level": level})
+
+    def get_muted_for(self, target: str) -> bool:
+        return self.device_muted if target == "device" \
+            else self.player_muted
+
+    def set_mute_for(self, target: str, muted: bool):
+        muted = bool(muted)
+        with self._lock:
+            if target == "device":
+                self.device_muted = muted
+            else:
+                self.player_muted = muted
+                self.spotify_muted = muted
+        self._forward("volume.set_mute",
+                      {"target": target, "muted": muted})
+
     def is_started(self) -> bool:
         """True only while started AND the COM host is live — the
         availability contract tool_volume has always read."""
@@ -502,6 +573,32 @@ def toggle_volume_target() -> str:
 
 def set_hud_mute(muted: bool):
     _VOL_MGR.set_mute(muted)
+
+
+def get_volume_for(target: str) -> float:
+    """Explicit-target level for the dashboard's sliders:
+    "device" (the computer) or "player" (the playing app)."""
+    return _VOL_MGR.get_level_for(target)
+
+
+def set_volume_for(target: str, pct: float):
+    _VOL_MGR.set_level_for(target, pct)
+
+
+def set_mute_for(target: str, muted: bool):
+    _VOL_MGR.set_mute_for(target, muted)
+
+
+def get_muted_for(target: str) -> bool:
+    return _VOL_MGR.get_muted_for(target)
+
+
+def player_label() -> str:
+    return _VOL_MGR.player_label
+
+
+def player_present() -> bool:
+    return _VOL_MGR.player_present
 
 
 def volume_manager_started() -> bool:

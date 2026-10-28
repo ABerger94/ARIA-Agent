@@ -169,6 +169,14 @@ class _VolumeOps:
         self._spot_cache = None       # SimpleAudioVolume wrapper
         self._spot_state = (1.0, False)
         self._spot_backoff_until = 0.0
+        # The PLAYER session generalises the Spotify one (Alek,
+        # 2026-10-28: a slider for whatever app is playing, not
+        # just Spotify). The target process defaults to spotify.exe
+        # — the historical behaviour — and the facade retargets it
+        # to the active SMTC app's process as playback moves. State
+        # keys keep their spotify_* names as aliases of player_*.
+        self._player_process = "spotify.exe"
+        self._player_present = False
 
     # -- device endpoint: cached wrapper, one stale re-resolve ------
     def _resolve_endpoint(self):
@@ -212,13 +220,30 @@ class _VolumeOps:
     def apply_dev_mute(self, muted):
         self._dev_call(lambda v: v.SetMute(1 if muted else 0, None))
 
-    # -- Spotify session: cached wrapper + absence backoff ----------
+    # -- Player session: cached wrapper + absence backoff ----------
+    # (born as the Spotify session; the target process is now
+    # retargetable — see _player_process above)
+    def set_player_process(self, name):
+        """Retarget the player session at another process (e.g.
+        vlc.exe when a movie is playing). A change drops the cached
+        wrapper and resets last-known state — the old app's levels
+        say nothing about the new one."""
+        name = str(name or "").strip()
+        if not name or name.lower() == self._player_process.lower():
+            return
+        self._player_process = name
+        self._spot_cache = None
+        self._spot_state = (1.0, False)
+        self._spot_backoff_until = 0.0
+        self._player_present = False
+
     def _resolve_spotify(self):
-        """Spotify's SimpleAudioVolume wrapper, or None when the
-        session is absent (or resolution is backing off). A dead
-        session must not be re-enumerated on every 1 s facade poll:
-        a successful enumeration that finds no Spotify arms a
-        ~10 s backoff during which last-known state is served."""
+        """The player process's SimpleAudioVolume wrapper, or None
+        when the session is absent (or resolution is backing off).
+        A dead session must not be re-enumerated on every 1 s
+        facade poll: a successful enumeration that finds no match
+        arms a ~10 s backoff during which last-known state is
+        served."""
         if self._spot_cache is not None:
             return self._spot_cache
         now = time.monotonic()
@@ -227,11 +252,14 @@ class _VolumeOps:
         sessions = self._au.GetAllSessions()
         try:
             for s in sessions:
-                if s.Process and s.Process.name().lower() == "spotify.exe":
+                if s.Process and s.Process.name().lower() == \
+                        self._player_process.lower():
                     self._spot_cache = s.SimpleAudioVolume
+                    self._player_present = True
                     return self._spot_cache
         finally:
             del sessions
+        self._player_present = False
         self._spot_backoff_until = now + _SPOTIFY_BACKOFF_S
         return None
 
@@ -243,6 +271,7 @@ class _VolumeOps:
         vol = self._resolve_spotify()
         if vol is None:
             return False, None
+        self._player_present = True
         try:
             return True, fn(vol)
         except Exception as e:
@@ -282,11 +311,21 @@ class _VolumeOps:
         if found:
             self._spot_state = (self._spot_state[0], bool(muted))
 
+    # Player-named aliases for the session ops (the session is the
+    # playing app's, whatever it is — Spotify by default).
+    query_player = query_spot
+    apply_player = apply_spot
+    query_player_mute = query_spot_mute
+    apply_player_mute = apply_spot_mute
+
     def get_state(self) -> Dict[str, Any]:
         """Assemble the four-part volume state. Each part is queried
         independently (as the old worker did); a failed part comes
         back None and its error is listed under "errors" so the
-        client can keep last-known state and surface the failure."""
+        client can keep last-known state and surface the failure.
+        The player parts also ride under their historical spotify_*
+        names, and the state names the player process + whether a
+        live session for it was found."""
         if not self.available:
             raise RuntimeError("pycaw unavailable in comhost")
         state: Dict[str, Any] = {}
@@ -300,6 +339,10 @@ class _VolumeOps:
             except Exception as e:
                 state[key] = None
                 errors.append(f"{key}: {type(e).__name__}: {e}")
+        state["player_vol"] = state["spotify_vol"]
+        state["player_muted"] = state["spotify_muted"]
+        state["player_process"] = self._player_process
+        state["player_present"] = bool(self._player_present)
         if errors:
             state["errors"] = errors
         return state
@@ -514,18 +557,22 @@ class _ComCore:
             if op == "ping":
                 result: Any = {"pong": True}
             elif op == "volume.get_state":
+                # The facade names the playing app's process with
+                # each poll; the host retargets its player session.
+                if req.get("player_process"):
+                    self._vol.set_player_process(req["player_process"])
                 result = self._vol.get_state()
             elif op == "volume.set_device":
                 level = float(req["level"])
                 self._vol.apply_dev(level)
                 result = {"applied": max(0.0, min(1.0, level))}
-            elif op == "volume.set_spotify":
+            elif op in ("volume.set_spotify", "volume.set_player"):
                 level = float(req["level"])
                 self._vol.apply_spot(level)
                 result = {"applied": max(0.0, min(1.0, level))}
             elif op == "volume.set_mute":
                 muted = bool(req["muted"])
-                if req.get("target") == "spotify":
+                if req.get("target") in ("spotify", "player"):
                     self._vol.apply_spot_mute(muted)
                 else:
                     self._vol.apply_dev_mute(muted)

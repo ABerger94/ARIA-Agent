@@ -626,3 +626,29 @@ def test_h_core_regime_collects_then_disables_gc():
         if was_enabled:
             gc.enable()
     assert rec.idents(), "shutdown() must collect on the COM thread"
+
+
+def test_k_player_session_retargets_to_the_playing_app():
+    # Alek, 2026-10-28: the player slider follows whatever app is
+    # playing, not just Spotify. Default stays spotify.exe (the
+    # historical behaviour every older test pins); a get_state
+    # carrying player_process retargets the session.
+    spot = _FakeSessionVolume()
+    vlcvol = _FakeSessionVolume()
+    vlcvol.level = 0.33
+    _install_fake_com(sessions=[_FakeSession("spotify.exe", spot),
+                                _FakeSession("vlc.exe", vlcvol)])
+    core, _emitted = _core()
+    r = core.handle({"id": 1, "op": "volume.get_state"})["result"]
+    assert r["player_process"] == "spotify.exe"
+    assert r["player_vol"] == 0.8 and r["player_present"] is True
+    r = core.handle({"id": 2, "op": "volume.get_state",
+                     "player_process": "vlc.exe"})["result"]
+    assert r["player_process"] == "vlc.exe"
+    assert r["player_vol"] == 0.33 and r["player_present"] is True
+    assert r["spotify_vol"] == 0.33   # legacy alias follows player
+    core.handle({"id": 3, "op": "volume.set_player", "level": 0.5})
+    assert vlcvol.level == 0.5 and spot.level == 0.8
+    core.handle({"id": 4, "op": "volume.set_mute",
+                 "target": "player", "muted": True})
+    assert vlcvol.mute is True and spot.mute is False

@@ -221,7 +221,7 @@ def create_dashboard(callbacks):
                                 QVBoxLayout, QHBoxLayout, QSplitter, QTabWidget,
                                 QTextBrowser, QLineEdit, QSlider, QGridLayout,
                                 QFileDialog, QDialog, QApplication, QListWidget, QListWidgetItem,
-                                QScrollArea)
+                                QScrollArea, QSizePolicy)
     from aria import frame, hud, config, applock
     from aria.resonance import ResonanceOrb
     from aria.neural_field import NeuralField
@@ -449,14 +449,58 @@ def create_dashboard(callbacks):
                 b = QPushButton(name); b.clicked.connect(lambda checked=False, a=action: hud._dispatch_media_action(a)); media.addWidget(b)
                 self.media_buttons[action] = b
             ll.addLayout(media)
-            _vol = QHBoxLayout(); _vol.addWidget(QLabel('SYSTEM VOLUME'))
-            self.volume = QSlider(Qt.Orientation.Horizontal); self.volume.setRange(0, 100)
-            self.volume.sliderMoved.connect(lambda value: hud.set_hud_volume(value / 100)); _vol.addWidget(self.volume, 1)
-            ll.addLayout(_vol)
+            # AUDIO (Alek, 2026-10-28): two explicit sliders —
+            # the computer and the playing app — each with its own
+            # mute. This replaces the single slider + hidden target
+            # toggle the panel used to have: both sources' levels
+            # are visible and grabbable at once. The PLAYER row's
+            # label names the app (Spotify, VLC, ...) and the row
+            # disables when no session for it exists.
+            def _vol_row(label_text, target):
+                row = QHBoxLayout()
+                lab = QLabel(label_text); lab.setFixedWidth(92)
+                row.addWidget(lab)
+                s = QSlider(Qt.Orientation.Horizontal); s.setRange(0, 100)
+                s.sliderMoved.connect(
+                    lambda value, t=target: hud.set_volume_for(t, value / 100))
+                row.addWidget(s, 1)
+                m = QPushButton('Mute'); m.setCheckable(True)
+                m.setFixedWidth(50)
+                m.toggled.connect(
+                    lambda checked, t=target: hud.set_mute_for(t, checked))
+                row.addWidget(m)
+                return row, s, m, lab
+            _vr, self.volume, self.mute_device, _sys_lab = _vol_row(
+                'COMPUTER', 'device')
+            ll.addLayout(_vr)
+            _vr2, self.volume_player, self.mute_player, \
+                self.player_vol_label = _vol_row('PLAYER', 'player')
+            ll.addLayout(_vr2)
             # REMOTE CONTROL used to sit here; it lives in Settings
             # (Connections tab, 'Open Remote Control') now (Alek,
             # 2026-10-27). open_remote() stays for Settings' use.
-            ll.addStretch()
+            # ALBUM ART (Alek, 2026-10-28: "maximize the space for
+            # album artwork") — the artwork takes ALL the column's
+            # leftover height (it replaces the old bottom stretch),
+            # scaled to fit while keeping its square aspect. The
+            # bytes arrive via frame.media_data() <- aria/smtc.py's
+            # thumbnail read; no art (or nothing playing) leaves a
+            # quiet placeholder tile, never a broken-image box.
+            self.art = QLabel('♪')
+            self.art.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.art.setObjectName('art')
+            self.art.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                   QSizePolicy.Policy.Expanding)
+            self.art.setMinimumHeight(110)
+            self.art.setStyleSheet(
+                'background: #14171d; color: #39415a;'
+                ' font-size: 72px; border-radius: 10px;')
+            ll.addWidget(self.art, 1)
+            self.art_caption = QLabel('')
+            ll.addWidget(self.art_caption)
+            self._art_key = None
+            self._art_pixmap = None
+            self._art_scaled_size = None
             body.addWidget(left)
             center, cl = self.card('ARIA / LIVE')
             self._center_card = center
@@ -1583,7 +1627,21 @@ def create_dashboard(callbacks):
             self._last_subsystems = list(data.get('subsystems') or [])
             self.status.setText(_services_status_text(data.get('subsystems')))
             self.voice.setText('Voice on' if data['voice_enabled'] else 'Voice off')
-            if not self.volume.isSliderDown(): self.volume.setValue(int(data['volume'] * 100))
+            if not self.volume.isSliderDown(): self.volume.setValue(int(data.get('volume_device', data.get('volume', 0)) * 100))
+            if not self.volume_player.isSliderDown(): self.volume_player.setValue(int((data.get('volume_player') or 0) * 100))
+            _papp = str(data.get('player_app') or '').upper()
+            _plabel = _papp if _papp else 'PLAYER'
+            if self.player_vol_label.text() != _plabel:
+                self.player_vol_label.setText(self.player_vol_label.fontMetrics().elidedText(_plabel, Qt.TextElideMode.ElideRight, 92))
+            _present = bool(data.get('player_present'))
+            self.volume_player.setEnabled(_present)
+            self.mute_player.setEnabled(_present)
+            for _btn, _muted in ((self.mute_device, data.get('muted_device')),
+                                 (self.mute_player, data.get('muted_player'))):
+                if _btn.isChecked() != bool(_muted):
+                    _btn.blockSignals(True)
+                    _btn.setChecked(bool(_muted))
+                    _btn.blockSignals(False)
             music = frame.media_data(); _track_full = music.get('title') or music.get('track') or 'Nothing playing'
             self.track.setToolTip(_track_full)
             # NOW PLAYING panel: track on one line, artist under it
@@ -1592,8 +1650,9 @@ def create_dashboard(callbacks):
             # real playing-vs-paused status; the window title is
             # the fallback. The header carries the state: green
             # NOW PLAYING, amber PAUSED, plain when Spotify is
-            # closed. No album art shown (not wired to the panel);
-            # no progress bar is fabricated.
+            # closed. Album art (wired 2026-10-28) renders in the
+            # big tile below the audio rows; no progress bar is
+            # fabricated.
             _fm = self.track.fontMetrics()
             _w = max(self.track.width(), 180)
             _trk = music.get('track') or ''
@@ -1633,6 +1692,38 @@ def create_dashboard(callbacks):
                 self.media_progress.show()
             else:
                 self.media_progress.hide()
+            # Album art tile: reload only when the track's art key
+            # changes; rescale only when the tile's size changes —
+            # the 1 s refresh must not re-decode JPEGs for fun.
+            _akey = music.get('art_key')
+            if _akey != self._art_key:
+                self._art_key = _akey
+                self._art_pixmap = None
+                self._art_scaled_size = None
+                _raw = music.get('art')
+                if _raw:
+                    _pm = QPixmap()
+                    if _pm.loadFromData(_raw):
+                        self._art_pixmap = _pm
+                if self._art_pixmap is None:
+                    self.art.setPixmap(QPixmap())
+                    self.art.setText('♪')
+            if self._art_pixmap is not None:
+                _asz = self.art.size()
+                if _asz.width() > 10 and _asz != self._art_scaled_size:
+                    self._art_scaled_size = _asz
+                    self.art.setText('')
+                    self.art.setPixmap(self._art_pixmap.scaled(
+                        _asz, Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation))
+            _cap = ' — '.join(x for x in (music.get('artist') or '',
+                                          music.get('album') or '') if x)
+            if _cap:
+                _cap = self.art_caption.fontMetrics().elidedText(
+                    _cap, Qt.TextElideMode.ElideRight,
+                    max(self.art_caption.width(), 180))
+            if self.art_caption.text() != _cap:
+                self.art_caption.setText(_cap)
             _entries = frame.chat_entries(100)
             chat = '\n\n'.join(f'{ts}  {sender}\n{text}' for ts, sender, text in _entries)
             if chat != self._last_chat:

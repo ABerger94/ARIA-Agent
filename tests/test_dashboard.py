@@ -703,3 +703,65 @@ def test_orb_publish_falls_back_when_composite_fails(monkeypatch, tmp_path):
     assert published, 'publish must still happen via the grab fallback'
     assert published[0].size > 0
     window.close()
+
+
+def test_media_panel_player_slider_and_art_tile(monkeypatch, tmp_path):
+    # Alek, 2026-10-28: two explicit volume sliders (computer +
+    # playing app, each with a mute) and a big album-art tile in
+    # the left column's leftover space.
+    app = QApplication.instance() or QApplication([])
+    data = dict(cpu=25, mem=40, battery='80%', uptime_s=600,
+                active_provider='Ollama', subsystems=[],
+                task_active=0, scheduled=0, voice_enabled=True, volume=.5,
+                volume_device=.5, volume_player=.8,
+                muted_device=False, muted_player=True,
+                player_app='VLC', player_present=True)
+    frame = types.ModuleType('aria.frame')
+    frame.strip_data = lambda: data
+    frame._fmt_uptime = lambda seconds: '10m'
+    frame.spotify_data = lambda: {'title': ''}
+    frame.media_data = lambda: {
+        'title': 'The Artist - The Song', 'track': 'The Song',
+        'artist': 'The Artist', 'album': 'The Album', 'app': 'VLC',
+        'art': None, 'art_key': ('vlc', 'The Song', 'The Artist',
+                                 'The Album')}
+    frame.chat_entries = lambda n: []
+    frame.activity_events = lambda n: []
+    frame.toggle_voice = lambda: None
+    frame.receive_file = lambda p: None
+    hud = types.ModuleType('aria.hud')
+    hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = ''; hud.WHISPER_MODE = False
+    hud._dispatch_spotify_action = lambda a: None
+    hud._dispatch_media_action = lambda a: None
+    hud.set_hud_volume = lambda v: None
+    hud.set_volume_for = lambda t, v: None
+    hud.set_mute_for = lambda t, m: None
+    config = types.ModuleType('aria.config'); config.redact = str
+    config.log_silent = lambda *args: None
+    config.get_setting = lambda key, default=None: default
+    for name, mod in [('aria.frame', frame), ('aria.hud', hud), ('aria.config', config)]:
+        monkeypatch.setitem(sys.modules, name, mod)
+        monkeypatch.setattr(sys.modules['aria'], name.rsplit('.', 1)[1], mod, raising=False)
+    queue = types.ModuleType('aria.agent.taskqueue')
+    queue.get_queue = lambda: types.SimpleNamespace(get_all_statuses=lambda: [])
+    scheduler = types.ModuleType('aria.scheduler'); scheduler.sched_list = lambda: []
+    monkeypatch.setitem(sys.modules, 'aria.agent.taskqueue', queue)
+    monkeypatch.setitem(sys.modules, 'aria.scheduler', scheduler)
+    speech = types.ModuleType('aria.speech'); speech.VOICE_ENABLED = True
+    monkeypatch.setitem(sys.modules, 'aria.speech', speech)
+    monkeypatch.setattr(sys.modules['aria'], 'speech', speech, raising=False)
+    callbacks = types.SimpleNamespace(
+        ptt_press=lambda: None, ptt_release=lambda: None,
+        interrupt=lambda: None, toggle_whisper=lambda: None,
+        submit=lambda x: None, request_stop=lambda: None,
+        is_running=lambda: True, housekeeping=lambda: None,
+        render_frame=lambda: np.zeros((800, 1280, 3), dtype=np.uint8))
+    window = create_dashboard(callbacks)
+    window.show(); app.processEvents(); window.render_once(); app.processEvents()
+    assert window.volume.value() == 50            # computer slider
+    assert window.volume_player.value() == 80     # player slider
+    assert window.volume_player.isEnabled()       # session present
+    assert window.mute_player.isChecked()         # player muted state
+    assert window.player_vol_label.text() == 'VLC'
+    assert window.art.text() == '♪'               # no art -> placeholder
+    assert window.art_caption.text() == 'The Artist — The Album'

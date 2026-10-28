@@ -238,3 +238,35 @@ def test_app_labels():
     assert smtc.app_label('Microsoft.ZuneVideo_8wekyb3d8bbwe') == 'Movies & TV'
     assert smtc.app_label('org.videolan.vlc') == 'VLC'
     assert smtc.app_label('Some.Random.Player_x') == 'Player'
+
+
+def test_art_bytes_ride_the_session_info_and_cache(monkeypatch):
+    # Alek, 2026-10-28: album artwork for the dashboard's big tile.
+    # The WinRT read itself is _fetch_art (Windows-only); here it is
+    # faked so the caching contract is what gets pinned: one fetch
+    # per (app, track, artist, album), bytes on the info dict.
+    props = types.SimpleNamespace(
+        title='The Song', artist='The Artist', album_title='The Album',
+        thumbnail=object())
+    session = _Session('SpotifyAB.SpotifyMusic_beta', props=props)
+    _install(monkeypatch, _Manager([session], current=session))
+    fetches = []
+    monkeypatch.setattr(
+        smtc, '_fetch_art',
+        lambda ref: fetches.append(ref) or b'\xff\xd8jpeg')
+    monkeypatch.setattr(smtc, '_ART_CACHE', {})
+    monkeypatch.setattr(smtc, '_ART_FAIL', {})
+    info = smtc.refresh_now()['spotify']
+    assert info['art'] == b'\xff\xd8jpeg'
+    assert info['art_key'][1] == 'The Song'
+    again = smtc.refresh_now()['spotify']
+    assert again['art'] == b'\xff\xd8jpeg'
+    assert len(fetches) == 1          # second read served by cache
+
+
+def test_app_process_mapping():
+    assert smtc.app_process('SpotifyAB.SpotifyMusic_beta') == 'spotify.exe'
+    assert smtc.app_process('VideoLAN.VLC') == 'vlc.exe'
+    assert smtc.app_process(
+        'Microsoft.Media.Player_8wekyb3d8bbwe!App') == 'MediaPlayer.exe'
+    assert smtc.app_process('') == ''

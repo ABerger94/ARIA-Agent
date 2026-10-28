@@ -133,6 +133,102 @@ def app_label(app_id: str) -> str:
     return tail or "Media"
 
 
+# The audio-session process behind an SMTC app id, for the volume
+# backend's per-app slider (aria/comhost.py matches pycaw sessions
+# by process name). Best-effort: an app id that literally ends in
+# .exe names itself; packaged players map by hand below.
+_APP_PROCESSES = (
+    ("spotify", "spotify.exe"),
+    ("zunevideo", "Video.UI.exe"),
+    ("microsoft.media.player", "MediaPlayer.exe"),
+    ("mediaplayer", "MediaPlayer.exe"),
+    ("wmplayer", "wmplayer.exe"),
+    ("video.ui", "Video.UI.exe"),
+    ("vlc", "vlc.exe"),
+    ("msedge", "msedge.exe"),
+    ("chrome", "chrome.exe"),
+    ("firefox", "firefox.exe"),
+    ("itunes", "iTunes.exe"),
+    ("plex", "Plex.exe"),
+    ("tidal", "TIDAL.exe"),
+    ("deezer", "Deezer.exe"),
+)
+
+
+def app_process(app_id: str) -> str:
+    """The likely .exe behind an SMTC source app id, or "" when
+    unknown (the volume backend then keeps its Spotify default)."""
+    raw = str(app_id or "").strip()
+    low = raw.lower()
+    for needle, exe in _APP_PROCESSES:
+        if needle in low:
+            return exe
+    tail = raw.replace("\\", "/").rsplit("/", 1)[-1]
+    if tail.lower().endswith(".exe"):
+        return tail
+    return ""
+
+
+# ---------------- album art ----------------
+# SMTC media properties carry a thumbnail stream reference. The
+# bytes are fetched on the background refresh thread (never the
+# UI thread) and cached by (app, track, artist, album): a track
+# change refetches, a repeat read is free. Failures back off —
+# some apps hand out a thumbnail reference that never opens.
+_ART_CACHE: dict = {}
+_ART_FAIL: dict = {}
+_ART_RETRY_S = 30.0
+_ART_MAX_BYTES = 2_000_000
+
+
+def _fetch_art(ref) -> Optional[bytes]:
+    """Open an SMTC thumbnail reference and read its bytes.
+    Windows/WinRT only; every failure is a quiet None."""
+    try:
+        stream = ref.open_read_async().get()
+        size = int(stream.size)
+        if size <= 0 or size > _ART_MAX_BYTES:
+            return None
+        from winsdk.windows.storage.streams import (
+            Buffer, DataReader, InputStreamOptions)
+        buf = Buffer(size)
+        try:
+            options = InputStreamOptions.NONE
+        except Exception:
+            options = InputStreamOptions.PARTIAL
+        stream.read_async(buf, size, options).get()
+        reader = DataReader.from_buffer(buf)
+        n = int(reader.unconsumed_buffer_length)
+        if n <= 0:
+            return None
+        data = reader.read_bytes(n)
+        if not data:
+            data = bytearray(n)
+            reader.read_bytes(data)
+        return bytes(data) or None
+    except Exception:
+        return None
+
+
+def _art_for(props, key) -> Optional[bytes]:
+    if key in _ART_CACHE:
+        return _ART_CACHE[key]
+    ref = getattr(props, "thumbnail", None)
+    if ref is None:
+        return None
+    now = time.monotonic()
+    if now - _ART_FAIL.get(key, -_ART_RETRY_S - 1) < _ART_RETRY_S:
+        return None
+    data = _fetch_art(ref)
+    if data:
+        _ART_CACHE[key] = data
+        if len(_ART_CACHE) > 24:
+            _ART_CACHE.pop(next(iter(_ART_CACHE)))
+        return data
+    _ART_FAIL[key] = now
+    return None
+
+
 def _session_info(session) -> Optional[dict]:
     try:
         info = session.get_playback_info()
@@ -140,6 +236,7 @@ def _session_info(session) -> Optional[dict]:
         app_id = session.source_app_user_model_id or ""
     except Exception:
         return None
+    props = None
     try:
         props = session.try_get_media_properties_async().get()
         track = (props.title or "").strip()
@@ -151,6 +248,10 @@ def _session_info(session) -> Optional[dict]:
         # still beats no session at all.
         track = artist = album = ""
     title = f"{artist} - {track}" if artist and track else track
+    art = art_key = None
+    if props is not None and track:
+        art_key = (str(app_id), track, artist, album)
+        art = _art_for(props, art_key)
     return {
         "running": True,
         "source": "smtc",
@@ -162,6 +263,8 @@ def _session_info(session) -> Optional[dict]:
         "album": album,
         "app": app_label(app_id),
         "app_id": app_id,
+        "art": art,
+        "art_key": art_key,
         "is_spotify": "spotify" in str(app_id).lower(),
     }
 
