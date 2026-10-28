@@ -5,10 +5,17 @@ instant voice shortcuts, proactive behaviors, autonomous self-healing,
 and persistent worker threads.
 """
 
+import sys as _sys
+
 from aria.agent.brain import (
     run_agent,
     build_system_instruction
 )
+
+# Direct reference to the fully-loaded brain module, captured
+# once here so the delegation below never touches the import
+# machinery at call time (see __getattr__).
+_brain_ref = _sys.modules.get("aria.agent.brain")
 
 # Live brain state — BUSY_PROCESSING, LAST_ACTIVITY,
 # CONVERSATION_HISTORY — is deliberately NOT from-imported here.
@@ -28,8 +35,21 @@ _LIVE_STATE_NAMES = frozenset(
 
 
 def __getattr__(name):
+    # HARDENED (2026-10-27, after a RecursionError-at-startup
+    # report on Alek's laptop): the first cut of this delegation
+    # ran `from aria.agent import brain` on EVERY delegated read —
+    # import machinery (fromlist handling, import lock, package
+    # attribute probes) inside an attribute hook that startup
+    # threads call constantly is a reentrancy hazard. This version
+    # only reads the module reference captured at import above:
+    # no imports, no locks, and any probe that lands before the
+    # reference exists (or for an unknown name) fails clean with
+    # AttributeError instead of reaching into a half-built package.
     if name in _LIVE_STATE_NAMES:
-        from aria.agent import brain as _brain
+        _brain = globals().get("_brain_ref")
+        if _brain is None:
+            raise AttributeError(
+                f"module 'aria.agent' has no attribute {name!r}")
         return getattr(_brain, name)
     raise AttributeError(
         f"module 'aria.agent' has no attribute {name!r}")

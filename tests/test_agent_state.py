@@ -74,6 +74,13 @@ def test_history_delegates_across_rebind():
     assert len(brain.CONVERSATION_HISTORY) == 2
 
 
+def test_delegation_uses_captured_brain_reference():
+    # The hardened delegation (2026-10-27) must resolve through
+    # the brain module reference captured at package import —
+    # never through a call-time import.
+    assert agent._brain_ref is brain
+
+
 def test_package_surface_intact():
     assert callable(agent.run_agent)
     assert callable(agent.build_system_instruction)

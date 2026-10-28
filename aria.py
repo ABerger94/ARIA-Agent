@@ -37,6 +37,18 @@ _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+# Crash net (2026-10-27): a fatal-class crash at startup on
+# Alek's laptop surfaced only as a bare exception object dump —
+# the real traceback was lost with stderr. faulthandler now
+# writes every thread's stack to faulthandler.log in the install
+# root on a fatal error, so a recurrence leaves evidence behind.
+try:
+    import faulthandler as _faulthandler
+    _FH_FILE = open(os.path.join(_ROOT, "faulthandler.log"), "a", buffering=1)
+    _faulthandler.enable(file=_FH_FILE, all_threads=True)
+except Exception:
+    pass
+
 from aria import *
 from aria.main import main, start_all, handle_action
 
