@@ -38,11 +38,12 @@ def _write_json_atomic(path, payload):
 
 class LifeSupervisor:
     def __init__(self, control_provider, log=None, base_dir=None,
-                 popen=None):
+                 popen=None, journal_handler=None):
         self._provider = control_provider
         self._log = log or (lambda msg: None)
         self.p = paths(base_dir)
         self._popen = popen or subprocess.Popen
+        self._journal_handler = journal_handler
         self._proc = None
         self._stop = threading.Event()
         self._thread = None
@@ -126,11 +127,40 @@ class LifeSupervisor:
         self._log("Life room: subprocess restarted")
         return "respawned"
 
+    # -- journal mediation --------------------------------------------
+    # The life process asks for journal text via a request file;
+    # ONLY the main process ever calls a model. The handler is a
+    # callable(context) -> text; any failure answers with empty
+    # text so the child is never left waiting (it files nothing
+    # for an empty answer and its templated lines cover the day).
+
+    def _mediate_journal_once(self):
+        if self._journal_handler is None:
+            return False
+        try:
+            with open(self.p["journal_req"], encoding="utf-8") as f:
+                req = json.load(f)
+        except Exception:
+            return False
+        if not isinstance(req, dict) or not req.get("id"):
+            return False
+        if os.path.exists(self.p["journal_resp"]):
+            return False                    # an answer is in flight
+        try:
+            text = self._journal_handler(req.get("context") or {})
+        except Exception as e:
+            self._log(f"Life room: journal mediation failed: {e}")
+            text = ""
+        _write_json_atomic(self.p["journal_resp"],
+                           {"id": req["id"], "text": str(text or "")})
+        return True
+
     def _loop(self):
         while not self._stop.is_set():
             try:
                 self._write_control(running=True)
                 self._supervise_once(time.time())
+                self._mediate_journal_once()
             except Exception:
                 pass
             self._stop.wait(CONTROL_PERIOD_S)

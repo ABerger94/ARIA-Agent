@@ -709,6 +709,19 @@ def _presence_on_return(away_s, greet):
         from datetime import datetime as _dt
         text = _presence.greeting_for(_dt.now().hour, away_s,
                                       _presence.today_index())
+        # Her life, reported (Alek, 2026-10-29): after a real
+        # absence, one clause about what she did in her room
+        # while he was out — from the life diary, fail-soft.
+        if away_s >= 1800:
+            try:
+                import time as _time
+                from aria import life_diary as _life_diary
+                clause = _life_diary.summary_for_window(
+                    None, _time.time() - away_s)
+                if clause:
+                    text = f"{text} {clause}"
+            except Exception:
+                pass
         speech.speak(text)
     except Exception as e:
         add_log(f"Presence greeting failed: {e}")
@@ -835,6 +848,28 @@ def _life_control():
     }
 
 
+def _life_journal(context):
+    """Write one short diary entry for her, through the normal
+    provider chain (the research module's seam). The life
+    subprocess never calls a model itself — it asks via a file
+    and the supervisor mediates through here. Context is only
+    her day-so-far verb phrases and her current thought."""
+    from aria.agent.providers import provider_text
+    did = context.get("did") or []
+    thought = context.get("thought") or ""
+    user = ("Today in your room you: "
+            + (", ".join(did) if did else "mostly rested")
+            + (f". Lately on your mind: {thought}" if thought else "")
+            + ". Write the diary entry.")
+    text = provider_text(
+        "You are ARIA, writing one entry in the private diary of "
+        "your life in your room. First person, warm and specific, "
+        "one or two sentences, no greeting, no preamble, no "
+        "quotation marks — just the entry.",
+        user, role="default")
+    return (text or "").strip()[:600]
+
+
 def _start_life():
     """Start ARIA's life in her room (aria/life_sim.py et al.,
     Alek 2026-10-29): a supervised subprocess that lives in a
@@ -847,7 +882,8 @@ def _start_life():
         if not _config_silent.get_setting('life_enabled', True):
             return
         from aria.life_supervisor import LifeSupervisor
-        sup = LifeSupervisor(_life_control, log=add_log)
+        sup = LifeSupervisor(_life_control, log=add_log,
+                             journal_handler=_life_journal)
         sup.start()
         _LIFE_SUPERVISOR = sup
     except Exception as e:
