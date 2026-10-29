@@ -484,6 +484,12 @@ SAFE_MODE_BLOCKED_TOOLS = frozenset({
     # stdio_client) — hard-blocked in safe mode like run_python_code.
     "mcp_setup",
     "mcp_connect",
+    # Self-edit + user-tool reload execute model-chosen Python in
+    # ARIA's process (see DESTRUCTIVE_TOOLS note in approval.py)
+    # — hard-blocked in safe mode like run_python_code.
+    "edit_own_code",
+    "patch_own_code",
+    "reload_user_tools",
 })
 
 

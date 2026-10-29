@@ -73,6 +73,17 @@ DESTRUCTIVE_TOOLS = frozenset({
     # ungated read-only / teardown paths.
     "mcp_setup",
     "mcp_connect",
+    # Self-edit + user-tool reload are code execution: edit_own_code
+    # can write a .py file into aria/tools/user_tools/, and
+    # reload_user_tools exec_module()s it before validating it
+    # (aria/tools/usertools.py), so an ungated pair runs arbitrary
+    # Python in ARIA's process with no approval. Gating all three
+    # names closes the plant + trigger paths together (ChatGPT x
+    # ARIA loop finding, 2026-10-29); patch_own_code is gated
+    # with edit because it writes the same allowlisted files.
+    "edit_own_code",
+    "patch_own_code",
+    "reload_user_tools",
 })
 
 # In-memory pending approvals: token -> {token, tool, args, desc, created_ts}.
