@@ -793,6 +793,67 @@ def _start_presence():
         add_log(f"Presence monitor unavailable: {e}")
 
 
+# ---------------------------------------------------------------- life room
+_LIFE_SUPERVISOR = None
+
+
+def _life_control():
+    """What the main process knows, for the life subprocess's
+    control file (aria/life_supervisor.py). Every probe fails
+    soft: a broken probe reads as its quiet value, never as a
+    reason to wake her or keep her from pausing."""
+    asleep = False
+    try:
+        from aria import presence as _presence
+        asleep = bool(_presence.locked())
+    except Exception:
+        pass
+    try:
+        from aria import applock as _applock
+        asleep = asleep or bool(_applock.is_locked())
+    except Exception:
+        pass
+    with_alek = False
+    try:
+        with_alek = bool(speech.is_speaking() or agent.BUSY_PROCESSING)
+    except Exception:
+        pass
+    media = False
+    try:
+        from aria import smtc as _smtc
+        info = _smtc.now_playing_any()
+        media = bool(info and info.get("playing"))
+    except Exception:
+        pass
+    from datetime import datetime as _dt
+    hour = _dt.now().hour
+    return {
+        "asleep": asleep,
+        "with_alek": with_alek,
+        "media_playing": media,
+        "quiet": hour >= 23 or hour < 7,
+    }
+
+
+def _start_life():
+    """Start ARIA's life in her room (aria/life_sim.py et al.,
+    Alek 2026-10-29): a supervised subprocess that lives in a
+    simulated room while ARIA runs. Guarded like presence — if
+    it cannot start, ARIA is exactly as she was without it. The
+    subprocess has no tool, network, or speech access; it only
+    lives. Setting: 'life_enabled' (default on)."""
+    global _LIFE_SUPERVISOR
+    try:
+        if not _config_silent.get_setting('life_enabled', True):
+            return
+        from aria.life_supervisor import LifeSupervisor
+        sup = LifeSupervisor(_life_control, log=add_log)
+        sup.start()
+        _LIFE_SUPERVISOR = sup
+    except Exception as e:
+        add_log(f"Life room unavailable: {e}")
+
+
 def presence_allows_speech() -> bool:
     """Fail-open consult for unprompted-speech paths."""
     try:
@@ -908,6 +969,7 @@ def start_all():
                      daemon=True).start()
 
     _start_presence()
+    _start_life()
 
     # Event triggers (Alek, 2026-10-28): the poll loop that fires
     # journaled tasks on email / folder / presence-return events.
