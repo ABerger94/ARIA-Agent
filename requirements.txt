@@ -71,6 +71,14 @@ pywin32==306; sys_platform == "win32"
 # Optional at runtime — without it, telemetry falls back to the
 # window title and transport to the media-key toggle.
 winsdk==1.0.0b10; sys_platform == "win32"
+# Media visualizer loopback capture (aria/media_audio.py): the
+# dashboard's audio-reactive bars read the default speaker's WASAPI
+# loopback through soundcard. Optional at runtime — without it the
+# visualizer runs on a simulated spectrum (live() reports False).
+# Wheel audit 2026-10-29: soundcard 0.4.6 ships a py3-none-any
+# wheel; its cffi dependency ships cp312/win_amd64; numpy is
+# already pinned above.
+soundcard==0.4.6; sys_platform == "win32"
 # Mic capture (Fork A, Step 2): sounddevice replaces PyAudio/sr.Microphone.
 # ABI-independent wheel with PortAudio bundled — no per-Python wheel trap.
 sounddevice==0.5.6

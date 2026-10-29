@@ -227,6 +227,11 @@ def create_dashboard(callbacks):
     from aria.neural_field import NeuralField
     from aria.constellation import ConstellationWidget
     from aria.orb3d import Orb3D
+    from aria.viz_policy import VizPolicy
+    try:
+        from aria.visualizer import MediaVisualizer
+    except Exception:
+        MediaVisualizer = None
     from aria.metric_bar import MetricBar, StatusPlaque
     from aria.video_panel import VideoPanel, HAVE_VIDEO as _HAVE_VIDEO
     try:
@@ -631,6 +636,29 @@ def create_dashboard(callbacks):
             # the same advance() contract.
             self.orb3d = Orb3D(transparent_background=True)
             self.orb3d.hide(); _stack.addWidget(self.orb3d, 0, 0)
+            # The media visualizer (Alek, 2026-10-29): audio-
+            # reactive bars that take the center while music
+            # plays. NOT a set_centerpiece mode — the persisted
+            # centerpiece stays whatever Settings says; the
+            # visualizer is a transient overlay the render loop
+            # drives through VizPolicy, with the same ✕ pattern
+            # as the memory map.
+            self._viz_policy = VizPolicy()
+            self._viz_on = False
+            self.viz = (MediaVisualizer()
+                        if MediaVisualizer is not None else None)
+            if self.viz is not None:
+                self.viz.hide(); _stack.addWidget(self.viz, 0, 0)
+                self.viz.set_accent(_current_accent() or DEFAULT_ACCENT)
+                self.viz_close = QPushButton('', self.viz)
+                self.viz_close.setIcon(_x_icon())
+                self.viz_close.setIconSize(QSize(15, 15))
+                self.viz_close.setFixedSize(26, 26)
+                self.viz_close.setToolTip('Close visualizer')
+                self.viz_close.setStyleSheet(
+                    'background: rgba(10, 20, 30, 190); padding: 0;'
+                    'border: 1px solid #1b3042; border-radius: 4px;')
+                self.viz_close.clicked.connect(self._viz_manual_close)
             cl.addWidget(self.center_stack, 1)
             self._last_orb_publish = 0.0
             self.state = QLabel('IDLE'); self.state.setAlignment(Qt.AlignmentFlag.AlignCenter); self.state.setObjectName('brand'); cl.addWidget(self.state)
@@ -727,6 +755,12 @@ def create_dashboard(callbacks):
             rl.addLayout(row); body.addWidget(right); body.setSizes([250, 560, 550])
             command = QHBoxLayout()
             self.entry = QLineEdit(); self.entry.setPlaceholderText('Talk to ARIA or give her a task…'); self.entry.returnPressed.connect(self.submit)
+            # Typing recency for the visualizer's step-aside rule:
+            # any change to the entry text stamps the clock.
+            self._last_typed_at = 0.0
+            self.entry.textChanged.connect(
+                lambda _t: setattr(self, '_last_typed_at',
+                                   time.monotonic()))
             command.addWidget(self.entry, 1)
             send = QPushButton('Send directive'); send.setObjectName('primary'); send.clicked.connect(self.submit); command.addWidget(send)
             layout.addLayout(command)
@@ -1026,6 +1060,8 @@ def create_dashboard(callbacks):
                         getattr(self, 'mem_map_center', None)):
                 if _mw is not None:
                     _mw.set_accent(accent.name())
+            if getattr(self, 'viz', None) is not None:
+                self.viz.set_accent(accent.name())
             # The Conversation log follows the accent (Alek: ARIA's
             # responses in the system colour, whatever is set) —
             # remember it for render_once and force a repaint even
@@ -1444,6 +1480,45 @@ def create_dashboard(callbacks):
             btn.move(max(2, host.width() - btn.width() - 8), 8)
             btn.raise_()
 
+        def _place_viz_close(self):
+            """Keep the visualizer's ✕ in its top-right corner."""
+            host = getattr(self, 'viz', None)
+            btn = getattr(self, 'viz_close', None)
+            if host is None or btn is None:
+                return
+            btn.move(max(2, host.width() - btn.width() - 8), 8)
+            btn.raise_()
+
+        def _viz_manual_close(self):
+            """The visualizer's ✕: dismissed for this session."""
+            self._viz_policy.manual_close()
+            self._viz_hide()
+
+        def _viz_show(self, music):
+            if self.viz is None:
+                return
+            if self.video is not None and self.video.isVisible():
+                return
+            self.face.hide()
+            if self.holo is not None:
+                self.holo.hide()
+            self.mem_map_center.hide()
+            self.orb3d.hide()
+            self.viz.set_track(
+                music.get('track') or music.get('title') or '',
+                music.get('artist') or '')
+            self.viz.show()
+            self._place_viz_close()
+            self._viz_on = True
+
+        def _viz_hide(self):
+            if self.viz is not None:
+                self.viz.hide()
+            was = self._viz_on
+            self._viz_on = False
+            if was:
+                self._show_centerpiece()
+
         def show_video(self, source, title='', muted=False):
             """Play a file/direct URL in the center card, orb swapped out.
 
@@ -1459,6 +1534,9 @@ def create_dashboard(callbacks):
             if self.holo is not None:
                 self.holo.hide()
             self.mem_map_center.hide()
+            if self.viz is not None:
+                self.viz.hide()
+            self._viz_on = False
             self.video.show()
             return True
 
@@ -1771,6 +1849,34 @@ def create_dashboard(callbacks):
             # No caption under the artwork (Alek, 2026-10-28:
             # "I don't need the text under the album artwork") —
             # the tile takes the freed height too.
+            # Media visualizer (Alek, 2026-10-29): pops up when
+            # music starts, steps aside while Alek talks or
+            # types to her, returns when the interaction ends —
+            # unless he closed it himself. VizPolicy owns the
+            # rules; this block only feeds it and swaps widgets.
+            if self.viz is not None:
+                _typing = (self.entry.hasFocus()
+                           and time.monotonic()
+                           - getattr(self, '_last_typed_at', 0.0) < 5.0)
+                _interacting = (
+                    _typing
+                    or str(hud.CURRENT_STATE).lower()
+                    in ('listening', 'speaking', 'thinking'))
+                _want_viz = self._viz_policy.update(
+                    playing=bool(music.get('playing')),
+                    session=bool(music.get('running')
+                                 or music.get('playing')
+                                 or music.get('status') == 'paused'),
+                    interacting=_interacting)
+                if _want_viz and not self._viz_on:
+                    self._viz_show(music)
+                elif not _want_viz and self._viz_on:
+                    self._viz_hide()
+                if self._viz_on:
+                    self.viz.set_track(
+                        music.get('track') or music.get('title') or '',
+                        music.get('artist') or '')
+                    self._place_viz_close()
             _entries = frame.chat_entries(100)
             chat = '\n\n'.join(f'{ts}  {sender}\n{text}' for ts, sender, text in _entries)
             if chat != self._last_chat:
