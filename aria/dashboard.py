@@ -482,8 +482,18 @@ def create_dashboard(callbacks):
                 # (Alek's screenshot, 2026-10-28: the tracked
                 # pause button shrank narrower + shorter than the
                 # 18px-bold three — "make them all skinny like
-                # that pause button"). One fixed size for the row.
-                b.setFixedSize(64, 30)
+                # that pause button"). MAX width, not fixed: a
+                # hard 64px made the row 256px wide, and where
+                # the column offers less (~218px at 1280x800)
+                # the layout squeezed the buttons INTO each
+                # other — measured 12-13px overlaps. Capped +
+                # expanding: they share the row evenly, never
+                # overlap, and stop growing at 64.
+                b.setFixedHeight(30)
+                b.setMaximumWidth(64)
+                b.setMinimumWidth(40)
+                b.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                QSizePolicy.Policy.Fixed)
                 b.clicked.connect(lambda checked=False, a=action: hud._dispatch_media_action(a)); media.addWidget(b)
                 self.media_buttons[action] = b
             ll.addLayout(media)
