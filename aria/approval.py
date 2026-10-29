@@ -65,6 +65,14 @@ DESTRUCTIVE_TOOLS = frozenset({
     "manage_background_job",  # only when action=start; see needs_approval()
     "open_app_or_url",
     "move_head_servos",
+    # MCP server setup/connect: a model-chosen command is spawned by
+    # stdio_client before any MCP handshake (aria/mcp.py), and setup
+    # persists the server enabled, so startup autoconnect re-runs it.
+    # Gating both names closes the unapproved command-execution path
+    # (ChatGPT x ARIA loop finding, 2026-10-28); list/disconnect stay
+    # ungated read-only / teardown paths.
+    "mcp_setup",
+    "mcp_connect",
 })
 
 # In-memory pending approvals: token -> {token, tool, args, desc, created_ts}.

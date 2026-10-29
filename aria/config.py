@@ -480,6 +480,10 @@ SAFE_MODE_BLOCKED_TOOLS = frozenset({
     "send_email",
     "drive_wheels",
     "move_head_servos",
+    # MCP setup/connect spawn a model-chosen process (aria/mcp.py
+    # stdio_client) — hard-blocked in safe mode like run_python_code.
+    "mcp_setup",
+    "mcp_connect",
 })
 
 
