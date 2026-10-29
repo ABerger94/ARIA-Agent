@@ -288,7 +288,7 @@ def create_settings_dialog(parent, callbacks):
     # when it offers one.
     cust_cp_note = QLabel('Centerpiece — the face in the middle of the dashboard. Applies immediately.'); cust_cp_note.setWordWrap(True); cust_lay.addWidget(cust_cp_note)
     centerpiece_row = QHBoxLayout(); centerpiece_row.addWidget(QLabel('Centerpiece'))
-    dialog.centerpiece = QComboBox(); dialog.centerpiece.addItem('Waveform orb', 'orb'); dialog.centerpiece.addItem('Character', 'holo'); dialog.centerpiece.addItem('Memory map', 'map'); dialog.centerpiece.addItem('Waveform orb 3D', 'orb3d')
+    dialog.centerpiece = QComboBox(); dialog.centerpiece.addItem('Waveform orb', 'orb'); dialog.centerpiece.addItem('Character', 'holo'); dialog.centerpiece.addItem('Memory map', 'map'); dialog.centerpiece.addItem('Waveform orb 3D', 'orb3d'); dialog.centerpiece.addItem("ARIA's Room", 'room')
     try:
         from aria import ui_prefs as _up_cp
         _cur_cp = _up_cp.get_centerpiece()

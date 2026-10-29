@@ -232,6 +232,10 @@ def create_dashboard(callbacks):
         from aria.visualizer import MediaVisualizer
     except Exception:
         MediaVisualizer = None
+    try:
+        from aria.room_panel import RoomWidget
+    except Exception:
+        RoomWidget = None
     from aria.metric_bar import MetricBar, StatusPlaque
     from aria.video_panel import VideoPanel, HAVE_VIDEO as _HAVE_VIDEO
     try:
@@ -659,6 +663,25 @@ def create_dashboard(callbacks):
                     'background: rgba(10, 20, 30, 190); padding: 0;'
                     'border: 1px solid #1b3042; border-radius: 4px;')
                 self.viz_close.clicked.connect(self._viz_manual_close)
+            # ARIA's Room (Alek, 2026-10-29): her life in a room,
+            # a persisted centerpiece mode like the memory map —
+            # NOT transient like the visualizer. Same ✕ pattern:
+            # close returns the center to the orb.
+            self.room = (RoomWidget()
+                         if RoomWidget is not None else None)
+            if self.room is not None:
+                self.room.hide(); _stack.addWidget(self.room, 0, 0)
+                self.room.set_accent(_current_accent() or DEFAULT_ACCENT)
+                self.room_close = QPushButton('', self.room)
+                self.room_close.setIcon(_x_icon())
+                self.room_close.setIconSize(QSize(15, 15))
+                self.room_close.setFixedSize(26, 26)
+                self.room_close.setToolTip("Close ARIA's room")
+                self.room_close.setStyleSheet(
+                    'background: rgba(10, 20, 30, 190); padding: 0;'
+                    'border: 1px solid #1b3042; border-radius: 4px;')
+                self.room_close.clicked.connect(
+                    lambda: self.set_centerpiece('orb'))
             cl.addWidget(self.center_stack, 1)
             self._last_orb_publish = 0.0
             self.state = QLabel('IDLE'); self.state.setAlignment(Qt.AlignmentFlag.AlignCenter); self.state.setObjectName('brand'); cl.addWidget(self.state)
@@ -1062,6 +1085,8 @@ def create_dashboard(callbacks):
                     _mw.set_accent(accent.name())
             if getattr(self, 'viz', None) is not None:
                 self.viz.set_accent(accent.name())
+            if getattr(self, 'room', None) is not None:
+                self.room.set_accent(accent.name())
             # The Conversation log follows the accent (Alek: ARIA's
             # responses in the system colour, whatever is set) —
             # remember it for render_once and force a repaint even
@@ -1438,7 +1463,7 @@ def create_dashboard(callbacks):
             matching the boot-time rule. 'map' is the memory
             constellation (Alek, 2026-10-27), fed fresh facts
             on every swap to it."""
-            self._centerpiece = name if name in ('holo', 'map', 'orb3d') else 'orb'
+            self._centerpiece = name if name in ('holo', 'map', 'orb3d', 'room') else 'orb'
             if self._centerpiece == 'holo' and self.holo is None:
                 self._centerpiece = 'orb'
             try:
@@ -1460,6 +1485,8 @@ def create_dashboard(callbacks):
                 self.holo.hide()
             self.mem_map_center.hide()
             self.orb3d.hide()
+            if getattr(self, 'room', None) is not None:
+                self.room.hide()
             if self._centerpiece == 'holo' and self.holo is not None:
                 self.holo.show()
             elif self._centerpiece == 'map':
@@ -1467,6 +1494,10 @@ def create_dashboard(callbacks):
                 self._place_map_close()
             elif self._centerpiece == 'orb3d':
                 self.orb3d.show()
+            elif self._centerpiece == 'room' \
+                    and getattr(self, 'room', None) is not None:
+                self.room.show()
+                self._place_room_close()
             else:
                 self.face.show()
 
@@ -1475,6 +1506,15 @@ def create_dashboard(callbacks):
             as the center card resizes."""
             host = getattr(self, 'mem_map_center', None)
             btn = getattr(self, 'map_close', None)
+            if host is None or btn is None:
+                return
+            btn.move(max(2, host.width() - btn.width() - 8), 8)
+            btn.raise_()
+
+        def _place_room_close(self):
+            """Keep the room's ✕ in its top-right corner."""
+            host = getattr(self, 'room', None)
+            btn = getattr(self, 'room_close', None)
             if host is None or btn is None:
                 return
             btn.move(max(2, host.width() - btn.width() - 8), 8)
