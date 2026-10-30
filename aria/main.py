@@ -234,6 +234,39 @@ def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silen
         say(lane_ack)
         return lane_ack
 
+    # 4. Task bookmark lanes (pass 6): "save this for later"
+    # snapshots the current task from history; "where were we"
+    # resumes it as a brain turn carrying the bookmark context.
+    try:
+        from aria import bookmark as _bookmark
+        save_ack = _bookmark.try_save(user_text,
+                                      agent.brain.CONVERSATION_HISTORY)
+        if save_ack is not None:
+            say(save_ack)
+            return save_ack
+        if _bookmark.is_resume(user_text):
+            bm = _bookmark.load()
+            if bm is None:
+                ack = _bookmark.nothing_saved_ack()
+                say(ack)
+                return ack
+            return agent.run_agent(_bookmark.resume_prompt(bm),
+                                   silent=silent)
+    except Exception:
+        pass
+
+    # 4b. Clipboard attachment (pass 6): text staged from the
+    # dashboard rides this turn as a context block. Scheduled turns
+    # never consume it — it waits for the user's own next ask.
+    if mode != "scheduled":
+        try:
+            from aria import context_attach as _attach
+            block = _attach.consume_block()
+        except Exception:
+            block = None
+        if block:
+            user_text = block + "\n\n" + user_text
+
     # 5. Multimodal context attachment
     image_bytes = None
     is_screen = False
