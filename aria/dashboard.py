@@ -773,7 +773,7 @@ def create_dashboard(callbacks):
             # Providers / Audio / Customize / Pet used to sit here too;
             # they live in Settings now (Alek, 2026-10-27) — the
             # open_* / toggle_pet methods stay for Settings' use.
-            for text, fn in [('Commands', self.commands), ('Add file', self.browse_file)]:
+            for text, fn in [('Commands', self.commands), ('Add file', self.browse_file), ('Attach clipboard', self.attach_clipboard)]:
                 b = QPushButton(text); b.clicked.connect(fn); row.addWidget(b)
             rl.addLayout(row); body.addWidget(right); body.setSizes([250, 560, 550])
             command = QHBoxLayout()
@@ -786,6 +786,18 @@ def create_dashboard(callbacks):
                                    time.monotonic()))
             command.addWidget(self.entry, 1)
             send = QPushButton('Send directive'); send.setObjectName('primary'); send.clicked.connect(self.submit); command.addWidget(send)
+            # Clipboard attachment chip (pass 6): visible only while
+            # a clipboard snapshot is staged for the next turn.
+            attach_row = QHBoxLayout()
+            self._attach_label = QLabel('')
+            attach_row.addWidget(self._attach_label, 1)
+            attach_clear = QPushButton('Remove')
+            attach_clear.clicked.connect(self._clear_attach)
+            attach_row.addWidget(attach_clear)
+            self._attach_row_widgets = [self._attach_label, attach_clear]
+            for _w in self._attach_row_widgets:
+                _w.hide()
+            layout.addLayout(attach_row)
             layout.addLayout(command)
             self.panel_result.connect(self.panel_finished)
             self.email_result.connect(self.mail_finished)
@@ -795,6 +807,15 @@ def create_dashboard(callbacks):
             self._settings_shortcut.activated.connect(self.settings)
             self._commands_shortcut = QShortcut(QKeySequence('Ctrl+K'), self)
             self._commands_shortcut.activated.connect(self.commands)
+            self._attach_shortcut = QShortcut(QKeySequence('Ctrl+Shift+V'), self)
+            self._attach_shortcut.activated.connect(self.attach_clipboard)
+            # The chip also clears when a voice/bridge turn consumes
+            # the staged text inside handle_action — poll the staging
+            # state cheaply so the chip never lies about it.
+            self._attach_notice_until = 0.0
+            self._attach_timer = QTimer(self)
+            self._attach_timer.timeout.connect(self._sync_attach_chip)
+            self._attach_timer.start(1000)
             self._fullscreen_shortcut = QShortcut(QKeySequence('F11'), self)
             self._fullscreen_shortcut.activated.connect(self._toggle_fullscreen)
             # Esc — the stop-talking quick key (Alek, 2026-10-27):
@@ -930,6 +951,41 @@ def create_dashboard(callbacks):
             path, _ = QFileDialog.getOpenFileName(self, 'Send a file to ARIA')
             if path:
                 frame.receive_file(path)
+
+        def attach_clipboard(self):
+            """Snapshot the clipboard text as context for the next
+            turn (pass 6). Capture is on demand only — nothing
+            watches the clipboard in the background."""
+            from aria import context_attach
+            text = QApplication.clipboard().text() or ''
+            staged = context_attach.set_pending(text)
+            if staged is None:
+                self._attach_notice_until = time.monotonic() + 3.0
+                self._attach_label.setText('Clipboard is empty — copy something first.')
+                self._attach_label.show()
+            self._sync_attach_chip()
+
+        def _clear_attach(self):
+            from aria import context_attach
+            context_attach.clear_pending()
+            self._attach_notice_until = 0.0
+            self._sync_attach_chip()
+
+        def _sync_attach_chip(self):
+            from aria import context_attach
+            summary = context_attach.pending_summary()
+            if summary is not None:
+                trunc = ', truncated' if summary['truncated'] else ''
+                self._attach_label.setText(
+                    f"📋 Clipboard attached ({summary['chars']} chars{trunc}): "
+                    f"“{summary['preview']}”")
+                for w in self._attach_row_widgets:
+                    w.show()
+            elif time.monotonic() < self._attach_notice_until:
+                self._attach_label.show()
+            else:
+                for w in self._attach_row_widgets:
+                    w.hide()
 
         def _sync_neural_geometry(self):
             # The neural field is the centre card's background:
