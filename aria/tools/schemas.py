@@ -117,7 +117,7 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
         'parameters': {   'properties': {'delay_seconds': {'type': 'INTEGER'}, 'message': {'type': 'STRING'}},
                           'required': ['delay_seconds', 'message'],
                           'type': 'OBJECT'}},
-    {   'description': 'Sets a reminder delivered when the user is back at the laptop (next presence return), not at a fixed time. Use when he says "when I get back" / "when I return". Waits out quiet hours.',
+    {   'description': 'Sets a reminder delivered when the user is back at the laptop (next presence return), not at a fixed time. Use when he says "when I get back" / "when I return".',
         'name': 'set_reminder_on_return',
         'parameters': {   'properties': {'message': {'type': 'STRING'}},
                           'required': ['message'],

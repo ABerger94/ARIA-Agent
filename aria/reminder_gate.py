@@ -13,10 +13,14 @@ WHAT THIS ADDS
       delivered on the first eligible tick after a genuine
       away->present transition that happened after the reminder was
       created.
-    - Quiet-hours eligibility (23:00-07:00, the presence monitor's
-      own hours): an on-return reminder waits out the night, and a
-      timed "once" reminder that falls due in quiet hours is
-      deferred — never dropped — until the first eligible tick.
+    - Quiet hours (23:00-07:00, the presence monitor's own hours)
+      defer TIMED "once" reminders that fall due overnight —
+      deferred, never dropped, until the first eligible tick. They
+      do NOT hold on-return reminders: a return is Alek acting, not
+      ARIA initiating, and the reminder exists because he asked for
+      it on exactly that event. (Corrected 2026-10-29 after his
+      23:49 witness: the original gate held his on-return reminder
+      for 07:00 while he stood at the unlocked laptop.)
     - Delivery = a brief spoken line plus a card file in the shared
       inbox (the folder both the dashboard Inbox tab and the phone
       inbox page render). Acknowledgment — the
@@ -147,9 +151,11 @@ def tick(*, now: datetime, present: bool, store: GateStore,
     """One scheduler tick for on-return reminders.
 
     rows: (tid, message, created_datetime) for kind='on_return'.
-    Delivers every row whose return has happened, when Alek is
-    present and it is not quiet hours. Returns delivered tids.
-    Also reconciles delivered cards deleted externally (acked)."""
+    Delivers every row whose return has happened, on the first
+    tick where Alek is present — at any hour (see module docstring:
+    quiet hours gate timed reminders, never on-return ones).
+    Returns delivered tids. Also reconciles delivered cards
+    deleted externally (acked)."""
     data = store.load()
     watcher = ReturnWatcher(data.get("watcher"))
     watcher.observe(present, now)
@@ -158,7 +164,7 @@ def tick(*, now: datetime, present: bool, store: GateStore,
                  if card_exists(d.get("file", ""))]
 
     done: List[int] = []
-    if present and not in_quiet_hours(now):
+    if present:
         for tid, message, created in rows:
             if not watcher.due(created):
                 continue

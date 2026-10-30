@@ -125,16 +125,27 @@ def test_duplicate_presence_never_redelivers(tmp_path):
     assert len(h.spoken) == 1
 
 
-def test_quiet_hours_hold_then_deliver(tmp_path):
+def test_quiet_hours_do_not_hold_on_return(tmp_path):
+    # Alek's 2026-10-29 23:49 witness: he set an on-return reminder,
+    # locked, returned, unlocked — inside quiet hours — and got
+    # nothing, because the original gate held it for 07:00. A return
+    # is Alek acting; the reminder fires on it at any hour.
     h = Harness(tmp_path)
     h.add(1, "call the storage office", dt(29, 22, 0))
     h.tick(dt(29, 22, 5), present=True)
     h.tick(dt(29, 23, 10), present=False)
-    done = h.tick(dt(29, 23, 30), present=True)  # return, but quiet
-    assert done == [] and h.spoken == [] and len(h.rows) == 1
-    done = h.tick(dt(30, 7, 0), present=True)    # morning, still here
+    done = h.tick(dt(29, 23, 30), present=True)  # return, quiet hours
     assert done == [1]
     assert h.spoken == ["Reminder from earlier: call the storage office"]
+
+
+def test_no_delivery_while_away_overnight(tmp_path):
+    h = Harness(tmp_path)
+    h.add(1, "overnight thing", dt(29, 22, 0))
+    h.tick(dt(29, 22, 5), present=True)
+    h.tick(dt(29, 23, 10), present=False)
+    assert h.tick(dt(30, 2, 0), present=False) == []
+    assert h.spoken == [] and len(h.rows) == 1
 
 
 def test_created_after_return_waits_for_next(tmp_path):
