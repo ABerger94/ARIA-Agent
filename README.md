@@ -239,23 +239,36 @@ author's direction: one program, ARIA, with Shell Mode built in.
 
 ![Shell Home](docs/images/shell-home.png)
 
-- **Shell Home** (`aria/shell_panel.py`) — clock, date, time-of-day
-  greeting, and your app list, over the dashboard's centrepiece.
-  Open it any time with the **Shell Home** button in the dashboard's
-  centre column.
+- **Shell Home** (`aria/shell_panel.py`) — an OS home, not a
+  settings panel: big clock, date, and time-of-day greeting with
+  ARIA's orb beside it, a **tile grid** of your apps, a right rail
+  of live cards, and the command bar as a dock pill along the
+  bottom. Open it any time with the **Shell Home** button in the
+  dashboard's centre column.
 - **App launcher** (`aria/app_launcher.py`) — your actual Start
   Menu, enumerated from its shortcuts (per-user and all-users roots,
   deduped and sorted), with ranked search: exact matches first,
-  then name-prefix, word-prefix, and substring.
+  then name-prefix, word-prefix, and substring. Tiles show the
+  real shortcut icon on Windows (Qt's icon provider) and a
+  coloured letter tile everywhere else; double-click or Enter
+  launches.
 
   ![Shell Home app search](docs/images/shell-search.png)
-- **Command bar** (`aria/shell_home.py`) — one input for everything.
-  An unambiguous app name (`Steam`, `open Chrome`) launches it.
-  Anything else goes to ARIA as a normal conversation turn — through
-  the exact same dispatcher, **approval gates, and safe mode** she
-  already has. The shell adds no new powers and bypasses nothing.
-  Matching is deliberately conservative: it will not guess an app
-  from a sentence — sentences are for ARIA.
+- **Rail cards** — **Briefing** (the last composed briefing's own
+  sections, from `aria/briefing.py`), **Now Playing** (the live
+  SMTC session, from `aria/smtc.py`), and **Status** (approval
+  mode, safe mode, voice — read from the real settings). Cards
+  never fabricate: no briefing yet or nothing playing reads as
+  exactly that, and a setting that can't be read is omitted, not
+  guessed.
+- **Command bar** (`aria/shell_home.py`) — one input for everything,
+  in the bottom dock pill. An unambiguous app name (`Steam`,
+  `open Chrome`) launches it. Anything else goes to ARIA as a
+  normal conversation turn — through the exact same dispatcher,
+  **approval gates, and safe mode** she already has. The shell
+  adds no new powers and bypasses nothing. Matching is
+  deliberately conservative: it will not guess an app from a
+  sentence — sentences are for ARIA.
 
   ![Shell Home command bar](docs/images/shell-command.png)
 - **Start ARIA in Shell Mode** — a checkbox inside Shell Home. Tick

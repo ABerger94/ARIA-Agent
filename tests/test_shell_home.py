@@ -93,3 +93,76 @@ def test_route_sentences_are_chat():
 def test_route_empty_is_empty():
     assert shell_home.route_command("   ", APPS)["kind"] == "empty"
     assert shell_home.route_command("", APPS)["kind"] == "empty"
+
+
+# -- V2: tile + rail-card presentation models ---------------------
+
+def test_tile_model_letter_and_stable_color():
+    tile = shell_home.tile_model({"name": "Steam", "path": "/x/s.lnk"})
+    assert tile["name"] == "Steam"
+    assert tile["letter"] == "S"
+    assert tile["color"] in shell_home.TILE_COLORS
+    # Same name -> same letter + colour, every run (stable paint).
+    a = shell_home.tile_model({"name": "Steam"})
+    b = shell_home.tile_model({"name": "Steam", "path": "/other"})
+    assert (a["letter"], a["color"]) == (b["letter"], b["color"])
+    assert shell_home.tile_model({})["letter"] == "?"
+    assert shell_home.tile_model({"name": "chrome"})["letter"] == "C"
+
+
+def test_briefing_card_empty_without_report():
+    card = shell_home.briefing_card(None)
+    assert card["title"] == "Briefing"
+    assert card["empty"] is True
+    assert "No briefing yet" in card["lines"][0]
+    assert shell_home.briefing_card({})["empty"] is True
+
+
+def test_briefing_card_uses_report_sections_schedule_first():
+    report = {"generated_at": "2026-10-30T08:00:00",
+              "text": "full text",
+              "sections": [
+                  {"label": "Local weather", "text": "Weather: cold.",
+                   "status": "ok"},
+                  {"label": "Today's schedule",
+                   "text": "Schedule: one thing.", "status": "ok"},
+                  {"label": "Tech news", "text": "", "status": "empty"},
+              ]}
+    card = shell_home.briefing_card(report)
+    assert card["empty"] is False
+    assert card["lines"][0] == "Schedule: one thing."
+    assert card["lines"][1] == "Weather: cold."
+    # Blank sections never reach the card.
+    assert len(card["lines"]) == 2
+
+
+def test_now_playing_card_states():
+    card = shell_home.now_playing_card(None)
+    assert card["empty"] is True
+    assert card["lines"] == ["Nothing playing"]
+    info = {"title": "Artist - Track", "track": "Track",
+            "artist": "Artist", "app": "Spotify", "playing": True}
+    card = shell_home.now_playing_card(info)
+    assert card["empty"] is False
+    assert card["lines"][0] == "Artist - Track"
+    assert card["lines"][1] == "Playing · Spotify"
+    info["playing"] = False
+    assert shell_home.now_playing_card(info)["lines"][1] == \
+        "Paused · Spotify"
+    # A session with no title at all is still "nothing playing".
+    assert shell_home.now_playing_card({"app": "VLC"})["empty"] is True
+
+
+def test_status_card_only_states_what_it_was_given():
+    card = shell_home.status_card()
+    assert card["empty"] is True
+    card = shell_home.status_card(safe_mode=False,
+                                  approval_mode="confirm-risky",
+                                  voice_enabled=True, shell_mode=True)
+    assert card["empty"] is False
+    assert card["lines"] == ["Approvals: confirm-risky",
+                             "Safe mode: off", "Voice: on",
+                             "Shell Mode boot: on"]
+    # Unknown values are omitted, never guessed.
+    card = shell_home.status_card(safe_mode=True)
+    assert card["lines"] == ["Safe mode: on"]

@@ -63,6 +63,111 @@ def home_model(apps, now=None, name="Alek", limit=24):
     }
 
 
+# ------------------------------------------------------------------
+# V2 presentation models (2026-10-30): tile grid + rail cards.
+# Still pure — the panel gathers real values through the seams
+# (aria.briefing.latest_briefing, aria.smtc.now_playing_any,
+# aria.config / aria.approval) and these formatters decide what
+# the cards say. No seam, no data: an honest empty state, never
+# a plausible-looking fabrication.
+# ------------------------------------------------------------------
+
+#: Letter-tile palette (mock family) — picked deterministically
+#: from the app name so a tile's colour is stable between runs.
+TILE_COLORS = ("#57c7d4", "#8fb8c9", "#7fd08a", "#c9a2e0",
+               "#e0a2b0", "#d8c58a", "#7aa8e0", "#a8d08a")
+
+
+def tile_model(app):
+    """The tile the grid paints for one app entry.
+
+    A letter tile (initial + stable colour) is the universal
+    fallback; on Windows the panel layers the real shortcut icon
+    over it when Qt's icon provider has one.
+    """
+    name = str((app or {}).get("name", "") or "?").strip() or "?"
+    letter = name[0].upper()
+    color = TILE_COLORS[sum(name.lower().encode()) % len(TILE_COLORS)]
+    return {"name": name, "letter": letter, "color": color,
+            "path": (app or {}).get("path", "")}
+
+
+def briefing_card(report):
+    """Briefing rail card from briefing.latest_briefing().
+
+    *report* is the last composed briefing dict (or None when
+    ARIA hasn't composed one yet this session). Lines are the
+    report's own section texts — schedule first, then the rest
+    in order, capped — never invented content.
+    """
+    if not report:
+        return {"title": "Briefing", "empty": True,
+                "lines": ["No briefing yet — ARIA composes one "
+                          "at startup."]}
+    sections = [s for s in (report.get("sections") or [])
+                if isinstance(s, dict) and s.get("text")]
+    sections.sort(key=lambda s: 0 if "schedule" in
+                  str(s.get("label", "")).lower() else 1)
+    lines = [str(s["text"]) for s in sections[:3]]
+    if not lines:
+        text = str(report.get("text") or "").strip()
+        lines = [text] if text else []
+    if not lines:
+        return {"title": "Briefing", "empty": True,
+                "lines": ["Briefing is empty right now."]}
+    return {"title": "Briefing", "empty": False, "lines": lines}
+
+
+def now_playing_card(info):
+    """Now Playing rail card from smtc.now_playing_any().
+
+    *info* is the SMTC session dict (title/track/artist/app/
+    playing) or None when no session exists — the card then
+    says so, plainly.
+    """
+    if not info:
+        return {"title": "Now Playing", "empty": True,
+                "lines": ["Nothing playing"]}
+    title = str(info.get("title") or info.get("track") or "").strip()
+    if not title:
+        artist = str(info.get("artist") or "").strip()
+        track = str(info.get("track") or "").strip()
+        title = f"{artist} - {track}".strip(" -") if (artist or track) \
+            else ""
+    if not title:
+        return {"title": "Now Playing", "empty": True,
+                "lines": ["Nothing playing"]}
+    lines = [title]
+    app = str(info.get("app") or "").strip()
+    state = "Playing" if info.get("playing") else "Paused"
+    lines.append(f"{state} · {app}" if app else state)
+    return {"title": "Now Playing", "empty": False, "lines": lines}
+
+
+def status_card(safe_mode=None, approval_mode=None,
+                voice_enabled=None, shell_mode=None):
+    """Status rail card from real settings/engine values.
+
+    Every argument is a value the panel read from a real seam
+    (config settings, approval.get_mode, the shell_mode pref);
+    a value that couldn't be read arrives as None and its line
+    is simply omitted — the card never guesses a state.
+    """
+    lines = []
+    if approval_mode is not None:
+        lines.append(f"Approvals: {approval_mode}")
+    if safe_mode is not None:
+        lines.append(f"Safe mode: {'on' if safe_mode else 'off'}")
+    if voice_enabled is not None:
+        lines.append(f"Voice: {'on' if voice_enabled else 'off'}")
+    if shell_mode is not None:
+        lines.append(f"Shell Mode boot: {'on' if shell_mode else 'off'}")
+    if not lines:
+        return {"title": "Status", "empty": True,
+                "lines": ["Status unavailable"]}
+    return {"title": "Status", "empty": False, "lines": lines}
+
+
 def route_command(text, apps):
     """Classify command-bar text -> an intent dict.
 
