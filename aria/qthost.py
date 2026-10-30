@@ -309,7 +309,23 @@ def run_qt_host(callbacks) -> int:
             # from the first frame, on a cold start and on every
             # self-restart alike (a plain show() left her small /
             # minimized and he had to maximize her by hand).
-            window.showMaximized()
+            # ARIA OS (2026-10-30): Shell Mode boots her as the
+            # shell instead — Shell Home in front, true fullscreen.
+            # Explorer is never replaced; the panel's Exit to
+            # Windows drops back to this maximized dashboard over
+            # the ordinary desktop.
+            _shell_boot = False
+            try:
+                from aria import ui_prefs as _prefs
+                _shell_boot = _prefs.get_shell_mode() \
+                    and hasattr(window, 'open_shell_home')
+            except Exception:
+                _shell_boot = False
+            if _shell_boot:
+                window.open_shell_home()
+                window.showFullScreen()
+            else:
+                window.showMaximized()
         else:
             window.show()
         window.raise_()

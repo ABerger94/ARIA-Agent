@@ -236,6 +236,19 @@ def create_dashboard(callbacks):
         from aria.room_panel import RoomWidget
     except Exception:
         RoomWidget = None
+    try:
+        from aria.shell_panel import ShellPanel
+    except Exception:
+        ShellPanel = None
+
+    def _shell_apps():
+        from aria import app_launcher
+        return app_launcher.enumerate_apps(
+            app_launcher.default_roots())
+
+    def _shell_launch(app):
+        from aria import app_launcher
+        app_launcher.launch_app(app)
     from aria.metric_bar import MetricBar, StatusPlaque
     from aria.video_panel import VideoPanel, HAVE_VIDEO as _HAVE_VIDEO
     try:
@@ -682,6 +695,23 @@ def create_dashboard(callbacks):
                     'border: 1px solid #1b3042; border-radius: 4px;')
                 self.room_close.clicked.connect(
                     lambda: self.set_centerpiece('orb'))
+            # ARIA OS Shell Home (2026-10-30): the shell's home
+            # screen, in the same center stack — clock + greeting,
+            # his real Start Menu apps, the command bar, and an
+            # always-visible Exit to Windows. NOT a persisted
+            # centerpiece: it opens from the Shell Home button (or
+            # at boot when Shell Mode is on) and Exit returns the
+            # center to whatever centerpiece Settings holds.
+            # Explorer is never replaced in v1 — the shell is a
+            # fullscreen dashboard mode, and Exit leaves it.
+            self.shell = (ShellPanel(
+                apps_provider=_shell_apps,
+                on_launch=_shell_launch,
+                on_command=lambda text: callbacks.submit(text),
+                on_exit=lambda: self.exit_shell_home())
+                if ShellPanel is not None else None)
+            if self.shell is not None:
+                self.shell.hide(); _stack.addWidget(self.shell, 0, 0)
             cl.addWidget(self.center_stack, 1)
             self._last_orb_publish = 0.0
             self.state = QLabel('IDLE'); self.state.setAlignment(Qt.AlignmentFlag.AlignCenter); self.state.setObjectName('brand'); cl.addWidget(self.state)
@@ -693,7 +723,8 @@ def create_dashboard(callbacks):
             controls = QHBoxLayout()
             self.mic = QPushButton('Hold to talk'); self.mic.pressed.connect(callbacks.ptt_press); self.mic.released.connect(callbacks.ptt_release); controls.addWidget(self.mic)
             self.voice = QPushButton('Voice on'); self.voice.clicked.connect(frame.toggle_voice); controls.addWidget(self.voice)
-            stop = QPushButton('Stop speaking'); stop.clicked.connect(callbacks.interrupt); controls.addWidget(stop); cl.addLayout(controls)
+            stop = QPushButton('Stop speaking'); stop.clicked.connect(callbacks.interrupt); controls.addWidget(stop)
+            self.shell_btn = QPushButton('Shell Home'); self.shell_btn.setToolTip('Open the ARIA OS home screen'); self.shell_btn.clicked.connect(self.open_shell_home); controls.addWidget(self.shell_btn); cl.addLayout(controls)
             # Whisper and centerpiece buttons used to live here
             # (Alek, 2026-10-27): whisper is the Voice / audio
             # Settings checkbox, the centerpiece is Settings →
@@ -1531,6 +1562,46 @@ def create_dashboard(callbacks):
                 self._feed_memory_maps()
             self._show_centerpiece()
 
+        def open_shell_home(self):
+            """ARIA OS (2026-10-30): bring Shell Home to the
+            center, covering every centerpiece. The persisted
+            centerpiece is untouched underneath — Exit returns
+            to it. Refreshes the app list so shortcuts installed
+            since boot show up."""
+            if getattr(self, 'shell', None) is None:
+                return
+            if self.video is not None and self.video.isVisible():
+                self.video.hide()
+            self.face.hide()
+            if self.holo is not None:
+                self.holo.hide()
+            self.mem_map_center.hide()
+            self.orb3d.hide()
+            if getattr(self, 'room', None) is not None:
+                self.room.hide()
+            if getattr(self, 'viz', None) is not None:
+                self.viz.hide()
+            self.shell.refresh_apps()
+            self.shell.refresh_clock()
+            self.shell.show()
+            self.shell.command.setFocus()
+
+        def exit_shell_home(self):
+            """Exit to Windows: leave Shell Home AND fullscreen —
+            the dashboard drops back to its normal maximized
+            window over the ordinary Windows desktop. This is
+            the shell's sacred escape hatch (Alek's design rule):
+            it must always work, so it swallows its own errors
+            panel-by-panel rather than dying on one bad widget."""
+            try:
+                if self.isFullScreen():
+                    self.showMaximized()
+            except Exception:
+                pass
+            if getattr(self, 'shell', None) is not None:
+                self.shell.hide()
+            self._show_centerpiece()
+
         def _show_centerpiece(self):
             """Make the stored centerpiece the visible one (unless a
             video owns the center card right now)."""
@@ -1543,6 +1614,8 @@ def create_dashboard(callbacks):
             self.orb3d.hide()
             if getattr(self, 'room', None) is not None:
                 self.room.hide()
+            if getattr(self, 'shell', None) is not None:
+                self.shell.hide()
             if self._centerpiece == 'holo' and self.holo is not None:
                 self.holo.show()
             elif self._centerpiece == 'map':

@@ -226,6 +226,57 @@ is no ambient, always-on camera tile.
 
 ---
 
+## Shell Mode (the ARIA OS layer)
+
+**Your computer, run by conversation.** Shell Mode is ARIA's optional
+home layer for Windows, built in — not a separate program. Windows
+itself — the kernel, the drivers, every app and game you own — stays
+exactly where it is. What changes is the part you live in: instead of
+a desktop of icons, ARIA can boot into **Shell Home**, a fullscreen
+home screen in her navy/cyan identity. It began life as the separate
+ARIA OS project (2026-10-30) and was folded into this repo at the
+author's direction: one program, ARIA, with Shell Mode built in.
+
+![Shell Home](docs/images/shell-home.png)
+
+- **Shell Home** (`aria/shell_panel.py`) — clock, date, time-of-day
+  greeting, and your app list, over the dashboard's centrepiece.
+  Open it any time with the **Shell Home** button in the dashboard's
+  centre column.
+- **App launcher** (`aria/app_launcher.py`) — your actual Start
+  Menu, enumerated from its shortcuts (per-user and all-users roots,
+  deduped and sorted), with ranked search: exact matches first,
+  then name-prefix, word-prefix, and substring.
+
+  ![Shell Home app search](docs/images/shell-search.png)
+- **Command bar** (`aria/shell_home.py`) — one input for everything.
+  An unambiguous app name (`Steam`, `open Chrome`) launches it.
+  Anything else goes to ARIA as a normal conversation turn — through
+  the exact same dispatcher, **approval gates, and safe mode** she
+  already has. The shell adds no new powers and bypasses nothing.
+  Matching is deliberately conservative: it will not guess an app
+  from a sentence — sentences are for ARIA.
+
+  ![Shell Home command bar](docs/images/shell-command.png)
+- **Start ARIA in Shell Mode** — a checkbox inside Shell Home. Tick
+  it and the next start boots fullscreen into Shell Home
+  (`aria/qthost.py` reads the `shell_mode` preference, off by
+  default, via `aria/ui_prefs.py`). Untick it and you're back to the
+  classic dashboard boot.
+- **Exit to Windows** — an always-visible button, bottom right of
+  Shell Home. One click: fullscreen drops, the shell steps aside,
+  and you're looking at the ordinary Windows desktop with ARIA as a
+  normal window. The escape hatch is sacred.
+
+**v1 limits — stated plainly.** Explorer is never replaced in v1:
+Shell Mode is a fullscreen dashboard mode, not a registry shell
+swap — the step where a crash could strand you without a desktop is
+later work, and it only happens after v1 is witnessed solid. The
+launcher enumerates Start Menu shortcuts (`.lnk`) only; Microsoft
+Store apps without shortcuts and portable EXEs aren't listed yet.
+
+---
+
 ## Phone bridge & node
 
 **The bridge** (`aria/bridge.py`) is an HTTPS server on your local network
@@ -388,7 +439,8 @@ Layout, briefly: `aria.py` (root launcher), `aria/agent/` (the brain:
 provider loop, task journal, consolidation, workers, self-healing),
 `aria/tools/` (schemas for the progressive toolkits, dispatch, sandbox,
 builtins), `aria/dashboard.py` + `aria/ui_panels.py` (the Qt command
-center and its dialogs), `aria/bridge.py` (the phone bridge),
+center and its dialogs), `aria/app_launcher.py` + `aria/shell_home.py`
++ `aria/shell_panel.py` (the Shell Mode layer), `aria/bridge.py` (the phone bridge),
 `aria/applock.py` (the app lock), `aria/console_window.py` (the
 console window show/hide),
 `aria/node_hub.py` + `aria/phone_node.py` (the Android node),

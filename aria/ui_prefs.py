@@ -90,6 +90,39 @@ def set_pet_pos(pos) -> None:
         pass
 
 
+def get_shell_mode() -> bool:
+    """ARIA OS Shell Mode (2026-10-30): when True, the dashboard
+    boots fullscreen with Shell Home in front. Default False —
+    the shell is opt-in, and the normal dashboard is untouched
+    until he turns it on."""
+    try:
+        with open(_ui_file(), encoding="utf-8") as f:
+            return (json.load(f) or {}).get("shell_mode") is True
+    except Exception:
+        return False
+
+
+def set_shell_mode(enabled) -> str:
+    """Persist the Shell Mode toggle (soft-fail like the rest of
+    this module — a preference must never break the window)."""
+    enabled = bool(enabled)
+    try:
+        payload = {}
+        try:
+            with open(_ui_file(), encoding="utf-8") as f:
+                payload = json.load(f) or {}
+        except Exception:
+            payload = {}
+        payload["shell_mode"] = enabled
+        payload["updated"] = datetime.now(timezone.utc).isoformat()
+        os.makedirs(os.path.dirname(_ui_file()), exist_ok=True)
+        with open(_ui_file(), "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+    except Exception:
+        pass
+    return f"Shell Mode: {'on' if enabled else 'off'}."
+
+
 def set_accent(accent) -> str:
     """Persist the accent (None resets to the default palette)."""
     os.makedirs(os.path.dirname(_ui_file()), exist_ok=True)
