@@ -222,6 +222,17 @@ def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silen
         say(ack)
         return ack
 
+    # 3. Local command lane (pass 6): exact media phrases take a
+    # direct path — no model round trip. Whole-utterance matches
+    # only; anything else falls through to the brain untouched.
+    try:
+        from aria import command_lane as _lane
+        lane_ack = _lane.try_handle(user_text)
+    except Exception:
+        lane_ack = None
+    if lane_ack is not None:
+        say(lane_ack)
+        return lane_ack
 
     # 5. Multimodal context attachment
     image_bytes = None
