@@ -398,7 +398,7 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
     {   'description': 'Shows the steps of a saved routine in plain language.',
         'name': 'describe_routine',
         'parameters': {'properties': {'name': {'type': 'STRING'}}, 'required': ['name'], 'type': 'OBJECT'}},
-    {   'description': 'Marks a routine trusted: its destructive steps replay without per-step approval. A conscious user action.',
+    {   'description': 'Marks a routine trusted: its destructive steps replay without per-step approval. Under confirm modes this grant itself pauses for the user\'s approval before it takes effect.',
         'name': 'trust_routine',
         'parameters': {'properties': {'name': {'type': 'STRING'}}, 'required': ['name'], 'type': 'OBJECT'}},
     {   'description': 'Removes trusted status from a routine.',

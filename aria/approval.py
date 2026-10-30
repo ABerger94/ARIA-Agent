@@ -84,6 +84,18 @@ DESTRUCTIVE_TOOLS = frozenset({
     "edit_own_code",
     "patch_own_code",
     "reload_user_tools",
+    # trust_routine is an authorization grant, not an action: a
+    # trusted routine's destructive steps replay with
+    # preauthorized=True, skipping the approval gate entirely
+    # (aria/routines.py run_routine_impl), so an ungated
+    # trust_routine lets one model turn mint its own bypass for
+    # every later replay. Gating the grant means under
+    # confirm-risky / confirm-all the model call pauses for the
+    # user's banner tap, and the approve-token replay executes
+    # exactly that grant. untrust_routine stays ungated: revoking
+    # trust only ever restores per-step approval. (ChatGPT x ARIA
+    # loop finding, 2026-10-29.)
+    "trust_routine",
 })
 
 # In-memory pending approvals: token -> {token, tool, args, desc, created_ts}.

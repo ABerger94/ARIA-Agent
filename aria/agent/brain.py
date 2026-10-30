@@ -457,7 +457,7 @@ def build_system_instruction(user_prompt: str) -> str:
         "open_app_or_url: resolve links from earlier in chat automatically. "
         "Routines: named multi-step automations. routine_record_start(name) begins capturing your subsequent tool calls "
         "as replayable steps ('watch me do this, save it as X'); routine_record_stop() saves it. run_routine(name, params_json) "
-        "replays with {{param}} substitution. Only suggest trust_routine when the user explicitly wants unattended replays. "
+        "replays with {{param}} substitution. Only suggest trust_routine when the user explicitly wants unattended replays; the grant itself pauses for their approval under confirm modes. "
         "Delegated tasks: delegate_task(goal) hands a multi-step job to the background task queue (planned in at most "
         "5 steps, executed step by step, outcome announced aloud when done) — use it ONLY when the user explicitly "
         "asks you to handle something in the background or as a delegated task; never delegate on your own initiative. "

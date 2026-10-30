@@ -199,6 +199,15 @@ def run_routine_impl(name: str, params=None) -> str:
     {{param}} placeholders in string arg values are substituted from `params`.
     Every step replays with preauthorized=True EXCEPT destructive steps in an
     untrusted routine, which pass through the approval gate (Module 4).
+    Two guards apply on top of that preauthorization, because a
+    preauthorized replay otherwise skips the dispatcher's own checks:
+    (1) safe mode is a hard block, not an approval — a step whose tool
+    is in SAFE_MODE_BLOCKED_TOOLS is skipped while safe mode is on,
+    even for trusted routines and even in auto mode (where
+    needs_approval() is False and the step would otherwise replay
+    preauthorized past the check); (2) a step that pauses for
+    approval stops the routine — later steps do NOT run before the
+    user has confirmed the earlier one.
     """
     params = params or {}
     sname = sanitize_name(name)
@@ -232,9 +241,25 @@ def run_routine_impl(name: str, params=None) -> str:
                 f"{', '.join(missing)}. Fix the routine before replaying.]")
 
     lines = []
+    paused_at = None
     for i, step in enumerate(steps, 1):
         tool = step.get("tool", "?")
         args = _substitute(step.get("args", {}), params)
+        # Safe mode is a hard block, not an approval: it applies to
+        # replays too. The dispatcher skips its safe-mode check for
+        # preauthorized calls, and routine steps replay preauthorized
+        # (trusted always; untrusted in auto mode, where
+        # needs_approval() is False) — so the check lives here, per
+        # step, before dispatch. A blocked step is skipped, not run.
+        try:
+            _safe = config.is_safe_mode()
+        except Exception:
+            _safe = False
+        if _safe and tool in config.SAFE_MODE_BLOCKED_TOOLS:
+            lines.append(f"{i}. {tool} -> [Safe mode: '{tool}' is disabled. "
+                         f"Disable safe mode to use shell, GUI control, "
+                         f"or email.]")
+            continue
         # Destructive steps in an untrusted routine go through approval.
         preauthorized = True
         try:
@@ -249,7 +274,18 @@ def run_routine_impl(name: str, params=None) -> str:
             result = f"[Tool Error: {e}]"
         preview = config.redact(str(result)).replace("\n", " ")[:200]
         lines.append(f"{i}. {tool} -> {preview}")
+        # A step that paused for approval stops the routine: later
+        # steps must not run before the user has confirmed this one.
+        if str(result).startswith("[AWAITING_APPROVAL"):
+            paused_at = i
+            lines.append(f"Routine paused at step {i}: awaiting user "
+                         f"approval — later steps not run.")
+            break
     config.add_log(f"[routines] ran '{sname}' ({len(steps)} steps, trusted={trusted})")
+    if paused_at is not None:
+        return (f"Routine '{sname}' PAUSED at step {paused_at} awaiting "
+                f"approval (trusted={'yes' if trusted else 'no'}):\n"
+                + "\n".join(lines))
     return (f"Routine '{sname}' replayed ({len(steps)} steps, "
             f"trusted={'yes' if trusted else 'no'}):\n" + "\n".join(lines))
 
