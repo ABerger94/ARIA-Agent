@@ -193,13 +193,41 @@ def _preflight_steps(steps, known_tools):
         return []
 
 
+def _wrapper_nested_tool(tool, args):
+    """Nested gated tool behind a wrapper step, or None.
+
+    browser_control, code_helper and dev_agent are in neither policy
+    set, but their handlers re-enter the dispatcher for a gated
+    effect (open_app_or_url / write_file) and ride the outer call's
+    preauthorized scope (aria/tools/gaptools.py: _open_url_via_dispatch
+    / _write_file_via_dispatch). Checking policy against the outer
+    name alone therefore lets an untrusted routine replay launch or
+    write with no approval, and lets a routine replay a launch past
+    safe mode even though open_app_or_url is safe-mode-blocked.
+    Only effect actions count: browser_control get_text and
+    code_helper explain/fix have no nested effect. (ChatGPT x ARIA
+    loop finding, 2026-10-30.)
+    """
+    try:
+        action = str((args or {}).get("action") or "").strip().lower()
+    except Exception:
+        return None
+    if tool == "browser_control":
+        return "open_app_or_url" if action == "go_to" else None
+    if tool == "code_helper":
+        return "write_file" if action == "write" else None
+    if tool == "dev_agent":
+        return "write_file"
+    return None
+
+
 def run_routine_impl(name: str, params=None) -> str:
     """Replay a routine's steps via dispatch.execute_tool.
 
     {{param}} placeholders in string arg values are substituted from `params`.
     Every step replays with preauthorized=True EXCEPT destructive steps in an
     untrusted routine, which pass through the approval gate (Module 4).
-    Two guards apply on top of that preauthorization, because a
+    Three guards apply on top of that preauthorization, because a
     preauthorized replay otherwise skips the dispatcher's own checks:
     (1) safe mode is a hard block, not an approval — a step whose tool
     is in SAFE_MODE_BLOCKED_TOOLS is skipped while safe mode is on,
@@ -207,7 +235,12 @@ def run_routine_impl(name: str, params=None) -> str:
     needs_approval() is False and the step would otherwise replay
     preauthorized past the check); (2) a step that pauses for
     approval stops the routine — later steps do NOT run before the
-    user has confirmed the earlier one.
+    user has confirmed this one; (3) a wrapper step's nested effect
+    is checked too — an untrusted routine's browser_control go_to /
+    code_helper write / dev_agent save replays WITHOUT preauthorization
+    so the nested launch/write pauses for approval like a direct
+    call, and a nested safe-mode-blocked launch is skipped in safe
+    mode even for trusted routines.
     """
     params = params or {}
     sname = sanitize_name(name)
@@ -260,13 +293,28 @@ def run_routine_impl(name: str, params=None) -> str:
                          f"Disable safe mode to use shell, GUI control, "
                          f"or email.]")
             continue
+        # Wrapper-effect steps (see _wrapper_nested_tool): the outer
+        # name is ungated, but the nested effect is gated — so the
+        # nested name gets the same safe-mode treatment, and an
+        # untrusted replay must not carry preauthorization into it.
+        nested = _wrapper_nested_tool(tool, args)
+        if _safe and nested in config.SAFE_MODE_BLOCKED_TOOLS:
+            lines.append(f"{i}. {tool} -> [Safe mode: '{nested}' is disabled. "
+                         f"Disable safe mode to use shell, GUI control, "
+                         f"or email.]")
+            continue
         # Destructive steps in an untrusted routine go through approval.
+        # A wrapper step counts as destructive for this purpose when
+        # it carries a nested gated effect: without this, the nested
+        # launch/write rides the outer call's preauthorized scope
+        # past both gates (the outer name is in neither policy set).
         preauthorized = True
         try:
-            if not trusted and _approval_mod.needs_approval(tool, args):
-                preauthorized = False
+            _needs = _approval_mod.needs_approval(tool, args)
         except Exception:
-            preauthorized = True
+            _needs = False
+        if not trusted and (_needs or nested is not None):
+            preauthorized = False
         try:
             result, _ok = _dispatch_mod.execute_tool(tool, args,
                                                      preauthorized=preauthorized)
