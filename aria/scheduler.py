@@ -271,6 +271,104 @@ def tool_set_reminder(delay_seconds: int, message: str) -> str:
     return f"Reminder set (#{tid}): I'll say '{message}' in {delay_seconds} seconds."
 
 
+def sched_add_on_return(message: str) -> int:
+    """An on-return reminder (pass 6): same table, kind='on_return',
+    sentinel next_run so the timed due-query never picks it up; the
+    reminder gate delivers it after Alek returns to the laptop."""
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("""INSERT INTO scheduled_tasks (kind, prompt, interval_s, next_run, created)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    ("on_return", message, 0, "9999-12-31 23:59:59",
+                     datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        tid = cur.lastrowid
+        conn.commit()
+        conn.close()
+    _bump_sched_count(1)
+    return tid
+
+
+def sched_on_return_rows():
+    """(tid, message, created_datetime) for pending on-return rows."""
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT id, prompt, created FROM scheduled_tasks "
+                    "WHERE kind = 'on_return' ORDER BY created")
+        rows = cur.fetchall()
+        conn.close()
+    out = []
+    for tid, prompt, created in rows:
+        try:
+            created_dt = datetime.strptime(created, "%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            created_dt = datetime.min
+        out.append((tid, prompt, created_dt))
+    return out
+
+
+def tool_set_reminder_on_return(message: str) -> str:
+    tid = sched_add_on_return(message)
+    add_log(f"On-return reminder #{tid} set")
+    return (f"Reminder set (#{tid}): I'll remind you '{message}' when "
+            f"you're back at the laptop.")
+
+
+def _gate_store():
+    from aria.reminder_gate import GateStore
+    path = os.path.join(os.path.expanduser("~"), "ARIA",
+                        "reminder_gate.json")
+    return GateStore(path)
+
+
+def tool_acknowledge_reminders() -> str:
+    from aria import inbox as _inbox
+    from aria.reminder_gate import acknowledge_all
+
+    def _delete_card(fname):
+        os.unlink(os.path.join(_inbox.INBOX_DIR, fname))
+
+    n = acknowledge_all(store=_gate_store(), delete_card=_delete_card)
+    if n == 0:
+        return "No delivered reminders to clear."
+    return f"Cleared {n} reminder card{'s' if n != 1 else ''}."
+
+
+def _reminder_gate_tick(is_busy_fn=None):
+    """One reminder-gate tick (pass 6), called from scheduler_loop.
+    Wires the real seams into aria.reminder_gate.tick."""
+    from aria import inbox as _inbox
+    from aria import presence as _presence
+    from aria import reminder_gate
+
+    def _write_card(tid, message):
+        body = (f"Reminder (delivered {datetime.now():%Y-%m-%d %H:%M})\n\n"
+                f"{message}\n\nSay 'got it' to clear this card, or "
+                f"delete the file.\n")
+        return _inbox.save_upload(f"reminder-{tid}.txt",
+                                  body.encode("utf-8"))
+
+    def _card_exists(fname):
+        return bool(fname) and os.path.exists(
+            os.path.join(_inbox.INBOX_DIR, fname))
+
+    busy = is_busy_fn() if is_busy_fn else False
+    done = reminder_gate.tick(
+        now=datetime.now(),
+        present=_presence.is_present(),
+        store=_gate_store(),
+        rows=sched_on_return_rows(),
+        is_busy=busy,
+        speak=speech.speak,
+        queue_speech=lambda t: speech._SPEECH_QUEUE.put(t),
+        delete_row=lambda tid: sched_cancel(tid),
+        write_card=_write_card,
+        card_exists=_card_exists)
+    for tid in done:
+        add_log(f"On-return reminder #{tid} delivered")
+
+
 def tool_set_recurring(interval_seconds: int, prompt: str) -> str:
     kind = "brief" if _BRIEF_PROMPT_RE.search(prompt or "") else "interval"
     tid = sched_add(kind, prompt, interval_s=max(60, int(interval_seconds)))
@@ -284,7 +382,12 @@ def tool_list_scheduled() -> str:
     rows = sched_list()
     if not rows:
         return "No scheduled tasks."
-    lines = [f"#{r[0]} [{r[1]}] next: {r[4]} | {r[2]}" for r in rows]
+    lines = []
+    for r in rows:
+        if r[1] == "on_return":
+            lines.append(f"#{r[0]} [on return] | {r[2]}")
+        else:
+            lines.append(f"#{r[0]} [{r[1]}] next: {r[4]} | {r[2]}")
     return "\n".join(lines)
 
 
@@ -366,6 +469,7 @@ def is_paused() -> bool:
 def scheduler_loop(is_busy_fn: Optional[Callable[[], bool]] = None,
                    run_agent_fn: Optional[Callable[[str], None]] = None):
     """Background scheduler worker thread."""
+    _deferred_logged = set()  # quiet-hours deferrals already logged
     time.sleep(5)
     while True:
         if PAUSED:
@@ -383,6 +487,18 @@ def scheduler_loop(is_busy_fn: Optional[Callable[[], bool]] = None,
 
             for tid, kind, prompt, interval_s in due:
                 if kind == "once":
+                    # Quiet hours (pass 6): a timed reminder that
+                    # falls due overnight waits for the first
+                    # eligible tick — deferred, never dropped.
+                    try:
+                        from aria.reminder_gate import timed_eligible
+                        if not timed_eligible(datetime.now()):
+                            if tid not in _deferred_logged:
+                                _deferred_logged.add(tid)
+                                add_log(f"Reminder #{tid} held: quiet hours")
+                            continue
+                    except Exception:
+                        pass
                     with DB_LOCK:
                         conn = sqlite3.connect(DB_PATH)
                         conn.execute("DELETE FROM scheduled_tasks WHERE id = ?", (tid,))
@@ -452,6 +568,13 @@ def scheduler_loop(is_busy_fn: Optional[Callable[[], bool]] = None,
             try:
                 from aria.events import poll_inbox
                 poll_inbox()
+            except Exception as _e_silent:
+                _config_silent.log_silent("scheduler_loop", _e_silent)
+
+            # Reminder gate (pass 6): on-return delivery + card
+            # reconciliation. Never break scheduling.
+            try:
+                _reminder_gate_tick(is_busy_fn)
             except Exception as _e_silent:
                 _config_silent.log_silent("scheduler_loop", _e_silent)
         except Exception as e:

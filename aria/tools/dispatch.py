@@ -742,6 +742,8 @@ def _init_default_registry():
     # Scheduler tools
     _REGISTRY["morning_briefing"] = lambda a: scheduler.tool_briefing()
     _REGISTRY["set_reminder"] = lambda a: scheduler.tool_set_reminder(int(a.get("delay_seconds", 60)), a.get("message", ""))
+    _REGISTRY["set_reminder_on_return"] = lambda a: scheduler.tool_set_reminder_on_return(a.get("message", ""))
+    _REGISTRY["acknowledge_reminders"] = lambda a: scheduler.tool_acknowledge_reminders()
     _REGISTRY["set_recurring_task"] = lambda a: scheduler.tool_set_recurring(int(a.get("interval_seconds", 3600)), a.get("prompt", ""))
     _REGISTRY["set_timer"] = lambda a: scheduler.tool_set_timer(a.get("duration_text", "10m"), a.get("label", "timer"))
     _REGISTRY["list_scheduled_tasks"] = lambda a: scheduler.tool_list_scheduled()

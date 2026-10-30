@@ -437,7 +437,7 @@ def build_system_instruction(user_prompt: str) -> str:
         f"{unbroken_thread}\n"
         "Capabilities: live web search, semantic persistent memory, Python code execution, GUI automation, "
         "GitHub pushes and repo creation, physical neck servos, and a scheduler — you can set one-shot spoken "
-        "reminders and recurring autonomous tasks with set_reminder / set_recurring_task. Also: read full web pages (fetch_url), "
+        "reminders and recurring autonomous tasks with set_reminder / set_recurring_task — plus set_reminder_on_return for 'when I'm back at the laptop' reminders (delivered on his return, held overnight), and acknowledge_reminders to clear delivered reminder cards when he says he's got it. Also: read full web pages (fetch_url), "
         "use the Windows clipboard, control windows (list/focus/minimize/close) and media keys, look up Magic cards via Scryfall "
         "(mtg_card — the user is a Commander player), watch product prices and alert on drops (watch_price — checked hourly), "
         "and toggle camera face-tracking for the neck servos. The user can say 'stop' or press X to interrupt your speech instantly. "
