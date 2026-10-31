@@ -292,3 +292,176 @@ def test_render_once_forwards_to_shell_orb_only_when_active(monkeypatch):
         assert len(orb._amp_hist) == 2          # forwarding stopped
     finally:
         window.close()
+
+
+# -- Shell Home V17-C hosted geometry (2026-10-31) -------------
+# V16's rail fix was verified standalone, and Alek's live
+# witness on 789b0d26 still showed a short Briefing and Today
+# 'Open' buttons cut mid-word. These tests therefore run in
+# the REAL Dashboard window at his size (1920x1003), fed
+# through the dashboard's own provider seams — never a
+# standalone panel.
+
+def _hosted_today(monkeypatch):
+    """Feed Today through the seams the hosted panel actually
+    reads: tasks via aria.scheduler.sched_list (the harness's
+    stub module), the next event via aria.ical, unread via
+    aria.tools.builtins — the exact lazy imports
+    shell_panel._default_tasks / _default_today_remote make."""
+    import time as _time
+    from datetime import datetime, timedelta
+    sched = sys.modules['aria.scheduler']
+    past = (datetime.now() - timedelta(minutes=30)).strftime(
+        '%Y-%m-%d %H:%M:%S')
+    monkeypatch.setattr(
+        sched, 'sched_list',
+        lambda: [(7, 'once', 'Take your medication', None, past)],
+        raising=False)
+    builtins = types.ModuleType('aria.tools.builtins')
+    builtins._ical_url = lambda: 'stub://feed'
+    builtins.tool_read_email = (
+        lambda unread_only=True, limit=99: '\n'.join(
+            f'[uid={i}] A — S{i}' for i in range(50)))
+    tools_pkg = types.ModuleType('aria.tools')
+    tools_pkg.__path__ = []
+    tools_pkg.builtins = builtins
+    ical = types.ModuleType('aria.ical')
+    now = datetime.now()
+    ical.upcoming_from_feed = lambda url, days=7: [{
+        'summary': 'Little Caesers',
+        'start': now + timedelta(hours=8),
+        'end': now + timedelta(hours=15),
+        'all_day': False}]
+    monkeypatch.setitem(sys.modules, 'aria.tools', tools_pkg)
+    monkeypatch.setitem(sys.modules, 'aria.tools.builtins',
+                        builtins)
+    monkeypatch.setitem(sys.modules, 'aria.ical', ical)
+    return _time
+
+
+def _kick_remote(shell):
+    """Reset the Today fetch throttle so a fetch runs against
+    the just-patched seams (the panel throttles refetches to
+    WEATHER_REFETCH_SECONDS; the first fetch at window build
+    time used the unpatched stubs)."""
+    shell._today_fetched_at = None
+    shell.refresh_today_remote()
+    shell.refresh_today()
+
+
+def _settle_today(shell, time_mod):
+    """Pump events until the off-thread remote fetch has
+    landed AND the repainted model carries all three rows."""
+    app = QApplication.instance()
+    end = time_mod.time() + 10
+    while time_mod.time() < end:
+        app.processEvents()
+        model = shell._today_model
+        if (shell._today_remote.get('unread') == 50
+                and model and model['event']
+                and model['tasks']):
+            break
+        time_mod.sleep(0.01)
+    for _ in range(3):
+        app.processEvents()
+
+
+def test_shell_hosted_briefing_gets_the_height(monkeypatch):
+    """In the hosted window at 1920x1003 the Briefing card is
+    materially taller than Today and its body clears 200px;
+    growing the window grows the body (the rail's leftover is
+    really the Briefing's)."""
+    window, _calls = _window(monkeypatch, show=False)
+    time_mod = _hosted_today(monkeypatch)
+    try:
+        shell = window.shell
+        window.resize(1920, 1003)
+        window.show()
+        window.open_shell_home()
+        _kick_remote(shell)
+        _settle_today(shell, time_mod)
+        assert shell.today_frame.isVisible()
+        assert (shell.briefing_frame.height()
+                > shell.today_frame.height() + 40)
+        body = shell.briefing_body.height()
+        assert body >= 200
+        window.resize(1920, 1200)
+        QApplication.instance().processEvents()
+        assert shell.briefing_body.height() > body + 80
+    finally:
+        window.close()
+
+
+def test_shell_hosted_today_buttons_render_whole(monkeypatch):
+    """Alek's named acceptance item (2026-10-31 07:33): every
+    Today row button in the HOSTED window — Open, Done,
+    Snooze +1h — renders at no less than its size hint, fits
+    its full caption width with padding to spare, and sits
+    fully inside the Today card."""
+    window, _calls = _window(monkeypatch, show=False)
+    time_mod = _hosted_today(monkeypatch)
+    try:
+        from PyQt6.QtWidgets import QPushButton
+        shell = window.shell
+        window.resize(1920, 1003)
+        window.show()
+        window.open_shell_home()
+        _kick_remote(shell)
+        _settle_today(shell, time_mod)
+        btns = [b for b in shell.today_frame.findChildren(
+            QPushButton) if b.isVisible()]
+        assert ({b.text() for b in btns}
+                >= {'Open', 'Done', 'Snooze +1h'})
+        frame_w = shell.today_frame.width()
+        for b in btns:
+            assert b.width() >= b.sizeHint().width()
+            need = (b.fontMetrics().horizontalAdvance(b.text())
+                    + 36)
+            assert b.width() >= need
+            origin = b.mapTo(shell.today_frame,
+                             b.rect().topLeft())
+            assert origin.x() + b.width() <= frame_w
+    finally:
+        window.close()
+
+
+def test_shell_hosted_chrome_steps_aside_and_restores(
+        monkeypatch):
+    """The V17-C hosting fix: while Shell Home holds the
+    window, the dashboard's state line and bottom command row
+    are hidden (their height reaches the shell), the controls
+    row with the Dashboard escape stays, and exiting restores
+    everything — with the orb centerpiece laying out sanely
+    again afterwards."""
+    window, _calls = _window(monkeypatch, show=False)
+    try:
+        app = QApplication.instance()
+        window.resize(1920, 1003)
+        window.show()
+        app.processEvents()
+        stack_before = window.center_stack.height()
+        window.open_shell_home()
+        app.processEvents()
+        assert window._shell_is_home()
+        assert not window.state.isVisible()
+        assert not window.entry.isVisible()
+        assert window.shell_btn.isVisible()   # escape stays
+        assert (window.center_stack.height()
+                > stack_before + 60)
+        window.exit_shell_home()
+        app.processEvents()
+        assert window.state.isVisible()
+        assert window.entry.isVisible()
+        assert not window.shell.isVisible()
+        # The persisted centerpiece (whichever Settings holds)
+        # is back on stage and lays out sanely.
+        centerpiece = {'orb': window.face, 'room': window.room,
+                       'holo': window.holo,
+                       'map': window.mem_map_center,
+                       'orb3d': window.orb3d}[
+                           window._centerpiece]
+        assert centerpiece.isVisible()
+        stack = window.center_stack
+        assert stack.width() > 400 and stack.height() > 300
+    finally:
+        window.close()

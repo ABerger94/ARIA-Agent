@@ -184,6 +184,28 @@ pin identity everywhere in this panel is now the app KEY
 so existing pins are untouched. (B) Grouped pins render as
 horizontal SHELVES, not the V14 vertical list (see the shelf
 section below); ungrouped is still exactly the V8 grid.
+(C) Hosted geometry — V16's fix was real but incomplete:
+Alek's live witness on 789b0d26 (git log verified by him)
+STILL showed a short Briefing and Today 'Open' buttons cut
+mid-word, while every standalone capture was correct. The
+hosted reproduction (the real Dashboard at 1920x1003, fed
+through its own seams) measured the chain the standalone
+tests never saw: the window gives the center stack only
+~700 of its 1003px (dashboard header, the IDLE state line,
+the controls row, and the window's own bottom command row
+take the rest), and the panel's header + dock take ~300
+more — the Briefing body landed at ~170px, and the Today
+frame's hint drifted against its allotted height after late
+content changes. Fixes at the measured constraints: the
+dashboard's shell-full path also steps its state line and
+bottom command row aside (restored on exit; the controls
+row with the Dashboard escape stays), Today rows invalidate
+the frame hint on every repaint, the rail frames carry a
+320px minimum width, and every shell action button carries
+a minimum width floored from its own caption in the sheet's
+font (_floor_button_width) — a layout may squeeze the
+wrapping label, never a button's text. Hosted tests in
+test_shell_dashboard.py pin all of it in the real window.
 
 The card never fabricates: no briefing composed yet yields
 report_text's own honest placeholder line.
@@ -213,8 +235,8 @@ from aria.resonance import ResonanceOrb
 try:
     from PyQt6.QtCore import (QEvent, QFileInfo, QSize, Qt, QTimer,
                               pyqtSignal)
-    from PyQt6.QtGui import (QColor, QFont, QIcon, QPainter, QPixmap,
-                             QTextOption)
+    from PyQt6.QtGui import (QColor, QFont, QFontMetrics, QIcon,
+                             QPainter, QPixmap, QTextOption)
     from PyQt6.QtWidgets import (
         QAbstractItemView,
         QFileIconProvider,
@@ -702,6 +724,28 @@ def _default_ack_reminders():
         pass
 
 
+def _floor_button_width(btn):
+    """V17-C: pin a shell action button's minimum width to its
+    own caption — the #shellActionBtn sheet font (14px)
+    measured directly, plus the sheet's horizontal padding
+    (18px a side), the border, and slack. A layout in a tight
+    rail may squeeze many things, but it may never size one of
+    these buttons below the width its text needs: in Alek's
+    hosted dashboard the Today 'Open' buttons rendered cut
+    mid-word (V16's Fixed policy followed a size hint that
+    under-measured the text on his machine), while every
+    standalone capture showed them whole. The floor is
+    computed from the font the sheet actually paints with, so
+    it holds wherever the hint does not."""
+    try:
+        font = QFont(btn.font())
+        font.setPixelSize(14)
+        btn.setMinimumWidth(
+            QFontMetrics(font).horizontalAdvance(btn.text()) + 42)
+    except Exception:
+        pass
+
+
 # -- V13 Today providers: the real seams, lazy + fail-soft -----
 
 def _default_tasks():
@@ -1111,6 +1155,11 @@ class ShellPanel(QWidget):
         self.today_frame.setSizePolicy(
             QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Maximum)
+        # V17-C: the rail never squeezes below the width a
+        # Today task row needs (floored buttons + a wrapping
+        # label's longest word + card margins) — at narrow
+        # widths the app grid yields first, not the buttons.
+        self.today_frame.setMinimumWidth(320)
         today_lay = QVBoxLayout(self.today_frame)
         today_lay.setContentsMargins(14, 10, 14, 10)
         today_lay.setSpacing(6)
@@ -1128,6 +1177,7 @@ class ShellPanel(QWidget):
         # the card. Now Playing and Status are gone entirely.
         self.briefing_frame, self.briefing_body = \
             self._make_briefing_card()
+        self.briefing_frame.setMinimumWidth(320)
         rail.addWidget(self.briefing_frame, 1)
         # The rail is Briefing ONLY (V4 addendum): the Shell Mode
         # boot toggle moved to Settings → General, its one home —
@@ -1170,6 +1220,12 @@ class ShellPanel(QWidget):
         gotit_row.addWidget(self.gotit_btn)
         self.reminder_frame.layout().addLayout(gotit_row)
         root.addWidget(self.reminder_frame)
+        # V17-C: the card buttons get the same text floor as
+        # Today's (see _floor_button_width) — a squeezed card
+        # wraps its text, never its buttons' captions.
+        for _b in (self.approve_btn, self.deny_btn,
+                   self.gotit_btn):
+            _floor_button_width(_b)
 
         # -- command palette dropdown (V12) ----------------------
         # An in-flow list directly above the dock: candidates
@@ -1483,6 +1539,11 @@ class ShellPanel(QWidget):
                 f"{n} unread email{'s' if n != 1 else ''}",
                 [("Open", lambda: self._jump_tab("Inbox"))]))
         self.today_frame.setVisible(not model["empty"])
+        # V17-C: the row set just changed under a live layout —
+        # invalidate the frame's cached hint explicitly (the
+        # hosted probes caught the hint drifting from the
+        # allotted height after late content changes).
+        self.today_frame.updateGeometry()
 
     def _today_row(self, text, buttons):
         row = QWidget()
@@ -1507,6 +1568,11 @@ class ShellPanel(QWidget):
             # a button below its size hint into its own text.
             btn.setSizePolicy(QSizePolicy.Policy.Fixed,
                               QSizePolicy.Policy.Fixed)
+            # V17-C: and a hard floor under the hint itself,
+            # measured from the button's own text (see
+            # _floor_button_width) — the hosted window on
+            # Alek's machine clipped these mid-word anyway.
+            _floor_button_width(btn)
             btn.clicked.connect(fn)
             lay.addWidget(btn)
         return row

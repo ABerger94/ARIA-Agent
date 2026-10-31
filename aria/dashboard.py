@@ -838,6 +838,11 @@ def create_dashboard(callbacks):
                                    time.monotonic()))
             command.addWidget(self.entry, 1)
             send = QPushButton('Send directive'); send.setObjectName('primary'); send.clicked.connect(self.submit); command.addWidget(send)
+            # Shell Mode V17-C: the bottom command row steps
+            # aside while Shell Home holds the window (its own
+            # dock is the input then) — kept as a list so
+            # _enter/_leave_shell_full can hide/restore it.
+            self._command_row_widgets = [self.entry, send]
             # Clipboard attachment chip (pass 6): visible only while
             # a clipboard snapshot is staged for the next turn.
             attach_row = QHBoxLayout()
@@ -1585,6 +1590,28 @@ def create_dashboard(callbacks):
                 self._feed_memory_maps()
             self._show_centerpiece()
 
+        def _shell_chrome_widgets(self):
+            """The dashboard's own rows that step aside while
+            Shell Home holds the window (V17-C): the IDLE state
+            line and the bottom Talk-to-ARIA command row. Both
+            duplicate what the shell itself shows (its header
+            carries the state, its dock is the command input),
+            and at 1920x1003 they cost the hosted panel ~100px
+            of the height the Briefing rail needs — the hosted
+            measurement behind V17-C: the window gave the
+            center stack only ~700 of 1003px. The center
+            CONTROLS row is NOT chrome: it carries the
+            Dashboard escape button (V5) and stays. Fail-soft
+            list — a widget a partial construction never made
+            simply isn't hidden."""
+            out = []
+            state = getattr(self, 'state', None)
+            if state is not None:
+                out.append(state)
+            out.extend(getattr(self, '_command_row_widgets',
+                               None) or [])
+            return out
+
         def _enter_shell_full(self):
             """Shell Mode V3 (2026-10-30, Alek's witnessed
             verdict): Shell Home takes the WHOLE window. The
@@ -1593,7 +1620,9 @@ def create_dashboard(callbacks):
             to read — so entering the shell hides BOTH side
             columns and remembers the splitter sizes for an
             exact restore. Idempotent and fail-soft per-widget,
-            like the exit path: the shell must always open."""
+            like the exit path: the shell must always open.
+            V17-C adds the state line + bottom command row to
+            what steps aside (see _shell_chrome_widgets)."""
             if getattr(self, '_shell_full', False):
                 return
             self._shell_full = True
@@ -1606,6 +1635,11 @@ def create_dashboard(callbacks):
                 try:
                     if col is not None:
                         col.hide()
+                except Exception:
+                    pass
+            for wdg in self._shell_chrome_widgets():
+                try:
+                    wdg.hide()
                 except Exception:
                     pass
 
@@ -1622,6 +1656,11 @@ def create_dashboard(callbacks):
                 try:
                     if col is not None:
                         col.show()
+                except Exception:
+                    pass
+            for wdg in self._shell_chrome_widgets():
+                try:
+                    wdg.show()
                 except Exception:
                     pass
             try:
