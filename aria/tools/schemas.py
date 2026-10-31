@@ -274,9 +274,6 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
         'name': 'check_calendar',
         'parameters': {   'properties': {'days': {'type': 'INTEGER'}},
                           'type': 'OBJECT'}},
-    {   'description': 'Shows the phone-bridge login token, for entering on the iPhone.',
-        'name': 'bridge_token',
-        'parameters': {'properties': {}, 'type': 'OBJECT'}},
     {   'description': 'Run a bounded workflow skill: a reusable multi-step procedure with a hard cap on tool calls. '
                        'Skills: deep_research (web research with cited summary), system_check (laptop health report), '
                        'file_sweep (find and digest workspace files matching the objective), git_audit (git branch, status, and commits report). Prefer a skill over a '
@@ -682,8 +679,8 @@ TOOLS_DECLARATION = [
 TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persistent background jobs, system health audit, self-healing diagnostics, delegated background tasks, update status, code help, dev agent',
                  'tools': ['manage_autonomous_goal', 'manage_background_job', 'system_health_audit', 'self_heal_diagnose',
                            'delegate_task', 'task_status', 'task_cancel', 'task_resume', 'update_status', 'code_helper', 'dev_agent', 'event_trigger']},
-    'admin': {   'summary': 'API keys, bridge token, command guide, volume, approval controls, personas, user tools, shell commands, backup mirror, game updates',
-                 'tools': ['bridge_token', 'show_commands', 'hide_commands', 'volume',
+    'admin': {   'summary': 'API keys, command guide, volume, approval controls, personas, user tools, shell commands, backup mirror, game updates',
+                 'tools': ['show_commands', 'hide_commands', 'volume',
                            'list_pending_approvals', 'get_approval_mode',
                            'reload_user_tools', 'set_persona', 'list_personas', 'get_persona', 'set_backup_mirror', 'run_shell_command', 'game_updater']},
     'comms': {'summary': 'Gmail: store credentials, send and read email, triage the inbox',
@@ -815,7 +812,6 @@ COMMAND_GUIDE = [   ('Memory', 'save_memory', 'remember my Doja playlist is spot
     ('Face & body', 'move_head_servos', 'look left'),
     ('Face & body', 'drive_wheels', 'drive forward for 2 seconds'),
     ('Face & body', 'body_stop', 'stop moving'),
-    ('Phone & keys', 'bridge_token', 'what is my bridge token?'),
     ('GitHub', 'github_push_file', 'push this file to my repo'),
     ('GitHub', 'github_create_repo', 'create a repo called gig-tracker'),
     ('Email', 'gmail_setup', 'save my Gmail and app password'),

@@ -448,7 +448,7 @@ def build_system_instruction(user_prompt: str) -> str:
         "(inbox_list to see them, inbox_describe for photos, inbox_read for text files). When they say 'look at' or 'see' "
         "about a sent, uploaded, or inbox photo, use inbox_describe — never the webcam; the webcam is only for things "
         "physically in front of the laptop right now. Volume control (volume), Commander deck advice (mtg_advice), toggleable break reminders, and full voice chat "
-        "from the phone bridge (bridge_token). Shortcuts: 'let\'s play some magic' opens Convoke lobby. Voice notes: take_note / read_notes. "
+        "from the phone bridge. Shortcuts: 'let\'s play some magic' opens Convoke lobby. Voice notes: take_note / read_notes. "
         "DJ mode: dj. Convert natural time phrases to seconds. Memory habits: save durable facts immediately with save_memory, update on corrections, "
         "forget with forget_memory, and write in your journal with journal_write. "
         "Risky tools (file writes, code execution, GUI control, app/URL opening, "

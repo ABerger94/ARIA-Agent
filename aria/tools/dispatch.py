@@ -9,7 +9,7 @@ import time
 import re
 from typing import Dict, List, Optional, Set, Tuple, Callable, Any
 
-from aria.config import MAX_TOOL_OUTPUT, BRIDGE_TOKEN, GITHUB_USERNAME, redact
+from aria.config import MAX_TOOL_OUTPUT, GITHUB_USERNAME, redact
 from aria.memory import spine_append as default_spine_append, add_log as default_add_log
 from aria.tools.schemas import (
     TOOLKITS, get_toolkit_declarations, get_toolkits_prompt_block
@@ -703,7 +703,6 @@ def _init_default_registry():
     _REGISTRY["find_file"] = lambda a: builtins.tool_find_file(a.get("name", ""), a.get("ext", ""))
     _REGISTRY["volume"] = lambda a: builtins.tool_volume(a.get("action", "status"), int(a.get("level", 50)))
     _REGISTRY["mtg_advice"] = lambda a: builtins.tool_mtg_advice(a.get("deck", ""), a.get("card_name", ""))
-    _REGISTRY["bridge_token"] = lambda a: f"Your bridge token is: {BRIDGE_TOKEN}. Enter it on the phone bridge login page."
 
     # Inbox tools (phone bridge uploads)
     _REGISTRY["inbox_list"] = lambda a: (
