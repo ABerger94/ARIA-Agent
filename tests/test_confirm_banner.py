@@ -93,7 +93,14 @@ def _approval_with_stub_config(monkeypatch):
     import importlib
     approval = importlib.import_module('aria.approval')
     stub = types.SimpleNamespace(
-        redact=str, add_log=lambda *a: None, log_silent=lambda *a: None)
+        redact=str, add_log=lambda *a: None, log_silent=lambda *a: None,
+        # _describe_tool consults this first since the discovered-
+        # MCP gating fix (ChatGPT loop Fix 1): a stub without it
+        # makes every description collapse to the generic
+        # "execute tool 'x'" fallback, which is what broke
+        # test_pending_entries_roundtrip. Real config returns
+        # None for any non-MCP tool name.
+        parse_discovered_mcp_tool=lambda tool: None)
     monkeypatch.setattr(approval, 'config', stub)
     approval._PENDING.clear()
     return approval
