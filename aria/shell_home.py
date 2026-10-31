@@ -58,6 +58,78 @@ def home_model(apps, now=None, name="Alek", limit=24):
 
 
 # ------------------------------------------------------------------
+# V6 (2026-10-30, Alek's order): the header weather readout.
+# weather_line formats the dict aria/scheduler.py::_weather_full()
+# already returns (wttr.in: temp_F / desc / high_F / low_F, all
+# strings, any of them possibly blank); weather_symbol picks the
+# glyph for the condition text. Both are pure and fail-soft:
+# missing data yields a shorter line or no line — never an
+# invented value, never a crash.
+# ------------------------------------------------------------------
+
+#: (keywords, glyph) pairs for weather_symbol, matched IN ORDER
+#: against the lowercased condition text — first hit wins, and
+#: the order is load-bearing: thunder outranks the rain inside
+#: "Patchy light rain with thunder", snow outranks rain for
+#: "rain and snow", and "partly cloudy" is tested before plain
+#: "cloud". One emoji glyph set, used consistently.
+_WEATHER_SYMBOLS = (
+    (("thunder",), "⛈"),
+    (("blizzard", "snow"), "❄"),
+    (("sleet", "hail", "ice pellet"), "🌨"),
+    (("drizzle",), "🌦"),
+    (("rain", "shower"), "🌧"),
+    (("fog", "mist", "haze"), "🌫"),
+    (("partly",), "⛅"),
+    (("overcast", "cloud"), "☁"),
+    (("clear", "sunny"), "☀"),
+)
+
+
+def weather_symbol(desc):
+    """One unicode glyph for a wttr.in weatherDesc string.
+
+    Keyword match, case-insensitive, in _WEATHER_SYMBOLS order.
+    Unknown or empty conditions yield "" — no symbol rather
+    than a wrong guess.
+    """
+    text = str(desc or "").strip().lower()
+    if not text:
+        return ""
+    for keywords, glyph in _WEATHER_SYMBOLS:
+        if any(k in text for k in keywords):
+            return glyph
+    return ""
+
+
+def weather_line(weather):
+    """The header weather line from a _weather_full() dict.
+
+    Pinned format (V6): "61°F · Clear · High 68 · Low 49" —
+    current temp + condition, then the day's high and low when
+    the source provided them. Blank fields drop their segment;
+    a dict with nothing usable (or None) yields "".
+    """
+    if not weather:
+        return ""
+    temp = str(weather.get("temp_F") or "").strip()
+    desc = str(weather.get("desc") or "").strip()
+    high = str(weather.get("high_F") or "").strip()
+    low = str(weather.get("low_F") or "").strip()
+    parts = []
+    head = f"{temp}°F" if temp else ""
+    if desc:
+        head = f"{head} · {desc}" if head else desc
+    if head:
+        parts.append(head)
+    if high:
+        parts.append(f"High {high}")
+    if low:
+        parts.append(f"Low {low}")
+    return " · ".join(parts)
+
+
+# ------------------------------------------------------------------
 # V2 presentation models (2026-10-30): tile grid + rail cards.
 # Still pure — formatters decide what cards say from real values;
 # no data: an honest empty state, never a fabrication.

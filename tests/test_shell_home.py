@@ -241,3 +241,66 @@ def test_briefing_full_text_research_append():
     research = "RESEARCH BRIEFS\nA sample brief body."
     assert shell_home.briefing_full_text(FULL_REPORT, research) == \
         base + "\n" + research
+
+
+# -- V6: header weather (weather_line + weather_symbol) -----------
+
+def test_weather_line_full_dict():
+    # The pinned format over _weather_full()'s exact shape.
+    weather = {"temp_F": "61", "desc": "Clear",
+               "high_F": "68", "low_F": "49"}
+    assert shell_home.weather_line(weather) == \
+        "61°F · Clear · High 68 · Low 49"
+
+
+def test_weather_line_partial_dicts():
+    # Blank fields drop their segment — partial data still
+    # renders, and nothing is invented to fill the gaps.
+    assert shell_home.weather_line(
+        {"temp_F": "61", "desc": "Clear"}) == "61°F · Clear"
+    assert shell_home.weather_line(
+        {"temp_F": "61", "high_F": "68", "low_F": "49"}) == \
+        "61°F · High 68 · Low 49"
+    assert shell_home.weather_line({"desc": "Fog"}) == "Fog"
+    assert shell_home.weather_line(
+        {"temp_F": "  ", "desc": "", "high_F": "",
+         "low_F": ""}) == ""
+
+
+def test_weather_line_none_and_empty():
+    assert shell_home.weather_line(None) == ""
+    assert shell_home.weather_line({}) == ""
+
+
+def test_weather_symbol_condition_classes():
+    cases = {
+        "Clear": "☀", "Sunny": "☀",
+        "Partly cloudy": "⛅",
+        "Cloudy": "☁", "Overcast": "☁",
+        "Light rain": "🌧", "Heavy rain shower": "🌧",
+        "Patchy light drizzle": "🌦",
+        "Thundery outbreaks possible": "⛈",
+        "Light snow": "❄", "Blizzard": "❄",
+        "Fog": "🌫", "Mist": "🌫", "Haze": "🌫",
+        "Sleet": "🌨", "Hail": "🌨",
+    }
+    for desc, glyph in cases.items():
+        assert shell_home.weather_symbol(desc) == glyph, desc
+
+
+def test_weather_symbol_ordering():
+    # Thunder outranks the rain it arrives with.
+    assert shell_home.weather_symbol(
+        "Patchy light rain with thunder") == "⛈"
+    # "Partly cloudy" is the partly glyph, not plain cloud.
+    assert shell_home.weather_symbol("Partly cloudy") == "⛅"
+    # Snow outranks rain in a mix.
+    assert shell_home.weather_symbol("Rain and snow") == "❄"
+    # Matching is case-insensitive.
+    assert shell_home.weather_symbol("LIGHT RAIN") == "🌧"
+
+
+def test_weather_symbol_unknown_is_empty():
+    assert shell_home.weather_symbol("") == ""
+    assert shell_home.weather_symbol(None) == ""
+    assert shell_home.weather_symbol("Diamond dust") == ""

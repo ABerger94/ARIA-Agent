@@ -44,7 +44,10 @@ def _panel(**overrides):
         on_command=calls["command"].append,
         now_provider=lambda: NOW,
         briefing_provider=lambda: None,
-        research_provider=lambda: "")
+        research_provider=lambda: "",
+        # Hermetic: no panel in this suite touches the network
+        # unless its test injects a weather provider of its own.
+        weather_provider=lambda: None)
     kwargs.update(overrides)
     panel = shell_panel.ShellPanel(**kwargs)
     return panel, calls
@@ -300,3 +303,85 @@ def test_set_accent_rethemes_live_and_ignores_invalid():
     assert panel.orb._core_color.name() == "#d4579c"
     panel.set_accent("bogus")
     assert panel._accent == "#e83a9a"
+
+
+# -- V6: header weather -------------------------------------------
+
+WEATHER = {"temp_F": "61", "desc": "Clear",
+           "high_F": "68", "low_F": "49"}
+
+
+def _pump_weather(panel):
+    """Let the off-thread fetch land: join the worker thread,
+    then deliver its queued signal to the labels."""
+    thread = panel._weather_thread
+    if thread is not None:
+        thread.join(timeout=5)
+    _APP.processEvents()
+
+
+def test_weather_line_and_symbol_show_from_provider():
+    panel, _calls = _panel(weather_provider=lambda: WEATHER)
+    _pump_weather(panel)
+    assert panel.weather_label.text() == \
+        "61°F · Clear · High 68 · Low 49"
+    assert panel.weather_symbol_label.text() == "☀"
+    assert panel.weather_label.objectName() == "shellWeather"
+    assert panel.weather_symbol_label.objectName() == \
+        "shellWeatherSymbol"
+
+
+def test_weather_none_provider_leaves_labels_empty():
+    panel, _calls = _panel(weather_provider=lambda: None)
+    _pump_weather(panel)
+    # Fail-soft: no data means NO readout — no placeholder text.
+    assert panel.weather_label.text() == ""
+    assert panel.weather_symbol_label.text() == ""
+
+
+def test_weather_broken_provider_leaves_labels_empty():
+    def boom():
+        raise RuntimeError("offline")
+    panel, _calls = _panel(weather_provider=boom)
+    _pump_weather(panel)
+    assert panel.weather_label.text() == ""
+    assert panel.weather_symbol_label.text() == ""
+
+
+def test_weather_fetch_is_throttled():
+    clock = [5000.0]
+    fetches = []
+
+    def provider():
+        fetches.append(1)
+        return WEATHER
+
+    panel, _calls = _panel(weather_provider=provider,
+                           time_provider=lambda: clock[0])
+    # The constructor's refresh already fetched once.
+    _pump_weather(panel)
+    assert len(fetches) == 1
+    # Repeated refreshes inside the window never refetch — the
+    # 20s clock tick calls refresh_weather every tick.
+    assert panel.refresh_weather() is False
+    assert panel.refresh_weather() is False
+    _pump_weather(panel)
+    assert len(fetches) == 1
+    # Past the ~15-minute window, a refresh fetches again.
+    clock[0] += shell_panel.WEATHER_REFETCH_SECONDS + 1
+    assert panel.refresh_weather() is True
+    _pump_weather(panel)
+    assert len(fetches) == 2
+
+
+def test_weather_style_rules_and_accent_shift():
+    stock = shell_panel.shell_style(None)
+    assert "#shellWeather" in stock
+    assert "#shellWeatherSymbol" in stock
+    # The symbol carries an accent-family colour (27px, stock
+    # cyan), so a custom accent hue-shifts it like the shell's
+    # other accent elements (#57c7d4 -> #d4579c family).
+    assert "QLabel#shellWeatherSymbol { color: #57c7d4;" in stock
+    shifted = shell_panel.shell_style("#e83a9a")
+    assert "QLabel#shellWeatherSymbol { color: #d4579c;" in \
+        shifted

@@ -40,6 +40,17 @@ bottom right: one click and the shell steps aside — Shell Mode
 never replaces explorer.exe, so Windows was never gone, just
 covered.
 
+V6 (2026-10-30, Alek's order): the header gains a local
+weather readout under the date line — a condition symbol
+(``shell_home.weather_symbol``) beside one short line
+(``shell_home.weather_line``: temp + condition + the day's
+high/low). Data comes from ARIA's existing weather source,
+``aria.scheduler._weather_full`` (wttr.in, Dundalk), through
+an injectable provider, fetched OFF the UI thread (daemon
+thread + Qt signal) and throttled to one fetch per ~15
+minutes. Fail-soft: no data (offline, source down) leaves the
+labels empty — no placeholder, no error, ever.
+
 The card never fabricates: no briefing composed yet yields
 report_text's own honest placeholder line.
 
@@ -56,13 +67,14 @@ and default to the real seams, lazily and fail-soft.
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from datetime import datetime
 
 from aria import app_launcher, shell_home
 
 try:
-    from PyQt6.QtCore import QFileInfo, QSize, Qt, QTimer
+    from PyQt6.QtCore import QFileInfo, QSize, Qt, QTimer, pyqtSignal
     from PyQt6.QtGui import (QColor, QFont, QIcon, QPainter, QPixmap,
                              QTextOption)
     from PyQt6.QtWidgets import (
@@ -80,6 +92,7 @@ try:
     )
 except Exception:  # pragma: no cover - Qt absent (headless tools)
     QWidget = object
+    pyqtSignal = None
 
 #: Same-app relaunch guard (V3): a second launch of the SAME app
 #: inside this window is treated as signal bounce, not intent —
@@ -92,6 +105,8 @@ QWidget#shellHome { background: #0b1622; }
 QLabel#shellClock { color: #eaf6ff; font-size: 56px; font-weight: 600; }
 QLabel#shellGreeting { color: #57c7d4; font-size: 22px; }
 QLabel#shellDate { color: #8fb8c9; font-size: 15px; }
+QLabel#shellWeather { color: #8fb8c9; font-size: 15px; }
+QLabel#shellWeatherSymbol { color: #57c7d4; font-size: 27px; }
 QLabel#shellCount { color: #8fb8c9; font-size: 13px; }
 QLineEdit#shellSearch { background: #101f30; color: #eaf6ff;
             border: 1px solid #1b3042; border-radius: 6px;
@@ -280,14 +295,40 @@ def _default_research():
         return ""
 
 
+#: Weather refetch throttle (V6): the header readout refreshes
+#: at most once per ~15 minutes — weather does not move faster
+#: than that, and the shell's 20s clock tick must never turn
+#: into a network fetch per tick.
+WEATHER_REFETCH_SECONDS = 900.0
+
+
+def _default_weather():
+    """The header weather dict from ARIA's existing source:
+    aria.scheduler._weather_full() (wttr.in, Dundalk) — the
+    same fetch her briefings use; no new service, no key. The
+    scheduler is imported lazily and any failure reads as None
+    (the panel then simply shows no weather). This BLOCKS on
+    the network — callers must run it off the UI thread."""
+    try:
+        from aria.scheduler import _weather_full
+        return _weather_full()
+    except Exception:
+        return None
+
+
 class ShellPanel(QWidget):
     """The Shell Home screen. See the module docstring."""
+
+    # V6: (weather_line, weather_symbol) fetched off-thread,
+    # delivered back to the UI thread through this signal.
+    if pyqtSignal is not None:
+        _weather_ready = pyqtSignal(str, str)
 
     def __init__(self, parent=None, apps=None, apps_provider=None,
                  on_launch=None, on_command=None,
                  now_provider=None, briefing_provider=None,
                  research_provider=None, accent=None,
-                 time_provider=None):
+                 time_provider=None, weather_provider=None):
         super().__init__(parent)
         self.setObjectName("shellHome")
         # Accent (V4 addendum): an explicit accent wins; otherwise
@@ -311,6 +352,16 @@ class ShellPanel(QWidget):
         self._briefing_provider = briefing_provider or _default_briefing
         self._research_provider = research_provider or _default_research
         self._icon_provider = None
+        # Weather (V6): injectable provider returning a
+        # _weather_full()-shaped dict or None; default is her
+        # existing wttr.in seam. Fetches run on a daemon thread
+        # and are timestamp-gated through _time_provider, so the
+        # throttle window is testable like the launch guard's.
+        self._weather_provider = weather_provider or _default_weather
+        self._weather_fetched_at = None
+        self._weather_thread = None
+        if pyqtSignal is not None:
+            self._weather_ready.connect(self._apply_weather)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(36, 28, 36, 24)
@@ -332,6 +383,19 @@ class ShellPanel(QWidget):
         self.date_label = QLabel("")
         self.date_label.setObjectName("shellDate")
         titles.addWidget(self.date_label)
+        # V6: the weather row — condition symbol + one short
+        # line under the date. Both labels start empty and stay
+        # empty until a fetch delivers real data (fail-soft).
+        weather_row = QHBoxLayout()
+        weather_row.setSpacing(8)
+        self.weather_symbol_label = QLabel("")
+        self.weather_symbol_label.setObjectName("shellWeatherSymbol")
+        weather_row.addWidget(self.weather_symbol_label)
+        self.weather_label = QLabel("")
+        self.weather_label.setObjectName("shellWeather")
+        weather_row.addWidget(self.weather_label)
+        weather_row.addStretch(1)
+        titles.addLayout(weather_row)
         header.addLayout(titles)
         header.addStretch(1)
         root.addLayout(header)
@@ -415,6 +479,7 @@ class ShellPanel(QWidget):
             self.refresh_apps()
         self.refresh_clock()
         self.refresh_cards()
+        self.refresh_weather()
         self._refilter()
 
     # -- construction helpers -----------------------------------
@@ -516,9 +581,56 @@ class ShellPanel(QWidget):
         self.briefing_body.setPlainText(
             shell_home.briefing_full_text(report, research))
 
+    # -- weather (V6) -------------------------------------------
+    def refresh_weather(self):
+        """Kick an off-thread weather fetch, throttled: at most
+        one fetch per WEATHER_REFETCH_SECONDS, and never a
+        second while one is already in flight. The gate stamps
+        the fetch START, so a slow or failed fetch also waits
+        out the window before retrying. Returns True when a
+        fetch was started. The provider runs on a daemon thread
+        (it blocks on the network); the result re-enters the UI
+        thread through the _weather_ready signal."""
+        now = self._time_provider()
+        if self._weather_fetched_at is not None and \
+                now - self._weather_fetched_at < \
+                WEATHER_REFETCH_SECONDS:
+            return False
+        if self._weather_thread is not None and \
+                self._weather_thread.is_alive():
+            return False
+        self._weather_fetched_at = now
+
+        def work():
+            try:
+                data = self._weather_provider()
+            except Exception:
+                data = None
+            line = shell_home.weather_line(data)
+            symbol = shell_home.weather_symbol(
+                (data or {}).get("desc"))
+            if pyqtSignal is not None:
+                try:
+                    self._weather_ready.emit(line, symbol)
+                except Exception:
+                    pass  # panel already gone; nobody to paint
+
+        self._weather_thread = threading.Thread(
+            target=work, daemon=True, name="shell-weather")
+        self._weather_thread.start()
+        return True
+
+    def _apply_weather(self, line, symbol):
+        """UI-thread slot for the fetched weather: paint the
+        line + symbol, or emptiness when there is no data —
+        the labels carry no placeholder text, ever."""
+        self.weather_label.setText(line or "")
+        self.weather_symbol_label.setText(symbol or "")
+
     def _tick(self):
         self.refresh_clock()
         self.refresh_cards()
+        self.refresh_weather()
 
     # -- interactions ------------------------------------------
     def _refilter(self):

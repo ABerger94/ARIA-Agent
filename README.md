@@ -241,7 +241,12 @@ author's direction: one program, ARIA, with Shell Mode built in.
 
 - **Shell Home** (`aria/shell_panel.py`) — an OS home, not a
   settings panel: big clock, date, and time-of-day greeting with
-  ARIA's orb beside it, a **tile grid** of your apps, a right
+  ARIA's orb beside it, the local weather under the date
+  (condition symbol + temperature and the day's high/low, from
+  the same wttr.in source her briefings use — fetched off the
+  UI thread, refreshed at most every ~15 minutes, and simply
+  absent when the source can't be reached), a **tile grid** of
+  your apps, a right
   rail given over to the Briefing card, and the command bar as
   a dock pill along the bottom. Open it any time with the **Shell Home** button in the
   dashboard's centre column. Opening it gives Shell Home the
