@@ -123,6 +123,54 @@ def set_shell_mode(enabled) -> str:
     return f"Shell Mode: {'on' if enabled else 'off'}."
 
 
+def get_pinned_apps():
+    """Shell Home pinned apps (V8, 2026-10-30): the ordered list
+    of Start Menu .lnk paths Alek pinned to the home grid. Pin
+    identity is the .lnk path — the stable, launchable identity
+    enumerate_apps returns. Fails soft to [] (no pins = the
+    shell's empty state, never a broken home), drops blanks and
+    duplicates, preserves pin order."""
+    try:
+        with open(_ui_file(), encoding="utf-8") as f:
+            value = (json.load(f) or {}).get("pinned_apps")
+        if isinstance(value, list):
+            out = []
+            for entry in value:
+                path = str(entry or "").strip()
+                if path and path not in out:
+                    out.append(path)
+            return out
+    except Exception:
+        pass
+    return []
+
+
+def set_pinned_apps(paths) -> str:
+    """Persist the pinned .lnk paths in pin order (soft-fail
+    like the rest of this module — a preference must never
+    break the window)."""
+    cleaned = []
+    for entry in paths or []:
+        path = str(entry or "").strip()
+        if path and path not in cleaned:
+            cleaned.append(path)
+    try:
+        payload = {}
+        try:
+            with open(_ui_file(), encoding="utf-8") as f:
+                payload = json.load(f) or {}
+        except Exception:
+            payload = {}
+        payload["pinned_apps"] = cleaned
+        payload["updated"] = datetime.now(timezone.utc).isoformat()
+        os.makedirs(os.path.dirname(_ui_file()), exist_ok=True)
+        with open(_ui_file(), "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+    except Exception:
+        pass
+    return f"Pinned apps: {len(cleaned)}."
+
+
 def set_accent(accent) -> str:
     """Persist the accent (None resets to the default palette)."""
     os.makedirs(os.path.dirname(_ui_file()), exist_ok=True)

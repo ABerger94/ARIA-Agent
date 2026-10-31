@@ -38,6 +38,13 @@ NOW = datetime(2026, 10, 30, 15, 47)
 
 def _panel(**overrides):
     calls = {"launch": [], "command": []}
+    # V8: pins live behind injected seams over an in-memory
+    # store — no test in this suite reads or writes a real
+    # ui.json. The store starts with every sample app pinned
+    # (in APPS order), so the default pinned view shows the
+    # full sample grid the pre-V8 tests were written against;
+    # V8 tests rewrite the store to exercise the pin flows.
+    pin_store = {"paths": [a["path"] for a in APPS]}
     kwargs = dict(
         apps=APPS,
         on_launch=calls["launch"].append,
@@ -47,9 +54,13 @@ def _panel(**overrides):
         research_provider=lambda: "",
         # Hermetic: no panel in this suite touches the network
         # unless its test injects a weather provider of its own.
-        weather_provider=lambda: None)
+        weather_provider=lambda: None,
+        pinned_provider=lambda: list(pin_store["paths"]),
+        pinned_writer=lambda paths: pin_store.__setitem__(
+            "paths", list(paths)))
     kwargs.update(overrides)
     panel = shell_panel.ShellPanel(**kwargs)
+    panel._test_pin_store = pin_store
     return panel, calls
 
 
@@ -63,7 +74,10 @@ def test_header_and_no_exit_button():
     # button becomes the Dashboard button while the shell is
     # open (test_shell_dashboard covers that side).
     assert not hasattr(panel, "exit_btn")
-    assert panel.count_label.text() == "3 apps"
+    # V8: the count line belongs to the grid's view — the
+    # helper seeds all three sample apps pinned, so the home
+    # (pinned) view honestly reads "3 pinned".
+    assert panel.count_label.text() == "3 pinned"
 
 
 def test_search_filters_the_list():
@@ -385,3 +399,116 @@ def test_weather_style_rules_and_accent_shift():
     shifted = shell_panel.shell_style("#e83a9a")
     assert "QLabel#shellWeatherSymbol { color: #d4579c;" in \
         shifted
+
+
+# -- V8: pinned apps -------------------------------------------------
+
+def _names(panel):
+    return [panel.app_list.item(i).text()
+            for i in range(panel.app_list.count())]
+
+
+def _set_pins(panel, paths):
+    panel._test_pin_store["paths"] = list(paths)
+    panel._refilter()
+
+
+def test_default_view_is_pinned_only():
+    panel, _calls = _panel()
+    _set_pins(panel, ["/x/steam.lnk"])
+    assert _names(panel) == ["Steam"]
+    assert panel.count_label.text() == "1 pinned"
+    assert panel.view_toggle.text() == "All apps"
+
+
+def test_all_apps_toggle_shows_everything_and_back():
+    panel, _calls = _panel()
+    _set_pins(panel, ["/x/steam.lnk"])
+    panel.view_toggle.click()
+    assert _names(panel) == ["Google Chrome", "Steam", "Calculator"]
+    assert panel.count_label.text() == "3 apps"
+    assert panel.view_toggle.text() == "Pinned"
+    panel.view_toggle.click()
+    assert _names(panel) == ["Steam"]
+    assert panel.count_label.text() == "1 pinned"
+    assert panel.view_toggle.text() == "All apps"
+
+
+def test_search_from_pinned_view_finds_unpinned_apps():
+    panel, _calls = _panel()
+    _set_pins(panel, ["/x/steam.lnk"])
+    panel.search.setText("calc")
+    # Search searches ALL apps, pinned or not...
+    assert _names(panel) == ["Calculator"]
+    assert panel.count_label.text() == "1 of 3 apps"
+    panel.search.setText("")
+    # ...and clearing it returns to the pinned view.
+    assert _names(panel) == ["Steam"]
+    assert panel.count_label.text() == "1 pinned"
+
+
+def test_pin_order_governs_the_home_grid():
+    panel, _calls = _panel()
+    _set_pins(panel, ["/x/calc.lnk", "/x/chrome.lnk"])
+    assert _names(panel) == ["Calculator", "Google Chrome"]
+
+
+def test_right_click_menu_pins_and_unpins():
+    panel, _calls = _panel()
+    _set_pins(panel, [])
+    panel.set_view_all(True)
+    chrome = panel._apps[0]
+    assert panel.pin_action_label(chrome) == "Pin to Home"
+    menu = panel._pin_menu(chrome)
+    assert [a.text() for a in menu.actions()] == ["Pin to Home"]
+    menu.actions()[0].trigger()
+    # The pin persisted through the writer seam...
+    assert panel._test_pin_store["paths"] == ["/x/chrome.lnk"]
+    # ...and the same tile now offers removal.
+    assert panel.pin_action_label(chrome) == "Remove from Home"
+    menu = panel._pin_menu(chrome)
+    assert [a.text() for a in menu.actions()] == ["Remove from Home"]
+    menu.actions()[0].trigger()
+    assert panel._test_pin_store["paths"] == []
+
+
+def test_unpin_from_pinned_view_removes_the_tile():
+    panel, _calls = _panel()
+    _set_pins(panel, ["/x/steam.lnk", "/x/calc.lnk"])
+    assert _names(panel) == ["Steam", "Calculator"]
+    panel.toggle_pin(panel._apps[1])       # Steam
+    assert panel._test_pin_store["paths"] == ["/x/calc.lnk"]
+    assert _names(panel) == ["Calculator"]
+
+
+def test_pin_from_search_results_works():
+    panel, _calls = _panel()
+    _set_pins(panel, [])
+    panel.search.setText("steam")
+    assert _names(panel) == ["Steam"]
+    panel.toggle_pin(panel._apps[1])       # Steam, found by search
+    assert panel._test_pin_store["paths"] == ["/x/steam.lnk"]
+    panel.search.setText("")
+    assert _names(panel) == ["Steam"]      # and it's home now
+
+
+def test_empty_state_when_nothing_pinned():
+    panel, _calls = _panel()
+    _set_pins(panel, [])
+    assert panel.app_list.count() == 0
+    assert panel.grid_stack.currentWidget() is panel.empty_label
+    assert "No pinned apps yet" in panel.empty_label.text()
+    assert "right-click" in panel.empty_label.text()
+    assert panel.count_label.text() == "0 pinned"
+    # The way out is right there: the toggle reveals all apps.
+    panel.view_toggle.click()
+    assert panel.grid_stack.currentWidget() is panel.app_list
+    assert panel.app_list.count() == 3
+
+
+def test_stale_pin_is_skipped_silently():
+    panel, _calls = _panel()
+    _set_pins(panel, ["/x/uninstalled.lnk", "/x/steam.lnk"])
+    assert _names(panel) == ["Steam"]
+    assert panel.count_label.text() == "1 pinned"
+    assert panel.grid_stack.currentWidget() is panel.app_list

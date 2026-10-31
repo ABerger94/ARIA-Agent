@@ -263,6 +263,16 @@ author's direction: one program, ARIA, with Shell Mode built in.
   same-app relaunch guard, so one double-click opens one window.
 
   ![Shell Home app search](docs/images/shell-search.png)
+- **Pinned apps** — Shell Home opens to just the apps you pin:
+  right-click any tile (in the full list or in search results)
+  for **Pin to Home** / **Remove from Home**. Pins are Start
+  Menu shortcut paths kept in pin order in `ui.json`
+  (`aria/ui_prefs.py`); a shortcut that disappears is skipped
+  silently. The **All apps** toggle beside the search box
+  reveals the full list; search always searches everything,
+  and with nothing pinned the grid shows a short how-to note
+  instead of a void. The count line follows the view —
+  "8 pinned", "210 apps", "3 of 210 apps".
 - **The rail is Briefing, only** — the card fills the rail's whole
   height and carries **the same text as the Workspace Briefing
   tab**: `report_text` of the last composed briefing (header,

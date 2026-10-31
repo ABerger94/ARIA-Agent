@@ -51,6 +51,21 @@ thread + Qt signal) and throttled to one fetch per ~15
 minutes. Fail-soft: no data (offline, source down) leaves the
 labels empty — no placeholder, no error, ever.
 
+V8 (2026-10-30, Alek's order + approved design): the home
+grid opens to his PINNED apps only. Pins are .lnk paths kept
+in pin order in ``aria/ui_prefs`` (injectable provider/writer
+seams here, like the weather's); right-clicking any tile —
+in the pinned grid, in All Apps, or in search results —
+offers Pin to Home / Remove from Home. An "All apps" toggle
+beside the search box reveals the full enumeration; search
+always searches ALL apps and clearing it returns to the
+current view. The count line is honest per view (pure
+``shell_home.view_count_line``). Zero pins shows a guidance
+note in the grid area, never an empty void. Left-click
+behaviour is unchanged (single select, double launch, the
+V3 relaunch guard intact), and the command bar still routes
+against ALL apps, pinned or not.
+
 The card never fabricates: no briefing composed yet yields
 report_text's own honest placeholder line.
 
@@ -85,8 +100,11 @@ try:
         QLineEdit,
         QListWidget,
         QListWidgetItem,
+        QMenu,
         QPlainTextEdit,
+        QPushButton,
         QSizePolicy,
+        QStackedWidget,
         QVBoxLayout,
         QWidget,
     )
@@ -132,6 +150,15 @@ QFrame#shellDock { background: #101f30; border: 1px solid #2b5873;
               border-radius: 22px; }
 QLineEdit#shellCommand { background: transparent; color: #eaf6ff;
             border: none; padding: 10px 6px; font-size: 15px; }
+QPushButton#shellViewToggle { background: #101f30; color: #dceef7;
+            border: 1px solid #1b3042; border-radius: 6px;
+            padding: 9px 14px; font-size: 14px; }
+QPushButton#shellViewToggle:hover { background: #17435a; }
+QLabel#shellEmpty { color: #8fb8c9; font-size: 16px; }
+QMenu { background: #101f30; color: #eaf6ff;
+            border: 1px solid #1b3042; }
+QMenu::item { padding: 6px 22px; }
+QMenu::item:selected { background: #17435a; }
 """
 
 
@@ -316,6 +343,27 @@ def _default_weather():
         return None
 
 
+def _default_pins():
+    """The persisted pin list (V8): aria.ui_prefs'
+    get_pinned_apps — ordered .lnk paths. Fail-soft to []
+    (no pins = the empty state, never a broken home)."""
+    try:
+        from aria import ui_prefs
+        return ui_prefs.get_pinned_apps()
+    except Exception:
+        return []
+
+
+def _default_save_pins(paths):
+    """Persist the pin list (V8) through aria.ui_prefs;
+    fail-soft — a prefs write can never break the shell."""
+    try:
+        from aria import ui_prefs
+        ui_prefs.set_pinned_apps(paths)
+    except Exception:
+        pass
+
+
 class ShellPanel(QWidget):
     """The Shell Home screen. See the module docstring."""
 
@@ -328,7 +376,8 @@ class ShellPanel(QWidget):
                  on_launch=None, on_command=None,
                  now_provider=None, briefing_provider=None,
                  research_provider=None, accent=None,
-                 time_provider=None, weather_provider=None):
+                 time_provider=None, weather_provider=None,
+                 pinned_provider=None, pinned_writer=None):
         super().__init__(parent)
         self.setObjectName("shellHome")
         # Accent (V4 addendum): an explicit accent wins; otherwise
@@ -362,6 +411,13 @@ class ShellPanel(QWidget):
         self._weather_thread = None
         if pyqtSignal is not None:
             self._weather_ready.connect(self._apply_weather)
+        # Pins (V8): injectable provider/writer over the
+        # persisted pin list (ordered .lnk paths); defaults are
+        # the real ui_prefs seams. The home grid OPENS on the
+        # pinned view — the full list hides behind the toggle.
+        self._pinned_provider = pinned_provider or _default_pins
+        self._pinned_writer = pinned_writer or _default_save_pins
+        self._view_all = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(36, 28, 36, 24)
@@ -406,11 +462,22 @@ class ShellPanel(QWidget):
 
         left = QVBoxLayout()
         left.setSpacing(10)
+        # V8: the search row carries the view toggle — the grid
+        # opens on Pinned; this button reveals All Apps (and
+        # reads "Pinned" while the full list is up, naming where
+        # a click goes, like the dashboard's one button does).
+        search_row = QHBoxLayout()
+        search_row.setSpacing(10)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search apps…")
         self.search.setObjectName("shellSearch")
         self.search.textChanged.connect(self._refilter)
-        left.addWidget(self.search)
+        search_row.addWidget(self.search, 1)
+        self.view_toggle = QPushButton("All apps")
+        self.view_toggle.setObjectName("shellViewToggle")
+        self.view_toggle.clicked.connect(self._toggle_view)
+        search_row.addWidget(self.view_toggle)
+        left.addLayout(search_row)
 
         self.app_list = QListWidget()
         self.app_list.setObjectName("shellAppList")
@@ -431,7 +498,25 @@ class ShellPanel(QWidget):
         # launched the app twice on Alek's machine. itemActivated
         # alone already covers double-click AND Enter.
         self.app_list.itemActivated.connect(self._activate_item)
-        left.addWidget(self.app_list, 1)
+        # V8: right-click pins/unpins — the menu is custom, so
+        # left-click activation above is untouched.
+        self.app_list.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self.app_list.customContextMenuRequested.connect(
+            self._on_context_menu)
+        # The grid area is a two-page stack (V8): the tile grid,
+        # or the pinned-empty guidance note when there is
+        # nothing pinned — never an empty void.
+        self.grid_stack = QStackedWidget()
+        self.grid_stack.addWidget(self.app_list)
+        self.empty_label = QLabel(
+            "No pinned apps yet — open All Apps and right-click "
+            "an app to pin it here.")
+        self.empty_label.setObjectName("shellEmpty")
+        self.empty_label.setWordWrap(True)
+        self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.grid_stack.addWidget(self.empty_label)
+        left.addWidget(self.grid_stack, 1)
 
         self.count_label = QLabel("")
         self.count_label.setObjectName("shellCount")
@@ -561,7 +646,10 @@ class ShellPanel(QWidget):
         self.clock_label.setText(model["clock"])
         self.greeting_label.setText(model["greeting"])
         self.date_label.setText(model["date_line"])
-        self.count_label.setText(model["count_line"])
+        # The count line is NOT set here (V8): it belongs to the
+        # grid's current view (pinned / all / search), which
+        # _refilter owns — a clock tick must not repaint it with
+        # the full-list total.
 
     def refresh_cards(self):
         """Repaint the rail's one card (V4): the Briefing tab's
@@ -632,18 +720,120 @@ class ShellPanel(QWidget):
         self.refresh_cards()
         self.refresh_weather()
 
+    # -- pins (V8) ----------------------------------------------
+    def _pinned_paths(self):
+        """The current pin list through the provider seam,
+        fail-soft to [] — a broken prefs read shows the empty
+        state, never a crash."""
+        try:
+            return list(self._pinned_provider() or [])
+        except Exception:
+            return []
+
+    def pin_action_label(self, app):
+        """The right-click menu's verb for *app*: a pinned app
+        offers removal, an unpinned one offers the pin."""
+        if shell_home.is_pinned(self._pinned_paths(),
+                                (app or {}).get("path", "")):
+            return "Remove from Home"
+        return "Pin to Home"
+
+    def toggle_pin(self, app):
+        """Pin an unpinned app / unpin a pinned one (the menu's
+        one action): the pure toggle decides the new list, the
+        writer seam persists it, and the grid re-renders — in
+        the pinned view an unpin removes the tile at once, in
+        All Apps / search the tile stays (it's enumerated)."""
+        path = str((app or {}).get("path", "") or "")
+        if not path:
+            return
+        new_paths = shell_home.toggle_pin(self._pinned_paths(), path)
+        try:
+            self._pinned_writer(new_paths)
+        except Exception:
+            pass
+        self._refilter()
+
+    def _pin_menu(self, app):
+        """The tile's right-click menu (one action). Built
+        separately from the exec so tests can inspect and
+        trigger it without a modal grab."""
+        menu = QMenu(self)
+        action = menu.addAction(self.pin_action_label(app))
+        action.triggered.connect(lambda: self.toggle_pin(app))
+        return menu
+
+    def _on_context_menu(self, pos):
+        item = self.app_list.itemAt(pos)
+        if item is None:
+            return
+        app = item.data(Qt.ItemDataRole.UserRole)
+        if app is None:
+            return
+        self.app_list.setCurrentItem(item)
+        self._pin_menu(app).exec(
+            self.app_list.viewport().mapToGlobal(pos))
+
+    def set_view_all(self, show_all):
+        """Switch the grid's base view (Pinned <-> All Apps)
+        and re-render. Search, while text is present, overrides
+        the base view either way."""
+        self._view_all = bool(show_all)
+        self._refilter()
+
+    def _toggle_view(self):
+        self.set_view_all(not self._view_all)
+
+    def _sync_view_toggle(self):
+        self.view_toggle.setText(
+            "Pinned" if self._view_all else "All apps")
+
     # -- interactions ------------------------------------------
     def _refilter(self):
         query = self.search.text() if hasattr(self, "search") else ""
-        results = app_launcher.search_apps(self._apps, query,
-                                           limit=200)
+        query = (query or "").strip()
+        if query:
+            # Search ALWAYS searches everything (V8) — even
+            # from the pinned view — and clearing the box
+            # returns to whichever base view is current.
+            view = "search"
+            results = app_launcher.search_apps(self._apps, query,
+                                               limit=200)
+        elif self._view_all:
+            view = "all"
+            results = list(self._apps)
+        else:
+            view = "pinned"
+            results = shell_home.pinned_view(
+                self._apps, self._pinned_paths())
         self.app_list.clear()
         for app in results:
             item = QListWidgetItem(self._icon_for(app), app["name"])
             item.setData(Qt.ItemDataRole.UserRole, app)
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            # V8 capture probe: with uniformItemSizes and no
+            # explicit hint, a cell's rect came out sized by the
+            # FIRST item's content (81px in one view, 99px in
+            # another) — narrow enough that two-line names
+            # elided instead of wrapping. Pinning every item's
+            # hint to the grid size makes cell geometry fixed,
+            # independent of which app a view happens to lead
+            # with (the pinned view's leader is pin order, so
+            # this mattered most exactly there).
+            item.setSizeHint(self.app_list.gridSize())
             self.app_list.addItem(item)
+        # Empty state (V8): the pinned view with nothing to show
+        # (zero pins, or every pin stale) puts the guidance note
+        # in the grid area instead of a void — the All Apps
+        # toggle above stays reachable either way.
+        if view == "pinned" and not results:
+            self.grid_stack.setCurrentWidget(self.empty_label)
+        else:
+            self.grid_stack.setCurrentWidget(self.app_list)
+        self._sync_view_toggle()
         self.refresh_clock()
+        self.count_label.setText(shell_home.view_count_line(
+            view, len(results), len(self._apps)))
 
     def _activate_item(self, item):
         app = item.data(Qt.ItemDataRole.UserRole)

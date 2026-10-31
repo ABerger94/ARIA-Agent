@@ -304,3 +304,62 @@ def test_weather_symbol_unknown_is_empty():
     assert shell_home.weather_symbol("") == ""
     assert shell_home.weather_symbol(None) == ""
     assert shell_home.weather_symbol("Diamond dust") == ""
+
+
+# -- V8: pinned apps (pure helpers) --------------------------------
+
+def test_toggle_pin_appends_in_order_and_removes():
+    pins = shell_home.toggle_pin([], "/x/chrome.lnk")
+    assert pins == ["/x/chrome.lnk"]
+    pins = shell_home.toggle_pin(pins, "/x/steam.lnk")
+    assert pins == ["/x/chrome.lnk", "/x/steam.lnk"]  # pin order
+    pins = shell_home.toggle_pin(pins, "/x/chrome.lnk")
+    assert pins == ["/x/steam.lnk"]                   # toggle off
+    # The input list is never mutated.
+    original = ["/x/steam.lnk"]
+    shell_home.toggle_pin(original, "/x/calc.lnk")
+    assert original == ["/x/steam.lnk"]
+
+
+def test_toggle_pin_dedupes_and_ignores_blanks():
+    messy = ["/x/steam.lnk", "/x/steam.lnk", "", "  "]
+    pins = shell_home.toggle_pin(messy, "/x/calc.lnk")
+    assert pins == ["/x/steam.lnk", "/x/calc.lnk"]
+    # A duplicate pin is impossible: toggling an already-pinned
+    # path removes it, it never appears twice.
+    assert shell_home.toggle_pin(pins, "") == pins
+    assert shell_home.toggle_pin(None, "") == []
+
+
+def test_is_pinned():
+    pins = ["/x/chrome.lnk", "/x/steam.lnk"]
+    assert shell_home.is_pinned(pins, "/x/steam.lnk")
+    assert not shell_home.is_pinned(pins, "/x/calc.lnk")
+    assert not shell_home.is_pinned(pins, "")
+    assert not shell_home.is_pinned([], "/x/steam.lnk")
+    assert not shell_home.is_pinned(None, "/x/steam.lnk")
+
+
+def test_pinned_view_follows_pin_order_not_enumeration():
+    pins = ["/x/calc.lnk", "/x/chrome.lnk"]
+    view = shell_home.pinned_view(APPS, pins)
+    assert [a["name"] for a in view] == ["Calculator",
+                                         "Google Chrome"]
+
+
+def test_pinned_view_skips_stale_pins_silently():
+    pins = ["/x/gone.lnk", "/x/steam.lnk"]
+    view = shell_home.pinned_view(APPS, pins)
+    assert [a["name"] for a in view] == ["Steam"]
+    assert shell_home.pinned_view(APPS, []) == []
+    assert shell_home.pinned_view(APPS, None) == []
+    assert shell_home.pinned_view([], pins) == []
+
+
+def test_view_count_line_is_honest_per_view():
+    assert shell_home.view_count_line("pinned", 8, 210) == "8 pinned"
+    assert shell_home.view_count_line("pinned", 0, 210) == "0 pinned"
+    assert shell_home.view_count_line("all", 210, 210) == "210 apps"
+    assert shell_home.view_count_line("all", 1, 1) == "1 app"
+    assert shell_home.view_count_line("search", 3, 210) == "3 of 210 apps"
+    assert shell_home.view_count_line("search", 1, 1) == "1 of 1 app"

@@ -262,6 +262,77 @@ def status_card(safe_mode=None, approval_mode=None,
     return {"title": "Status", "empty": False, "lines": lines}
 
 
+# ------------------------------------------------------------------
+# V8 (2026-10-30, Alek's order + approved design): pinned apps.
+# Shell Home opens to the pinned grid ONLY; the full list hides
+# behind an All Apps toggle, and search always searches all apps.
+# Pin identity is the app entry's .lnk path (the stable,
+# launchable identity from enumerate_apps), persisted in pin
+# order via aria/ui_prefs. These helpers are the pure core; the
+# panel wires them to ui_prefs and the right-click menu.
+# ------------------------------------------------------------------
+
+def is_pinned(pinned_paths, path):
+    """True when *path* is among the pinned .lnk paths."""
+    target = str(path or "")
+    if not target:
+        return False
+    return any(str(p or "") == target for p in (pinned_paths or []))
+
+
+def toggle_pin(pinned_paths, path):
+    """A NEW pin list with *path* toggled: appended (in pin
+    order) when absent, removed when present. The result is
+    deduped and blank-free, so duplicate pins are impossible
+    however the caller got its list. A blank path changes
+    nothing (beyond the cleanup)."""
+    cleaned = []
+    for entry in pinned_paths or []:
+        p = str(entry or "").strip()
+        if p and p not in cleaned:
+            cleaned.append(p)
+    target = str(path or "").strip()
+    if not target:
+        return cleaned
+    if target in cleaned:
+        return [p for p in cleaned if p != target]
+    return cleaned + [target]
+
+
+def pinned_view(apps, pinned_paths):
+    """The home grid's entries: the enumerated apps whose path
+    is pinned, IN PIN ORDER. A pinned path that no longer
+    enumerates (app uninstalled, shortcut moved) is skipped
+    silently — the grid never shows a corpse or an error."""
+    by_path = {}
+    for app in apps or []:
+        p = str((app or {}).get("path", "") or "")
+        if p and p not in by_path:
+            by_path[p] = app
+    out = []
+    for entry in pinned_paths or []:
+        app = by_path.get(str(entry or "").strip())
+        if app is not None:
+            out.append(app)
+    return out
+
+
+def view_count_line(view, shown, total):
+    """The grid's count line, honest per view (V8): the pinned
+    view counts PINS ("8 pinned"), All Apps counts the full
+    enumeration ("210 apps"), search counts matches against the
+    full list ("3 of 210 apps") — never the total dressed up as
+    what's on screen."""
+    shown = max(0, int(shown or 0))
+    total = max(0, int(total or 0))
+    if view == "pinned":
+        return f"{shown} pinned"
+    if view == "search":
+        noun = "app" if total == 1 else "apps"
+        return f"{shown} of {total} {noun}"
+    return f"{total} app" if total == 1 else f"{total} apps"
+
+
 def route_command(text, apps):
     """Classify command-bar text -> an intent dict.
 

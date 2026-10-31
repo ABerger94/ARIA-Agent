@@ -86,6 +86,32 @@ def test_ui_prefs_roundtrip_and_soft_fail(monkeypatch, tmp_path):
     assert prefs.get_accent() is None
 
 
+def test_ui_prefs_pinned_apps_roundtrip(monkeypatch, tmp_path):
+    # V8: Shell Home pins persist as ordered .lnk paths in the
+    # same ui.json, fail-soft like every other pref here.
+    import importlib
+    prefs = importlib.import_module('aria.ui_prefs')
+    target = tmp_path / 'ui.json'
+    monkeypatch.setattr(prefs, '_ui_file', lambda: str(target))
+    assert prefs.get_pinned_apps() == []
+    prefs.set_pinned_apps(['/x/chrome.lnk', '/x/steam.lnk'])
+    assert prefs.get_pinned_apps() == ['/x/chrome.lnk',
+                                       '/x/steam.lnk']
+    # Round-trip preserves the other keys in the file.
+    prefs.set_accent('#FF3366')
+    assert prefs.get_pinned_apps() == ['/x/chrome.lnk',
+                                       '/x/steam.lnk']
+    # Blanks and duplicates are cleaned on the way in.
+    prefs.set_pinned_apps(['/x/steam.lnk', '', '/x/steam.lnk',
+                           ' /x/calc.lnk '])
+    assert prefs.get_pinned_apps() == ['/x/steam.lnk',
+                                       '/x/calc.lnk']
+    prefs.set_pinned_apps([])
+    assert prefs.get_pinned_apps() == []
+    target.write_text('{broken')
+    assert prefs.get_pinned_apps() == []
+
+
 def test_style_for_accent():
     from aria.dashboard import STYLE, style_for_accent
     assert style_for_accent(None) == STYLE
