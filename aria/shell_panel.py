@@ -135,6 +135,21 @@ act on. No pause/resume control exists: scheduled_tasks has
 no enabled flag and no pause seam — state is shown, never a
 fake button. The tall Briefing card below is untouched.
 
+V14 (2026-10-31, Alek's order): pinned groups + drag
+reorder. A pin may carry a group name (ui_prefs' pin_groups
+map — additive beside the V8 ordered path list, so pre-V14
+pins migrate by absence: ungrouped, order untouched). When
+any pin is grouped, the pinned view renders as a list with
+an inert bold header per group; otherwise it is exactly the
+V8 icon grid. The pinned view supports internal drag-drop:
+dropping persists the new order through the same seams, and
+an app dropped under another group's header joins that
+group (the order capture walks headers). The right-click
+menu gains Move up / Move down (the no-drag path to the same
+result) and Move to group ▸ — existing groups, Ungrouped,
+and New group… via a name prompt. Search and All Apps are
+unchanged and drag-free.
+
 The card never fabricates: no briefing composed yet yields
 report_text's own honest placeholder line.
 
@@ -166,9 +181,11 @@ try:
     from PyQt6.QtGui import (QColor, QFont, QIcon, QPainter, QPixmap,
                              QTextOption)
     from PyQt6.QtWidgets import (
+        QAbstractItemView,
         QFileIconProvider,
         QFrame,
         QHBoxLayout,
+        QInputDialog,
         QLabel,
         QLineEdit,
         QListWidget,
@@ -528,6 +545,27 @@ def _default_reminders():
         return []
 
 
+def _default_pin_groups():
+    """The persisted pin-group map (V14): ui_prefs'
+    get_pin_groups — {pinned path: group name}. Fail-soft
+    to {} (all ungrouped)."""
+    try:
+        from aria import ui_prefs
+        return ui_prefs.get_pin_groups()
+    except Exception:
+        return {}
+
+
+def _default_save_pin_groups(groups):
+    """Persist the pin-group map (V14) through ui_prefs;
+    fail-soft like every prefs write here."""
+    try:
+        from aria import ui_prefs
+        ui_prefs.set_pin_groups(groups)
+    except Exception:
+        pass
+
+
 def _default_ack_reminders():
     """Acknowledge through scheduler.tool_acknowledge_reminders
     — literally the voice tool's code path (it clears the gate
@@ -683,7 +721,8 @@ class ShellPanel(QWidget):
                  history_writer=None, file_opener=None,
                  muted_provider=None, on_open_tab=None,
                  on_shell_action=None, tasks_provider=None,
-                 task_actor=None, today_remote_provider=None):
+                 task_actor=None, today_remote_provider=None,
+                 pin_groups_provider=None, pin_groups_writer=None):
         super().__init__(parent)
         self.setObjectName("shellHome")
         # Accent (V4 addendum): an explicit accent wins; otherwise
@@ -769,6 +808,16 @@ class ShellPanel(QWidget):
         self._today_model = None
         if pyqtSignal is not None:
             self._today_ready.connect(self._apply_today_remote)
+        # Pin groups (V14): a parallel seam pair over ui_prefs'
+        # {path: group} map — the V8 paths seam is untouched,
+        # so pin/unpin behaves exactly as before and groups
+        # layer on top. _rebuilding guards the rowsMoved
+        # persistence hook while _refilter repopulates.
+        self._pin_groups_provider = pin_groups_provider or \
+            _default_pin_groups
+        self._pin_groups_writer = pin_groups_writer or \
+            _default_save_pin_groups
+        self._rebuilding = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(36, 28, 36, 24)
@@ -867,6 +916,15 @@ class ShellPanel(QWidget):
             Qt.ContextMenuPolicy.CustomContextMenu)
         self.app_list.customContextMenuRequested.connect(
             self._on_context_menu)
+        # V14: drag reorder in the pinned view persists through
+        # the model's rowsMoved — connected once here; the
+        # handler ignores programmatic rebuilds (_rebuilding)
+        # and non-pinned views (drag is disabled there anyway).
+        try:
+            self.app_list.model().rowsMoved.connect(
+                self._on_rows_moved)
+        except Exception:
+            pass
         # The grid area is a two-page stack (V8): the tile grid,
         # or the pinned-empty guidance note when there is
         # nothing pinned — never an empty void.
@@ -1427,12 +1485,35 @@ class ShellPanel(QWidget):
         self._refilter()
 
     def _pin_menu(self, app):
-        """The tile's right-click menu (one action). Built
-        separately from the exec so tests can inspect and
-        trigger it without a modal grab."""
+        """The tile's right-click menu: Pin/Remove (V8), plus
+        — for a pinned app — the V14 arrangement actions (Move
+        up / Move down, Move to group ▸ with the existing
+        groups, Ungrouped, and New group…). Built separately
+        from the exec so tests can inspect and trigger it
+        without a modal grab."""
         menu = QMenu(self)
         action = menu.addAction(self.pin_action_label(app))
         action.triggered.connect(lambda: self.toggle_pin(app))
+        path = str((app or {}).get("path", "") or "")
+        if path and shell_home.is_pinned(self._pinned_paths(),
+                                         path):
+            menu.addSeparator()
+            up = menu.addAction("Move up")
+            up.triggered.connect(
+                lambda _c=False: self.move_pin(app, -1))
+            down = menu.addAction("Move down")
+            down.triggered.connect(
+                lambda _c=False: self.move_pin(app, 1))
+            sub = menu.addMenu("Move to group")
+            for name in self._group_names():
+                act = sub.addAction(name or "Ungrouped")
+                act.triggered.connect(
+                    lambda _c=False, g=name:
+                    self.move_pin_to_group(app, g))
+            sub.addSeparator()
+            newg = sub.addAction("New group…")
+            newg.triggered.connect(
+                lambda _c=False: self.move_pin_to_new_group(app))
         return menu
 
     def _on_context_menu(self, pos):
@@ -1440,11 +1521,96 @@ class ShellPanel(QWidget):
         if item is None:
             return
         app = item.data(Qt.ItemDataRole.UserRole)
-        if app is None:
-            return
+        if app is None or (isinstance(app, dict)
+                           and "group_header" in app):
+            return  # group headers are inert — no menu
         self.app_list.setCurrentItem(item)
         self._pin_menu(app).exec(
             self.app_list.viewport().mapToGlobal(pos))
+
+    # -- pin groups + reorder (V14) ------------------------------
+    def _pin_groups(self):
+        """The current {path: group} map through the provider
+        seam, fail-soft to {} — a broken prefs read means
+        ungrouped, never a crash."""
+        try:
+            return dict(self._pin_groups_provider() or {})
+        except Exception:
+            return {}
+
+    def _pin_entries(self):
+        return shell_home.pin_entries(self._pinned_paths(),
+                                      self._pin_groups())
+
+    def _group_names(self):
+        """Group names in display order for the menu, with ''
+        (Ungrouped) always present exactly once."""
+        names = [g for g, _m in
+                 shell_home.grouped_entries(self._pin_entries())]
+        if "" not in names:
+            names.insert(0, "")
+        return names
+
+    def _write_entries(self, entries):
+        """Persist an entry list through BOTH seams: order via
+        the V8 paths writer, groups via the groups writer
+        (set_pinned_apps also prunes orphaned groups)."""
+        try:
+            self._pinned_writer([e["path"] for e in entries])
+        except Exception:
+            pass
+        try:
+            self._pin_groups_writer(
+                {e["path"]: e["group"] for e in entries
+                 if e["group"]})
+        except Exception:
+            pass
+
+    def move_pin(self, app, delta):
+        """Move up / Move down: the pure move over the current
+        entries, persisted, repainted."""
+        path = str((app or {}).get("path", "") or "")
+        if not path:
+            return
+        self._write_entries(shell_home.move_entry(
+            self._pin_entries(), path, delta))
+        self._refilter()
+
+    def move_pin_to_group(self, app, group):
+        """Move to group ▸: the pure regroup, persisted,
+        repainted."""
+        path = str((app or {}).get("path", "") or "")
+        if not path:
+            return
+        self._write_entries(shell_home.set_entry_group(
+            self._pin_entries(), path, group))
+        self._refilter()
+
+    def move_pin_to_new_group(self, app):
+        """New group…: prompt for the name, then the same move.
+        An empty/cancelled prompt changes nothing."""
+        name, ok = QInputDialog.getText(
+            self, "New group", "Group name:")
+        if ok and str(name or "").strip():
+            self.move_pin_to_group(app, str(name).strip())
+
+    def _on_rows_moved(self, *_args):
+        """A drag finished in the pinned view: capture the new
+        order (and group membership, from header positions)
+        off the painted items and persist it. Programmatic
+        rebuilds are guarded out by _rebuilding."""
+        if self._rebuilding or self._view_all or \
+                (self.search.text() or "").strip():
+            return
+        walk = []
+        for i in range(self.app_list.count()):
+            data = self.app_list.item(i).data(
+                Qt.ItemDataRole.UserRole)
+            if isinstance(data, dict) and "group_header" in data:
+                walk.append(("header", data["group_header"]))
+            elif isinstance(data, dict):
+                walk.append(("app", data.get("path", "")))
+        self._write_entries(shell_home.entries_from_grid(walk))
 
     def set_view_all(self, show_all):
         """Switch the grid's base view (Pinned <-> All Apps)
@@ -1461,9 +1627,81 @@ class ShellPanel(QWidget):
             "Pinned" if self._view_all else "All apps")
 
     # -- interactions ------------------------------------------
+    def _paint_grid(self, view, results, entries, grouped):
+        """Populate the app list for one _refilter pass.
+
+        Ungrouped (every view except a grouped pinned home):
+        the V8 icon grid, byte-for-byte behaviour. Grouped
+        pinned home (V14): a list-mode rendering — a bold,
+        inert header row per group ('Pinned' for the ungrouped
+        block), app rows beneath it. The pinned view (either
+        rendering) enables internal drag reorder; search and
+        All Apps disable it — arrangement is a home-view act.
+        """
+        lst = self.app_list
+        lst.clear()
+        if view == "pinned":
+            lst.setDragDropMode(
+                QAbstractItemView.DragDropMode.InternalMove)
+            lst.setMovement(QListWidget.Movement.Snap)
+        else:
+            lst.setDragDropMode(
+                QAbstractItemView.DragDropMode.NoDragDrop)
+            lst.setMovement(QListWidget.Movement.Static)
+        if not grouped:
+            lst.setViewMode(QListWidget.ViewMode.IconMode)
+            lst.setUniformItemSizes(True)
+            lst.setGridSize(QSize(120, 122))
+            for app in results:
+                item = QListWidgetItem(self._icon_for(app),
+                                       app["name"])
+                item.setData(Qt.ItemDataRole.UserRole, app)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                # V8 capture probe: with uniformItemSizes and no
+                # explicit hint, a cell's rect came out sized by
+                # the FIRST item's content (81px in one view,
+                # 99px in another) — narrow enough that two-line
+                # names elided instead of wrapping. Pinning every
+                # item's hint to the grid size makes cell geometry
+                # fixed, independent of which app a view happens
+                # to lead with (the pinned view's leader is pin
+                # order, so this mattered most exactly there).
+                item.setSizeHint(lst.gridSize())
+                lst.addItem(item)
+            return
+        lst.setViewMode(QListWidget.ViewMode.ListMode)
+        lst.setUniformItemSizes(False)
+        # The construction grid size (120x122) also drives
+        # ListMode row geometry when set — clear it so the
+        # rows take their own hints (30px headers, 58px apps)
+        # instead of spreading one tile-cell per row.
+        lst.setGridSize(QSize())
+        by_path = {str(a.get("path", "")): a for a in results}
+        for group, members in shell_home.grouped_entries(entries):
+            header = QListWidgetItem(group or "Pinned")
+            header.setData(Qt.ItemDataRole.UserRole,
+                           {"group_header": group})
+            header.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            font = QFont()
+            font.setBold(True)
+            header.setFont(font)
+            header.setSizeHint(QSize(0, 30))
+            lst.addItem(header)
+            for entry in members:
+                app = by_path.get(entry["path"])
+                if app is None:
+                    continue
+                item = QListWidgetItem(self._icon_for(app),
+                                       app["name"])
+                item.setData(Qt.ItemDataRole.UserRole, app)
+                item.setSizeHint(QSize(0, 58))
+                lst.addItem(item)
+
     def _refilter(self):
         query = self.search.text() if hasattr(self, "search") else ""
         query = (query or "").strip()
+        entries = []
+        grouped = False
         if query:
             # Search ALWAYS searches everything (V8) — even
             # from the pinned view — and clearing the box
@@ -1476,24 +1714,19 @@ class ShellPanel(QWidget):
             results = list(self._apps)
         else:
             view = "pinned"
+            entries = shell_home.pin_entries(
+                self._pinned_paths(), self._pin_groups())
             results = shell_home.pinned_view(
-                self._apps, self._pinned_paths())
-        self.app_list.clear()
-        for app in results:
-            item = QListWidgetItem(self._icon_for(app), app["name"])
-            item.setData(Qt.ItemDataRole.UserRole, app)
-            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            # V8 capture probe: with uniformItemSizes and no
-            # explicit hint, a cell's rect came out sized by the
-            # FIRST item's content (81px in one view, 99px in
-            # another) — narrow enough that two-line names
-            # elided instead of wrapping. Pinning every item's
-            # hint to the grid size makes cell geometry fixed,
-            # independent of which app a view happens to lead
-            # with (the pinned view's leader is pin order, so
-            # this mattered most exactly there).
-            item.setSizeHint(self.app_list.gridSize())
-            self.app_list.addItem(item)
+                self._apps, [e["path"] for e in entries])
+            # V14: group headers exist only when at least one
+            # pin actually carries a group — an all-ungrouped
+            # home renders exactly the V8 grid.
+            grouped = any(e["group"] for e in entries)
+        self._rebuilding = True
+        try:
+            self._paint_grid(view, results, entries, grouped)
+        finally:
+            self._rebuilding = False
         # Empty state (V8): the pinned view with nothing to show
         # (zero pins, or every pin stale) puts the guidance note
         # in the grid area instead of a void — the All Apps
@@ -1509,7 +1742,8 @@ class ShellPanel(QWidget):
 
     def _activate_item(self, item):
         app = item.data(Qt.ItemDataRole.UserRole)
-        if app is not None:
+        if app is not None and not (isinstance(app, dict)
+                                    and "group_header" in app):
             self._launch(app)
 
     def _launch(self, app):

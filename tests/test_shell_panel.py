@@ -469,7 +469,13 @@ def test_right_click_menu_pins_and_unpins():
     # ...and the same tile now offers removal.
     assert panel.pin_action_label(chrome) == "Remove from Home"
     menu = panel._pin_menu(chrome)
-    assert [a.text() for a in menu.actions()] == ["Remove from Home"]
+    # V14: a PINNED tile's menu also carries the arrangement
+    # actions (Move up / Move down / Move to group ▸) after the
+    # V8 pin action — the unpinned menu above stays one action.
+    texts = [a.text() for a in menu.actions()]
+    assert texts[0] == "Remove from Home"
+    assert "Move up" in texts and "Move down" in texts
+    assert "Move to group" in texts
     menu.actions()[0].trigger()
     assert panel._test_pin_store["paths"] == []
 

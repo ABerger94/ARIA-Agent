@@ -148,7 +148,9 @@ def get_pinned_apps():
 def set_pinned_apps(paths) -> str:
     """Persist the pinned .lnk paths in pin order (soft-fail
     like the rest of this module — a preference must never
-    break the window)."""
+    break the window). V14: the pin_groups map is pruned to
+    the surviving paths in the same write, so an unpinned app
+    leaves no orphaned group behind."""
     cleaned = []
     for entry in paths or []:
         path = str(entry or "").strip()
@@ -162,6 +164,10 @@ def set_pinned_apps(paths) -> str:
         except Exception:
             payload = {}
         payload["pinned_apps"] = cleaned
+        groups = payload.get("pin_groups")
+        if isinstance(groups, dict):
+            payload["pin_groups"] = {
+                p: g for p, g in groups.items() if p in cleaned}
         payload["updated"] = datetime.now(timezone.utc).isoformat()
         os.makedirs(os.path.dirname(_ui_file()), exist_ok=True)
         with open(_ui_file(), "w", encoding="utf-8") as f:
@@ -169,6 +175,66 @@ def set_pinned_apps(paths) -> str:
     except Exception:
         pass
     return f"Pinned apps: {len(cleaned)}."
+
+
+def get_pin_groups():
+    """Shell Home pin groups (V14, 2026-10-31): {pinned .lnk
+    path: group name}. Pins stored before V14 have no entry
+    here — they are simply ungrouped; the migration is the
+    absence of data, so existing pins and their order carry
+    over untouched. Fails soft to {}."""
+    try:
+        with open(_ui_file(), encoding="utf-8") as f:
+            value = (json.load(f) or {}).get("pin_groups")
+        if isinstance(value, dict):
+            out = {}
+            for path, group in value.items():
+                p = str(path or "").strip()
+                g = str(group or "").strip()
+                if p and g:
+                    out[p] = g
+            return out
+    except Exception:
+        pass
+    return {}
+
+
+def set_pin_groups(groups) -> str:
+    """Persist the {path: group} map (soft-fail). Blank groups
+    and blank paths drop out — ungrouped is the absence of an
+    entry, never an empty string stored."""
+    cleaned = {}
+    for path, group in (groups or {}).items():
+        p = str(path or "").strip()
+        g = str(group or "").strip()
+        if p and g:
+            cleaned[p] = g
+    try:
+        payload = {}
+        try:
+            with open(_ui_file(), encoding="utf-8") as f:
+                payload = json.load(f) or {}
+        except Exception:
+            payload = {}
+        payload["pin_groups"] = cleaned
+        payload["updated"] = datetime.now(timezone.utc).isoformat()
+        os.makedirs(os.path.dirname(_ui_file()), exist_ok=True)
+        with open(_ui_file(), "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+    except Exception:
+        pass
+    return f"Pin groups: {len(cleaned)}."
+
+
+def get_pinned_entries():
+    """The V14 entry view of the pins: [{path, group}] in pin
+    order, merging the ordered path list with the group map.
+    This is the migration surface — a pre-V14 ui.json (plain
+    path list, no map) yields every pin ungrouped, order and
+    membership exactly preserved."""
+    groups = get_pin_groups()
+    return [{"path": p, "group": groups.get(p, "")}
+            for p in get_pinned_apps()]
 
 
 def get_command_history():

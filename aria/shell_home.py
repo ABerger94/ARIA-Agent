@@ -639,6 +639,117 @@ def today_cards(now, tasks, event, unread, task_limit=3):
                      and not unread}
 
 
+# ------------------------------------------------------------------
+# V14 (2026-10-31, Alek's order): pinned groups + reorder. Pins
+# gain an optional group name. Storage stays additive in
+# ui_prefs — the ordered path list is untouched (every V8
+# caller keeps working) and groups live in a parallel
+# path->group map; get_pinned_entries() there merges them.
+# These helpers are the pure model over entries
+# ({path, group} dicts): grouping order, drag-order capture,
+# keyboard moves, and group moves. Invariant: entries stay
+# GROUP-CONTIGUOUS (a group's entries are never split by
+# another group's), so the flat order the grid paints and the
+# grouped order are the same list.
+# ------------------------------------------------------------------
+
+def pin_entries(paths, groups=None):
+    """Merge an ordered pin path list with a {path: group} map
+    into clean entries: blanks and duplicates dropped, group
+    names trimmed ('' = ungrouped), pin order preserved."""
+    groups = groups or {}
+    out = []
+    for entry in paths or []:
+        path = str(entry or "").strip()
+        if not path or any(e["path"] == path for e in out):
+            continue
+        out.append({"path": path,
+                    "group": str(groups.get(path) or "").strip()})
+    return out
+
+
+def grouped_entries(entries):
+    """[(group, [entries])] in first-appearance group order,
+    entries within a group in pin order. Ungrouped ('') is a
+    group like any other here; the panel decides its header
+    label ('Pinned')."""
+    order = []
+    by_group = {}
+    for entry in entries or []:
+        group = str((entry or {}).get("group") or "")
+        if group not in by_group:
+            by_group[group] = []
+            order.append(group)
+        by_group[group].append(entry)
+    return [(g, by_group[g]) for g in order]
+
+
+def regroup(entries):
+    """The same entries re-sorted group-contiguously (first-
+    appearance group order, pin order within) — applied after
+    any operation that could split a group."""
+    out = []
+    for _group, members in grouped_entries(entries):
+        out.extend(members)
+    return out
+
+
+def entries_from_grid(items):
+    """Rebuild pin entries from the painted grid's item walk:
+    *items* is a sequence of ('header', group) / ('app', path)
+    in display order (the panel extracts it from the list
+    widget after a drag). An app takes the group of the header
+    above it — so dragging a tile into another group's block
+    regroups it, which is the whole point of the headers.
+    Apps before any header are ungrouped."""
+    out = []
+    group = ""
+    for kind, value in items or []:
+        if kind == "header":
+            group = str(value or "").strip()
+        elif kind == "app":
+            path = str(value or "").strip()
+            if path and not any(e["path"] == path for e in out):
+                out.append({"path": path, "group": group})
+    return out
+
+
+def move_entry(entries, path, delta):
+    """Move one entry *delta* places in the flat pin order
+    (the context menu's Move up / Move down — the accessible
+    twin of dragging). Clamped at the ends; the result is
+    regrouped so a move can never split a group block."""
+    entries = [dict(e) for e in (entries or [])]
+    idx = next((i for i, e in enumerate(entries)
+                if e["path"] == path), None)
+    if idx is None:
+        return entries
+    target = max(0, min(len(entries) - 1, idx + int(delta)))
+    entry = entries.pop(idx)
+    entries.insert(target, entry)
+    return regroup(entries)
+
+
+def set_entry_group(entries, path, group):
+    """Move one entry into *group* ('' = ungrouped): it lands
+    at the END of that group's block; a brand-new group forms
+    at the end of the list. The rest of the order is kept."""
+    group = str(group or "").strip()
+    entries = [dict(e) for e in (entries or [])]
+    idx = next((i for i, e in enumerate(entries)
+                if e["path"] == path), None)
+    if idx is None:
+        return entries
+    entry = entries.pop(idx)
+    entry["group"] = group
+    last = -1
+    for i, e in enumerate(entries):
+        if e["group"] == group:
+            last = i
+    entries.insert(last + 1 if last >= 0 else len(entries), entry)
+    return regroup(entries)
+
+
 def route_command(text, apps):
     """Classify command-bar text -> an intent dict.
 
