@@ -59,7 +59,8 @@ _ORIG_CONNECT = builtins.tool_mcp_connect
 _ORIG_LIST = builtins.tool_mcp_list_servers
 
 
-def _stub_setup(name='', command='', args='', url='', env='', headers=''):
+def _stub_setup(name='', command='', args='', url='', env='', headers='',
+                transport=''):
     _SETUP_CALLS.append({'name': name, 'command': command, 'args': args,
                          'url': url, 'env': env, 'headers': headers})
     return 'STUB_SETUP'

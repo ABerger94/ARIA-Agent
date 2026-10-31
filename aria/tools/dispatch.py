@@ -755,7 +755,8 @@ def _init_default_registry():
     # MCP client tools — ARIA connects to MCP servers and uses their tools
     _REGISTRY["mcp_setup"] = lambda a: builtins.tool_mcp_setup(
         a.get("name", ""), a.get("command", ""), a.get("args", ""),
-        a.get("url", ""), a.get("env", ""), a.get("headers", ""))
+        a.get("url", ""), a.get("env", ""), a.get("headers", ""),
+        a.get("transport", ""))
     _REGISTRY["mcp_connect"] = lambda a: builtins.tool_mcp_connect(a.get("name", ""))
     _REGISTRY["mcp_disconnect"] = lambda a: builtins.tool_mcp_disconnect(a.get("name", ""))
     _REGISTRY["mcp_list_servers"] = lambda a: builtins.tool_mcp_list_servers()

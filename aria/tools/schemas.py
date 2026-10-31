@@ -320,14 +320,18 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
         'parameters': {'properties': {}, 'type': 'OBJECT'}},
     {   'description': 'Adds an MCP (Model Context Protocol) server ARIA can use. stdio: pass command and args '
                        '(e.g. command="npx", args=["-y","@modelcontextprotocol/server-filesystem","C:/data"]). '
-                       'sse/http: pass url instead. env/headers take JSON object strings for secrets.',
+                       'Remote servers: pass url and say which transport it speaks via transport — '
+                       'transport="http" for a Streamable HTTP endpoint (e.g. Robinhood, '
+                       'https://agent.robinhood.com/mcp/trading); transport="sse" is only for legacy SSE '
+                       'endpoints. Omit transport for stdio. env/headers take JSON object strings for secrets.',
         'name': 'mcp_setup',
         'parameters': {   'properties': {   'name': {'type': 'STRING'},
                                             'command': {'type': 'STRING'},
                                             'args': {'type': 'STRING'},
                                             'url': {'type': 'STRING'},
                                             'env': {'type': 'STRING'},
-                                            'headers': {'type': 'STRING'}},
+                                            'headers': {'type': 'STRING'},
+                                            'transport': {'type': 'STRING'}},
                           'required': ['name'],
                           'type': 'OBJECT'}},
     {   'description': 'Connects to MCP server(s) and loads their tools as callable ARIA tools '

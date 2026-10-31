@@ -917,10 +917,20 @@ def tool_unwatch_price(watch_id: int) -> str:
 # ---------------------------------------------------------------------------
 
 def tool_mcp_setup(name: str = "", command: str = "", args: str = "",
-                   url: str = "", env: str = "", headers: str = "") -> str:
-    """Add an MCP server configuration. stdio needs command+args; sse/http need url."""
+                   url: str = "", env: str = "", headers: str = "",
+                   transport: str = "") -> str:
+    """Add an MCP server configuration. stdio needs command+args; sse/http need url.
+
+    transport is optional: pass "http" for a Streamable HTTP endpoint
+    (e.g. Robinhood), "sse" only for a legacy SSE endpoint. When it is
+    omitted the legacy inference is kept exactly (command -> stdio,
+    url -> sse) so existing setups are unaffected. An invalid value is
+    rejected by add_server and saves nothing.
+    """
     from aria import mcp as mcp_mod
-    transport = "stdio" if command else ("sse" if url else "stdio")
+    transport = (transport or "").strip().lower()
+    if not transport:
+        transport = "stdio" if command else ("sse" if url else "stdio")
     return mcp_mod.add_server(name=name, transport=transport, command=command,
                               args=args, env=env, url=url, headers=headers)
 
