@@ -188,25 +188,19 @@ def create_lnk_windows(lnk: str, target: str, args: str,
                        work_dir: str, icon_loc: str) -> None:
     """
     Create a Windows .lnk shortcut WITHOUT launching PowerShell or cmd.
-    Tries win32com (pywin32) first; falls back to wscript.exe + VBScript.
-    wscript.exe is a GUI-mode host — it never opens a console window.
-    """
-    # ── Option 1: pywin32 (pure Python COM, zero subprocess) ──────────
-    try:
-        from win32com.client import Dispatch   # type: ignore
-        sh = Dispatch("WScript.Shell")
-        sc = sh.CreateShortCut(lnk)
-        sc.TargetPath = target
-        sc.Arguments = f'"{args}"'
-        sc.WorkingDirectory = work_dir
-        sc.Description = DESCRIPTION
-        sc.IconLocation = icon_loc
-        sc.save()
-        return
-    except ImportError:
-        pass
 
-    # ── Option 2: wscript.exe + VBScript (always available on Windows,
+    wscript.exe + VBScript is the ONLY mechanism, on purpose: the
+    COM call happens inside the wscript host process, never in
+    ARIA's own process. An earlier version tried win32com
+    (pywin32) first — importing a COM library into the main
+    process is exactly what the COM process-isolation invariant
+    (tests/test_isolation.py; crash round 5) forbids outside
+    aria/comhost.py, so the shortcut writer was in violation
+    every time it ran on a machine with pywin32 installed.
+    wscript.exe is a GUI-mode host — it never opens a console
+    window — and it ships with every Windows install.
+    """
+    # ── wscript.exe + VBScript (always available on Windows,
     #    GUI-mode executable — never opens a console window) ────────────
     vbs = "\n".join([
         'Set ws = CreateObject("WScript.Shell")',

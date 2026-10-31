@@ -1,8 +1,10 @@
 """Desktop shortcut creation (Mark-LVI port): aria.desktop_shortcut.
 
 Pure stdlib module, exercised directly. The Windows .lnk writer is
-tested with a fake win32com injected into sys.modules — no real
-registry/COM in the sandbox; the Linux .desktop branch runs
+tested with a fake subprocess.Popen standing in for wscript.exe —
+the writer generates a VBScript and hands it to the wscript host
+process (COM lives there, never in ARIA's process; see
+tests/test_isolation.py); the Linux .desktop branch runs
 end-to-end against a tmp desktop.
 """
 import sys
@@ -191,41 +193,46 @@ def test_build_aria_icon_multires_and_deterministic(tmp_path):
     assert a.read_bytes() == b.read_bytes()
 
 
-# ── the .lnk writer itself, against a fake win32com ──────────────────
+# ── the .lnk writer itself, against a fake wscript host ─────────────
 
-def test_create_lnk_windows_with_fake_win32com(monkeypatch, tmp_path):
+def test_create_lnk_windows_via_wscript_vbs(monkeypatch, tmp_path):
+    # The writer must produce a VBScript carrying the same shortcut
+    # properties the old in-process win32com path set, and hand it
+    # to wscript.exe — the COM call happens in that host process,
+    # never in ARIA's (COM isolation invariant, crash round 5).
     recorded = {}
-    class FakeShortcut:
-        def save(self):
-            recorded['saved'] = True
-    class FakeShell:
-        def CreateShortCut(self, lnk):
-            recorded['lnk'] = lnk
-            sc = FakeShortcut()
-            recorded['shortcut'] = sc
-            return sc
-    def fake_dispatch(name):
-        recorded['dispatch'] = name
-        return FakeShell()
-    win32com = types.ModuleType('win32com')
-    client = types.ModuleType('win32com.client')
-    client.Dispatch = fake_dispatch
-    win32com.client = client
-    monkeypatch.setitem(sys.modules, 'win32com', win32com)
-    monkeypatch.setitem(sys.modules, 'win32com.client', client)
+
+    class FakeProc:
+        def wait(self, timeout=None):
+            recorded['waited'] = timeout
+            return 0
+
+    def fake_popen(cmd, **kwargs):
+        recorded['cmd'] = cmd
+        recorded['kwargs'] = kwargs
+        # The .vbs still exists at launch time; capture its body.
+        recorded['vbs'] = Path(cmd[-1]).read_text(encoding='utf-8')
+        return FakeProc()
+
+    monkeypatch.setattr(dsc.subprocess, 'Popen', fake_popen)
     lnk = str(tmp_path / 'A.R.I.A.lnk')
     dsc.create_lnk_windows(lnk, r'C:\Python312\python.exe',
                            r'E:\ARIA\aria.py', r'E:\ARIA',
                            r'C:\Python312\python.exe,0')
-    assert recorded['dispatch'] == 'WScript.Shell'
-    assert recorded['lnk'] == lnk
-    sc = recorded['shortcut']
-    assert sc.TargetPath == r'C:\Python312\python.exe'
-    assert sc.Arguments == r'"E:\ARIA\aria.py"'   # quoted script path
-    assert sc.WorkingDirectory == r'E:\ARIA'
-    assert sc.Description == 'A.R.I.A AI Assistant'
-    assert sc.IconLocation == r'C:\Python312\python.exe,0'
-    assert recorded['saved'] is True
+    assert recorded['cmd'][0] == 'wscript.exe'
+    assert recorded['cmd'][1] == '/nologo'
+    assert recorded['cmd'][-1].endswith('.vbs')
+    assert recorded['waited'] == 10
+    vbs = recorded['vbs']
+    assert 'CreateObject("WScript.Shell")' in vbs
+    assert f'CreateShortcut("{lnk}")' in vbs
+    assert r'sc.TargetPath = "C:\Python312\python.exe"' in vbs
+    # The script path is quoted via Chr(34) concatenation.
+    assert r'sc.Arguments = Chr(34) & "E:\ARIA\aria.py" & Chr(34)' in vbs
+    assert r'sc.WorkingDirectory = "E:\ARIA"' in vbs
+    assert 'sc.Description = "A.R.I.A AI Assistant"' in vbs
+    assert r'sc.IconLocation = "C:\Python312\python.exe,0"' in vbs
+    assert 'sc.Save' in vbs
 
 
 # ── create_desktop_shortcut: the never-raise wrapper ─────────────────
