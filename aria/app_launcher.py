@@ -23,12 +23,26 @@ real is shelled out.
 
 The launch seam is injectable for the same reason: tests pass a
 recorder instead of really opening anything.
+
+V18 (2026-10-31, Alek's ask — "is there anyway to get the app
+symbol/icon for things like Spotify? Instead of just a
+letter."): AppsFolder entries also gain a real icon where one
+can be resolved from the installed package: the AppID's
+package family name locates the package (one fail-soft
+``Get-AppxPackage`` call, cached for the process), the
+package's AppxManifest.xml names its Square44x44Logo asset,
+and the largest on-disk variant of that asset becomes the
+entry's ``icon`` path, which the shell panel loads like any
+image file. Every step fails soft to the letter tile the
+shell already draws — an unresolvable icon changes nothing.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
+import xml.etree.ElementTree as ET
 
 #: Verbs the command bar strips before matching ("open chrome").
 LAUNCH_VERBS = ("open", "launch", "start", "run")
@@ -204,13 +218,285 @@ def merge_app_sources(lnk_apps, folder_apps):
                   key=lambda a: _normalize_name(a["name"]))
 
 
-def enumerate_all_apps(roots, appsfolder_runner=None):
+def enumerate_all_apps(roots, appsfolder_runner=None,
+                       appx_runner=None):
     """Every app the shell can show: Start Menu .lnk files
     merged with AppsFolder entries (the dashboard's provider
-    calls this; the panel never knows two sources exist)."""
-    return merge_app_sources(
-        enumerate_apps(roots),
-        enumerate_appsfolder(runner=appsfolder_runner))
+    calls this; the panel never knows two sources exist).
+    AppsFolder entries then gain a resolved package icon where
+    one exists (V18, see attach_appsfolder_icons)."""
+    return attach_appsfolder_icons(
+        merge_app_sources(
+            enumerate_apps(roots),
+            enumerate_appsfolder(runner=appsfolder_runner)),
+        runner=appx_runner)
+
+
+# ------------------------------------------------------------------
+# V18: real icons for AppsFolder apps. An AppID is
+# "<PackageFamilyName>!<EntryId>"; the family name identifies
+# the installed package, whose AppxManifest.xml declares the
+# app's logo asset. Resolution is Windows-only in effect (the
+# package source is PowerShell) and fail-soft at every step:
+# any failure reads as "no icon", and the shell keeps the
+# letter tile it already draws for path-less entries.
+# ------------------------------------------------------------------
+
+#: In-process caches: package locations are read at most once
+#: per process (packages do not move while ARIA runs; a
+#: restart re-reads), and each AppID's icon resolution —
+#: hit or miss — is computed at most once, so re-enumeration
+#: on every Shell Home open stays as cheap as V17's.
+_APPX_LOCATIONS_CACHE = None
+_ICON_CACHE = {}
+
+
+def package_family_name(appid):
+    """The package family name inside an AppID: the segment
+    before "!". '' when the AppID carries no family segment."""
+    text = str(appid or "").strip()
+    if "!" not in text:
+        return ""
+    return text.split("!", 1)[0].strip()
+
+
+def appid_entry_id(appid):
+    """The application entry id inside an AppID: the segment
+    after "!" (the manifest Application's Id). '' if absent."""
+    text = str(appid or "").strip()
+    if "!" not in text:
+        return ""
+    return text.split("!", 1)[1].strip()
+
+
+def _get_appx_packages_stdout(timeout=15):
+    """Run Get-AppxPackage (family name + install location
+    for every installed package) and return its JSON stdout.
+    The AppsFolder icon path's one real side effect, isolated
+    so tests inject a fake runner. Raises on any failure —
+    the caller fails soft."""
+    cmd = ["powershell", "-NoProfile", "-NonInteractive",
+           "-Command",
+           "Get-AppxPackage | Select-Object PackageFamilyName,"
+           " InstallLocation | ConvertTo-Json -Compress"]
+    kwargs = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(
+            subprocess, "CREATE_NO_WINDOW", 0)
+    out = subprocess.run(cmd, capture_output=True, text=True,
+                         timeout=timeout, **kwargs)
+    if out.returncode != 0:
+        raise RuntimeError(
+            f"Get-AppxPackage exited {out.returncode}")
+    return out.stdout or ""
+
+
+def enumerate_appx_locations(runner=None, timeout=15):
+    """{PackageFamilyName: InstallLocation} for the installed
+    AppX packages, via PowerShell. FAIL-SOFT like the
+    AppsFolder source: any failure reads as {} (no package
+    icons), never an exception."""
+    if runner is None:
+        def runner():
+            return _get_appx_packages_stdout(timeout)
+    try:
+        raw = json.loads(runner() or "")
+    except Exception:
+        return {}
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return {}
+    out = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        family = str(item.get("PackageFamilyName") or "").strip()
+        location = str(item.get("InstallLocation") or "").strip()
+        if family and location and family not in out:
+            out[family] = location
+    return out
+
+
+def _local_name(tag):
+    """An XML tag's local name, namespace stripped."""
+    return str(tag or "").rsplit("}", 1)[-1]
+
+
+def manifest_logo(manifest_text, entry_id=""):
+    """The Square44x44Logo asset path declared in an
+    AppxManifest.xml for the application *entry_id* (the
+    AppID's after-"!" segment). Falls back to the first
+    application that declares a logo — a manifest with one
+    app is the common case, and a near-miss logo beats the
+    letter tile. '' when nothing usable is declared or the
+    XML does not parse."""
+    try:
+        root = ET.fromstring(manifest_text or "")
+    except Exception:
+        return ""
+    fallback = ""
+    for elem in root.iter():
+        if _local_name(elem.tag) != "Application":
+            continue
+        logo = ""
+        for child in elem.iter():
+            if _local_name(child.tag) == "VisualElements":
+                logo = str(child.get("Square44x44Logo")
+                           or "").strip()
+                if logo:
+                    break
+        if not logo:
+            continue
+        if not fallback:
+            fallback = logo
+        if entry_id and str(elem.get("Id") or "").strip() \
+                == str(entry_id).strip():
+            return logo
+    return fallback
+
+
+_VARIANT_RE = re.compile(
+    r"^(?P<stem>.+)\.(?P<kind>targetsize|scale)-(?P<n>\d+)"
+    r"(?P<ext>\.[^.]+)$", re.IGNORECASE)
+
+
+def choose_logo_variant(filenames, logo_name):
+    """Pick the best on-disk variant of the manifest's logo
+    asset among *filenames* (one directory's names). Store
+    packages ship the declared file plus sized variants
+    (``Logo.targetsize-48.png``, ``Logo.scale-200.png``).
+    Preference: the largest targetsize variant (the unplated
+    tile art, sized for exactly this use), then the largest
+    scale variant, then the declared base file itself.
+    Returns the chosen filename, or '' when no candidate
+    matches the asset at all."""
+    logo_name = str(logo_name or "").strip()
+    if not logo_name:
+        return ""
+    stem, ext = os.path.splitext(logo_name)
+    best = ""
+    best_rank = None
+    for name in filenames or []:
+        if name == logo_name:
+            rank = (0, 0)
+        else:
+            match = _VARIANT_RE.match(name or "")
+            if not match or match.group("stem") != stem \
+                    or match.group("ext").lower() != ext.lower():
+                continue
+            n = int(match.group("n"))
+            if match.group("kind").lower() == "targetsize":
+                rank = (2, n)
+            else:
+                rank = (1, n)
+        if best_rank is None or rank > best_rank:
+            best_rank = rank
+            best = name
+    return best
+
+
+def resolve_appsfolder_icon(appid, locations, read_text=None,
+                            listdir=None, isfile=None):
+    """The on-disk logo file for an AppsFolder AppID, or ''.
+
+    *locations* is enumerate_appx_locations' map. The disk
+    seams (read_text / listdir / isfile) are injectable so
+    tests resolve against a fake package tree; defaults are
+    the real filesystem. Fail-soft throughout."""
+    if read_text is None:
+        def read_text(path):
+            with open(path, encoding="utf-8",
+                      errors="replace") as f:
+                return f.read()
+    if listdir is None:
+        listdir = os.listdir
+    if isfile is None:
+        isfile = os.path.isfile
+    family = package_family_name(appid)
+    if not family:
+        return ""
+    locations = locations or {}
+    install = locations.get(family)
+    if not install:
+        folded = family.casefold()
+        for key, value in locations.items():
+            if str(key).casefold() == folded:
+                install = value
+                break
+    if not install:
+        return ""
+    try:
+        manifest = read_text(os.path.join(
+            install, "AppxManifest.xml"))
+    except Exception:
+        return ""
+    logo_rel = manifest_logo(manifest, appid_entry_id(appid))
+    if not logo_rel:
+        return ""
+    logo_rel = logo_rel.replace("\\", "/")
+    logo_dir = os.path.join(install,
+                            os.path.dirname(logo_rel))
+    logo_name = os.path.basename(logo_rel)
+    try:
+        names = listdir(logo_dir)
+    except Exception:
+        names = []
+    chosen = choose_logo_variant(names, logo_name)
+    if chosen:
+        return os.path.join(logo_dir, chosen)
+    base = os.path.join(logo_dir, logo_name)
+    try:
+        return base if isfile(base) else ""
+    except Exception:
+        return ""
+
+
+def attach_appsfolder_icons(apps, locations=None, runner=None):
+    """Return *apps* with an ``icon`` path resolved for every
+    AppsFolder entry that lacks one (V18). Entries that
+    resolve keep everything else identical; entries that do
+    not are returned untouched (the SAME dict), so a failed
+    resolution is indistinguishable from V17. Locations are
+    fetched at most once per process and each AppID resolves
+    at most once per process (the caches above); the
+    PowerShell call happens only when an uncached AppsFolder
+    entry actually needs it."""
+    global _APPX_LOCATIONS_CACHE
+    apps = list(apps or [])
+    pending = []
+    for app in apps:
+        if not isinstance(app, dict) \
+                or app_kind(app) != "appsfolder" \
+                or app.get("icon"):
+            continue
+        appid = str(app.get("appid") or "")
+        if appid and appid not in _ICON_CACHE:
+            pending.append(appid)
+    if pending:
+        if locations is None:
+            if _APPX_LOCATIONS_CACHE is None:
+                _APPX_LOCATIONS_CACHE = \
+                    enumerate_appx_locations(runner=runner)
+            locations = _APPX_LOCATIONS_CACHE
+        for appid in pending:
+            try:
+                _ICON_CACHE[appid] = resolve_appsfolder_icon(
+                    appid, locations)
+            except Exception:
+                _ICON_CACHE[appid] = ""
+    out = []
+    for app in apps:
+        if isinstance(app, dict) \
+                and app_kind(app) == "appsfolder" \
+                and not app.get("icon"):
+            icon = _ICON_CACHE.get(
+                str(app.get("appid") or ""), "")
+            if icon:
+                app = dict(app)
+                app["icon"] = icon
+        out.append(app)
+    return out
 
 
 def _rank(app_name, query):

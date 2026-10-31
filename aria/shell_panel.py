@@ -1333,6 +1333,20 @@ class ShellPanel(QWidget):
 
     def _icon_for(self, app):
         tile = shell_home.tile_model(app)
+        # V18: an AppsFolder entry may carry a resolved
+        # package icon (app_launcher.attach_appsfolder_icons
+        # put the installed package's logo file on the entry
+        # as "icon") — load it like any image file. Any
+        # failure (missing file, undecodable image) falls
+        # through to the letter tile, unchanged.
+        icon_path = str((app or {}).get("icon") or "").strip()
+        if icon_path:
+            try:
+                icon = QIcon(icon_path)
+                if icon is not None and not icon.isNull():
+                    return icon
+            except Exception:
+                pass
         if sys.platform == "win32" and tile["path"]:
             try:
                 if self._icon_provider is None:
