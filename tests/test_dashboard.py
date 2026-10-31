@@ -66,7 +66,14 @@ def test_dashboard_routes_controls_and_refreshes(monkeypatch, tmp_path):
     assert dlg.isVisible()
     assert 'Vision' in '\n'.join(w.text() for w in dlg.findChildren(QLabel))
     dlg.close()
-    assert window.tabs.count() == 7
+    # The Workspace has EIGHT tabs (README "The UI"; dashboard.py
+    # builds them from this exact list). This assertion still
+    # pinned 7 after the eighth tab landed — pin the names, not
+    # just the count, so the next tab change fails with a
+    # readable diff instead of a bare number.
+    assert [window.tabs.tabText(i) for i in range(window.tabs.count())] == [
+        'Conversation', 'Inbox', 'Calendar', 'Tasks', 'Activity',
+        'Briefing', 'News', 'Memory']
     assert window.cpu._value == 25
     assert window.plaque_engine._value == 'Ollama'
     assert '<b>literal text</b>' in window.views['Conversation'].toPlainText()
