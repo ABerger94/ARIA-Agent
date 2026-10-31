@@ -29,6 +29,7 @@ body.facemode #app>*:not([data-panel="vision"]){display:none!important}body.face
 <div class="eyebrow">Your assistant, within reach</div><h1>Remote control</h1><p class="muted">Talk to ARIA. Check your inbox. Pick up where you left off.</p>
 <div class="stats"><div class="stat"><small>ARIA is</small><strong id="state">Connecting</strong></div><div class="stat"><small>Active engine</small><strong id="provider">Checking connection</strong></div></div>
 <section id="approvals" class="panel" hidden aria-live="polite"><div class="eyebrow">Confirmation needed</div><h2>ARIA is waiting for your OK</h2><div id="approval-list"></div><div id="approval-outcome" role="status"></div><button id="approval-refresh" class="secondary" type="button">Refresh</button></section>
+<section id="missions" class="panel" hidden><div class="eyebrow">Missions</div><h2>Durable jobs</h2><div id="mission-list"></div></section>
 <nav aria-label="Companion sections"><button data-tab="control" class="selected" aria-selected="true">Control</button><button data-tab="chat">Conversation</button><button data-tab="inbox">Inbox</button><button data-tab="briefing">Briefing</button><button data-tab="vision">Orb &amp; camera</button><button data-tab="settings">Settings</button></nav>
 <section data-panel="control" class="grid"><div class="panel"><div class="eyebrow">Voice connection</div><h2>What can I help with?</h2><p class="muted">Hold while you speak, or tap once to start and again to finish.</p><div class="talk-row"><button id="talk">Hold to talk</button><button id="ptt" type="button">Tap to talk</button></div><span id="astat" role="status">Audio: ready</span><button id="stop-speech" class="secondary" style="margin-top:16px">Stop speaking</button><button id="lock-aria" class="secondary" style="margin-top:16px;margin-left:8px">Lock ARIA</button></div><div class="stack"><div id="notifs" class="panel" hidden><div class="eyebrow">Notifications</div><div id="notif-list"></div></div><div class="panel"><div class="eyebrow">Latest from ARIA</div><p id="recent-reply">Your latest reply will appear here.</p></div><div class="panel"><h2>Start here</h2><div class="shortcuts"><button data-prompt="Give me my morning briefing">Daily briefing</button><button data-prompt="What tasks are running?">My tasks</button><button data-prompt="Check my calendar for today">Today's calendar</button></div></div><div class="tools"><a href="/upload">Send a file</a><a href="/commands">Command reference</a></div></div></section>
 <section data-panel="chat" hidden><div class="section-head"><h2>Conversation</h2><span class="muted">Synced with your laptop</span></div><div id="log"></div></section>
@@ -735,6 +736,38 @@ async function loadApprovals(){
 }
 document.getElementById('approval-refresh').onclick=loadApprovals;
 loadApprovals(); setInterval(loadApprovals, 5000);
+// Missions section (2026-10-31): read-only durable-mission
+// status — goal, status, step progress, and the delivery
+// summary once a mission settles. Text is set via textContent,
+// never parsed as HTML. Hidden when no missions exist. A
+// mission's parked steps resolve in the confirmation band
+// above, not here.
+function renderMissions(es){
+  var box=document.getElementById('missions');
+  var list=document.getElementById('mission-list');
+  box.hidden=!es.length; list.innerHTML='';
+  es.forEach(function(m){
+    var card=document.createElement('div'); card.className='approval-card';
+    var head=document.createElement('div'); head.className='eyebrow';
+    head.textContent='Mission #'+m.id+' — '+(m.status||'');
+    var goal=document.createElement('p'); goal.className='approval-desc';
+    goal.textContent=(m.goal||'')+'  ('+(m.done||0)+'/'+(m.total||0)+' steps)';
+    card.appendChild(head); card.appendChild(goal);
+    if(m.summary){
+      var sum=document.createElement('p'); sum.className='approval-desc';
+      sum.textContent=m.summary;
+      card.appendChild(sum);
+    }
+    list.appendChild(card);
+  });
+}
+async function loadMissions(){
+  try{
+    var r=await api('/api/missions'); var j=await r.json();
+    renderMissions((j&&j.missions)||[]);
+  }catch(e){}
+}
+loadMissions(); setInterval(loadMissions, 5000);
 // Phone notifications (Web Push): register the service worker, ask
 // permission, and hand the subscription to the bridge, which stores
 // it for aria/notify.py's push sink.

@@ -228,6 +228,13 @@ Briefing yields and re-expands exactly as before. Hosted
 geometry for all of it lives in test_shell_v21_layout.py —
 measured in the real Dashboard window, per the V16 lesson.
 
+Durable missions (2026-10-31, Alek's approved design): active
+mission cards ride the Today strip — goal, status, step
+progress, with Pause/Resume and Cancel wired through an
+injectable actor seam to aria.missions' own ops (pause toggles,
+cancel settles). No mission, no row: the strip's empty-hide
+behavior is unchanged when no mission exists.
+
 The card never fabricates: no briefing composed yet yields
 report_text's own honest placeholder line.
 
@@ -794,6 +801,31 @@ def _default_task_action(tid, action):
         pass
 
 
+def _default_missions():
+    """Durable missions for Today: aria.missions'
+    active_mission_cards() — non-terminal missions straight
+    from the missions table the executor runs."""
+    try:
+        from aria import missions
+        return missions.active_mission_cards()
+    except Exception:
+        return []
+
+
+def _default_mission_action(mid, action):
+    """Today's mission buttons through the missions module's
+    own ops: Pause/Resume -> pause_mission (toggle), Cancel
+    -> cancel_mission."""
+    try:
+        from aria import missions
+        if action in ("pause", "resume"):
+            missions.pause_mission(mid)
+        elif action == "cancel":
+            missions.cancel_mission(mid)
+    except Exception:
+        pass
+
+
 def _default_today_remote():
     """The network half of Today — {event, unread} — gathered
     OFF the UI thread (the panel throttles + signals it like
@@ -912,6 +944,7 @@ class ShellPanel(QWidget):
                  muted_provider=None, on_open_tab=None,
                  on_shell_action=None, tasks_provider=None,
                  task_actor=None, today_remote_provider=None,
+                 missions_provider=None, mission_actor=None,
                  pin_groups_provider=None, pin_groups_writer=None):
         super().__init__(parent)
         self.setObjectName("shellHome")
@@ -999,6 +1032,14 @@ class ShellPanel(QWidget):
         # off-thread provider like the weather's.
         self._tasks_provider = tasks_provider or _default_tasks
         self._task_actor = task_actor or _default_task_action
+        # Durable missions (2026-10-31): injectable seams over
+        # aria.missions — active mission cards ride the Today
+        # strip with Pause/Resume + Cancel wired to the
+        # missions module's own ops.
+        self._missions_provider = missions_provider or \
+            _default_missions
+        self._mission_actor = mission_actor or \
+            _default_mission_action
         self._today_remote_provider = today_remote_provider or \
             _default_today_remote
         self._today_remote = {"event": None, "unread": None}
@@ -1554,10 +1595,15 @@ class ShellPanel(QWidget):
             tasks = self._tasks_provider() or []
         except Exception:
             tasks = []
+        try:
+            mission_cards = self._missions_provider() or []
+        except Exception:
+            mission_cards = []
         model = shell_home.today_cards(
             self._now_provider(), tasks,
             self._today_remote.get("event"),
-            self._today_remote.get("unread"))
+            self._today_remote.get("unread"),
+            missions=mission_cards)
         self._today_model = model
         while self.today_rows.count():
             item = self.today_rows.takeAt(0)
@@ -1584,6 +1630,23 @@ class ShellPanel(QWidget):
                      self._task_clicked(tid, "snooze")))
             self.today_rows.addWidget(self._today_row(
                 f"{task['prompt']} · {task['when']}", buttons), 1)
+        for mc in model.get("missions") or []:
+            buttons = []
+            if "pause" in mc["actions"]:
+                buttons.append(
+                    ("Pause", lambda _c=False, mid=mc["id"]:
+                     self._mission_clicked(mid, "pause")))
+            if "resume" in mc["actions"]:
+                buttons.append(
+                    ("Resume", lambda _c=False, mid=mc["id"]:
+                     self._mission_clicked(mid, "resume")))
+            if "cancel" in mc["actions"]:
+                buttons.append(
+                    ("Cancel", lambda _c=False, mid=mc["id"]:
+                     self._mission_clicked(mid, "cancel")))
+            self.today_rows.addWidget(self._today_row(
+                f"Mission: {mc['goal']} · {mc['status']} · "
+                f"{mc['done']}/{mc['total']} steps", buttons), 1)
         if model["unread"]:
             n = model["unread"]
             self.today_rows.addWidget(self._today_row(
@@ -1640,6 +1703,13 @@ class ShellPanel(QWidget):
     def _task_clicked(self, tid, action):
         try:
             self._task_actor(tid, action)
+        except Exception:
+            pass
+        self.refresh_today()
+
+    def _mission_clicked(self, mid, action):
+        try:
+            self._mission_actor(mid, action)
         except Exception:
             pass
         self.refresh_today()

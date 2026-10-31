@@ -588,7 +588,8 @@ def _fmt_task_time(dt):
     return f"{h}:{dt.minute:02d} {'PM' if dt.hour >= 12 else 'AM'}"
 
 
-def today_cards(now, tasks, event, unread, task_limit=3):
+def today_cards(now, tasks, event, unread, task_limit=3,
+                missions=None):
     """Compose the Today section model.
 
     *tasks*: sched_list() rows (id, kind, prompt, interval_s,
@@ -599,6 +600,11 @@ def today_cards(now, tasks, event, unread, task_limit=3):
     *event*: {summary, start (datetime), all_day} or None.
     *unread*: an int count, or None when mail state is unknown
     (the mail row then hides rather than guessing zero).
+    *missions*: durable-mission cards (aria.missions
+    .active_mission_cards dicts: id, goal, status, done,
+    total) or None. A mission row carries Pause/Cancel while
+    it is live, Resume/Cancel while paused — the missions
+    module's own ops, no fake controls.
     """
     now = now or datetime.now()
     rows = []
@@ -644,11 +650,27 @@ def today_cards(now, tasks, event, unread, task_limit=3):
         except Exception:
             event_card = None
 
+    mission_rows = []
+    for mc in missions or []:
+        try:
+            status = str(mc.get("status") or "")
+            mission_rows.append({
+                "id": mc["id"], "goal": str(mc.get("goal") or ""),
+                "status": status,
+                "done": int(mc.get("done") or 0),
+                "total": int(mc.get("total") or 0),
+                "actions": (["resume", "cancel"]
+                            if status == "paused"
+                            else ["pause", "cancel"])})
+        except Exception:
+            continue
+
     return {"event": event_card, "tasks": rows,
+            "missions": mission_rows,
             "unread": (int(unread) if unread is not None
                        else None),
             "empty": event_card is None and not rows
-                     and not unread}
+                     and not mission_rows and not unread}
 
 
 # ------------------------------------------------------------------

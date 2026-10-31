@@ -122,6 +122,28 @@ _PENDING = {}
 # confirmed on screen" apart from a routine/delegated replay.
 _replay_local = threading.local()
 
+# Resolution listeners (Durable Mission Layer, 2026-10-31):
+# fn(token, tool, args, approved, result) fires after a pending
+# entry resolves, on approve AND deny. approve_token remains the
+# only execution route — listeners only OBSERVE outcomes so a
+# durable caller (aria.missions) can checkpoint the result of a
+# call it parked. A listener can never change the outcome.
+_RESOLUTION_LISTENERS = []
+
+
+def add_resolution_listener(fn) -> None:
+    if fn not in _RESOLUTION_LISTENERS:
+        _RESOLUTION_LISTENERS.append(fn)
+
+
+def _notify_resolution(token, entry, approved, result) -> None:
+    for fn in list(_RESOLUTION_LISTENERS):
+        try:
+            fn(token, entry.get("tool"), dict(entry.get("args")
+               or {}), approved, result)
+        except Exception as _e_silent:
+            config.log_silent("_notify_resolution", _e_silent)
+
 
 def in_approve_replay(tool, args) -> bool:
     """True while approve_token() is replaying exactly this call
@@ -355,9 +377,13 @@ def approve_token(token: str) -> str:
         else:
             config.add_log(
                 f"[approval] token={t} executed: {result[:200]}")
+        _notify_resolution(t, entry, True, result)
         return result
     except Exception as e:
         config.add_log(f"[approval] token={t} execution ERROR: {e}")
+        _notify_resolution(
+            t, entry, True,
+            f"[Approval error: failed to execute approved call: {e}]")
         return f"[Approval error: failed to execute approved call: {e}]"
     finally:
         _replay_local.current = None
@@ -372,7 +398,10 @@ def deny_token(token: str) -> str:
         return (f"[Approval error: unknown or expired token '{t}'. "
                 f"Call list_pending_approvals() to see open requests.]")
     config.add_log(f"[approval] denied token={t} tool={entry['tool']} — dropped")
-    return f"Denied and dropped: {entry['desc']} (token={t}). It was not executed."
+    result = (f"Denied and dropped: {entry['desc']} (token={t}). "
+              f"It was not executed.")
+    _notify_resolution(t, entry, False, result)
+    return result
 
 
 def pending_entries() -> list:

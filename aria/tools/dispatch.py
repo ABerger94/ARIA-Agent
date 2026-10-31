@@ -769,6 +769,15 @@ def _init_default_registry():
     _REGISTRY["set_timer"] = lambda a: scheduler.tool_set_timer(a.get("duration_text", "10m"), a.get("label", "timer"))
     _REGISTRY["list_scheduled_tasks"] = lambda a: scheduler.tool_list_scheduled()
     _REGISTRY["cancel_scheduled_task"] = lambda a: scheduler.tool_cancel_scheduled(int(a.get("task_id", 0)))
+    # Durable missions (2026-10-31, Alek's approved design):
+    # exactly four mission tools. The module is stdlib + aria
+    # internals only; the local import keeps the funnel loadable
+    # even if the missions module is ever broken.
+    from aria import missions as _missions_mod
+    _REGISTRY["mission_create"] = lambda a: _missions_mod.tool_mission_create(a)
+    _REGISTRY["mission_list"] = lambda a: _missions_mod.tool_mission_list(a)
+    _REGISTRY["mission_pause"] = lambda a: _missions_mod.tool_mission_pause(a)
+    _REGISTRY["mission_cancel"] = lambda a: _missions_mod.tool_mission_cancel(a)
     _REGISTRY["break_reminders"] = lambda a: scheduler.tool_break_reminders(a.get("enabled", True))
     _REGISTRY["calendar_setup"] = lambda a: builtins.tool_calendar_setup(a.get("ical_url", ""))
     _REGISTRY["check_calendar"] = lambda a: builtins.tool_check_calendar(a.get("days", 1))

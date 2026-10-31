@@ -596,6 +596,16 @@ def scheduler_loop(is_busy_fn: Optional[Callable[[], bool]] = None,
                 _reminder_gate_tick(is_busy_fn)
             except Exception as _e_silent:
                 _config_silent.log_silent("scheduler_loop", _e_silent)
+
+            # Durable missions (2026-10-31): the mission
+            # executor's tick — cheap when idle (one indexed
+            # SELECT), single-flight worker thread when a
+            # mission is runnable. Never break scheduling.
+            try:
+                from aria import missions as _missions_mod
+                _missions_mod.executor_tick()
+            except Exception as _e_silent:
+                _config_silent.log_silent("scheduler_loop", _e_silent)
         except Exception as e:
             add_log(f"Scheduler err: {e}")
         time.sleep(10)

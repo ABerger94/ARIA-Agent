@@ -136,6 +136,34 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
     {   'description': 'Cancels a scheduled task by its #id.',
         'name': 'cancel_scheduled_task',
         'parameters': {'properties': {'task_id': {'type': 'INTEGER'}}, 'required': ['task_id'], 'type': 'OBJECT'}},
+    {   'description': 'Creates a DURABLE mission: a multi-step job that survives restarts and runs in the '
+                       'background, one step at a time, checkpointing each finished step (finished steps never '
+                       're-run). steps is a JSON array of {"tool": name, "args": {...}} objects, executed in '
+                       'order. The plan parks for the user\'s one-time approval before anything runs. The '
+                       'authorization envelope defaults to the tools named in steps; a step outside the envelope, '
+                       'or an irreversible tool not listed in pre_approved_irreversible, parks for approval even '
+                       'in auto mode. allowed_tools / pre_approved_irreversible are comma-separated tool names. '
+                       'Use for jobs he hands over and walks away from, not quick one-off calls.',
+        'name': 'mission_create',
+        'parameters': {   'properties': {   'goal': {'type': 'STRING'},
+                                            'steps': {'type': 'STRING'},
+                                            'allowed_tools': {'type': 'STRING'},
+                                            'pre_approved_irreversible': {'type': 'STRING'},
+                                            'spend_cap': {'type': 'NUMBER'},
+                                            'deadline_minutes': {'type': 'INTEGER'}},
+                          'required': ['goal', 'steps'],
+                          'type': 'OBJECT'}},
+    {   'description': 'Lists durable missions with their status and step progress, newest first.',
+        'name': 'mission_list',
+        'parameters': {'properties': {}, 'type': 'OBJECT'}},
+    {   'description': 'Pauses an active durable mission (it stops between steps). Calling it on a paused '
+                       'mission resumes it.',
+        'name': 'mission_pause',
+        'parameters': {'properties': {'mission_id': {'type': 'INTEGER'}}, 'required': ['mission_id'], 'type': 'OBJECT'}},
+    {   'description': 'Cancels a durable mission: remaining steps never run and any parked approval for it '
+                       'is cleared from every surface.',
+        'name': 'mission_cancel',
+        'parameters': {'properties': {'mission_id': {'type': 'INTEGER'}}, 'required': ['mission_id'], 'type': 'OBJECT'}},
     {   'description': 'Saves a file to workspace.',
         'name': 'write_file',
         'parameters': {   'properties': {'content': {'type': 'STRING'}, 'filename': {'type': 'STRING'}},
@@ -714,6 +742,10 @@ TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persiste
                                   'set_recurring_task',
                                   'list_scheduled_tasks',
                                   'cancel_scheduled_task',
+                                  'mission_create',
+                                  'mission_list',
+                                  'mission_pause',
+                                  'mission_cancel',
                                   'set_timer',
                                   'break_reminders',
                                   'calendar_setup',

@@ -1044,6 +1044,20 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     {'pending': _approval_br.pending_entries()}
                 ).encode('utf-8'))
                 return
+            if self.path.split('?', 1)[0] == '/api/missions':
+                # Durable missions status for the phone page's
+                # Missions section (Alek's approved design,
+                # 2026-10-31): read-only summaries from
+                # aria.missions — goal, status, step progress,
+                # and the delivery summary once a mission
+                # settles. Resolving a mission's parked steps
+                # goes through the approval band above, never
+                # here. In-page only: no push, no manifest.
+                from aria import missions as _missions_br
+                self._send(200, json.dumps(
+                    {'missions': _missions_br.mission_summaries()}
+                ).encode('utf-8'))
+                return
             if self.path.startswith("/api/say"):
                 qs = self.path.split("?", 1)[1] if "?" in self.path else ""
                 params = dict(p.split("=", 1) for p in qs.split("&") if "=" in p)
