@@ -97,8 +97,11 @@ def briefing_card(report):
 
     *report* is the last composed briefing dict (or None when
     ARIA hasn't composed one yet this session). Lines are the
-    report's own section texts — schedule first, then the rest
-    in order, capped — never invented content.
+    report's own section texts, COMPLETE and untruncated —
+    schedule first, then every remaining section in order —
+    never invented content. (V3: the V2 card capped this at
+    three sections and Alek's witnessed briefing clipped
+    mid-sentence; the card now scrolls instead of cutting.)
     """
     if not report:
         return {"title": "Briefing", "empty": True,
@@ -108,7 +111,7 @@ def briefing_card(report):
                 if isinstance(s, dict) and s.get("text")]
     sections.sort(key=lambda s: 0 if "schedule" in
                   str(s.get("label", "")).lower() else 1)
-    lines = [str(s["text"]) for s in sections[:3]]
+    lines = [str(s["text"]) for s in sections]
     if not lines:
         text = str(report.get("text") or "").strip()
         lines = [text] if text else []

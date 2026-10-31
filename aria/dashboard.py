@@ -397,6 +397,13 @@ def create_dashboard(callbacks):
             self.settings_button = QPushButton('Settings'); self.settings_button.clicked.connect(self.settings); head.addWidget(self.settings_button)
             layout.addLayout(head)
             body = QSplitter(Qt.Orientation.Horizontal); layout.addWidget(body, 1)
+            # Shell Mode V3 (2026-10-30): the splitter + side
+            # columns are kept on self so Shell Home can take the
+            # FULL window — entering the shell hides both columns,
+            # leaving it restores them and the saved sizes.
+            self._body_splitter = body
+            self._split_sizes = None
+            self._shell_full = False
             left, ll = self.card('SYSTEM MONITOR'); left.setMinimumWidth(220); left.setMaximumWidth(290)
             self.left_card = left
             # The column must FIT the card with no scrolling (Alek,
@@ -807,6 +814,7 @@ def create_dashboard(callbacks):
             for text, fn in [('Commands', self.commands), ('Add file', self.browse_file), ('Attach clipboard', self.attach_clipboard)]:
                 b = QPushButton(text); b.clicked.connect(fn); row.addWidget(b)
             rl.addLayout(row); body.addWidget(right); body.setSizes([250, 560, 550])
+            self.right_card = right
             command = QHBoxLayout()
             self.entry = QLineEdit(); self.entry.setPlaceholderText('Talk to ARIA or give her a task…'); self.entry.returnPressed.connect(self.submit)
             # Typing recency for the visualizer's step-aside rule:
@@ -1562,6 +1570,52 @@ def create_dashboard(callbacks):
                 self._feed_memory_maps()
             self._show_centerpiece()
 
+        def _enter_shell_full(self):
+            """Shell Mode V3 (2026-10-30, Alek's witnessed
+            verdict): Shell Home takes the WHOLE window. The
+            V1/V2 shell lived in the centre column between the
+            System Monitor and the Workspace, squeezed too small
+            to read — so entering the shell hides BOTH side
+            columns and remembers the splitter sizes for an
+            exact restore. Idempotent and fail-soft per-widget,
+            like the exit path: the shell must always open."""
+            if getattr(self, '_shell_full', False):
+                return
+            self._shell_full = True
+            try:
+                self._split_sizes = self._body_splitter.sizes()
+            except Exception:
+                self._split_sizes = None
+            for col in (getattr(self, 'left_card', None),
+                        getattr(self, 'right_card', None)):
+                try:
+                    if col is not None:
+                        col.hide()
+                except Exception:
+                    pass
+
+        def _leave_shell_full(self):
+            """Restore the three-column dashboard exactly as it
+            was before Shell Home took the window (columns back,
+            saved splitter sizes back). No-op when the shell is
+            not holding the window."""
+            if not getattr(self, '_shell_full', False):
+                return
+            self._shell_full = False
+            for col in (getattr(self, 'left_card', None),
+                        getattr(self, 'right_card', None)):
+                try:
+                    if col is not None:
+                        col.show()
+                except Exception:
+                    pass
+            try:
+                if self._split_sizes:
+                    self._body_splitter.setSizes(self._split_sizes)
+            except Exception:
+                pass
+            self._split_sizes = None
+
         def open_shell_home(self):
             """ARIA OS (2026-10-30): bring Shell Home to the
             center, covering every centerpiece. The persisted
@@ -1581,6 +1635,7 @@ def create_dashboard(callbacks):
                 self.room.hide()
             if getattr(self, 'viz', None) is not None:
                 self.viz.hide()
+            self._enter_shell_full()
             self.shell.refresh_apps()
             self.shell.refresh_clock()
             self.shell.show()
@@ -1607,6 +1662,9 @@ def create_dashboard(callbacks):
             video owns the center card right now)."""
             if self.video is not None and self.video.isVisible():
                 return
+            # Leaving Shell Home by ANY path (Exit, a centerpiece
+            # swap) hands the side columns back (V3).
+            self._leave_shell_full()
             self.face.hide()
             if self.holo is not None:
                 self.holo.hide()

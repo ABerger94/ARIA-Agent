@@ -121,3 +121,33 @@ def test_centerpiece_swap_hides_shell(monkeypatch):
     assert not window.shell.isVisible()
     assert window.room.isVisible()
     window.close()
+
+
+# -- V3: Shell Home takes the full window -------------------------
+
+def test_shell_home_takes_full_window_and_exit_restores(monkeypatch):
+    window, _calls = _window(monkeypatch)
+    assert window.left_card.isVisible()
+    assert window.right_card.isVisible()
+    before = window._body_splitter.sizes()
+    window.open_shell_home()
+    assert window.shell.isVisible()
+    assert not window.left_card.isVisible()
+    assert not window.right_card.isVisible()
+    window.shell.exit_btn.click()
+    assert window.left_card.isVisible()
+    assert window.right_card.isVisible()
+    assert window._body_splitter.sizes() == before
+    window.close()
+
+
+def test_centerpiece_swap_restores_side_columns(monkeypatch):
+    window, _calls = _window(monkeypatch)
+    window.open_shell_home()
+    assert not window.left_card.isVisible()
+    assert not window.right_card.isVisible()
+    window.set_centerpiece('room')
+    assert not window.shell.isVisible()
+    assert window.left_card.isVisible()
+    assert window.right_card.isVisible()
+    window.close()

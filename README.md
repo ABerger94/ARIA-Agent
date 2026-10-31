@@ -244,18 +244,24 @@ author's direction: one program, ARIA, with Shell Mode built in.
   ARIA's orb beside it, a **tile grid** of your apps, a right rail
   of live cards, and the command bar as a dock pill along the
   bottom. Open it any time with the **Shell Home** button in the
-  dashboard's centre column.
+  dashboard's centre column. Opening it gives Shell Home the
+  **whole window**: the System Monitor and Workspace columns
+  step aside, and Exit restores them — divider positions
+  included — exactly as they were.
 - **App launcher** (`aria/app_launcher.py`) — your actual Start
   Menu, enumerated from its shortcuts (per-user and all-users roots,
   deduped and sorted), with ranked search: exact matches first,
   then name-prefix, word-prefix, and substring. Tiles show the
   real shortcut icon on Windows (Qt's icon provider) and a
   coloured letter tile everywhere else; double-click or Enter
-  launches.
+  launches — once: the panel has a single launch path plus a
+  same-app relaunch guard, so one double-click opens one window.
 
   ![Shell Home app search](docs/images/shell-search.png)
 - **Rail cards** — **Briefing** (the last composed briefing's own
-  sections, from `aria/briefing.py`), **Now Playing** (the live
+  sections, from `aria/briefing.py`, shown complete — the card is
+  tall and scrolls internally, so a long briefing wraps and
+  scrolls instead of clipping), **Now Playing** (the live
   SMTC session, from `aria/smtc.py`), and **Status** (approval
   mode, safe mode, voice — read from the real settings). Cards
   never fabricate: no briefing yet or nothing playing reads as

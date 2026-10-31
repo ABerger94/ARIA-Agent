@@ -8,6 +8,17 @@ ARIA's orb beside it, a **tile grid** of his real Start Menu apps
 the codebase (``aria.briefing.latest_briefing``,
 ``aria.smtc.now_playing_any``, ``aria.config`` /
 ``aria.approval``), and the command bar as a bottom dock pill.
+
+V3 (2026-10-30, Alek's witnessed verdict + approved redesign):
+the dashboard now gives Shell Home the FULL window (both side
+columns step aside), so this panel paints at reading size —
+card body text at 12pt-equivalent, no fixed heights that can
+clip, tile names wrapping to two lines, and the Briefing card
+tall and internally scrollable with the complete briefing text.
+V3 also fixes the witnessed double-launch: V2 connected BOTH
+``itemActivated`` and ``itemDoubleClicked`` to the same launch
+handler, and one double-click fires both — there is exactly one
+launch signal now, plus a same-app relaunch guard.
 Type (or later, say) what you want in the dock; an unambiguous
 app name launches it, everything else goes to ARIA as a normal
 turn through the dashboard's existing submit path, approval
@@ -31,6 +42,7 @@ to the real seams, lazily and fail-soft.
 from __future__ import annotations
 
 import sys
+import time
 from datetime import datetime
 
 from aria import app_launcher, shell_home
@@ -48,34 +60,50 @@ try:
         QListWidget,
         QListWidgetItem,
         QPushButton,
+        QScrollArea,
+        QSizePolicy,
         QVBoxLayout,
         QWidget,
     )
 except Exception:  # pragma: no cover - Qt absent (headless tools)
     QWidget = object
 
+#: Same-app relaunch guard (V3): a second launch of the SAME app
+#: inside this window is treated as signal bounce, not intent —
+#: the belt-and-braces half of the double-launch fix. Legitimate
+#: re-opens come seconds apart; the window stays far below that.
+LAUNCH_GUARD_SECONDS = 1.5
+
 _STYLE = """
 QWidget#shellHome { background: #0b1622; }
 QLabel#shellClock { color: #eaf6ff; font-size: 56px; font-weight: 600; }
 QLabel#shellGreeting { color: #57c7d4; font-size: 22px; }
-QLabel#shellDate { color: #8fb8c9; font-size: 14px; }
-QLabel#shellCount { color: #8fb8c9; font-size: 12px; }
+QLabel#shellDate { color: #8fb8c9; font-size: 15px; }
+QLabel#shellCount { color: #8fb8c9; font-size: 13px; }
 QLineEdit#shellSearch { background: #101f30; color: #eaf6ff;
             border: 1px solid #1b3042; border-radius: 6px;
             padding: 9px 12px; font-size: 15px; }
 QListWidget#shellAppList { background: #0e1c2c; color: #dceef7;
               border: 1px solid #1b3042; border-radius: 10px;
-              font-size: 13px; }
+              font-size: 14px; }
 QListWidget#shellAppList::item { padding: 8px 4px; }
 QListWidget#shellAppList::item:selected { background: #17435a;
               border-radius: 8px; }
 QFrame#shellCard { background: #0e1c2c; border: 1px solid #1b3042;
               border-radius: 10px; }
-QLabel#shellCardTitle { color: #57c7d4; font-size: 12px;
+QLabel#shellCardTitle { color: #57c7d4; font-size: 14px;
               font-weight: 700; }
-QLabel#shellCardBody { color: #dceef7; font-size: 13px; }
-QLabel#shellCardBodyEmpty { color: #8fb8c9; font-size: 13px;
-              font-style: italic; }
+QLabel#shellCardBody { color: #dceef7; font-size: 16px;
+              background: #0e1c2c; }
+QLabel#shellCardBodyEmpty { color: #8fb8c9; font-size: 16px;
+              font-style: italic; background: #0e1c2c; }
+QScrollArea#shellCardScroll { background: #0e1c2c;
+              border: none; }
+QScrollBar:vertical { background: #0e1c2c; width: 10px; }
+QScrollBar::handle:vertical { background: #2b5873;
+              border-radius: 5px; min-height: 24px; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+              height: 0; }
 QFrame#shellDock { background: #101f30; border: 1px solid #2b5873;
               border-radius: 22px; }
 QLineEdit#shellCommand { background: transparent; color: #eaf6ff;
@@ -183,7 +211,8 @@ class ShellPanel(QWidget):
                  on_launch=None, on_command=None, on_exit=None,
                  now_provider=None, shell_mode=None,
                  on_shell_mode=None, briefing_provider=None,
-                 now_playing_provider=None, status_provider=None):
+                 now_playing_provider=None, status_provider=None,
+                 time_provider=None):
         super().__init__(parent)
         self.setObjectName("shellHome")
         self.setStyleSheet(_STYLE)
@@ -194,6 +223,12 @@ class ShellPanel(QWidget):
         self._on_exit = on_exit
         self._on_shell_mode = on_shell_mode
         self._now_provider = now_provider or datetime.now
+        # Monotonic clock for the relaunch guard — injectable so
+        # the guard window is testable without real waiting.
+        self._time_provider = time_provider or time.monotonic
+        self._last_launch_key = None
+        self._last_launch_at = 0.0
+        self.briefing_scroll = None  # set by the Briefing card
         self._briefing_provider = briefing_provider or _default_briefing
         self._now_playing_provider = (now_playing_provider
                                       or _default_now_playing)
@@ -239,33 +274,41 @@ class ShellPanel(QWidget):
         self.app_list.setObjectName("shellAppList")
         self.app_list.setViewMode(QListWidget.ViewMode.IconMode)
         self.app_list.setIconSize(QSize(48, 48))
-        self.app_list.setGridSize(QSize(136, 108))
+        # V3: cell height carries a TWO-line name — IconMode
+        # elides a long name that cannot fit its cell, and the
+        # squeezed V2 render showed names sliced to one line.
+        self.app_list.setGridSize(QSize(120, 122))
         self.app_list.setWordWrap(True)
         self.app_list.setResizeMode(
             QListWidget.ResizeMode.Adjust)
         self.app_list.setMovement(QListWidget.Movement.Static)
         self.app_list.setUniformItemSizes(True)
+        # ONE launch signal path (V3 double-launch fix): V2 also
+        # connected itemDoubleClicked here, and Qt fires BOTH
+        # signals for a single double-click — every double-click
+        # launched the app twice on Alek's machine. itemActivated
+        # alone already covers double-click AND Enter.
         self.app_list.itemActivated.connect(self._activate_item)
-        self.app_list.itemDoubleClicked.connect(self._activate_item)
         left.addWidget(self.app_list, 1)
 
         self.count_label = QLabel("")
         self.count_label.setObjectName("shellCount")
         left.addWidget(self.count_label)
-        main.addLayout(left, 3)
+        main.addLayout(left, 2)
 
         rail = QVBoxLayout()
         rail.setSpacing(10)
+        # Briefing takes the rail's slack and scrolls internally:
+        # the full briefing, wrapped, never clipped mid-line.
         self.briefing_frame, self.briefing_body = self._make_card(
-            "BRIEFING")
-        rail.addWidget(self.briefing_frame)
+            "BRIEFING", scroll_body=True)
+        rail.addWidget(self.briefing_frame, 1)
         self.playing_frame, self.playing_body = self._make_card(
             "NOW PLAYING")
         rail.addWidget(self.playing_frame)
         self.status_frame, self.status_body = self._make_card(
             "STATUS")
         rail.addWidget(self.status_frame)
-        rail.addStretch(1)
 
         if shell_mode is None:
             try:
@@ -280,7 +323,7 @@ class ShellPanel(QWidget):
         self.shell_mode_box.setChecked(bool(shell_mode))
         self.shell_mode_box.toggled.connect(self._shell_mode_toggled)
         rail.addWidget(self.shell_mode_box)
-        main.addLayout(rail, 2)
+        main.addLayout(rail, 1)
         root.addLayout(main, 1)
 
         # -- bottom dock: command pill + Exit to Windows ---------
@@ -317,7 +360,7 @@ class ShellPanel(QWidget):
         self._refilter()
 
     # -- construction helpers -----------------------------------
-    def _make_card(self, title):
+    def _make_card(self, title, scroll_body=False):
         frame = QFrame()
         frame.setObjectName("shellCard")
         lay = QVBoxLayout(frame)
@@ -329,7 +372,42 @@ class ShellPanel(QWidget):
         body = QLabel("")
         body.setObjectName("shellCardBody")
         body.setWordWrap(True)
-        lay.addWidget(body)
+        # The label NEVER paints its own background: its palette
+        # is the app palette (light Window), and inside the
+        # scroll area that becomes a white slab under light
+        # text. The card frame owns the surface; the label is
+        # text only. (First V3 capture caught the slab.)
+        body.setAutoFillBackground(False)
+        body.setAlignment(Qt.AlignmentFlag.AlignTop
+                          | Qt.AlignmentFlag.AlignLeft)
+        if scroll_body:
+            # The label sizes to its full wrapped content; the
+            # scroll area is the card's viewport onto it. Nothing
+            # clips: overflow becomes a scrollbar, not an elision.
+            # Background discipline: the area's stylesheet rule
+            # paints it the CARD colour (never transparent) — the
+            # body label auto-fills with its inherited Window
+            # palette colour, and a transparent/broken link in
+            # that chain drops it back to the app palette's light
+            # Window colour: a white slab under light text, which
+            # is exactly what the first V3 capture caught.
+            scroll = QScrollArea()
+            scroll.setObjectName("shellCardScroll")
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll.setVerticalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            body.setMargin(6)
+            scroll.setWidget(body)
+            scroll.setMinimumHeight(190)
+            lay.addWidget(scroll, 1)
+            frame.setSizePolicy(QSizePolicy.Policy.Preferred,
+                                QSizePolicy.Policy.Expanding)
+            self.briefing_scroll = scroll
+        else:
+            lay.addWidget(body)
         return frame, body
 
     def _set_card(self, body_label, card):
@@ -416,6 +494,21 @@ class ShellPanel(QWidget):
             self._launch(app)
 
     def _launch(self, app):
+        # Same-app relaunch guard (V3): one physical gesture can
+        # still reach this method twice through paths no signal
+        # audit can fully foresee (an OS-level double activation,
+        # a command-bar Enter bouncing) — a repeat of the SAME
+        # app inside the guard window is bounce, not intent, and
+        # is dropped. A different app, or the same app after the
+        # window, launches normally.
+        key = (str((app or {}).get("name", "")),
+               str((app or {}).get("path", "")))
+        now = self._time_provider()
+        if key == self._last_launch_key and \
+                now - self._last_launch_at < LAUNCH_GUARD_SECONDS:
+            return
+        self._last_launch_key = key
+        self._last_launch_at = now
         if self._on_launch is not None:
             self._on_launch(app)
         else:

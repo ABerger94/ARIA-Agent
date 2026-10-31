@@ -136,6 +136,31 @@ def test_briefing_card_uses_report_sections_schedule_first():
     assert len(card["lines"]) == 2
 
 
+def test_briefing_card_passes_full_text_untruncated():
+    # V3 regression: the V2 card capped the briefing at three
+    # sections and Alek's witnessed card clipped mid-sentence.
+    # The formatter now passes EVERY section's full text, and
+    # the panel scrolls instead of cutting.
+    long_text = ("Schedule: " + "a long briefing sentence that "
+                 "keeps going and going, " * 10).strip()
+    report = {"sections": [
+        {"label": "Tech news", "text": "Tech: things happened."},
+        {"label": "Today's schedule", "text": long_text},
+        {"label": "Local weather", "text": "Weather: cold."},
+        {"label": "Email", "text": "Email: two threads wait."},
+        {"label": "World news", "text": "World: more things."},
+    ]}
+    card = shell_home.briefing_card(report)
+    assert card["empty"] is False
+    # Schedule first, then every other section in order, complete.
+    assert card["lines"][0] == long_text
+    assert card["lines"][1:] == ["Tech: things happened.",
+                                 "Weather: cold.",
+                                 "Email: two threads wait.",
+                                 "World: more things."]
+    assert len(card["lines"]) == 5
+
+
 def test_now_playing_card_states():
     card = shell_home.now_playing_card(None)
     assert card["empty"] is True

@@ -89,6 +89,90 @@ def test_item_activation_launches():
     assert [a["name"] for a in calls["launch"]] == ["Steam"]
 
 
+# -- V3: the double-launch fix ------------------------------------
+# The bug shipped because offscreen tests emitted signals by hand
+# and never sent a REAL double-click. V2 had connected both
+# itemActivated and itemDoubleClicked to the launch handler, and
+# Qt fires both for one double-click — so these tests drive the
+# widget the way a hand does.
+
+def _send_mouse(widget, etype, pos):
+    """Dispatch one QMouseEvent of *etype* at *pos*, synchronously.
+
+    A physical double-click reaches a Qt widget as the platform
+    sequence Press, Release, MouseButtonDblClick, Release — this
+    sends exactly those events through the widget's real event
+    handlers. (QTest.mouseDClick cannot be used here: on this
+    offscreen platform it drops every event after the first
+    press — verified against a bare QListWidget, which also
+    received only itemPressed — so its sequence never becomes a
+    double-click at all.)"""
+    from PyQt6.QtCore import QEvent, QPointF, Qt
+    from PyQt6.QtGui import QMouseEvent
+    buttons = (Qt.MouseButton.LeftButton
+               if etype != QEvent.Type.MouseButtonRelease
+               else Qt.MouseButton.NoButton)
+    event = QMouseEvent(etype, QPointF(pos),
+                        QPointF(widget.mapToGlobal(pos)),
+                        Qt.MouseButton.LeftButton, buttons,
+                        Qt.KeyboardModifier.NoModifier)
+    _APP.sendEvent(widget, event)
+
+
+def test_real_double_click_launches_exactly_once():
+    from PyQt6.QtCore import QEvent
+    panel, calls = _panel()
+    panel.resize(1000, 700)
+    panel.show()
+    _APP.processEvents()
+    item = panel.app_list.item(1)  # Steam
+    centre = panel.app_list.visualItemRect(item).center()
+    viewport = panel.app_list.viewport()
+    _send_mouse(viewport, QEvent.Type.MouseButtonPress, centre)
+    _send_mouse(viewport, QEvent.Type.MouseButtonRelease, centre)
+    _send_mouse(viewport, QEvent.Type.MouseButtonDblClick, centre)
+    _send_mouse(viewport, QEvent.Type.MouseButtonRelease, centre)
+    _APP.processEvents()
+    # One physical double-click: itemDoubleClicked AND
+    # itemActivated both fire (proven at the widget level) — the
+    # launch callback must still run exactly once.
+    assert [a["name"] for a in calls["launch"]] == ["Steam"]
+    panel.hide()
+
+
+def test_relaunch_guard_blocks_repeat_within_window():
+    clock = [1000.0]
+    panel, calls = _panel(time_provider=lambda: clock[0])
+    steam = panel.app_list.item(1)
+    calc = panel.app_list.item(2)
+    panel.app_list.itemActivated.emit(steam)
+    panel.app_list.itemActivated.emit(steam)  # bounce: dropped
+    assert [a["name"] for a in calls["launch"]] == ["Steam"]
+    clock[0] += 1.0  # still inside the 1.5s guard window
+    panel.app_list.itemActivated.emit(steam)
+    assert len(calls["launch"]) == 1
+    panel.app_list.itemActivated.emit(calc)  # different app: fine
+    assert [a["name"] for a in calls["launch"]] == \
+        ["Steam", "Calculator"]
+    clock[0] += 2.0  # past the window: same app launches again
+    panel.app_list.itemActivated.emit(steam)
+    assert [a["name"] for a in calls["launch"]] == \
+        ["Steam", "Calculator", "Steam"]
+
+
+def test_v3_layout_grid_metrics_and_briefing_scroll():
+    from PyQt6.QtCore import QSize
+    from PyQt6.QtWidgets import QScrollArea
+    panel, _calls = _panel()
+    # Tiles: 48px icons, cells tall enough for two-line names.
+    assert panel.app_list.iconSize() == QSize(48, 48)
+    assert panel.app_list.gridSize() == QSize(120, 122)
+    # The Briefing body lives inside a scroll area — overflow
+    # scrolls instead of clipping (the witnessed V2 defect).
+    assert isinstance(panel.briefing_scroll, QScrollArea)
+    assert panel.briefing_scroll.widget() is panel.briefing_body
+
+
 def test_exit_button_fires_callback():
     panel, calls = _panel()
     panel.exit_btn.click()
