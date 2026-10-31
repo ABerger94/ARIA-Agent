@@ -217,8 +217,11 @@ def needs_approval(tool: str, args=None) -> bool:
         return True
     # confirm-risky: only the destructive set, and file_organize only when
     # it will actually move files (dry_run=false; default is dry_run=true).
+    # Discovered MCP tools cannot be enumerated in the static set: their
+    # names are generated when a server connects, and the remote tool's
+    # effects are unknown, so the canonical classifier gates them all.
     if tool not in DESTRUCTIVE_TOOLS:
-        return False
+        return config.is_discovered_mcp_tool(tool)
     if tool == "file_organize":
         return not _as_bool((args or {}).get("dry_run"), default=True)
     if tool == "manage_background_job":
@@ -231,6 +234,11 @@ def _describe_tool(tool: str, args) -> str:
     """One-line human description of what the held call would do."""
     a = args or {}
     try:
+        _mcp = config.parse_discovered_mcp_tool(tool)
+        if _mcp:
+            _server, _remote_tool = _mcp
+            return (f"call MCP tool '{_remote_tool}' on server "
+                    f"'{_server}' (tool '{tool}')")
         if tool == "run_shell_command":
             return f"run shell command '{a.get('command', '')}' in '{a.get('cwd', '')}'"
         if tool == "run_python_code":

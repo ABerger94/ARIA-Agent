@@ -497,6 +497,47 @@ SAFE_MODE_BLOCKED_TOOLS = frozenset({
     "launch_app",
 })
 
+# Discovered MCP tools register dynamically as mcp_<server>__<tool>
+# (aria/mcp.py _register_server_tools). Those names are generated at
+# connection time, so they cannot be listed in the static policy sets
+# above. Their effects are whatever a third-party MCP server chooses
+# to expose, so policy treats the whole discovered namespace
+# conservatively: approval under confirm-risky and a hard block in
+# safe mode. The built-in MCP management tools have no "__"
+# separator and are classified by their own static policy entries.
+_DISCOVERED_MCP_TOOL_RE = re.compile(
+    r"^mcp_(?P<server>[A-Za-z0-9_.-]+)__(?P<tool>[A-Za-z0-9_.-]+)$")
+
+
+def parse_discovered_mcp_tool(name):
+    """Return (server, remote_tool) for a discovered MCP tool name.
+
+    Returns None for built-in MCP management names and every other
+    tool name. This is the canonical name classifier shared by the
+    approval and safe-mode layers.
+    """
+    if not isinstance(name, str):
+        return None
+    match = _DISCOVERED_MCP_TOOL_RE.match(name.strip())
+    if not match:
+        return None
+    return match.group("server"), match.group("tool")
+
+
+def is_discovered_mcp_tool(name) -> bool:
+    """True if *name* has the discovered MCP tool shape."""
+    return parse_discovered_mcp_tool(name) is not None
+
+
+def is_safe_mode_blocked(name) -> bool:
+    """True if *name* is hard-blocked while safe mode is enabled.
+
+    The static set remains the source for built-in tools; discovered
+    MCP tools are blocked by classification because their dynamic
+    names cannot be enumerated in that set.
+    """
+    return name in SAFE_MODE_BLOCKED_TOOLS or is_discovered_mcp_tool(name)
+
 
 def is_safe_mode() -> bool:
     if os.environ.get("ARIA_SAFE_MODE", "").strip().lower() in ("1", "true", "yes"):

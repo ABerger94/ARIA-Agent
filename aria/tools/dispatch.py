@@ -340,7 +340,7 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
     # 3a. Safe mode: shell, GUI control, and email are hard-blocked.
     if not preauthorized:
         from aria import config as _config_mod
-        if _config_mod.is_safe_mode() and fn_name in _config_mod.SAFE_MODE_BLOCKED_TOOLS:
+        if _config_mod.is_safe_mode() and _config_mod.is_safe_mode_blocked(fn_name):
             return (f"[Safe mode: '{fn_name}' is disabled. "
                     f"Disable safe mode to use shell, GUI control, or email.]",
                     False)

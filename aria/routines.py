@@ -230,7 +230,8 @@ def run_routine_impl(name: str, params=None) -> str:
     Three guards apply on top of that preauthorization, because a
     preauthorized replay otherwise skips the dispatcher's own checks:
     (1) safe mode is a hard block, not an approval — a step whose tool
-    is in SAFE_MODE_BLOCKED_TOOLS is skipped while safe mode is on,
+    is safe-mode-blocked (the static set, or a discovered MCP tool by
+    classification) is skipped while safe mode is on,
     even for trusted routines and even in auto mode (where
     needs_approval() is False and the step would otherwise replay
     preauthorized past the check); (2) a step that pauses for
@@ -288,7 +289,7 @@ def run_routine_impl(name: str, params=None) -> str:
             _safe = config.is_safe_mode()
         except Exception:
             _safe = False
-        if _safe and tool in config.SAFE_MODE_BLOCKED_TOOLS:
+        if _safe and config.is_safe_mode_blocked(tool):
             lines.append(f"{i}. {tool} -> [Safe mode: '{tool}' is disabled. "
                          f"Disable safe mode to use shell, GUI control, "
                          f"or email.]")
@@ -298,7 +299,7 @@ def run_routine_impl(name: str, params=None) -> str:
         # nested name gets the same safe-mode treatment, and an
         # untrusted replay must not carry preauthorization into it.
         nested = _wrapper_nested_tool(tool, args)
-        if _safe and nested in config.SAFE_MODE_BLOCKED_TOOLS:
+        if _safe and nested is not None and config.is_safe_mode_blocked(nested):
             lines.append(f"{i}. {tool} -> [Safe mode: '{nested}' is disabled. "
                          f"Disable safe mode to use shell, GUI control, "
                          f"or email.]")
