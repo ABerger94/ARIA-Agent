@@ -1815,20 +1815,29 @@ class ShellPanel(QWidget):
         """Move left / Move right (V17-B; was Move up/down):
         the pure IN-GROUP move over the current entries —
         a tile slides along its shelf and never crosses into
-        the neighbouring group — persisted, repainted."""
+        the neighbouring group — persisted, repainted. V18:
+        the arrangement lives on the pinned home, so a stale
+        search is cleared first and the result is visible
+        where it happened."""
         path = app_launcher.app_key(app or {})
         if not path:
             return
+        self._clear_search()
         self._write_entries(shell_home.move_entry_in_group(
             self._pin_entries(), path, delta))
         self._refilter()
 
     def move_pin_to_group(self, app, group):
         """Move to group ▸: the pure regroup, persisted,
-        repainted."""
+        repainted. V18: same reveal as move_pin — grouping
+        from a search result used to leave the stale search
+        on screen (the grouped shelf page exists only in the
+        pinned view), so the action looked like it ate the
+        pins; now it lands on the home it changed."""
         path = app_launcher.app_key(app or {})
         if not path:
             return
+        self._clear_search()
         self._write_entries(shell_home.set_entry_group(
             self._pin_entries(), path, group))
         self._refilter()
@@ -1861,8 +1870,13 @@ class ShellPanel(QWidget):
 
     def set_view_all(self, show_all):
         """Switch the grid's base view (Pinned <-> All Apps)
-        and re-render. Search, while text is present, overrides
-        the base view either way."""
+        and re-render. V18: the toggle is a navigation act, so
+        it clears any transient search first — asking for a
+        base view must show that view, not a stale query's
+        results (the pin-loss trap). While text is present
+        (typed, not navigated away from), search still
+        searches everything, as V8 designed."""
+        self._clear_search()
         self._view_all = bool(show_all)
         self._refilter()
 
@@ -2031,7 +2045,30 @@ class ShellPanel(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        # V18 (2026-10-31, Alek's live pin-loss report): Shell
+        # Home (re)opens CLEAN — a search typed on a previous
+        # visit must not still be masking the pinned home. The
+        # panel is one long-lived widget and _refilter lets a
+        # non-empty query override every base view, so leftover
+        # text made his pins "disappear" (and grouping, which
+        # renders only in the pinned view, never appeared).
+        self._clear_search()
         self._fit_shelf_heights()
+
+    def _clear_search(self):
+        """Drop any transient search text (V18). While text is
+        present the grid shows search results instead of the
+        current base view — by design while he is searching,
+        a trap once he has navigated away. Navigation seams
+        (the panel being shown, the view toggle, the pin
+        arrangement actions) call this so the view he asked
+        for is the view he gets. The clear fires textChanged,
+        which re-runs _refilter on the unmasked view."""
+        try:
+            if self.search.text():
+                self.search.clear()
+        except Exception:
+            pass
 
     def _shelf_sections_walk(self):
         """[(group, [pin keys in painted shelf order])] — the

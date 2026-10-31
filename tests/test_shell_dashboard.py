@@ -6,6 +6,7 @@ its command bar routes chat text through the dashboard's normal
 submit callback, and the Dashboard button hides the shell, leaves
 fullscreen, and restores the persisted centerpiece.
 """
+import json
 import os
 import sys
 import types
@@ -463,5 +464,73 @@ def test_shell_hosted_chrome_steps_aside_and_restores(
         assert centerpiece.isVisible()
         stack = window.center_stack
         assert stack.width() > 400 and stack.height() > 300
+    finally:
+        window.close()
+
+
+# -- Shell Home V18 hosted pin-loss regression (2026-10-31) ------
+# Alek's live V17 report: pins "disappeared" when he grouped,
+# and nothing stayed pinned. Hosted diagnosis: storage was
+# never lost — the search text from the V17 witness step
+# ("search Spotify in All apps") stayed in the box and masked
+# the pinned home across exit/re-open, grouping included
+# (the shelf page exists only in the pinned view). This test
+# runs the whole flow in the real Dashboard window over a
+# temp HOME: pin, search, pin + group from the search, exit,
+# re-open — the grouped home must be what's on stage, and the
+# ui.json on disk must hold every pin and the group.
+
+def test_shell_hosted_grouped_pins_survive_reopen(monkeypatch,
+                                                  tmp_path):
+    monkeypatch.setenv('HOME', str(tmp_path))
+    import aria.app_launcher as launcher
+    sm = (r"C:\Users\Allen\AppData\Roaming\Microsoft\Windows"
+          r"\Start Menu\Programs")
+    apps = [{'name': n, 'path': sm + '\\' + n + '.lnk'}
+            for n in ('Google Chrome', 'Microsoft Edge',
+                      'File Explorer', 'Command Prompt')]
+    spotify = {'name': 'Spotify',
+               'appid': 'SpotifyAB.SpotifyMusic_1.0!Spotify'}
+    apps = apps + [spotify]
+    monkeypatch.setattr(
+        launcher, 'enumerate_all_apps',
+        lambda roots, **kw: [dict(a) for a in apps])
+    window, _calls = _window(monkeypatch, show=False)
+    try:
+        app = QApplication.instance()
+        shell = window.shell
+        window.resize(1920, 1003)
+        window.show()
+        window.open_shell_home()
+        shell.refresh_apps()
+        shell.set_view_all(True)
+        for a in apps[:4]:
+            shell.toggle_pin(a)
+        shell.set_view_all(False)
+        # The V17 witness step that armed the trap.
+        shell.search.setText('spotify')
+        app.processEvents()
+        shell.toggle_pin(spotify)
+        shell.move_pin_to_group(spotify, 'Media')
+        window.exit_shell_home()
+        window.open_shell_home()
+        app.processEvents()
+        # Re-opened on the grouped home, every pin on stage.
+        assert shell.search.text() == ''
+        assert (shell.grid_stack.currentWidget()
+                is shell.shelf_scroll)
+        shelves = {g: [lst.item(i).text()
+                       for i in range(lst.count())]
+                   for g, lst in shell._shelf_lists}
+        assert shelves['Media'] == ['Spotify']
+        assert sorted(shelves['']) == sorted(
+            a['name'] for a in apps[:4])
+        assert shell.count_label.text() == '5 pinned'
+        # And the file store really holds it all.
+        data = json.loads((tmp_path / 'ARIA' / 'ui.json')
+                          .read_text(encoding='utf-8'))
+        assert len(data['pinned_apps']) == 5
+        assert data['pin_groups'] == {
+            'appid:SpotifyAB.SpotifyMusic_1.0!Spotify': 'Media'}
     finally:
         window.close()
