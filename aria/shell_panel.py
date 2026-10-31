@@ -120,6 +120,21 @@ itself — the panel reaches for none of those widgets).
 the normal submit path. Text matching nothing still falls
 through _submit_command to route_command/chat, unchanged.
 
+V13 (2026-10-31, Alek's order): actionable Today cards. A
+compact Today section sits above the Briefing in the rail:
+the next calendar event with an Open button (the V12 tab
+callback to Calendar), scheduled tasks that are due or due
+within 24h with Done / Snooze +1h buttons on 'once' rows
+(scheduler.sched_cancel / the new sched_snooze — real ops on
+the real table), and the unread mail count with an Open
+button to Inbox. Tasks read live on the tick (local sqlite);
+calendar and mail are network, so they arrive through a
+throttled off-thread fetch like the weather's. Every input
+fails soft and the section hides when there is nothing to
+act on. No pause/resume control exists: scheduled_tasks has
+no enabled flag and no pause seam — state is shown, never a
+fake button. The tall Briefing card below is untouched.
+
 The card never fabricates: no briefing composed yet yields
 report_text's own honest placeholder line.
 
@@ -524,6 +539,74 @@ def _default_ack_reminders():
         pass
 
 
+# -- V13 Today providers: the real seams, lazy + fail-soft -----
+
+def _default_tasks():
+    """Scheduled tasks for Today: scheduler.sched_list() —
+    (id, kind, prompt, interval_s, next_run) rows straight
+    from the scheduled_tasks table the scheduler itself runs."""
+    try:
+        from aria import scheduler
+        return scheduler.sched_list()
+    except Exception:
+        return []
+
+
+def _default_task_action(tid, action):
+    """Today's task buttons through the scheduler's own ops:
+    Done -> sched_cancel (the row is finished, it will not
+    fire), Snooze -> sched_snooze (+1h, 'once' rows only)."""
+    try:
+        from aria import scheduler
+        if action == "done":
+            scheduler.sched_cancel(tid)
+        elif action == "snooze":
+            scheduler.sched_snooze(tid, 3600)
+    except Exception:
+        pass
+
+
+def _default_today_remote():
+    """The network half of Today — {event, unread} — gathered
+    OFF the UI thread (the panel throttles + signals it like
+    the weather fetch). Event: the next not-yet-ended event
+    from the same iCal feed tool_check_calendar reads.
+    Unread: the [uid= line count of tool_read_email(
+    unread_only=True) — the exact parse the briefing's email
+    section uses; 'No messages match' is a real zero, while a
+    credentials/fetch failure stays None (unknown, row hides).
+    """
+    event = None
+    unread = None
+    try:
+        from aria.tools import builtins
+        url = builtins._ical_url()
+        if url:
+            from aria import ical
+            now = datetime.now()
+            for e in ical.upcoming_from_feed(url, days=7):
+                if e["end"] >= now:
+                    event = {"summary": e["summary"],
+                             "start": e["start"],
+                             "all_day": e["all_day"]}
+                    break
+    except Exception:
+        event = None
+    try:
+        from aria.tools import builtins
+        res = builtins.tool_read_email(unread_only=True, limit=99)
+        if res and "No messages match" in res:
+            unread = 0
+        elif res and "No Gmail credentials" not in res:
+            lines = [l for l in res.split("\n")
+                     if l.strip().startswith("[uid=")]
+            if lines:
+                unread = len(lines)
+    except Exception:
+        unread = None
+    return {"event": event, "unread": unread}
+
+
 # -- V12 palette providers: the real seams, lazy + fail-soft ----
 
 def _default_files():
@@ -584,6 +667,9 @@ class ShellPanel(QWidget):
     # delivered back to the UI thread through this signal.
     if pyqtSignal is not None:
         _weather_ready = pyqtSignal(str, str)
+        # V13: the Today section's network half (next calendar
+        # event + unread count), same off-thread pattern.
+        _today_ready = pyqtSignal(object)
 
     def __init__(self, parent=None, apps=None, apps_provider=None,
                  on_launch=None, on_command=None,
@@ -596,7 +682,8 @@ class ShellPanel(QWidget):
                  files_provider=None, history_provider=None,
                  history_writer=None, file_opener=None,
                  muted_provider=None, on_open_tab=None,
-                 on_shell_action=None):
+                 on_shell_action=None, tasks_provider=None,
+                 task_actor=None, today_remote_provider=None):
         super().__init__(parent)
         self.setObjectName("shellHome")
         # Accent (V4 addendum): an explicit accent wins; otherwise
@@ -668,6 +755,20 @@ class ShellPanel(QWidget):
         self._on_open_tab = on_open_tab
         self._on_shell_action = on_shell_action
         self._palette_suppress = False
+        # Today cards (V13): injectable seams — scheduled tasks
+        # + their actor (local sqlite, read on the tick), and
+        # the network half (calendar + mail) through a throttled
+        # off-thread provider like the weather's.
+        self._tasks_provider = tasks_provider or _default_tasks
+        self._task_actor = task_actor or _default_task_action
+        self._today_remote_provider = today_remote_provider or \
+            _default_today_remote
+        self._today_remote = {"event": None, "unread": None}
+        self._today_fetched_at = None
+        self._today_thread = None
+        self._today_model = None
+        if pyqtSignal is not None:
+            self._today_ready.connect(self._apply_today_remote)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(36, 28, 36, 24)
@@ -787,6 +888,24 @@ class ShellPanel(QWidget):
 
         rail = QVBoxLayout()
         rail.setSpacing(10)
+        # V13: the Today section sits above the Briefing in the
+        # rail — a compact card of actionable rows (next event,
+        # due tasks, unread mail) that hides entirely when
+        # there is nothing to act on. Rows are rebuilt by
+        # refresh_today; the frame is built once here.
+        self.today_frame = QFrame()
+        self.today_frame.setObjectName("shellCard")
+        today_lay = QVBoxLayout(self.today_frame)
+        today_lay.setContentsMargins(14, 10, 14, 10)
+        today_lay.setSpacing(6)
+        today_head = QLabel("TODAY")
+        today_head.setObjectName("shellCardTitle")
+        today_lay.addWidget(today_head)
+        self.today_rows = QVBoxLayout()
+        self.today_rows.setSpacing(6)
+        today_lay.addLayout(self.today_rows)
+        self.today_frame.hide()
+        rail.addWidget(self.today_frame)
         # V4: the Briefing card IS the rail — it takes all the
         # vertical space the three V2/V3 cards used, and its body
         # is the Briefing tab's full text in a view that fills
@@ -879,6 +998,8 @@ class ShellPanel(QWidget):
         self.refresh_clock()
         self.refresh_cards()
         self.refresh_actions()
+        self.refresh_today()
+        self.refresh_today_remote()
         self.refresh_weather()
         self._refilter()
 
@@ -1094,6 +1215,129 @@ class ShellPanel(QWidget):
             pass
         self.refresh_actions()
 
+    # -- Today cards (V13) ---------------------------------------
+    def refresh_today(self):
+        """Rebuild the Today rows from the seams: tasks read
+        live (local), event/unread from the last off-thread
+        remote fetch. The pure today_cards helper decides what
+        exists; an empty model hides the whole frame. Fail-soft
+        throughout — a broken seam shrinks Today, never breaks
+        the shell."""
+        try:
+            tasks = self._tasks_provider() or []
+        except Exception:
+            tasks = []
+        model = shell_home.today_cards(
+            self._now_provider(), tasks,
+            self._today_remote.get("event"),
+            self._today_remote.get("unread"))
+        self._today_model = model
+        while self.today_rows.count():
+            item = self.today_rows.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        if model["event"]:
+            ev = model["event"]
+            self.today_rows.addWidget(self._today_row(
+                f"{ev['when']} — {ev['summary']}",
+                [("Open", lambda: self._jump_tab("Calendar"))]))
+        for task in model["tasks"]:
+            buttons = []
+            # clicked(bool) would otherwise land in the lambda's
+            # first slot and eat the captured id — the dashboard's
+            # own checked=False idiom guards it.
+            if "done" in task["actions"]:
+                buttons.append(
+                    ("Done", lambda _c=False, tid=task["id"]:
+                     self._task_clicked(tid, "done")))
+            if "snooze" in task["actions"]:
+                buttons.append(
+                    ("Snooze +1h", lambda _c=False, tid=task["id"]:
+                     self._task_clicked(tid, "snooze")))
+            self.today_rows.addWidget(self._today_row(
+                f"{task['prompt']} · {task['when']}", buttons))
+        if model["unread"]:
+            n = model["unread"]
+            self.today_rows.addWidget(self._today_row(
+                f"{n} unread email{'s' if n != 1 else ''}",
+                [("Open", lambda: self._jump_tab("Inbox"))]))
+        self.today_frame.setVisible(not model["empty"])
+
+    def _today_row(self, text, buttons):
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        label = QLabel(text)
+        label.setObjectName("shellActionText")
+        label.setWordWrap(True)
+        lay.addWidget(label, 1)
+        for caption, fn in buttons:
+            btn = QPushButton(caption)
+            btn.setObjectName("shellActionBtn")
+            btn.clicked.connect(fn)
+            lay.addWidget(btn)
+        return row
+
+    def _jump_tab(self, name):
+        """Today's Open buttons ride the V12 tab callback —
+        the dashboard exits Shell Home and selects the tab."""
+        if self._on_open_tab is not None:
+            try:
+                self._on_open_tab(name)
+            except Exception:
+                pass
+
+    def _task_clicked(self, tid, action):
+        try:
+            self._task_actor(tid, action)
+        except Exception:
+            pass
+        self.refresh_today()
+
+    def refresh_today_remote(self):
+        """Kick the throttled off-thread Today fetch (calendar
+        + mail — both network), same pattern and throttle as
+        the weather fetch: at most once per
+        WEATHER_REFETCH_SECONDS, never two in flight."""
+        now = self._time_provider()
+        if self._today_fetched_at is not None and \
+                now - self._today_fetched_at < \
+                WEATHER_REFETCH_SECONDS:
+            return False
+        if self._today_thread is not None and \
+                self._today_thread.is_alive():
+            return False
+        self._today_fetched_at = now
+
+        def work():
+            try:
+                data = self._today_remote_provider()
+            except Exception:
+                data = None
+            if pyqtSignal is not None:
+                try:
+                    self._today_ready.emit(data or {})
+                except Exception:
+                    pass
+
+        self._today_thread = threading.Thread(
+            target=work, daemon=True, name="shell-today")
+        self._today_thread.start()
+        return True
+
+    def _apply_today_remote(self, data):
+        """UI-thread slot for the Today fetch: keep whatever
+        arrived (missing keys keep their previous values only
+        when the fetch itself failed wholesale — a successful
+        empty fetch honestly clears), then repaint."""
+        if isinstance(data, dict) and data:
+            self._today_remote = {
+                "event": data.get("event"),
+                "unread": data.get("unread")}
+        self.refresh_today()
+
     # -- weather (V6) -------------------------------------------
     def refresh_weather(self):
         """Kick an off-thread weather fetch, throttled: at most
@@ -1144,6 +1388,8 @@ class ShellPanel(QWidget):
         self.refresh_clock()
         self.refresh_cards()
         self.refresh_actions()
+        self.refresh_today()
+        self.refresh_today_remote()
         self.refresh_weather()
 
     # -- pins (V8) ----------------------------------------------

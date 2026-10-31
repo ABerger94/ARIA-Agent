@@ -21,7 +21,7 @@ chat still reaches ARIA, who has the real tool for it.
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from aria import app_launcher
 
@@ -554,6 +554,89 @@ def palette_candidates(query, apps, files, tabs, actions,
     out.sort(key=lambda c: (-c["score"], kind_order[c["kind"]],
                             c["label"].lower()))
     return out[:limit]
+
+
+# ------------------------------------------------------------------
+# V13 (2026-10-31, Alek's order): actionable Today cards. The
+# Briefing stays a report; Today is the slice of it with
+# controls — next calendar event (Open jumps to the Calendar
+# tab), due/pending scheduled tasks (Done / Snooze +1h on
+# 'once' rows, wired to scheduler.sched_cancel / sched_snooze),
+# and the unread mail count (jump to Inbox). Pure derivation
+# here from the seams' own shapes; every input fail-soft and
+# the section hides when there is nothing to act on. There is
+# deliberately NO pause/resume: scheduled_tasks has no enabled
+# flag and no pause seam exists, so no fake control is painted.
+# On-return rows are excluded — they are presence-triggered,
+# not time-due, and V11's card owns their delivered side.
+# ------------------------------------------------------------------
+
+def _fmt_task_time(dt):
+    h = dt.hour % 12 or 12
+    return f"{h}:{dt.minute:02d} {'PM' if dt.hour >= 12 else 'AM'}"
+
+
+def today_cards(now, tasks, event, unread, task_limit=3):
+    """Compose the Today section model.
+
+    *tasks*: sched_list() rows (id, kind, prompt, interval_s,
+    next_run 'YYYY-MM-DD HH:MM:SS'). A task shows when it is
+    due (next_run <= now) or falls within the next 24h; due
+    first, then soonest. 'once' rows carry Done/Snooze actions;
+    other kinds show state only (no fake controls).
+    *event*: {summary, start (datetime), all_day} or None.
+    *unread*: an int count, or None when mail state is unknown
+    (the mail row then hides rather than guessing zero).
+    """
+    now = now or datetime.now()
+    rows = []
+    for row in tasks or []:
+        try:
+            tid, kind, prompt = row[0], row[1], row[2]
+            next_run = datetime.strptime(
+                str(row[4]), "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            continue
+        if kind == "on_return":
+            continue
+        due = next_run <= now
+        if not due and next_run > now + timedelta(hours=24):
+            continue
+        when = ("due now" if due else
+                f"today {_fmt_task_time(next_run)}"
+                if next_run.date() == now.date() else
+                f"{next_run.strftime('%a')} "
+                f"{_fmt_task_time(next_run)}")
+        rows.append({"id": tid, "kind": kind,
+                     "prompt": str(prompt or ""), "due": due,
+                     "when": when, "next_run": next_run,
+                     "actions": (["done", "snooze"]
+                                 if kind == "once" else [])})
+    rows.sort(key=lambda r: (not r["due"], r["next_run"]))
+    rows = rows[:task_limit]
+    for r in rows:
+        del r["next_run"]
+
+    event_card = None
+    if event and event.get("summary"):
+        try:
+            start = event["start"]
+            if event.get("all_day"):
+                when = start.strftime("%a, %b ") + str(start.day) \
+                    + " (all day)"
+            else:
+                when = (start.strftime("%a ") +
+                        _fmt_task_time(start))
+            event_card = {"summary": str(event["summary"]),
+                          "when": when}
+        except Exception:
+            event_card = None
+
+    return {"event": event_card, "tasks": rows,
+            "unread": (int(unread) if unread is not None
+                       else None),
+            "empty": event_card is None and not rows
+                     and not unread}
 
 
 def route_command(text, apps):

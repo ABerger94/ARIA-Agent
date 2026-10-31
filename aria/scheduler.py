@@ -265,6 +265,24 @@ def sched_cancel(task_id: int) -> bool:
     return n > 0
 
 
+def sched_snooze(task_id: int, delay_s: int = 3600) -> bool:
+    """Push a pending 'once' task's next_run out by *delay_s*
+    (Shell Home V13's Snooze button). Only 'once' rows snooze —
+    a recurring task's cadence is its meaning, so those rows are
+    left untouched. Returns True when a row actually moved."""
+    nxt = (datetime.now() + timedelta(seconds=delay_s)).strftime(
+        "%Y-%m-%d %H:%M:%S")
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH)
+        n = conn.execute(
+            "UPDATE scheduled_tasks SET next_run = ? "
+            "WHERE id = ? AND kind = 'once'",
+            (nxt, task_id)).rowcount
+        conn.commit()
+        conn.close()
+    return n > 0
+
+
 def tool_set_reminder(delay_seconds: int, message: str) -> str:
     tid = sched_add("once", message, delay_s=max(1, int(delay_seconds)))
     add_log(f"Reminder #{tid} in {delay_seconds}s")
