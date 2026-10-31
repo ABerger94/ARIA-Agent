@@ -207,6 +207,27 @@ font (_floor_button_width) — a layout may squeeze the
 wrapping label, never a button's text. Hosted tests in
 test_shell_dashboard.py pin all of it in the real window.
 
+V21 (2026-10-31, Alek's order on his 09:20 live screenshot):
+"Take the briefing card use the entire space of both the
+today and briefing card. Bump the today card up higher so
+it's in line with the Good morning, Alek and time lines."
+Today leaves the rail: the section is now a compact
+horizontal strip in the header band, top-aligned with the
+clock/greeting lines, its rows flowing across and sharing
+the strip's width (labels wrap in their own share; the
+floored buttons cannot clip). The Briefing card takes the
+whole rail — the full space the Today and Briefing cards
+used to share, from the rail's top to the dock. An empty
+Today hides the strip with no hole in the band (the band's
+height is the orb/titles column's either way), so the
+Briefing's space no longer depends on whether Today has
+anything to show. The V11 action cards are untouched: they
+live below the main row at root level, so a pending card
+still takes its height out of the main row and the
+Briefing yields and re-expands exactly as before. Hosted
+geometry for all of it lives in test_shell_v21_layout.py —
+measured in the real Dashboard window, per the V16 lesson.
+
 The card never fabricates: no briefing composed yet yields
 report_text's own honest placeholder line.
 
@@ -1043,7 +1064,46 @@ class ShellPanel(QWidget):
         weather_row.addStretch(1)
         titles.addLayout(weather_row)
         header.addLayout(titles)
-        header.addStretch(1)
+        # V21 (Alek, 2026-10-31, on his 09:20 live screenshot):
+        # "Bump the today card up higher so it's in line with
+        # the Good morning, Alek and time lines." The Today
+        # section leaves the right rail and becomes a compact
+        # HORIZONTAL strip in this header band, top-aligned
+        # with the clock/greeting lines and taking the band's
+        # remaining width. Rows are rebuilt by refresh_today;
+        # the frame is built once here and hides entirely when
+        # there is nothing to show — a hidden widget leaves no
+        # hole in the band, and the band's height stays driven
+        # by the orb/titles column either way.
+        self.today_frame = QFrame()
+        self.today_frame.setObjectName("shellCard")
+        # V16: Today stays compact by policy — Maximum
+        # vertical policy means natural height only.
+        self.today_frame.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Maximum)
+        # V17-C's floor carries over: the strip never squeezes
+        # below the width a Today task row needs (floored
+        # buttons + a wrapping label) — the app area below
+        # yields first, not the buttons.
+        self.today_frame.setMinimumWidth(320)
+        today_lay = QHBoxLayout(self.today_frame)
+        today_lay.setContentsMargins(14, 8, 14, 8)
+        today_lay.setSpacing(10)
+        today_head = QLabel("TODAY")
+        today_head.setObjectName("shellCardTitle")
+        today_lay.addWidget(today_head)
+        # The strip's rows flow ACROSS (V13 painted them down
+        # the rail card): one row widget per item — event,
+        # tasks, unread — each sharing the strip's width so
+        # their labels wrap inside their own share and the
+        # floored buttons never clip.
+        self.today_rows = QHBoxLayout()
+        self.today_rows.setSpacing(10)
+        today_lay.addLayout(self.today_rows, 1)
+        self.today_frame.hide()
+        header.addWidget(self.today_frame, 1,
+                         Qt.AlignmentFlag.AlignTop)
         root.addLayout(header)
 
         # -- main: apps column + right rail ----------------------
@@ -1142,35 +1202,12 @@ class ShellPanel(QWidget):
 
         rail = QVBoxLayout()
         rail.setSpacing(10)
-        # V13: the Today section sits above the Briefing in the
-        # rail — a compact card of actionable rows (next event,
-        # due tasks, unread mail) that hides entirely when
-        # there is nothing to act on. Rows are rebuilt by
-        # refresh_today; the frame is built once here.
-        self.today_frame = QFrame()
-        self.today_frame.setObjectName("shellCard")
-        # V16: Today stays compact by policy — Maximum
-        # vertical policy means natural height only, so every
-        # spare pixel in the rail belongs to the Briefing.
-        self.today_frame.setSizePolicy(
-            QSizePolicy.Policy.Preferred,
-            QSizePolicy.Policy.Maximum)
-        # V17-C: the rail never squeezes below the width a
-        # Today task row needs (floored buttons + a wrapping
-        # label's longest word + card margins) — at narrow
-        # widths the app grid yields first, not the buttons.
-        self.today_frame.setMinimumWidth(320)
-        today_lay = QVBoxLayout(self.today_frame)
-        today_lay.setContentsMargins(14, 10, 14, 10)
-        today_lay.setSpacing(6)
-        today_head = QLabel("TODAY")
-        today_head.setObjectName("shellCardTitle")
-        today_lay.addWidget(today_head)
-        self.today_rows = QVBoxLayout()
-        self.today_rows.setSpacing(6)
-        today_lay.addLayout(self.today_rows)
-        self.today_frame.hide()
-        rail.addWidget(self.today_frame)
+        # V21: Today moved up to the header band (built above),
+        # so the rail is the Briefing's alone — "use the entire
+        # space of both the today and briefing card" (Alek,
+        # 2026-10-31). The space Today used to take at the top
+        # of this rail is the Briefing's now, from the rail's
+        # top to the dock.
         # V4: the Briefing card IS the rail — it takes all the
         # vertical space the three V2/V3 cards used, and its body
         # is the Briefing tab's full text in a view that fills
@@ -1531,7 +1568,7 @@ class ShellPanel(QWidget):
             ev = model["event"]
             self.today_rows.addWidget(self._today_row(
                 f"{ev['when']} — {ev['summary']}",
-                [("Open", lambda: self._jump_tab("Calendar"))]))
+                [("Open", lambda: self._jump_tab("Calendar"))]), 1)
         for task in model["tasks"]:
             buttons = []
             # clicked(bool) would otherwise land in the lambda's
@@ -1546,12 +1583,12 @@ class ShellPanel(QWidget):
                     ("Snooze +1h", lambda _c=False, tid=task["id"]:
                      self._task_clicked(tid, "snooze")))
             self.today_rows.addWidget(self._today_row(
-                f"{task['prompt']} · {task['when']}", buttons))
+                f"{task['prompt']} · {task['when']}", buttons), 1)
         if model["unread"]:
             n = model["unread"]
             self.today_rows.addWidget(self._today_row(
                 f"{n} unread email{'s' if n != 1 else ''}",
-                [("Open", lambda: self._jump_tab("Inbox"))]))
+                [("Open", lambda: self._jump_tab("Inbox"))]), 1)
         self.today_frame.setVisible(not model["empty"])
         # V17-C: the row set just changed under a live layout —
         # invalidate the frame's cached hint explicitly (the
