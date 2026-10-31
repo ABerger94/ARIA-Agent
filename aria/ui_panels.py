@@ -220,6 +220,30 @@ def create_settings_dialog(parent, callbacks):
         general.addRow(dialog.console)
     except Exception:
         dialog.console = None
+    # Shell Mode boot (Alek, 2026-10-30): start ARIA straight
+    # into Shell Home. Moved here from the Shell Home panel at
+    # his word — Settings is the toggle's one home. Persists via
+    # ui_prefs (NOT config settings): qthost's boot path and the
+    # shell read get_shell_mode() from there. Acts IMMEDIATELY,
+    # like the console toggle above — not via Apply.
+    try:
+        from aria import ui_prefs as _up_shell
+        dialog.shell_mode = QCheckBox(
+            'Start ARIA in Shell Mode (boot straight here)')
+        dialog.shell_mode.setChecked(bool(_up_shell.get_shell_mode()))
+        def _shell_mode_toggled(checked):
+            try:
+                _up_shell.set_shell_mode(bool(checked))
+                dialog.message.setText(
+                    'Shell Mode on — ARIA will boot into Shell Home.'
+                    if checked else
+                    'Shell Mode off — ARIA will boot to the dashboard.')
+            except Exception as exc:
+                dialog.message.setText(f'Shell Mode toggle failed — {exc}')
+        dialog.shell_mode.toggled.connect(_shell_mode_toggled)
+        general.addRow(dialog.shell_mode)
+    except Exception:
+        dialog.shell_mode = None
     audio = page('Voice / audio')
     dialog.voice = QCheckBox('Voice and wake-word listening enabled'); dialog.voice.setChecked(bool(speech.VOICE_ENABLED)); audio.addRow(dialog.voice)
     dialog.whisper = QCheckBox('Whisper mode'); dialog.whisper.setChecked(bool(hud.WHISPER_MODE)); audio.addRow(dialog.whisper)

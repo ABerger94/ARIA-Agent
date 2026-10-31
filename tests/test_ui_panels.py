@@ -247,3 +247,53 @@ def test_settings_desktop_icon_button(monkeypatch):
     dialog.desktop_icon.click()
     assert dialog.message.text() == 'Shortcut failed — no desktop'
     dialog.close(); parent.close()
+
+
+def test_settings_general_hosts_shell_mode_toggle(monkeypatch):
+    # V4 addendum (Alek, 2026-10-30): the Shell Mode boot toggle
+    # lives in Settings -> General, persists via ui_prefs (the
+    # same store qthost boots from), and acts immediately.
+    app = QApplication.instance() or QApplication(['aria-settings-test'])
+    saved = {}; calls = []
+    config = types.ModuleType('aria.config'); config._KEYS = {}
+    config.get_setting = lambda key, default=None: saved.get(key, default)
+    config.settings_load = lambda: dict(saved)
+    config.settings_save = lambda values: saved.update(values) or True
+    config.key_get = lambda key, fallback='': ('', 'script default')
+    config.save_keys = lambda: True; config.is_safe_mode = lambda: False
+    speech = types.ModuleType('aria.speech'); speech.VOICE_ENABLED = True
+    hud = types.ModuleType('aria.hud'); hud.WHISPER_MODE = False
+    hud.get_hud_volume = lambda: .5; hud.set_hud_volume = calls.append
+    approval = types.ModuleType('aria.approval'); approval.MODES = ('auto', 'confirm-risky', 'confirm-all')
+    approval.get_mode = lambda: 'confirm-risky'; approval.set_mode = calls.append
+    prefs = {'shell_mode': True}
+    ui_prefs = types.ModuleType('aria.ui_prefs')
+    ui_prefs.get_shell_mode = lambda: prefs['shell_mode']
+    ui_prefs.set_shell_mode = lambda v: prefs.__setitem__('shell_mode', bool(v))
+    ui_prefs.get_accent = lambda: None
+    ui_prefs.set_accent = lambda a: a
+    ui_prefs.get_centerpiece = lambda: 'orb'
+    ui_prefs.set_centerpiece = lambda n: n
+    ui_prefs.get_pet_pos = lambda: None
+    ui_prefs.set_pet_pos = lambda p: None
+    for name, mod in [('config', config), ('speech', speech), ('hud', hud),
+                      ('approval', approval), ('ui_prefs', ui_prefs)]:
+        monkeypatch.setitem(sys.modules, 'aria.' + name, mod)
+        monkeypatch.setattr(pkg, name, mod, raising=False)
+    class Parent(QMainWindow):
+        def apply_accent(self, value): calls.append(value)
+        def open_remote(self): calls.append('remote')
+    parent = Parent(); parent.setStyleSheet(STYLE)
+    callbacks = types.SimpleNamespace(speak=calls.append, toggle_whisper=lambda: calls.append('whisper'))
+    dialog = create_settings_dialog(parent, callbacks); dialog.show(); app.processEvents()
+    from PyQt6.QtWidgets import QCheckBox
+    assert isinstance(dialog.shell_mode, QCheckBox)
+    assert dialog.shell_mode.text() == 'Start ARIA in Shell Mode (boot straight here)'
+    # Initialised FROM ui_prefs (True here)...
+    assert dialog.shell_mode.isChecked() is True
+    # ...and toggling persists straight back through ui_prefs.
+    dialog.shell_mode.setChecked(False)
+    assert prefs['shell_mode'] is False
+    dialog.shell_mode.setChecked(True)
+    assert prefs['shell_mode'] is True
+    dialog.close(); parent.close()

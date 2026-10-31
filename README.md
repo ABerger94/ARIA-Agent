@@ -280,11 +280,11 @@ author's direction: one program, ARIA, with Shell Mode built in.
   sentence — sentences are for ARIA.
 
   ![Shell Home command bar](docs/images/shell-command.png)
-- **Start ARIA in Shell Mode** — a checkbox inside Shell Home. Tick
-  it and the next start boots fullscreen into Shell Home
-  (`aria/qthost.py` reads the `shell_mode` preference, off by
-  default, via `aria/ui_prefs.py`). Untick it and you're back to the
-  classic dashboard boot.
+- **Start ARIA in Shell Mode** — a checkbox in Settings →
+  General. Tick it and the next start boots fullscreen into
+  Shell Home (`aria/qthost.py` reads the `shell_mode`
+  preference, off by default, via `aria/ui_prefs.py`). Untick
+  it and you're back to the classic dashboard boot.
 - **Dashboard** — an always-visible button, bottom right of
   Shell Home (labelled "Dashboard"; earlier shells called it
   "Exit to Windows"). One click: fullscreen drops, the shell

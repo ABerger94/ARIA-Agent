@@ -37,15 +37,13 @@ NOW = datetime(2026, 10, 30, 15, 47)
 
 
 def _panel(**overrides):
-    calls = {"launch": [], "command": [], "exit": 0, "mode": []}
+    calls = {"launch": [], "command": [], "exit": 0}
     kwargs = dict(
         apps=APPS,
         on_launch=calls["launch"].append,
         on_command=calls["command"].append,
         on_exit=lambda: calls.__setitem__("exit", calls["exit"] + 1),
-        on_shell_mode=calls["mode"].append,
         now_provider=lambda: NOW,
-        shell_mode=False,
         briefing_provider=lambda: None,
         research_provider=lambda: "")
     kwargs.update(overrides)
@@ -174,6 +172,9 @@ def test_v4_rail_is_briefing_only_and_it_fills_the_rail():
     # Now Playing and Status are GONE — no bodies, no titles.
     assert not hasattr(panel, "playing_body")
     assert not hasattr(panel, "status_body")
+    # And the Shell Mode boot checkbox moved to Settings — the
+    # rail carries nothing but the Briefing card now.
+    assert not hasattr(panel, "shell_mode_box")
     titles = [w.text() for w in panel.findChildren(QLabel)]
     assert "NOW PLAYING" not in titles
     assert "STATUS" not in titles
@@ -198,13 +199,6 @@ def test_exit_button_fires_callback():
     panel, calls = _panel()
     panel.exit_btn.click()
     assert calls["exit"] == 1
-
-
-def test_shell_mode_checkbox_reports_toggles():
-    panel, calls = _panel()
-    assert panel.shell_mode_box.isChecked() is False
-    panel.shell_mode_box.setChecked(True)
-    assert calls["mode"] == [True]
 
 
 # -- V2 layout: tile grid, rail cards, dock pill ------------------
@@ -271,3 +265,41 @@ def test_dock_holds_command_and_exit_stays_visible():
     assert panel.dock.objectName() == "shellDock"
     assert panel.exit_btn.text() == "Dashboard"
     assert panel.orb is not None
+
+
+# -- V4 addendum: the shell follows the Customize accent ---------
+
+def test_accent_style_builder_default_is_stock():
+    # No accent (or the stock accent itself) leaves the sheet
+    # byte-identical — the default path can never lose its theme.
+    assert shell_panel.shell_style(None) == shell_panel._STYLE
+    assert "#57c7d4" in shell_panel.shell_style(None)
+    assert shell_panel.shell_style("#57c7d4") == shell_panel._STYLE
+    assert shell_panel.shell_style("not-a-colour") == \
+        shell_panel._STYLE
+
+
+def test_custom_accent_rethemes_panel_and_orbs():
+    panel, _calls = _panel(accent="#e83a9a")
+    assert panel._accent == "#e83a9a"
+    sheet = panel.styleSheet().lower()
+    # No stock-cyan accent hue survives anywhere in the sheet,
+    # and the shifted family colour is what replaced it.
+    assert "#57c7d4" not in sheet
+    assert "#2b5873" not in sheet
+    assert "#d4579c" in sheet
+    # Both orb discs repainted to the accent family.
+    assert panel.orb._core_color.name() == "#d4579c"
+    assert panel.dock_orb._core_color.name() == "#d4579c"
+    assert panel.orb._ring.name() == "#732b3f"
+
+
+def test_set_accent_rethemes_live_and_ignores_invalid():
+    panel, _calls = _panel(accent="#57c7d4")
+    assert "#57c7d4" in panel.styleSheet().lower()
+    panel.set_accent("#e83a9a")
+    assert panel._accent == "#e83a9a"
+    assert "#57c7d4" not in panel.styleSheet().lower()
+    assert panel.orb._core_color.name() == "#d4579c"
+    panel.set_accent("bogus")
+    assert panel._accent == "#e83a9a"

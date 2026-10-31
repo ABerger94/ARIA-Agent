@@ -21,9 +21,16 @@ latest briefing plus the guarded research-section append,
 composed by the pure ``shell_home.briefing_full_text`` helper
 and rendered in a read-only text view that fills the card at
 12pt-equivalent type. The rail is now: Briefing card + the
-Shell Mode boot checkbox, nothing else. (The pure
+nothing else — the Shell Mode boot toggle lives in
+Settings → General now (V4 addendum). (The pure
 now_playing/status formatters remain in shell_home.py, unused
-by this panel, per the V4 brief's no-churn call.)
+by this panel, per the V4 brief's no-churn call.) V4 addendum:
+the shell's colours follow the dashboard accent Alek sets in
+Customize — the stylesheet's accent family hue-shifts via
+``aria.hue_wheel.shift_palette`` (the dashboard's mechanism),
+the orb discs repaint to match, ``set_accent`` applies changes
+live, and the dashboard re-resolves the accent every time
+Shell Home opens.
 
 Type (or later, say) what you want in the dock; an unambiguous
 app name launches it, everything else goes to ARIA as a normal
@@ -56,7 +63,6 @@ try:
     from PyQt6.QtGui import (QColor, QFont, QIcon, QPainter, QPixmap,
                              QTextOption)
     from PyQt6.QtWidgets import (
-        QCheckBox,
         QFileIconProvider,
         QFrame,
         QHBoxLayout,
@@ -116,34 +122,122 @@ QPushButton#shellExit:hover { background: #17435a; }
 """
 
 
-class OrbDisc(QWidget):
-    """ARIA's presence on the home: a simple cyan orb disc drawn
-    in Qt (the brief's sanctioned lightweight stand-in until a
-    heavier orb widget earns a seam here)."""
+#: The shell's stock accent family (V4 addendum): every accent
+#: hue in the stylesheet and the orb's paint, hue-shifted as one
+#: family by aria.hue_wheel.shift_palette — the dashboard's own
+#: mechanism — whenever Alek's Customize accent is in force.
+#: Neutral dark surfaces and body text are NOT in the family.
+_ACCENT_BASE = "#57c7d4"
+_ACCENT_LINKED = ("#57c7d4", "#bdf3fa", "#2b5873", "#17435a",
+                  "#12303f", "#1b3042")
+_ORB_STOCK = ("#2b5873", "#57c7d4", "#bdf3fa")  # ring, core, heart
 
-    def __init__(self, parent=None, diameter=84):
+
+def _valid_accent(accent):
+    """Normalize a '#rrggbb' accent, or None when it is not one."""
+    try:
+        s = str(accent or "").strip().lower()
+        if len(s) == 7 and s.startswith("#"):
+            int(s[1:], 16)
+            return s
+    except Exception:
+        pass
+    return None
+
+
+def _shift_map(accent):
+    """{stock hex: shifted hex} for the shell's accent family,
+    or None when *accent* is unset/invalid (stock palette)."""
+    accent = _valid_accent(accent)
+    if not accent:
+        return None
+    try:
+        from aria.hue_wheel import shift_palette
+        return shift_palette({h: h for h in _ACCENT_LINKED},
+                             _ACCENT_BASE, accent)
+    except Exception:
+        return None
+
+
+def shell_style(accent=None):
+    """The panel stylesheet for *accent*: the stock sheet with
+    its accent family hue-shifted to the accent (dashboard
+    parity). Unset/invalid accent returns the stock sheet
+    unchanged — the default path can never lose its theme."""
+    shifted = _shift_map(accent)
+    if not shifted:
+        return _STYLE
+    import re
+    return re.sub("|".join(re.escape(h) for h in _ACCENT_LINKED),
+                  lambda m: shifted[m.group(0)], _STYLE)
+
+
+def _orb_colors(accent=None):
+    """(ring, core, heart) hexes for the orb under *accent*."""
+    shifted = _shift_map(accent)
+    if not shifted:
+        return _ORB_STOCK
+    return tuple(shifted[h] for h in _ORB_STOCK)
+
+
+def _resolve_accent():
+    """The accent currently SET, in the dashboard's own order
+    (ui_prefs Customize first, then settings 'ui_accent').
+    Reimplemented fail-soft here — shell_panel must never import
+    the dashboard (it imports us). None = nothing set = stock."""
+    try:
+        from aria import ui_prefs
+        found = _valid_accent(ui_prefs.get_accent())
+        if found:
+            return found
+    except Exception:
+        pass
+    try:
+        from aria import config
+        return _valid_accent(config.get_setting("ui_accent", None))
+    except Exception:
+        return None
+
+
+class OrbDisc(QWidget):
+    """ARIA's presence on the home: a simple orb disc drawn in
+    Qt (the brief's sanctioned lightweight stand-in until a
+    heavier orb widget earns a seam here). Its colours follow
+    the shell's accent family via set_colors."""
+
+    def __init__(self, parent=None, diameter=84, colors=None):
         super().__init__(parent)
         self._d = diameter
         self.setFixedSize(diameter, diameter)
+        ring, core, heart = colors or _ORB_STOCK
+        self._ring = QColor(ring)
+        self._core_color = QColor(core)
+        self._heart = QColor(heart)
+
+    def set_colors(self, ring, core, heart):
+        self._ring = QColor(ring)
+        self._core_color = QColor(core)
+        self._heart = QColor(heart)
+        self.update()
 
     def paintEvent(self, _event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         d = self._d
         # Outer ring.
-        p.setPen(QColor("#2b5873"))
+        p.setPen(self._ring)
         p.setBrush(Qt.GlobalColor.transparent)
         p.drawEllipse(2, 2, d - 4, d - 4)
         # Glowing core.
         core = int(d * 0.52)
         off = (d - core) // 2
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor("#57c7d4"))
+        p.setBrush(self._core_color)
         p.drawEllipse(off, off, core, core)
         # Bright heart.
         heart = int(d * 0.22)
         hoff = (d - heart) // 2
-        p.setBrush(QColor("#bdf3fa"))
+        p.setBrush(self._heart)
         p.drawEllipse(hoff, hoff, heart, heart)
         p.end()
 
@@ -193,19 +287,23 @@ class ShellPanel(QWidget):
 
     def __init__(self, parent=None, apps=None, apps_provider=None,
                  on_launch=None, on_command=None, on_exit=None,
-                 now_provider=None, shell_mode=None,
-                 on_shell_mode=None, briefing_provider=None,
-                 research_provider=None,
+                 now_provider=None, briefing_provider=None,
+                 research_provider=None, accent=None,
                  time_provider=None):
         super().__init__(parent)
         self.setObjectName("shellHome")
-        self.setStyleSheet(_STYLE)
+        # Accent (V4 addendum): an explicit accent wins; otherwise
+        # resolve the one currently set (Customize / Settings),
+        # exactly like the dashboard does at boot. None anywhere
+        # means the stock cyan family, unchanged.
+        self._accent = (_valid_accent(accent) if accent is not None
+                        else _resolve_accent())
+        self.setStyleSheet(shell_style(self._accent))
         self._apps_provider = apps_provider
         self._apps = list(apps) if apps is not None else []
         self._on_launch = on_launch
         self._on_command = on_command
         self._on_exit = on_exit
-        self._on_shell_mode = on_shell_mode
         self._now_provider = now_provider or datetime.now
         # Monotonic clock for the relaunch guard — injectable so
         # the guard window is testable without real waiting.
@@ -223,7 +321,8 @@ class ShellPanel(QWidget):
 
         # -- header: orb + clock/greeting/date ------------------
         header = QHBoxLayout()
-        self.orb = OrbDisc(self, diameter=84)
+        self.orb = OrbDisc(self, diameter=84,
+                           colors=_orb_colors(self._accent))
         header.addWidget(self.orb)
         titles = QVBoxLayout()
         titles.setSpacing(2)
@@ -287,20 +386,9 @@ class ShellPanel(QWidget):
         self.briefing_frame, self.briefing_body = \
             self._make_briefing_card()
         rail.addWidget(self.briefing_frame, 1)
-
-        if shell_mode is None:
-            try:
-                from aria import ui_prefs
-                shell_mode = ui_prefs.get_shell_mode()
-            except Exception:
-                shell_mode = False
-        self.shell_mode_box = QCheckBox(
-            "Start ARIA in Shell Mode (boot straight here)")
-        self.shell_mode_box.setObjectName("shellModeBox")
-        self.shell_mode_box.setStyleSheet("color: #8fb8c9;")
-        self.shell_mode_box.setChecked(bool(shell_mode))
-        self.shell_mode_box.toggled.connect(self._shell_mode_toggled)
-        rail.addWidget(self.shell_mode_box)
+        # The rail is Briefing ONLY (V4 addendum): the Shell Mode
+        # boot toggle moved to Settings → General, its one home —
+        # no checkbox here anymore.
         main.addLayout(rail, 1)
         root.addLayout(main, 1)
 
@@ -311,7 +399,8 @@ class ShellPanel(QWidget):
         self.dock.setObjectName("shellDock")
         dock_lay = QHBoxLayout(self.dock)
         dock_lay.setContentsMargins(16, 2, 16, 2)
-        self.dock_orb = OrbDisc(self.dock, diameter=18)
+        self.dock_orb = OrbDisc(self.dock, diameter=18,
+                                colors=_orb_colors(self._accent))
         dock_lay.addWidget(self.dock_orb)
         self.command = QLineEdit()
         self.command.setPlaceholderText(
@@ -381,6 +470,24 @@ class ShellPanel(QWidget):
             except Exception:
                 pass
         return _letter_icon(tile)
+
+    # -- accent -------------------------------------------------
+    def set_accent(self, accent):
+        """Follow the dashboard's accent live (V4 addendum):
+        rebuild the stylesheet from the accent family and repaint
+        both orb discs. Invalid accents are ignored — a bad
+        colour can never cost the shell its theme. Called by the
+        dashboard's apply_accent (Customize) and on Shell Home
+        open, so a colour changed while the shell was closed
+        shows the moment it opens, no restart."""
+        accent = _valid_accent(accent)
+        if not accent:
+            return
+        self._accent = accent
+        self.setStyleSheet(shell_style(accent))
+        colors = _orb_colors(accent)
+        self.orb.set_colors(*colors)
+        self.dock_orb.set_colors(*colors)
 
     # -- data -------------------------------------------------
     def refresh_apps(self):
@@ -476,14 +583,3 @@ class ShellPanel(QWidget):
     def _exit(self):
         if self._on_exit is not None:
             self._on_exit()
-
-    def _shell_mode_toggled(self, enabled):
-        self.refresh_cards()
-        if self._on_shell_mode is not None:
-            self._on_shell_mode(bool(enabled))
-            return
-        try:
-            from aria import ui_prefs
-            ui_prefs.set_shell_mode(bool(enabled))
-        except Exception:
-            pass

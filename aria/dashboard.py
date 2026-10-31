@@ -1182,6 +1182,8 @@ def create_dashboard(callbacks):
                 self.viz.set_accent(accent.name())
             if getattr(self, 'room', None) is not None:
                 self.room.set_accent(accent.name())
+            if getattr(self, 'shell', None) is not None:
+                self.shell.set_accent(accent.name())
             # The Conversation log follows the accent (Alek: ARIA's
             # responses in the system colour, whatever is set) —
             # remember it for render_once and force a repaint even
@@ -1636,6 +1638,16 @@ def create_dashboard(callbacks):
             if getattr(self, 'viz', None) is not None:
                 self.viz.hide()
             self._enter_shell_full()
+            # Shell colours follow the Customize accent (V4
+            # addendum): re-resolve on every open, so a colour
+            # changed while the shell was closed is already
+            # applied when it appears — no restart.
+            try:
+                _acc = _current_accent()
+                if _acc:
+                    self.shell.set_accent(_acc)
+            except Exception:
+                pass
             self.shell.refresh_apps()
             self.shell.refresh_clock()
             self.shell.show()

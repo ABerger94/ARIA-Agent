@@ -151,3 +151,26 @@ def test_centerpiece_swap_restores_side_columns(monkeypatch):
     assert window.left_card.isVisible()
     assert window.right_card.isVisible()
     window.close()
+
+
+def test_window_apply_accent_rethemes_shell(monkeypatch):
+    # V4 addendum: the dashboard's one accent path (Customize /
+    # Settings) reaches Shell Home like it reaches viz and room.
+    window, _calls = _window(monkeypatch)
+    window.apply_accent('#e83a9a')
+    assert window.shell._accent == '#e83a9a'
+    assert '#57c7d4' not in window.shell.styleSheet().lower()
+    window.close()
+
+
+def test_open_shell_home_reresolves_accent(monkeypatch):
+    # A colour set while the shell was closed is already applied
+    # when Shell Home opens — no restart.
+    window, _calls = _window(monkeypatch)
+    window.shell.set_accent('#57c7d4')
+    import aria.dashboard as dash
+    monkeypatch.setattr(dash, '_current_accent',
+                        lambda: '#e83a9a')
+    window.open_shell_home()
+    assert window.shell._accent == '#e83a9a'
+    window.close()
