@@ -588,3 +588,81 @@ def test_header_orb_pixels_follow_resonance_accent():
         assert cyan == 0, (magenta, cyan)
     finally:
         resonance.apply_accent(None)
+
+
+# -- V10: the accent shift covers the SURFACES too ----------------
+
+def test_shell_style_shifts_every_hex_in_the_sheet():
+    # The invariant (Alek's witnessed report: "not all of the
+    # home shell changed color"): with a non-default accent,
+    # NO stock hex from the stylesheet survives in the
+    # generated sheet — surfaces and text tones shift with the
+    # accent hues. Expected values come from shift_palette
+    # itself, never a second copy of the math.
+    import re
+    from aria.hue_wheel import shift_palette
+    stock_hexes = set(re.findall(r"#[0-9a-f]{6}",
+                                 shell_panel._STYLE))
+    assert len(stock_hexes) >= 10
+    expected = shift_palette({h: h for h in stock_hexes},
+                             shell_panel._ACCENT_BASE, "#e83a9a")
+    sheet = shell_panel.shell_style("#e83a9a")
+    for h in stock_hexes:
+        assert h not in sheet, h
+    for shifted in expected.values():
+        assert shifted in sheet, shifted
+    # The surfaces Alek actually saw stuck on navy:
+    for surface in ("#0b1622", "#0e1c2c", "#101f30"):
+        assert expected[surface] in sheet
+
+
+def test_shell_style_stock_paths_stay_byte_identical():
+    # The other half of the invariant: no accent, the stock
+    # accent itself, and junk all return the untouched sheet
+    # (the full-set HSV round-trip at the base hue is exact —
+    # measured when V10 landed).
+    assert shell_panel.shell_style(None) == shell_panel._STYLE
+    assert shell_panel.shell_style("#57c7d4") == shell_panel._STYLE
+    assert shell_panel.shell_style("junk") == shell_panel._STYLE
+
+
+def test_panel_magenta_surfaces_in_sheet_and_pixels():
+    from aria.hue_wheel import shift_palette
+    panel, _calls = _panel(accent="#e83a9a")
+    sheet = panel.styleSheet()
+    expected = shift_palette(
+        {h: h for h in shell_panel._STYLE_HEXES},
+        shell_panel._ACCENT_BASE, "#e83a9a")
+    # The generated sheet carries the shifted surfaces in
+    # their actual rules.
+    assert f"QWidget#shellHome {{ background: " \
+        f"{expected['#0b1622']}" in sheet
+    assert f"QFrame#shellCard {{ background: " \
+        f"{expected['#0e1c2c']}" in sheet
+    assert f"QFrame#shellDock {{ background: " \
+        f"{expected['#101f30']}" in sheet
+    # Pixel probe (the V4 white-slab pattern): the Briefing
+    # card's top strip renders in the accent family — shifted
+    # plum is RED-dominant where stock navy is BLUE-dominant —
+    # and stays a dark surface either way.
+    panel.resize(1200, 800)
+    panel.show()
+    _APP.processEvents()
+    img = panel.briefing_frame.grab().toImage()
+    c = img.pixelColor(img.width() // 2, 5)
+    assert c.red() > c.blue(), (c.red(), c.green(), c.blue())
+    assert max(c.red(), c.green(), c.blue()) < 110, \
+        (c.red(), c.green(), c.blue())
+
+
+def test_tile_ink_comes_from_the_shifted_map():
+    # Painted-surface audit: the letter tiles' glyph ink is
+    # the shell background THROUGH the shift, not a frozen
+    # stock hex; unaccented it is the stock background.
+    from aria.hue_wheel import shift_palette
+    expected = shift_palette(
+        {h: h for h in shell_panel._SHIFT_HEXES},
+        shell_panel._ACCENT_BASE, "#e83a9a")
+    assert shell_panel._tile_ink("#e83a9a") == expected["#0b1622"]
+    assert shell_panel._tile_ink(None) == "#0b1622"
+    assert shell_panel._tile_ink("junk") == "#0b1622"

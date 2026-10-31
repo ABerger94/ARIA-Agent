@@ -76,6 +76,18 @@ colours are the resonance module palette's, shifted by the
 dashboard's painted-accent path — Customize reaches it for
 free. The dock's 18px dot stays an OrbDisc.
 
+V10 (2026-10-30, Alek's witnessed report): the V4 accent
+shift covered only the accent HUES — the shell's navy
+surfaces (panel/card/grid/dock backgrounds) stayed stock
+and clashed with the shifted dashboard frame. The shift now
+covers EVERY hex in the stylesheet (derived from the sheet
+itself, surfaces and text tones included) plus the painted
+surfaces audited onto the same map (dock orb colours, the
+letter tiles' glyph ink; the tile FACE palette stays an
+intentional multi-hue exception — those stand in for app
+icons). With a non-default accent, no stock stylesheet hex
+survives; with none, the sheet is byte-identical stock.
+
 The card never fabricates: no briefing composed yet yields
 report_text's own honest placeholder line.
 
@@ -91,6 +103,7 @@ and default to the real seams, lazily and fail-soft.
 """
 from __future__ import annotations
 
+import re
 import sys
 import threading
 import time
@@ -173,15 +186,27 @@ QMenu::item:selected { background: #17435a; }
 """
 
 
-#: The shell's stock accent family (V4 addendum): every accent
-#: hue in the stylesheet and the orb's paint, hue-shifted as one
-#: family by aria.hue_wheel.shift_palette — the dashboard's own
-#: mechanism — whenever Alek's Customize accent is in force.
-#: Neutral dark surfaces and body text are NOT in the family.
+#: The shell's accent family (V4 addendum; V10 completed it):
+#: EVERY hex in the stylesheet — surfaces and text tones, not
+#: just the accent hues — hue-shifted as one family by
+#: aria.hue_wheel.shift_palette, the dashboard's own mechanism,
+#: whenever Alek's Customize accent is in force. V10 is Alek's
+#: witnessed fix: the V4 set held only six accent hues (two of
+#: them not even in the sheet anymore), so the navy SURFACES
+#: (#0b1622 / #0e1c2c / #101f30) never moved and clashed with
+#: the shifted dashboard frame around the shell. The wheel
+#: preserves each colour's saturation and value, so surfaces
+#: stay exactly as dark — only their hue family moves; the
+#: near-white text tones shift only subtly, which is correct.
+#: The set is DERIVED from _STYLE, so a future rule cannot
+#: silently introduce an unshifted hex. The dock orb's heart
+#: hex (#bdf3fa) is not in the sheet but rides the same map
+#: via _ORB_STOCK.
 _ACCENT_BASE = "#57c7d4"
-_ACCENT_LINKED = ("#57c7d4", "#bdf3fa", "#2b5873", "#17435a",
-                  "#12303f", "#1b3042")
+_STYLE_HEXES = tuple(sorted(set(re.findall(r"#[0-9a-f]{6}",
+                                           _STYLE))))
 _ORB_STOCK = ("#2b5873", "#57c7d4", "#bdf3fa")  # ring, core, heart
+_SHIFT_HEXES = tuple(sorted(set(_STYLE_HEXES) | set(_ORB_STOCK)))
 
 
 def _valid_accent(accent):
@@ -197,14 +222,15 @@ def _valid_accent(accent):
 
 
 def _shift_map(accent):
-    """{stock hex: shifted hex} for the shell's accent family,
-    or None when *accent* is unset/invalid (stock palette)."""
+    """{stock hex: shifted hex} for the shell's WHOLE palette —
+    every hex in the stylesheet plus the dock orb's — or None
+    when *accent* is unset/invalid (stock palette)."""
     accent = _valid_accent(accent)
     if not accent:
         return None
     try:
         from aria.hue_wheel import shift_palette
-        return shift_palette({h: h for h in _ACCENT_LINKED},
+        return shift_palette({h: h for h in _SHIFT_HEXES},
                              _ACCENT_BASE, accent)
     except Exception:
         return None
@@ -212,15 +238,29 @@ def _shift_map(accent):
 
 def shell_style(accent=None):
     """The panel stylesheet for *accent*: the stock sheet with
-    its accent family hue-shifted to the accent (dashboard
-    parity). Unset/invalid accent returns the stock sheet
-    unchanged — the default path can never lose its theme."""
+    EVERY hex hue-shifted to the accent family (dashboard
+    parity — V10: surfaces and text tones included, so with a
+    non-default accent no stock hex survives in the sheet).
+    Unset/invalid accent returns the stock sheet unchanged —
+    the default path can never lose its theme."""
     shifted = _shift_map(accent)
     if not shifted:
         return _STYLE
-    import re
-    return re.sub("|".join(re.escape(h) for h in _ACCENT_LINKED),
+    return re.sub("|".join(re.escape(h) for h in _STYLE_HEXES),
                   lambda m: shifted[m.group(0)], _STYLE)
+
+
+def _tile_ink(accent):
+    """The letter-tile glyph ink (V10 painted-surface audit):
+    the shell background hex, taken from the SAME shifted map
+    as everything else the panel paints — never a stock hex
+    left behind when an accent is in force. (The tile FACE
+    colours are the intentional multi-hue icon stand-ins and
+    stay exempt.)"""
+    shifted = _shift_map(accent)
+    if shifted:
+        return shifted.get("#0b1622", "#0b1622")
+    return "#0b1622"
 
 
 def _orb_colors(accent=None):
@@ -293,8 +333,10 @@ class OrbDisc(QWidget):
         p.end()
 
 
-def _letter_icon(tile, size=48):
-    """Paint the fallback letter tile as an icon."""
+def _letter_icon(tile, size=48, ink="#0b1622"):
+    """Paint the fallback letter tile as an icon. *ink* is the
+    glyph colour — the caller passes the accent-shifted shell
+    background (see _tile_ink), never a frozen stock hex."""
     pm = QPixmap(size, size)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
@@ -302,7 +344,7 @@ def _letter_icon(tile, size=48):
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(QColor(tile["color"]))
     p.drawRoundedRect(2, 2, size - 4, size - 4, 10, 10)
-    p.setPen(QColor("#0b1622"))
+    p.setPen(QColor(ink))
     font = QFont()
     font.setBold(True)
     font.setPixelSize(int(size * 0.5))
@@ -633,7 +675,7 @@ class ShellPanel(QWidget):
                     return icon
             except Exception:
                 pass
-        return _letter_icon(tile)
+        return _letter_icon(tile, ink=_tile_ink(self._accent))
 
     # -- accent -------------------------------------------------
     def set_accent(self, accent):
@@ -658,6 +700,13 @@ class ShellPanel(QWidget):
         # _apply_painted_accent on this same Customize path,
         # so there is nothing panel-side to repaint for it.
         self.dock_orb.set_colors(*_orb_colors(accent))
+        # V10: repaint the grid too — the letter tiles' glyph
+        # ink comes from the shifted map, so a live accent
+        # change re-inks them with everything else.
+        try:
+            self._refilter()
+        except Exception:
+            pass
 
     # -- the header waveform orb (V9) ----------------------------
     def advance_orb(self, state, level, muted=False):
