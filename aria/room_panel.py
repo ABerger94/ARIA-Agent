@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import time
 from datetime import datetime
 
@@ -53,8 +52,12 @@ ANCHORS = {"bed": 0.06, "plant": 0.23, "shelf": 0.345, "chair": 0.40,
 
 
 def default_state_path():
-    return os.path.join(os.path.expanduser("~"), "ARIA",
-                        "life_state.json")
+    # Install root via aria.data_dir (V20); the first resolve
+    # migrates a real legacy ~/ARIA/life_state.json, so the
+    # room paints her current state on first open after the
+    # move even before the life subprocess writes anew.
+    from aria import data_dir
+    return data_dir.path("life_state.json")
 
 
 def _hour_of(state):

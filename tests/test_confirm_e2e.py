@@ -108,6 +108,14 @@ def _run_flow(monkeypatch, approve: bool):
     app = _app()
     callbacks = _dashboard_stubs(monkeypatch)
     import importlib
+    import tempfile
+    # V20: the approval store resolves via aria.data_dir (the
+    # install root), not HOME — keep this suite's mode writes
+    # hermetic in a temp root.
+    _data_dir = importlib.import_module('aria.data_dir')
+    monkeypatch.setattr(
+        _data_dir, "_ROOT",
+        tempfile.mkdtemp(prefix="aria_e2e_data_"))
     approval = importlib.import_module('aria.approval')
     approval._PENDING.clear()
     prior_mode = approval.get_mode()

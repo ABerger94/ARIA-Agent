@@ -65,6 +65,11 @@ def env(tmp_path, monkeypatch):
     h = tmp_path / "home"
     (h / "ARIA").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(h))
+    # V20: the approval store resolves via aria.data_dir (the
+    # install root), not HOME — redirect the root to the same
+    # temp ARIA dir this fixture always used.
+    _data_dir = importlib.import_module("aria.data_dir")
+    monkeypatch.setattr(_data_dir, "_ROOT", str(h / "ARIA"))
     monkeypatch.delenv("ARIA_SAFE_MODE", raising=False)
     logs = []
     monkeypatch.setattr(

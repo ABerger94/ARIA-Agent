@@ -29,7 +29,8 @@ WHAT THIS ADDS
       only one folder.
 
 STATE
-    A small JSON store (~/ARIA/reminder_gate.json) holds the return
+    A small JSON store (reminder_gate.json at the install root
+    since V20 — aria/data_dir.py) holds the return
     watcher's state (so a restart keeps the last observed return)
     and the delivered-but-unacknowledged cards (so ack survives
     restarts too). All seams (clock, presence, speech, card files)

@@ -1,6 +1,7 @@
 """Reading ARIA's life diary from the main process (2026-10-29).
 
-The diary itself (life_diary.jsonl in ~/ARIA) is written by the
+The diary itself (life_diary.jsonl at the install root since
+V20, aria/data_dir.py; pre-V20 in ~/ARIA) is written by the
 life subprocess. This module is the main side's reader: it turns
 activity entries into the small human clause the presence
 greeting can carry — "While you were out, I napped, read, and
@@ -14,12 +15,17 @@ import json
 import os
 from datetime import datetime
 
+from aria import data_dir
+
 MAX_CLAUSE_ITEMS = 3
 
 
 def diary_path(base_dir=None):
-    d = base_dir or os.path.join(os.path.expanduser("~"), "ARIA")
-    return os.path.join(d, "life_diary.jsonl")
+    if base_dir:
+        return os.path.join(base_dir, "life_diary.jsonl")
+    # Default: data_dir.path resolves the install root AND
+    # migrates a real legacy diary copy-if-missing (V20).
+    return data_dir.path("life_diary.jsonl")
 
 
 def read_entries(base_dir=None, since_ts=None):

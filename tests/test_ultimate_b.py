@@ -117,7 +117,8 @@ def test_refusal_etc():
     assert 'Not a directory' in out, out
 
 def test_organize_refuses_routines_dir():
-    rd = os.path.expanduser(os.path.join('~', 'ARIA', 'routines'))
+    # V20: the routines dir is the install root's (aria.data_dir).
+    rd = fileops._routines_dir()
     os.makedirs(rd, exist_ok=True)
     out = fileops.tool_file_organize(rd)
     assert 'Refused' in out, out

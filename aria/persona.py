@@ -2,7 +2,7 @@
 
 A persona is a short style prompt fragment in aria/personas/<name>.md — it is
 NEVER an identity replacement (the soul stays the soul). The active persona
-name persists in ~/ARIA/persona.json; default is none (cleared).
+name persists in persona.json at the install root; default is none (cleared).
 
 Coordinator wiring (integration pass):
   - brain.build_system_instruction: append the persona overlay under a
@@ -27,13 +27,30 @@ import os
 from aria import config as _config
 
 _PERSONAS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "personas")
-_ARIA_HOME = os.path.expanduser("~/ARIA")
+# Persona storage lives at the install root (V20, aria/data_dir.py;
+# pre-V20 ~/ARIA). _config.ROOT_DIR is that root.
+_ARIA_HOME = _config.ROOT_DIR
 _STORAGE_FILE = os.path.join(_ARIA_HOME, "persona.json")
 
 
 def _storage_file():
     # indirection so tests can monkeypatch aria.persona._STORAGE_FILE
     return _STORAGE_FILE
+
+
+def _ensure_migrated():
+    """One-time copy of a real legacy ~/ARIA/persona.json to
+    the install root (V20), via aria.data_dir — canonical wins,
+    legacy left untouched. Only when the storage file has not
+    been redirected (tests, embedders). Fail-soft."""
+    try:
+        if os.path.normpath(_storage_file()) != os.path.normpath(
+                _STORAGE_FILE):
+            return
+        from aria import data_dir
+        data_dir.migrate_file("persona.json")
+    except Exception:
+        pass
 
 
 def list_personas():
@@ -50,6 +67,7 @@ def list_personas():
 
 
 def _read_storage():
+    _ensure_migrated()
     try:
         with open(_storage_file(), encoding="utf-8") as _f:
             data = json.load(_f)
@@ -63,6 +81,7 @@ def _read_storage():
 
 
 def _write_storage(data):
+    _ensure_migrated()
     try:
         os.makedirs(os.path.dirname(_storage_file()), exist_ok=True)
         with open(_storage_file(), "w", encoding="utf-8") as _f:

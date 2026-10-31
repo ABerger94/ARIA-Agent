@@ -1129,7 +1129,11 @@ def _maybe_run_first_run_wizard() -> None:
     Fully skippable, never blocks startup."""
     try:
         import os as _os
-        if not _os.path.exists(_os.path.expanduser("~/ARIA/.first_run_done")):
+        from aria import data_dir as _data_dir
+        # Install-root flag (V20); data_dir.path also migrates a
+        # real legacy ~/ARIA/.first_run_done, so an existing
+        # install never re-runs the wizard after the move.
+        if not _os.path.exists(_data_dir.path(".first_run_done")):
             from aria import first_run
             first_run.run_first_run_wizard()
     except Exception as _fr_e:

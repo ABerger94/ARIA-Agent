@@ -61,11 +61,12 @@ def test_write_failure_returns_quietly(monkeypatch):
 def test_rotation_failure_returns_quietly(monkeypatch, tmp_path):
     # Boot-killer shape: log is over the cap and rotating it is
     # refused (e.g. the .1 / source is held by another process).
-    logdir = tmp_path / "ARIA" / "logs"
+    logdir = tmp_path / "logs"
     logdir.mkdir(parents=True)
     p = logdir / "silent-errors.log"
     p.write_bytes(b"x" * (config._SILENT_LOG_MAX + 1))
-    monkeypatch.setattr(os.path, "expanduser", lambda s: str(tmp_path))
+    # V20: the log dir resolves from config.ROOT_DIR, not HOME.
+    monkeypatch.setattr(config, "ROOT_DIR", str(tmp_path))
 
     def _no_replace(*a, **k):
         raise PermissionError("rotation blocked")
@@ -89,9 +90,10 @@ def test_nested_call_during_failure_is_dropped(monkeypatch):
 
 
 def test_happy_path_still_logs(monkeypatch, tmp_path):
-    monkeypatch.setattr(os.path, "expanduser", lambda s: str(tmp_path))
+    # V20: the log dir resolves from config.ROOT_DIR, not HOME.
+    monkeypatch.setattr(config, "ROOT_DIR", str(tmp_path))
     config.log_silent("unit_test", ValueError("boom"))
-    p = tmp_path / "ARIA" / "logs" / "silent-errors.log"
+    p = tmp_path / "logs" / "silent-errors.log"
     assert p.exists()
     text = p.read_text(encoding="utf-8")
     assert "[unit_test] ValueError: boom" in text

@@ -12,7 +12,7 @@ THE SLICE (v1)
     this") snapshots the CURRENT task from the conversation history:
     the original request, the tools already run (in order), and a
     bounded excerpt of the recent exchange. It persists to
-    ~/ARIA/bookmark.json, so it survives restarts. Saying "where
+    bookmark.json at the install root, so it survives restarts. Saying "where
     were we" resumes: handle_action hands the brain a resume prompt
     carrying the bookmark, the brain recaps what the task was and
     what was already done, and the context is part of the live
@@ -38,6 +38,7 @@ from datetime import datetime
 from typing import Optional
 
 from aria.command_lane import normalize
+from aria import data_dir
 
 SAVE_PHRASES = {"save this for later", "bookmark this"}
 RESUME_PHRASES = {"where were we", "pick up where we left off",
@@ -50,7 +51,9 @@ ACTIONS_MAX = 12
 
 
 def default_path() -> str:
-    return os.path.join(os.path.expanduser("~"), "ARIA", "bookmark.json")
+    # Install root via aria.data_dir (V20); first resolve
+    # migrates any real legacy ~/ARIA/bookmark.json.
+    return data_dir.path("bookmark.json")
 
 
 def is_save(text: str) -> bool:

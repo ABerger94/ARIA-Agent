@@ -335,9 +335,10 @@ def tool_set_reminder_on_return(message: str) -> str:
 
 def _gate_store():
     from aria.reminder_gate import GateStore
-    path = os.path.join(os.path.expanduser("~"), "ARIA",
-                        "reminder_gate.json")
-    return GateStore(path)
+    from aria import data_dir
+    # Install root via aria.data_dir (V20); first resolve
+    # migrates any real legacy ~/ARIA/reminder_gate.json.
+    return GateStore(data_dir.path("reminder_gate.json"))
 
 
 def tool_acknowledge_reminders() -> str:

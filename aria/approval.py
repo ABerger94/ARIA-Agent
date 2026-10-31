@@ -1,7 +1,8 @@
 """ARIA ULTIMATE — Module 4: Approval / safety layer.
 
 Modes: auto (today's behavior) / confirm-risky / confirm-all.
-Persisted in ~/ARIA/approval.json. Default: auto (zero behavior change
+Persisted in approval.json at the install root (aria/data_dir.py,
+V20 — pre-V20 it lived in ~/ARIA). Default: auto (zero behavior change
 until the user opts in).
 
 Top-level imports: stdlib + aria.config only. dispatch/brain are imported
@@ -36,13 +37,13 @@ lazily inside functions — never at module level (no import cycles).
 # ============================================================================
 
 import json
-import os
 import secrets
 import threading
 import time
 from datetime import datetime, timezone
 
 from aria import config
+from aria import data_dir
 
 MODES = ("auto", "confirm-risky", "confirm-all")
 DEFAULT_MODE = "confirm-risky"
@@ -151,7 +152,10 @@ NEVER_GATED = frozenset({
 
 
 def _approval_file() -> str:
-    return os.path.join(os.path.expanduser("~"), "ARIA", "approval.json")
+    # Install root via aria.data_dir (V20); the first resolve
+    # in a process migrates any real legacy ~/ARIA/approval.json
+    # — his approval mode survives the move.
+    return data_dir.path("approval.json")
 
 
 def get_mode() -> str:
@@ -171,10 +175,11 @@ def set_mode(mode: str) -> str:
     if m not in MODES:
         return (f"[Approval mode must be one of: {', '.join(MODES)}. "
                 f"Current mode is still '{get_mode()}.']")
-    os.makedirs(os.path.dirname(_approval_file()), exist_ok=True)
     payload = {"mode": m, "updated": datetime.now(timezone.utc).isoformat()}
-    with open(_approval_file(), "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+    # Atomic write (V20): a dying write must never leave a
+    # corrupt approval.json behind for get_mode to fail-soft
+    # into the wrong default.
+    data_dir.write_json_atomic(_approval_file(), payload)
     config.add_log(f"[approval] mode set to '{m}'")
     if m == "auto":
         return ("Approval mode set to 'auto'. All tools execute immediately "

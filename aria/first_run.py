@@ -1,9 +1,11 @@
 """First-run wizard: environment sanity check + API key onboarding.
 
-Invoked from main.py when ~/ARIA/.first_run_done is absent:
+Invoked from main.py when .first_run_done is absent at the install
+root (aria/data_dir.py, V20; pre-V20 the flag lived in ~/ARIA):
 
     import os
-    if not os.path.exists(os.path.expanduser("~/ARIA/.first_run_done")):
+    from aria import data_dir
+    if not os.path.exists(data_dir.path(".first_run_done")):
         from aria import first_run
         first_run.run_first_run_wizard()
 
@@ -31,7 +33,7 @@ import sys
 
 from aria import config as _config
 
-_DONE_FLAG = os.path.expanduser(os.path.join("~", "ARIA", ".first_run_done"))
+_DONE_FLAG = os.path.join(_config.ROOT_DIR, ".first_run_done")
 
 # (keys-file field, friendly prompt). Only asked when the stored value is
 # missing/"INSERT" — never re-asks for keys that are already set.
@@ -157,7 +159,8 @@ def run_first_run_wizard():
         return True
     except _Skipped:
         print("\nWizard skipped — ARIA will start anyway. "
-              "Run it again by deleting ~/ARIA/.first_run_done.")
+              "Run it again by deleting .first_run_done from "
+              "ARIA's install folder.")
         return False
     finally:
         _mark_done()

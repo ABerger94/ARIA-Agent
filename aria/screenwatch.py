@@ -2,7 +2,7 @@
 
 Watches the user's screen for changes to a question (e.g. "what's the order
 status?", "is the build done?"). Each watch is persisted to
-``~/ARIA/screen_watches.json`` and fires a recurring scheduler task that
+``screen_watches.json`` at the install root and fires a recurring scheduler task that
 runs ``check_watch``.
 
 SCHEDULER WIRING (coordinator): ``tool_watch_screen`` creates the recurring
@@ -44,7 +44,27 @@ from typing import Dict
 from aria.config import add_log
 from aria import config as _config_silent
 
-WATCHES_PATH = os.path.expanduser(os.path.join("~", "ARIA", "screen_watches.json"))
+# State file at the install root (V20, aria/data_dir.py;
+# pre-V20 ~/ARIA/screen_watches.json). A module constant —
+# tests rebind it — computed from config.ROOT_DIR's formula.
+WATCHES_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "screen_watches.json")
+_CANONICAL_WATCHES_PATH = WATCHES_PATH
+
+
+def _ensure_migrated():
+    """One-time copy of a real legacy ~/ARIA/screen_watches.json
+    to the install root (V20), via aria.data_dir. Only when
+    WATCHES_PATH has not been rebound (tests). Fail-soft."""
+    try:
+        if os.path.normpath(WATCHES_PATH) != os.path.normpath(
+                _CANONICAL_WATCHES_PATH):
+            return
+        from aria import data_dir
+        data_dir.migrate_file("screen_watches.json")
+    except Exception:
+        pass
 MIN_INTERVAL_S = 60
 DIFF_THRESHOLD = 0.85
 _NAME_RE = re.compile(r"[^a-z0-9_-]")
@@ -57,6 +77,7 @@ def _sanitize_name(name: str) -> str:
 
 
 def _load() -> Dict[str, dict]:
+    _ensure_migrated()
     try:
         with open(WATCHES_PATH, "r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -66,6 +87,7 @@ def _load() -> Dict[str, dict]:
 
 
 def _save(watches: Dict[str, dict]) -> None:
+    _ensure_migrated()
     os.makedirs(os.path.dirname(WATCHES_PATH), exist_ok=True)
     with open(WATCHES_PATH, "w", encoding="utf-8") as fh:
         json.dump(watches, fh, indent=2)

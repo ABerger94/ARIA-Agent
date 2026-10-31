@@ -41,8 +41,11 @@ def _resolve_dir(directory: str) -> "tuple[str, Optional[str]]":
 
 
 def _routines_dir() -> str:
-    """Canonical routines storage dir per spec (~/ARIA/routines)."""
-    return os.path.realpath(os.path.expanduser(os.path.join("~", "ARIA", "routines")))
+    """Canonical routines storage dir: the install root's
+    routines/ (aria.data_dir, V20) — must agree with
+    aria.routines._routines_dir, its owner."""
+    from aria import data_dir
+    return os.path.realpath(data_dir.subdir("routines"))
 
 
 def _is_dotfile(name: str) -> bool:
@@ -98,7 +101,7 @@ def tool_file_organize(directory: str, dry_run: bool = True) -> str:
     dry_run=true (DEFAULT) returns the move plan and touches nothing.
     dry_run=false executes the moves. NOTE: executing is DESTRUCTIVE (files are
     moved) — the approval layer treats dry_run=false as destructive.
-    Never touches dotfiles or the routines dir (~/ARIA/routines).
+    Never touches dotfiles or the routines dir (the install root's routines/).
     Non-recursive: only files directly inside the directory are sorted.
     """
     d, err = _resolve_dir(directory)

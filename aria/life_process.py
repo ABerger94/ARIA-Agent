@@ -1,7 +1,8 @@
 """ARIA's life subprocess (Alek, 2026-10-29).
 
 Spawned and supervised by the main process (life_supervisor.py).
-Owns exactly three files in ~/ARIA and nothing else:
+Owns exactly three files at the install root (aria/data_dir.py,
+V20; pre-V20 ~/ARIA) and nothing else:
 
 - life_state.json   — her current life snapshot (LifeSim.snapshot),
                       written atomically, read by the dashboard's
@@ -27,6 +28,7 @@ import sys
 import time
 from datetime import datetime
 
+from aria import data_dir
 from aria.life_sim import LifeSim
 
 CONTROL_STALE_S = 90
@@ -36,21 +38,42 @@ JOURNAL_PER_HOUR = 4
 JOURNAL_PER_DAY = 20
 
 
+#: The life-room state files, by paths() key. All live in the
+#: one data dir (the install root since V20).
+_LIFE_FILES = {
+    "state": "life_state.json",
+    "control": "life_control.json",
+    "diary": "life_diary.jsonl",
+    "journal_req": "life_journal_request.json",
+    "journal_resp": "life_journal_response.json",
+    "journal_budget": "life_journal_budget.json",
+}
+
+
 def aria_dir(base_dir=None):
-    return base_dir or os.path.join(os.path.expanduser("~"), "ARIA")
+    # No explicit dir: the install root via aria.data_dir (V20).
+    return base_dir or data_dir.root()
 
 
 def paths(base_dir=None):
-    d = aria_dir(base_dir)
-    return {
-        "dir": d,
-        "state": os.path.join(d, "life_state.json"),
-        "control": os.path.join(d, "life_control.json"),
-        "diary": os.path.join(d, "life_diary.jsonl"),
-        "journal_req": os.path.join(d, "life_journal_request.json"),
-        "journal_resp": os.path.join(d, "life_journal_response.json"),
-        "journal_budget": os.path.join(d, "life_journal_budget.json"),
-    }
+    if base_dir:
+        # Explicit dir (tests, embedders): plain joins, no
+        # migration — migration belongs to the real install.
+        d = base_dir
+        out = {"dir": d}
+        for key, fname in _LIFE_FILES.items():
+            out[key] = os.path.join(d, fname)
+        return out
+    # Default dir: resolve each file through data_dir.path so
+    # the one-time legacy migration carries any real ~/ARIA
+    # life files (the diary above all — it is append-only
+    # journal data and must survive the move byte-for-byte,
+    # which copy-if-missing guarantees: the install root has
+    # no diary until this copy or her first new entry).
+    out = {"dir": data_dir.root()}
+    for key, fname in _LIFE_FILES.items():
+        out[key] = data_dir.path(fname)
+    return out
 
 
 def _read_json(path):

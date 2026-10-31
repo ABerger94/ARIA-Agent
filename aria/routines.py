@@ -2,7 +2,7 @@
 
 Named, replayable multi-step automations. "Watch me do this, save it as X."
 
-Storage: ~/ARIA/routines/<name>.json ->
+Storage: <install root>/routines/<name>.json (aria/data_dir.py, V20) ->
     {"name": ..., "created": iso, "trusted": bool, "steps": [{"tool": ..., "args": {...}}, ...]}
 Name sanitization: lowercase, alnum + `_`/`-` only, max 40 chars.
 
@@ -40,6 +40,7 @@ import time
 from datetime import datetime, timezone
 
 from aria import config
+from aria import data_dir
 
 MAX_NAME_LEN = 40
 
@@ -70,7 +71,9 @@ _PARAM_RE = re.compile(r"\{\{(\w+)\}\}")
 
 
 def _routines_dir() -> str:
-    return os.path.join(os.path.expanduser("~"), "ARIA", "routines")
+    # Install root via aria.data_dir (V20); first resolve
+    # migrates the legacy ~/ARIA/routines tree copy-if-missing.
+    return data_dir.subdir("routines")
 
 
 def _routine_path(name: str) -> str:
@@ -566,7 +569,7 @@ def tool_export_routine_pack(names_csv: str = "", dest_path: str = "") -> str:
             names = []
     if not dest_path.strip():
         dest_path = os.path.join(
-            os.path.expanduser("~"), "ARIA",
+            data_dir.root(),
             f"routines-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.zip")
     return export_pack(names, dest_path.strip())
 

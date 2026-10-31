@@ -1,6 +1,7 @@
 """Persisted audio input-device preference for the Audio panel.
 
-Stored in ~/ARIA/audio.json, following aria/approval.py's approval.json
+Stored in audio.json at the install root (aria/data_dir.py, V20;
+pre-V20 ~/ARIA/audio.json), following aria/approval.py's approval.json
 precedent. The microphone backend (aria/speech.py's SoundDeviceSource)
 already accepts a device index — it was simply never handed one. This
 module is the missing knob: the Audio panel writes it, aria/main.py
@@ -13,12 +14,13 @@ not pretend otherwise.
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
+
+from aria import data_dir
 
 
 def _audio_file() -> str:
-    return os.path.join(os.path.expanduser("~"), "ARIA", "audio.json")
+    return data_dir.path("audio.json")
 
 
 def get_input_device():
@@ -33,7 +35,6 @@ def get_input_device():
 
 def set_input_device(index) -> str:
     """Persist the input-device choice (None = system default)."""
-    os.makedirs(os.path.dirname(_audio_file()), exist_ok=True)
     payload = {}
     try:
         with open(_audio_file(), encoding="utf-8") as f:
@@ -42,8 +43,7 @@ def set_input_device(index) -> str:
         payload = {}
     payload["input_device"] = (int(index) if index is not None else None)
     payload["updated"] = datetime.now(timezone.utc).isoformat()
-    with open(_audio_file(), "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+    data_dir.write_json_atomic(_audio_file(), payload)
     if index is None:
         return "Microphone: system default."
     return f"Microphone: device {index} (applies at the next mic open)."

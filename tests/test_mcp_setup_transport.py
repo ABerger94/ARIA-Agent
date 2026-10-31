@@ -31,11 +31,15 @@ import types
 
 _TMPHOME = tempfile.mkdtemp(prefix='aria_mcp_transport_')
 os.environ['HOME'] = _TMPHOME
+
 PKG = os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), 'aria')
 pkg = types.ModuleType('aria')
 pkg.__path__ = [PKG]
 sys.modules['aria'] = pkg
+from aria import data_dir as _data_dir_v20
+_data_dir_v20._ROOT = os.path.join(_TMPHOME, 'ARIA')  # V20: state stores resolve via data_dir (install root), not HOME
+
 tools_pkg = types.ModuleType('aria.tools')
 tools_pkg.__path__ = [PKG + '/tools']
 sys.modules['aria.tools'] = tools_pkg

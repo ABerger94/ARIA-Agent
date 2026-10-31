@@ -440,14 +440,16 @@ def palette_actions(muted=False):
 
 def file_roots(home=None):
     """The bounded roots the palette enumerates for files: his
-    Desktop / Documents / Downloads plus ARIA's own folders
-    (~/ARIA data, ~/robot_workspace). Missing roots are fine —
+    Desktop / Documents / Downloads plus ARIA's own folder
+    (the install root since V20 — aria.data_dir) and
+    ~/robot_workspace. Missing roots are fine —
     enumerate_files skips them."""
     home = home or os.path.expanduser("~")
+    from aria import data_dir
     return [os.path.join(home, "Desktop"),
             os.path.join(home, "Documents"),
             os.path.join(home, "Downloads"),
-            os.path.join(home, "ARIA"),
+            data_dir.root(),
             os.path.join(home, "robot_workspace")]
 
 

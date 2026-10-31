@@ -550,10 +550,14 @@ def is_safe_mode() -> bool:
 
 # ---------------------------------------------------------------- silent-error log
 # Replaces bare `except Exception: pass` — failures get recorded to
-# ~/ARIA/logs/silent-errors.log (capped at 200KB) instead of vanishing.
+# <install root>/logs/silent-errors.log (capped at 200KB) instead of
+# vanishing. (V20: the log dir moved from ~/ARIA/logs to ROOT_DIR
+# with the rest of ARIA's state — aria/data_dir.py; a real legacy
+# log is carried over copy-if-missing on the first write.)
 # Debug visibility without spamming the user-facing event ring.
 _SILENT_LOG_MAX = 200 * 1024
 _log_silent_active = False
+_logs_migrated = False
 
 
 def log_silent(context: str, exc: BaseException) -> None:
@@ -573,7 +577,24 @@ def log_silent(context: str, exc: BaseException) -> None:
         return
     _log_silent_active = True
     try:
-        logdir = os.path.join(os.path.expanduser("~"), "ARIA", "logs")
+        logdir = os.path.join(ROOT_DIR, "logs")
+        global _logs_migrated
+        if not _logs_migrated:
+            _logs_migrated = True
+            try:
+                # One-time legacy carry-over (V20). Explicit
+                # roots: ROOT_DIR here, not data_dir's global,
+                # so the migration target is always the very
+                # directory this write is about to use. Any
+                # failure inside is swallowed by data_dir
+                # itself — and by the guard above if it ever
+                # tried to log about it.
+                from aria import data_dir as _data_dir
+                _data_dir.migrate_tree(
+                    "logs", root=ROOT_DIR,
+                    legacy=_data_dir.legacy_dir())
+            except Exception:
+                pass
         os.makedirs(logdir, exist_ok=True)
         p = os.path.join(logdir, "silent-errors.log")
         if os.path.exists(p) and os.path.getsize(p) > _SILENT_LOG_MAX:
