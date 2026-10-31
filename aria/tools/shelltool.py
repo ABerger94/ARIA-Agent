@@ -154,9 +154,12 @@ def _normalize(args) -> dict:
     app folder is chosen at execution / banner time, so the
     normalized form is stable); timeout an int clamped to
     5..300 (default 60). Idempotent: normalizing a normalized
-    dict returns the same dict, which is what lets
-    approval.approve_token's replay of the stashed normalized
-    args match approval.in_approve_replay exactly."""
+    dict returns the same dict, so when THIS handler parked the
+    call (branch (e)) approve_token's replay of the stash
+    matches approval.in_approve_replay's normalized check
+    exactly; when dispatch parked it (confirm-all), the stash
+    is the raw call and the handler's raw-args check matches
+    instead — branch (a) consults both."""
     params = args or {}
     command = str(params.get("command") or "").strip()
     raw_cwd = str(params.get("cwd") or "").strip()
@@ -251,12 +254,27 @@ def tool_run_shell_command(args=None) -> str:
     approval = _module("aria.approval")
     dispatch = _module("aria.tools.dispatch")
 
-    # (a) The approve replay: approve_token stashed exactly these
-    # normalized args and set the marker while replaying them —
-    # this call was confirmed on screen, so it runs.
+    # (a) The approve replay: approve_token set the marker for
+    # the stashed args while replaying them — this call was
+    # confirmed on screen, so it runs. The marker must be
+    # checked against BOTH shapes the stash can take: the args
+    # exactly as received (what dispatch stashed when IT parked
+    # the call — in confirm-all mode needs_approval parks every
+    # tool with the model's RAW args, before this handler ever
+    # ran) and the normalized form (what this handler stashed
+    # itself when it parked the call in branch (e) — the
+    # confirm-risky path). Checking only the normalized form
+    # deadlocked confirm-all: the marker held the raw stash,
+    # the comparison never matched, and the replay fell through
+    # to the scope refusal below — the user confirmed, the
+    # token executed, and the handler refused its own confirmed
+    # call (Alek's live witness, 2026-10-31 11:58: a git pull
+    # Confirm returned the routine-replay refusal).
     try:
         in_replay = (approval is not None and bool(
-            approval.in_approve_replay("run_shell_command", normalized)))
+            approval.in_approve_replay("run_shell_command", args or {})
+            or approval.in_approve_replay("run_shell_command",
+                                          normalized)))
     except Exception:
         in_replay = False
     if in_replay:
