@@ -4,7 +4,7 @@
 # instead of core.outcome, and dispatch's preauthorized scope
 # instead of trusted_scope. See LICENSES/NOTICE.md.
 """
-aria/tools/shelltool.py — run a terminal command, behind the gate, always.
+aria/tools/shelltool.py — run a terminal command, behind the gate.
 
 WHY THIS EXISTS
     Until now she had no shell at all. A shell command is not a
@@ -14,11 +14,19 @@ WHY THIS EXISTS
 
 THE GATE — AND THE ONE RULE THAT MAKES THIS TOOL DIFFERENT
     A shell command is arbitrary code with the user's full
-    permissions, so every invocation shows the command, runs
-    only on CONFIRM, and never runs in routines/delegation:
-    the exact command and working directory are parked behind
-    aria.approval's on-screen approval, and nothing executes
-    until a human presses CONFIRM (or approves the token).
+    permissions. In the confirm modes (confirm-risky and
+    confirm-all) every invocation shows the command and runs
+    only on CONFIRM: the exact command and working directory
+    are parked behind aria.approval's on-screen approval, and
+    nothing executes until a human presses CONFIRM (or
+    approves the token). In auto mode a live call runs at
+    once — Alek's ruling, 2026-10-31: "make auto mean auto".
+    In EVERY mode it never runs in routines/delegation (the
+    rule below), and while safe mode is on the auto lane is
+    closed: the call parks for a CONFIRM exactly as in the
+    confirm modes, so safe mode never becomes an unattended-
+    execution hole (this tool is deliberately absent from
+    SAFE_MODE_BLOCKED_TOOLS — the gate is its protection).
 
     Deliberate rule: this tool NEVER rides a preauthorized
     scope. Every other gated action may run at once inside a
@@ -34,12 +42,17 @@ THE GATE — AND THE ONE RULE THAT MAKES THIS TOOL DIFFERENT
     a failure outcome, which halts a replay on that step rather
     than letting it walk past a step that did not run.
 
-    The handler calls approval.request_approval directly —
-    regardless of approval mode — so the mode check in
-    dispatch's needs_approval path (which lets 'auto' mode run
-    tools immediately) cannot bypass this gate. The only way
-    in is the approve-replay marker approval.approve_token
-    sets while it replays the stashed, normalized call.
+    The handler runs its own gate rather than relying on
+    dispatch's needs_approval path: run_shell_command is not
+    in DESTRUCTIVE_TOOLS, so dispatch would never hold it,
+    yet a command must still park in the confirm modes. The
+    handler consults the mode from the same source dispatch
+    uses — approval.get_mode() — never a second store; an
+    unreadable mode reads as not-auto and the call parks
+    (fail-safe: the pre-ruling behaviour). In the confirm
+    modes the way in is the approve-replay marker
+    approval.approve_token sets while it replays the stashed,
+    normalized call.
 
 EXECUTION
     subprocess.run(command, shell=True) with output captured
@@ -196,6 +209,23 @@ def _execute(command: str, cwd: str, timeout: int) -> str:
     return f"Exit code: {result.returncode}\n{body}"
 
 
+def _safe_mode_on() -> bool:
+    """aria.config.is_safe_mode(), read lazily and fail-soft.
+
+    This read only closes the handler's auto lane; it is not
+    the safe-mode enforcement itself (dispatch checks safe
+    mode on its own path, with a hard import, before any
+    handler runs). An unreadable config therefore reads as
+    not-safe-mode here rather than inventing a block the
+    enforcement layer did not make."""
+    config = _module("aria.config")
+    try:
+        fn = getattr(config, "is_safe_mode", None) if config else None
+        return bool(fn()) if callable(fn) else False
+    except Exception:
+        return False
+
+
 # ── The handler ────────────────────────────────────────────────────
 
 def tool_run_shell_command(args=None) -> str:
@@ -258,7 +288,28 @@ def tool_run_shell_command(args=None) -> str:
             "the user has to answer that one first",
             command=command)
 
-    # (d) Park it behind the banner, whatever the approval mode.
+    # (d) Auto mode: a live call executes now (Alek's ruling,
+    # 2026-10-31 — auto means auto: no pending entry, no
+    # banner). The mode is approval's own get_mode(), the same
+    # source dispatch's needs_approval consults; anything
+    # unreadable reads as not-auto and the call parks below —
+    # the pre-ruling behaviour. Safe mode closes this lane:
+    # while it is on, the call parks for a human CONFIRM
+    # exactly as in the confirm modes, because this tool is
+    # deliberately not in SAFE_MODE_BLOCKED_TOOLS (its gate is
+    # the protection) and auto must never become safe mode's
+    # unattended-execution hole. The replay (a) and scope (b)
+    # rules above are untouched: auto changes what a LIVE call
+    # does, never who may ride a preauthorized scope.
+    try:
+        mode = (str(approval.get_mode() or "").strip().lower()
+                if approval is not None else "")
+    except Exception:
+        mode = ""
+    if mode == "auto" and not _safe_mode_on():
+        return _execute(command, cwd, timeout)
+
+    # (e) Park it behind the banner for a human CONFIRM.
     if approval is None:
         return _failed(
             "the approval layer is unavailable, so the command "

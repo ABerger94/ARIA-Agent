@@ -543,9 +543,10 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
                           'required': [],
                           'type': 'OBJECT'}},
     {   'description': 'Runs a command in the system shell with the signed-in user\'s full permissions. '
-                       'Every call parks behind an on-screen CONFIRM showing the exact command, working '
-                       'directory, and timeout — it never runs from a routine replay or a delegated task, '
-                       ' whatever the approval mode.',
+                       'In the confirm-risky and confirm-all approval modes every call parks behind an '
+                       'on-screen CONFIRM showing the exact command, working directory, and timeout; in '
+                       'auto mode a live call runs immediately. It never runs from a routine replay or a '
+                       ' delegated task, whatever the approval mode.',
         'name': 'run_shell_command',
         'parameters': {   'properties': {   'command': {'type': 'STRING'},
                                             'cwd': {'type': 'STRING'},

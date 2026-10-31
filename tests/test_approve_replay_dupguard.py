@@ -2,11 +2,19 @@
 never executed.
 
 Alek (approval mode: auto) asked ARIA to git pull her code. She
-used run_shell_command — whose handler parks EVERY call behind
-the on-screen CONFIRM regardless of mode (by design: a shell
-command is arbitrary code, and the mode check lives in dispatch,
-which this handler deliberately bypasses). He tapped CONFIRM.
-Nothing happened: no pull, no error anywhere he could see.
+used run_shell_command — whose handler then parked EVERY call
+behind the on-screen CONFIRM regardless of mode (by design at
+the time: a shell command is arbitrary code, and the mode check
+lives in dispatch, which this handler deliberately bypassed).
+He tapped CONFIRM. Nothing happened: no pull, no error anywhere
+he could see.
+
+Follow-up (same day): Alek ruled "make auto mean auto", and the
+handler now executes live shell calls unattended in auto mode
+(tests/test_shell_auto_mode.py). The hold/confirm chain below
+therefore runs under confirm-risky, where the handler still
+parks: the duplicate-guard mechanism under test is identical
+there, and in auto there is no longer a hold to confirm.
 
 Root cause, reproduced with the real chain: the handler stashes
 the NORMALIZED args ({command, cwd-resolved, timeout_seconds})
@@ -66,8 +74,11 @@ dispatch = importlib.import_module("aria.tools.dispatch")
 
 @pytest.fixture()
 def home(tmp_path, monkeypatch):
-    """Temp HOME with approval mode 'auto' (Alek's live setting)
-    and a captured OPS log."""
+    """Temp HOME with approval mode 'confirm-risky' and a
+    captured OPS log. (The incident happened in auto, but since
+    Alek's auto-means-auto ruling a live shell call no longer
+    parks in auto at all; the hold/confirm chain this suite
+    pins lives in the confirm modes now.)"""
     h = tmp_path / "home"
     (h / "ARIA").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(h))
@@ -77,9 +88,9 @@ def home(tmp_path, monkeypatch):
         lambda msg, *a, **k: logs.append(str(msg)))
     approval._PENDING.clear()
     dispatch.reset_turn_state()
-    assert approval.set_mode("auto").startswith(
-        "Approval mode set to 'auto'")
-    assert approval.get_mode() == "auto"
+    assert approval.set_mode("confirm-risky").startswith(
+        "Approval mode set to 'confirm-risky'")
+    assert approval.get_mode() == "confirm-risky"
     yield types.SimpleNamespace(dir=h, logs=logs)
     approval._PENDING.clear()
     dispatch.reset_turn_state()
@@ -340,11 +351,13 @@ def test_dashboard_banner_click_executes_the_pull(tmp_path,
     app = QApplication.instance() or QApplication([])
 
     callbacks = _dashboard_stubs(monkeypatch)
-    # Real HOME + real mode file here (the e2e pattern): Alek's
-    # setting is auto, and the shell gate parks anyway.
+    # Real HOME + real mode file here (the e2e pattern). The
+    # banner is a confirm-mode surface: since the auto-means-
+    # auto ruling, a live shell call in auto mode runs without
+    # ever raising one, so the hold is made in confirm-risky.
     approval._PENDING.clear()
     prior_mode = approval.get_mode()
-    approval.set_mode('auto')
+    approval.set_mode('confirm-risky')
     dispatch.reset_turn_state()
     try:
         _args, marker, _token = _hold_shell(tmp_path, "full")
