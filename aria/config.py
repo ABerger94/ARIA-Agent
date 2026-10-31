@@ -490,6 +490,11 @@ SAFE_MODE_BLOCKED_TOOLS = frozenset({
     "edit_own_code",
     "patch_own_code",
     "reload_user_tools",
+    # launch_app os.startfile()s a model-chosen existing program
+    # (aria/tools/winctl.py) — hard-blocked in safe mode like
+    # open_app_or_url, its gated sibling (ChatGPT x ARIA loop
+    # finding, 2026-10-30, queued since pass 4).
+    "launch_app",
 })
 
 

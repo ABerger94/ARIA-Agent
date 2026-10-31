@@ -96,6 +96,18 @@ DESTRUCTIVE_TOOLS = frozenset({
     # trust only ever restores per-step approval. (ChatGPT x ARIA
     # loop finding, 2026-10-29.)
     "trust_routine",
+    # launch_app is a local program launch: tool_launch_app
+    # os.startfile()s any existing path or Start Menu entry
+    # (aria/tools/winctl.py), so an ungated launch_app lets a
+    # model call run an existing executable, script, or shortcut
+    # with the user's permissions — a parallel ungated path to
+    # the gated open_app_or_url. Gating it (ChatGPT x ARIA loop
+    # finding, 2026-10-30, queued since pass 4) also gates
+    # routine steps for free: run_routine_impl consults these
+    # sets per step. The Shell Home / dashboard launcher is a
+    # separate user-click path (aria/app_launcher.py) and is
+    # untouched by this gate.
+    "launch_app",
 })
 
 # In-memory pending approvals: token -> {token, tool, args, desc, created_ts}.
@@ -247,6 +259,8 @@ def _describe_tool(tool: str, args) -> str:
             return f"organize files in '{a.get('directory', '')}' (EXECUTES the move plan)"
         if tool == "open_app_or_url":
             return f"open '{a.get('target', '')}'"
+        if tool == "launch_app":
+            return f"launch app '{a.get('name', '')}'"
         if tool == "move_head_servos":
             return f"move head servos (pan={a.get('pan', 90)} tilt={a.get('tilt', 45)})"
     except Exception as _e_silent:
