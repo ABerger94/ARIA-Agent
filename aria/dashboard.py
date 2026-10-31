@@ -722,7 +722,9 @@ def create_dashboard(callbacks):
             self.shell = (ShellPanel(
                 apps_provider=_shell_apps,
                 on_launch=_shell_launch,
-                on_command=lambda text: callbacks.submit(text))
+                on_command=lambda text: callbacks.submit(text),
+                on_open_tab=lambda name: self._shell_open_tab(name),
+                on_shell_action=lambda aid: self._shell_action(aid))
                 if ShellPanel is not None else None)
             if self.shell is not None:
                 self.shell.hide(); _stack.addWidget(self.shell, 0, 0)
@@ -1674,6 +1676,39 @@ def create_dashboard(callbacks):
                 self.exit_shell_home()
             else:
                 self.open_shell_home()
+
+        def _shell_open_tab(self, name):
+            """Shell palette tab jump (V12): leave Shell Home,
+            then select the named workspace tab. Unknown names
+            simply land on the dashboard — the palette only
+            offers real tabs, so this is belt and braces."""
+            self.exit_shell_home()
+            try:
+                for i in range(self.tabs.count()):
+                    if self.tabs.tabText(i) == name:
+                        self.tabs.setCurrentIndex(i)
+                        break
+            except Exception:
+                pass
+
+        def _shell_action(self, action_id):
+            """Shell palette ARIA actions (V12), each through the
+            dashboard's own existing seam: Lock -> applock.lock
+            (the Settings Lock button's call), Dashboard -> the
+            shell exit path, Room -> the centerpiece swap (which
+            itself leaves Shell Home), Mute -> frame.toggle_voice
+            (the OPS voice gate). Unknown ids do nothing."""
+            try:
+                if action_id == 'lock':
+                    applock.lock()
+                elif action_id == 'dashboard':
+                    self.exit_shell_home()
+                elif action_id == 'room':
+                    self.set_centerpiece('room')
+                elif action_id == 'mute':
+                    frame.toggle_voice()
+            except Exception as exc:
+                config.log_silent('dashboard.shell_action', exc)
 
         def open_shell_home(self):
             """ARIA OS (2026-10-30): bring Shell Home to the

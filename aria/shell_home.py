@@ -20,6 +20,7 @@ chat still reaches ARIA, who has the real tool for it.
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime
 
 from aria import app_launcher
@@ -380,6 +381,179 @@ def reminder_card(cards):
         return None
     return {"count": len(messages), "message": messages[0],
             "messages": messages}
+
+
+# ------------------------------------------------------------------
+# V12 (2026-10-31, Alek's order): the command palette. Typing in
+# the command bar offers candidates — apps (the launcher's own
+# ranking), files/folders from a BOUNDED enumeration (his
+# Desktop / Documents / Downloads + the ARIA folders, shallow,
+# capped — never a disk scan), the dashboard's tabs, and ARIA
+# actions — boosted by his persisted command history. Pure
+# candidate building here; the panel paints and dispatches.
+# Enter semantics are unchanged where it matters: an app still
+# launches through the direct seam, and text matching nothing
+# still falls through route_command to chat, gates and all.
+# ------------------------------------------------------------------
+
+#: The dashboard's workspace tabs, in order (aria/dashboard.py's
+#: addTab loop). Selecting one exits Shell Home and selects it
+#: via the dashboard's callback — the panel never touches the
+#: tab widget itself.
+DASHBOARD_TABS = ("Conversation", "Inbox", "Calendar", "Tasks",
+                  "Activity", "Briefing", "News", "Memory")
+
+#: Palette actions: (id, label, keywords). The mute label is
+#: state-dependent and composed in palette_actions() instead.
+_PALETTE_ACTIONS = (
+    ("lock", "Lock ARIA", "lock applock secure password"),
+    ("room", "Open ARIA's Room", "room life sim diary"),
+    ("dashboard", "Dashboard", "dashboard exit leave home"),
+    ("reminder", "Set a reminder…", "remind reminder alarm later"),
+)
+
+
+def palette_actions(muted=False):
+    """The palette's ARIA actions as candidate-ready dicts.
+    Mute's label reflects the CURRENT voice state (muted ->
+    'Unmute voice'), so the palette never offers to mute an
+    already-muted ARIA."""
+    out = [{"id": aid, "label": label, "keywords": kw}
+           for aid, label, kw in _PALETTE_ACTIONS]
+    out.append({
+        "id": "mute",
+        "label": "Unmute voice" if muted else "Mute voice",
+        "keywords": "mute unmute voice silent quiet speech",
+    })
+    return out
+
+
+def file_roots(home=None):
+    """The bounded roots the palette enumerates for files: his
+    Desktop / Documents / Downloads plus ARIA's own folders
+    (~/ARIA data, ~/robot_workspace). Missing roots are fine —
+    enumerate_files skips them."""
+    home = home or os.path.expanduser("~")
+    return [os.path.join(home, "Desktop"),
+            os.path.join(home, "Documents"),
+            os.path.join(home, "Downloads"),
+            os.path.join(home, "ARIA"),
+            os.path.join(home, "robot_workspace")]
+
+
+def enumerate_files(roots, cap=400):
+    """Shallow, capped file/folder enumeration for the palette:
+    each root's immediate entries only (no recursion, so no
+    scan can run away), dotfiles skipped, sorted by name.
+    Entries: {name, path, is_dir}. Unreadable roots skip."""
+    out = []
+    seen = set()
+    for root in roots or []:
+        if not root or not os.path.isdir(root):
+            continue
+        try:
+            names = sorted(os.listdir(root))
+        except Exception:
+            continue
+        for name in names:
+            if name.startswith("."):
+                continue
+            path = os.path.join(root, name)
+            if path in seen:
+                continue
+            seen.add(path)
+            out.append({"name": name, "path": path,
+                        "is_dir": os.path.isdir(path)})
+            if len(out) >= cap:
+                return out
+    return out
+
+
+def _match_score(text, q):
+    """How well *text* matches the normalized query *q*:
+    exact 100, prefix 80, word-prefix 70, substring 55, else 0."""
+    t = " ".join(str(text or "").lower().split())
+    if not q:
+        return 0
+    if t == q:
+        return 100
+    if t.startswith(q):
+        return 80
+    if any(w.startswith(q) for w in t.split()):
+        return 70
+    if q in t:
+        return 55
+    return 0
+
+
+def palette_candidates(query, apps, files, tabs, actions,
+                       history=None, limit=8):
+    """Build the palette's candidate list for *query*.
+
+    Every candidate: {kind, label, detail, ref, score} where
+    kind is app/file/tab/action and ref is the payload the
+    panel dispatches on (the app entry, the file path, the tab
+    name, the action id). Ranking: match quality first, then a
+    history boost (his own usage counts, capped), then kind
+    order app > action > tab > file. A blank query offers the
+    actions plus his most-used apps — the palette's home state.
+    """
+    q = " ".join(str(query or "").lower().split())
+    history = history or {}
+    kind_order = {"app": 0, "action": 1, "tab": 2, "file": 3}
+    out = []
+
+    def boost(label):
+        return min(int(history.get(label, 0) or 0), 10)
+
+    if not q:
+        for action in actions or []:
+            out.append({"kind": "action", "label": action["label"],
+                        "detail": "ARIA action", "ref": action["id"],
+                        "score": 50 + boost(action["label"])})
+        ranked = sorted(
+            (a for a in (apps or []) if boost(a.get("name", ""))),
+            key=lambda a: -boost(a.get("name", "")))
+        for app in ranked[:4]:
+            out.append({"kind": "app", "label": app.get("name", ""),
+                        "detail": "App", "ref": app,
+                        "score": 40 + boost(app.get("name", ""))})
+        out.sort(key=lambda c: (-c["score"],
+                                kind_order[c["kind"]]))
+        return out[:limit]
+
+    for app in app_launcher.search_apps(apps or [], q, limit=50):
+        score = _match_score(app.get("name", ""), q)
+        if score:
+            out.append({"kind": "app", "label": app.get("name", ""),
+                        "detail": "App", "ref": app,
+                        "score": score + boost(app.get("name", ""))})
+    for action in actions or []:
+        score = max(_match_score(action.get("label", ""), q),
+                    _match_score(action.get("keywords", ""), q))
+        if score:
+            out.append({"kind": "action",
+                        "label": action.get("label", ""),
+                        "detail": "ARIA action", "ref": action["id"],
+                        "score": score + boost(action.get("label", ""))})
+    for tab in tabs or []:
+        score = _match_score(tab, q)
+        if score:
+            out.append({"kind": "tab", "label": tab,
+                        "detail": "Dashboard tab", "ref": tab,
+                        "score": score + boost(tab)})
+    for entry in files or []:
+        score = _match_score(entry.get("name", ""), q)
+        if score:
+            out.append({"kind": "file",
+                        "label": entry.get("name", ""),
+                        "detail": ("Folder" if entry.get("is_dir")
+                                   else "File"),
+                        "ref": entry.get("path", ""),
+                        "score": score + boost(entry.get("name", ""))})
+    out.sort(key=lambda c: (-c["score"], kind_order[c["kind"]],
+                            c["label"].lower()))
+    return out[:limit]
 
 
 def route_command(text, apps):

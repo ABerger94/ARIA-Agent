@@ -171,6 +171,65 @@ def set_pinned_apps(paths) -> str:
     return f"Pinned apps: {len(cleaned)}."
 
 
+def get_command_history():
+    """Shell Home command-palette history (V12, 2026-10-31):
+    {candidate label: times chosen}, used to boost his frequent
+    picks in the palette ranking. Fails soft to {} — no history
+    means unboosted ranking, never a broken palette."""
+    try:
+        with open(_ui_file(), encoding="utf-8") as f:
+            value = (json.load(f) or {}).get("command_history")
+        if isinstance(value, dict):
+            out = {}
+            for key, count in value.items():
+                label = str(key or "").strip()
+                try:
+                    n = int(count)
+                except (TypeError, ValueError):
+                    continue
+                if label and n > 0:
+                    out[label] = n
+            return out
+    except Exception:
+        pass
+    return {}
+
+
+def record_command_history(label) -> str:
+    """Increment one palette pick's count (soft-fail like the
+    rest of this module). Storage is pruned to the 300
+    highest-count labels so the file cannot grow unboundedly
+    over years of use."""
+    label = str(label or "").strip()
+    if not label:
+        return "Command history: unchanged."
+    try:
+        payload = {}
+        try:
+            with open(_ui_file(), encoding="utf-8") as f:
+                payload = json.load(f) or {}
+        except Exception:
+            payload = {}
+        history = payload.get("command_history")
+        if not isinstance(history, dict):
+            history = {}
+        try:
+            history[label] = int(history.get(label, 0)) + 1
+        except (TypeError, ValueError):
+            history[label] = 1
+        if len(history) > 300:
+            history = dict(sorted(
+                history.items(), key=lambda kv: -int(kv[1]))[:300])
+        payload["command_history"] = history
+        payload["updated"] = datetime.now(timezone.utc).isoformat()
+        os.makedirs(os.path.dirname(_ui_file()), exist_ok=True)
+        with open(_ui_file(), "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+    except Exception:
+        pass
+    return f"Command history: {label}."
+
+
 def set_accent(accent) -> str:
     """Persist the accent (None resets to the default palette)."""
     os.makedirs(os.path.dirname(_ui_file()), exist_ok=True)

@@ -102,6 +102,24 @@ scheduler.tool_acknowledge_reminders — the voice tool's path.
 Cards poll on the panel's existing refresh tick; with nothing
 pending there are no cards and zero visual change.
 
+V12 (2026-10-31, Alek's order): the command bar is a real
+command palette. Typing opens a dropdown of candidates —
+apps (the launcher's ranking), files/folders from a bounded
+cached enumeration of his own folders, the dashboard's tabs,
+and ARIA actions (Lock, Open ARIA's Room, Dashboard, Set a
+reminder…, Mute/Unmute with a live-state label) — ranked by
+the pure palette_candidates with his persisted usage history
+(ui_prefs command_history) boosting what he actually picks.
+Up/Down/Enter/Esc drive it from the keyboard. Selection
+dispatches by kind through the existing seams only: apps via
+the direct-launch path with its relaunch guard, files via
+os.startfile, tabs and actions via dashboard callbacks (the
+dashboard exits Shell Home / engages the lock / toggles voice
+itself — the panel reaches for none of those widgets).
+'Set a reminder…' prefills the bar; the finished text takes
+the normal submit path. Text matching nothing still falls
+through _submit_command to route_command/chat, unchanged.
+
 The card never fabricates: no briefing composed yet yields
 report_text's own honest placeholder line.
 
@@ -117,6 +135,7 @@ and default to the real seams, lazily and fail-soft.
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 import threading
@@ -127,7 +146,8 @@ from aria import app_launcher, shell_home
 from aria.resonance import ResonanceOrb
 
 try:
-    from PyQt6.QtCore import QFileInfo, QSize, Qt, QTimer, pyqtSignal
+    from PyQt6.QtCore import (QEvent, QFileInfo, QSize, Qt, QTimer,
+                              pyqtSignal)
     from PyQt6.QtGui import (QColor, QFont, QIcon, QPainter, QPixmap,
                              QTextOption)
     from PyQt6.QtWidgets import (
@@ -206,6 +226,12 @@ QPushButton#shellActionBtn { background: #101f30; color: #dceef7;
             border: 1px solid #1b3042; border-radius: 6px;
             padding: 8px 18px; font-size: 14px; }
 QPushButton#shellActionBtn:hover { background: #17435a; }
+QListWidget#shellPalette { background: #101f30; color: #eaf6ff;
+              border: 1px solid #2b5873; border-radius: 10px;
+              font-size: 14px; }
+QListWidget#shellPalette::item { padding: 7px 12px; }
+QListWidget#shellPalette::item:selected { background: #17435a;
+              border-radius: 6px; }
 """
 
 
@@ -498,6 +524,59 @@ def _default_ack_reminders():
         pass
 
 
+# -- V12 palette providers: the real seams, lazy + fail-soft ----
+
+def _default_files():
+    """The palette's bounded file enumeration (shell_home's
+    file_roots + enumerate_files: shallow, capped, his folders
+    only — never a disk scan)."""
+    try:
+        return shell_home.enumerate_files(shell_home.file_roots())
+    except Exception:
+        return []
+
+
+def _default_history():
+    """Palette usage history from aria.ui_prefs (V12)."""
+    try:
+        from aria import ui_prefs
+        return ui_prefs.get_command_history()
+    except Exception:
+        return {}
+
+
+def _default_record_history(label):
+    """Persist one palette pick through aria.ui_prefs (V12)."""
+    try:
+        from aria import ui_prefs
+        ui_prefs.record_command_history(label)
+    except Exception:
+        pass
+
+
+def _default_file_opener(path):
+    """Open a file/folder the way Windows opens it (os.startfile
+    — the launcher's own mechanism for app shortcuts). Absent
+    off Windows; fail-soft everywhere."""
+    try:
+        opener = getattr(os, "startfile", None)
+        if opener is not None and path:
+            opener(path)
+    except Exception:
+        pass
+
+
+def _default_muted():
+    """Current voice-muted state for the palette's Mute/Unmute
+    label: the negation of aria.speech.VOICE_ENABLED — the same
+    flag the dashboard's render loop paints."""
+    try:
+        from aria import speech
+        return not getattr(speech, "VOICE_ENABLED", True)
+    except Exception:
+        return False
+
+
 class ShellPanel(QWidget):
     """The Shell Home screen. See the module docstring."""
 
@@ -513,7 +592,11 @@ class ShellPanel(QWidget):
                  time_provider=None, weather_provider=None,
                  pinned_provider=None, pinned_writer=None,
                  approval_provider=None, approval_resolver=None,
-                 reminder_provider=None, reminder_ack=None):
+                 reminder_provider=None, reminder_ack=None,
+                 files_provider=None, history_provider=None,
+                 history_writer=None, file_opener=None,
+                 muted_provider=None, on_open_tab=None,
+                 on_shell_action=None):
         super().__init__(parent)
         self.setObjectName("shellHome")
         # Accent (V4 addendum): an explicit accent wins; otherwise
@@ -568,6 +651,23 @@ class ShellPanel(QWidget):
             _default_reminders
         self._reminder_ack = reminder_ack or _default_ack_reminders
         self._approval_token = None
+        # Command palette (V12): injectable seams — bounded file
+        # enumeration (cached after first build), usage history
+        # over ui_prefs, the file opener, the mute state, and
+        # the two dashboard callbacks (tab jumps and ARIA
+        # actions the panel cannot perform alone). The panel
+        # holds no candidate state beyond the painted list.
+        self._files_provider = files_provider or _default_files
+        self._files_cache = None
+        self._history_provider = history_provider or \
+            _default_history
+        self._history_writer = history_writer or \
+            _default_record_history
+        self._file_opener = file_opener or _default_file_opener
+        self._muted_provider = muted_provider or _default_muted
+        self._on_open_tab = on_open_tab
+        self._on_shell_action = on_shell_action
+        self._palette_suppress = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(36, 28, 36, 24)
@@ -736,6 +836,18 @@ class ShellPanel(QWidget):
         self.reminder_frame.layout().addLayout(gotit_row)
         root.addWidget(self.reminder_frame)
 
+        # -- command palette dropdown (V12) ----------------------
+        # An in-flow list directly above the dock: candidates
+        # for what he's typing (apps / files / tabs / actions),
+        # hidden unless there is something to offer.
+        self.palette = QListWidget()
+        self.palette.setObjectName("shellPalette")
+        self.palette.setMaximumHeight(264)
+        self.palette.itemClicked.connect(
+            self._activate_palette_item)
+        self.palette.hide()
+        root.addWidget(self.palette)
+
         # -- bottom dock: the command pill, full width -----------
         bottom = QHBoxLayout()
         bottom.setSpacing(12)
@@ -751,6 +863,10 @@ class ShellPanel(QWidget):
             "Tell ARIA something, or type an app name to launch it…")
         self.command.setObjectName("shellCommand")
         self.command.returnPressed.connect(self._submit_command)
+        # V12: typing refreshes the palette; an event filter
+        # gives it Up/Down/Enter/Esc ahead of the line edit.
+        self.command.textChanged.connect(self._refresh_palette)
+        self.command.installEventFilter(self)
         dock_lay.addWidget(self.command, 1)
         bottom.addWidget(self.dock, 1)
         root.addLayout(bottom)
@@ -1174,13 +1290,154 @@ class ShellPanel(QWidget):
     def _submit_command(self):
         intent = shell_home.route_command(self.command.text(),
                                           self._apps)
-        if intent["kind"] == "launch":
-            self.command.clear()
-            self._launch(intent["app"])
-        elif intent["kind"] == "chat":
-            text = intent["text"]
-            self.command.clear()
-            if self._on_command is not None:
-                self._on_command(text)
+        self._palette_suppress = True
+        try:
+            if intent["kind"] == "launch":
+                self.command.clear()
+                self._record_history(intent["app"].get("name", ""))
+                self._launch(intent["app"])
+            elif intent["kind"] == "chat":
+                text = intent["text"]
+                self.command.clear()
+                if self._on_command is not None:
+                    self._on_command(text)
+        finally:
+            self._palette_suppress = False
+        self.palette.hide()
+
+    # -- command palette (V12) -----------------------------------
+    def _files(self):
+        """The palette's file candidates, enumerated once and
+        cached — the bounded scan runs on first use, not per
+        keystroke."""
+        if self._files_cache is None:
+            try:
+                self._files_cache = list(self._files_provider()
+                                         or [])
+            except Exception:
+                self._files_cache = []
+        return self._files_cache
+
+    def _history(self):
+        try:
+            return dict(self._history_provider() or {})
+        except Exception:
+            return {}
+
+    def _record_history(self, label):
+        label = str(label or "").strip()
+        if not label:
+            return
+        try:
+            self._history_writer(label)
+        except Exception:
+            pass
+
+    def _refresh_palette(self):
+        """Rebuild the dropdown for the command bar's current
+        text (pure palette_candidates decides content + order).
+        Hidden when there is nothing to offer; the first
+        candidate is preselected so Enter means the top pick."""
+        if self._palette_suppress:
+            return
+        try:
+            muted = bool(self._muted_provider())
+        except Exception:
+            muted = False
+        candidates = shell_home.palette_candidates(
+            self.command.text(), self._apps, self._files(),
+            shell_home.DASHBOARD_TABS,
+            shell_home.palette_actions(muted=muted),
+            history=self._history())
+        self.palette.clear()
+        for cand in candidates:
+            item = QListWidgetItem(
+                f"{cand['label']}    · {cand['detail']}")
+            item.setData(Qt.ItemDataRole.UserRole, cand)
+            self.palette.addItem(item)
+        if candidates:
+            self.palette.setCurrentRow(0)
+            self.palette.show()
+        else:
+            self.palette.hide()
+
+    def _activate_palette_item(self, item):
+        if item is not None:
+            self._activate_candidate(
+                item.data(Qt.ItemDataRole.UserRole))
+
+    def _activate_candidate(self, cand):
+        """Dispatch one palette pick by kind. App -> the
+        existing direct-launch seam (relaunch guard included);
+        file/folder -> the OS opener; tab -> the dashboard
+        callback; action -> the dashboard action callback,
+        except 'reminder', which is panel-local: it prefills
+        the command bar and the finished text flows through
+        the normal submit path (chat lane, gates unchanged).
+        Every pick is recorded in the usage history."""
+        if not isinstance(cand, dict):
+            return
+        self._record_history(cand.get("label", ""))
+        kind = cand.get("kind")
+        self._palette_suppress = True
+        try:
+            if kind == "app":
+                self.command.clear()
+                self.palette.hide()
+                self._launch(cand["ref"])
+            elif kind == "file":
+                self.command.clear()
+                self.palette.hide()
+                self._file_opener(cand["ref"])
+            elif kind == "tab":
+                self.command.clear()
+                self.palette.hide()
+                if self._on_open_tab is not None:
+                    self._on_open_tab(cand["ref"])
+            elif kind == "action":
+                if cand["ref"] == "reminder":
+                    self.command.setText("Remind me to ")
+                    self.palette.hide()
+                    self.command.setFocus()
+                else:
+                    self.command.clear()
+                    self.palette.hide()
+                    if self._on_shell_action is not None:
+                        self._on_shell_action(cand["ref"])
+        finally:
+            self._palette_suppress = False
+
+    def eventFilter(self, obj, event):
+        """Palette keyboard control on the command bar:
+        Up/Down move the selection, Enter activates the
+        highlighted candidate (consuming the key so the plain
+        submit does not ALSO fire), Esc closes the dropdown.
+        Anything else — and Enter with no dropdown — passes
+        through untouched, so V1–V11 Enter semantics are
+        exactly preserved when the palette is closed."""
+        if obj is self.command and \
+                event.type() == QEvent.Type.KeyPress:
+            key = event.key()
+            if key == Qt.Key.Key_Escape and \
+                    not self.palette.isHidden():
+                self.palette.hide()
+                return True
+            if key in (Qt.Key.Key_Down, Qt.Key.Key_Up):
+                if self.palette.isHidden():
+                    self._refresh_palette()
+                if not self.palette.isHidden() and \
+                        self.palette.count():
+                    row = self.palette.currentRow()
+                    row += 1 if key == Qt.Key.Key_Down else -1
+                    row = max(0, min(self.palette.count() - 1, row))
+                    self.palette.setCurrentRow(row)
+                    return True
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and \
+                    not self.palette.isHidden():
+                item = self.palette.currentItem()
+                if item is not None:
+                    self._activate_palette_item(item)
+                    return True
+        return super().eventFilter(obj, event)
 
 
