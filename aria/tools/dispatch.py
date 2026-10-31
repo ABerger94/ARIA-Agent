@@ -316,9 +316,30 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
         except Exception as _e_silent:
             _config_mod.log_silent("execute_tool", _e_silent)
 
-    # 2. Duplicate-call blocking
+    # 2. Duplicate-call blocking. One exemption: an approve-token
+    # replay of exactly this call is not a duplicate — it is the
+    # held call's resolution. A handler-side gate (run_shell_
+    # command, browser_agent) completes this dispatch on its
+    # first pass and caches its AWAITING result under this very
+    # signature whenever the model's args already match the
+    # stashed ones, so without the exemption the replay dies
+    # here: the approval entry is popped, the verdict is
+    # discarded by the click path, and nothing executes —
+    # Alek's dead Confirm, 2026-10-31 ("I confirm, and nothing
+    # happens"). The exemption is scoped to the replay marker
+    # approval.approve_token sets for exactly this (tool, args)
+    # on this thread; a plain preauthorized call (routine replay,
+    # skill step) carries no marker and stays duplicate-guarded.
     sig = call_signature(fn_name, args)
-    if sig in _TURN_CALLS:
+    _is_approve_replay = False
+    if preauthorized:
+        try:
+            from aria import approval as _approval_mod
+            _is_approve_replay = bool(
+                _approval_mod.in_approve_replay(fn_name, args or {}))
+        except Exception:
+            _is_approve_replay = False
+    if sig in _TURN_CALLS and not _is_approve_replay:
         return (
             f"[Duplicate call blocked: {fn_name} already ran with these "
             f"arguments this turn. Earlier result: {_TURN_CALLS[sig][:600]}]",

@@ -336,9 +336,21 @@ def approve_token(token: str) -> str:
         from aria.tools import dispatch as _dispatch  # lazy: no import cycle
         result, _ok = _dispatch.execute_tool(
             entry["tool"], entry["args"], preauthorized=True)
-        config.add_log(
-            f"[approval] token={t} executed: {str(result)[:200]}")
-        return str(result)
+        result = str(result)
+        # A replay can come back WITHOUT executing — re-parked
+        # behind a fresh approval, duplicate-blocked, safe-mode
+        # refused — and logging that as "executed" made a dead
+        # Confirm indistinguishable from a worked one (Alek,
+        # 2026-10-31). The OPS verdict names what happened.
+        if result.startswith("[AWAITING_APPROVAL") or \
+                result.startswith("[Duplicate call blocked") or \
+                result.startswith("[Safe mode"):
+            config.add_log(
+                f"[approval] token={t} did NOT execute: {result[:200]}")
+        else:
+            config.add_log(
+                f"[approval] token={t} executed: {result[:200]}")
+        return result
     except Exception as e:
         config.add_log(f"[approval] token={t} execution ERROR: {e}")
         return f"[Approval error: failed to execute approved call: {e}]"
