@@ -125,11 +125,13 @@ def set_shell_mode(enabled) -> str:
 
 def get_pinned_apps():
     """Shell Home pinned apps (V8, 2026-10-30): the ordered list
-    of Start Menu .lnk paths Alek pinned to the home grid. Pin
-    identity is the .lnk path — the stable, launchable identity
-    enumerate_apps returns. Fails soft to [] (no pins = the
-    shell's empty state, never a broken home), drops blanks and
-    duplicates, preserves pin order."""
+    of pin KEYS Alek pinned to the home grid. Pin identity is
+    app_launcher.app_key — the .lnk path for a Start Menu app
+    (every pre-V17 pin), and appid:<AppID> for an AppsFolder
+    app (V17: Store apps like Spotify have no .lnk path to
+    store). Fails soft to [] (no pins = the shell's empty
+    state, never a broken home), drops blanks and duplicates,
+    preserves pin order."""
     try:
         with open(_ui_file(), encoding="utf-8") as f:
             value = (json.load(f) or {}).get("pinned_apps")

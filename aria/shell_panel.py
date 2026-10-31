@@ -174,6 +174,17 @@ horizontal compression, wrapping as it goes) and every row
 button is Fixed-policy at its full size-hint size, so a
 button can never be shrunk into its own text again.
 
+V17 (2026-10-31, Alek's asks): two fixes. (A) Missing apps —
+the launcher also enumerates the Windows AppsFolder
+(Get-StartApps), so Store / per-user apps with no Start Menu
+.lnk (his example: Spotify) appear, launch through
+shell:AppsFolder\<AppID>, and pin under the key appid:<AppID>;
+pin identity everywhere in this panel is now the app KEY
+(app_launcher.app_key) — for .lnk apps the key is the path,
+so existing pins are untouched. (B) Grouped pins render as
+horizontal SHELVES, not the V14 vertical list (see the shelf
+section below); ungrouped is still exactly the V8 grid.
+
 The card never fabricates: no briefing composed yet yields
 report_text's own honest placeholder line.
 
@@ -1518,7 +1529,7 @@ class ShellPanel(QWidget):
         """The right-click menu's verb for *app*: a pinned app
         offers removal, an unpinned one offers the pin."""
         if shell_home.is_pinned(self._pinned_paths(),
-                                (app or {}).get("path", "")):
+                                app_launcher.app_key(app or {})):
             return "Remove from Home"
         return "Pin to Home"
 
@@ -1527,8 +1538,10 @@ class ShellPanel(QWidget):
         one action): the pure toggle decides the new list, the
         writer seam persists it, and the grid re-renders — in
         the pinned view an unpin removes the tile at once, in
-        All Apps / search the tile stays (it's enumerated)."""
-        path = str((app or {}).get("path", "") or "")
+        All Apps / search the tile stays (it's enumerated).
+        Pin identity is the app KEY (V17): the .lnk path, or
+        appid:<AppID> for an AppsFolder app."""
+        path = app_launcher.app_key(app or {})
         if not path:
             return
         new_paths = shell_home.toggle_pin(self._pinned_paths(), path)
@@ -1548,7 +1561,7 @@ class ShellPanel(QWidget):
         menu = QMenu(self)
         action = menu.addAction(self.pin_action_label(app))
         action.triggered.connect(lambda: self.toggle_pin(app))
-        path = str((app or {}).get("path", "") or "")
+        path = app_launcher.app_key(app or {})
         if path and shell_home.is_pinned(self._pinned_paths(),
                                          path):
             menu.addSeparator()
@@ -1623,7 +1636,7 @@ class ShellPanel(QWidget):
     def move_pin(self, app, delta):
         """Move up / Move down: the pure move over the current
         entries, persisted, repainted."""
-        path = str((app or {}).get("path", "") or "")
+        path = app_launcher.app_key(app or {})
         if not path:
             return
         self._write_entries(shell_home.move_entry(
@@ -1633,7 +1646,7 @@ class ShellPanel(QWidget):
     def move_pin_to_group(self, app, group):
         """Move to group ▸: the pure regroup, persisted,
         repainted."""
-        path = str((app or {}).get("path", "") or "")
+        path = app_launcher.app_key(app or {})
         if not path:
             return
         self._write_entries(shell_home.set_entry_group(
@@ -1663,7 +1676,7 @@ class ShellPanel(QWidget):
             if isinstance(data, dict) and "group_header" in data:
                 walk.append(("header", data["group_header"]))
             elif isinstance(data, dict):
-                walk.append(("app", data.get("path", "")))
+                walk.append(("app", app_launcher.app_key(data)))
         self._write_entries(shell_home.entries_from_grid(walk))
 
     def set_view_all(self, show_all):
@@ -1730,7 +1743,7 @@ class ShellPanel(QWidget):
         # rows take their own hints (30px headers, 58px apps)
         # instead of spreading one tile-cell per row.
         lst.setGridSize(QSize())
-        by_path = {str(a.get("path", "")): a for a in results}
+        by_key = {app_launcher.app_key(a): a for a in results}
         for group, members in shell_home.grouped_entries(entries):
             header = QListWidgetItem(group or "Pinned")
             header.setData(Qt.ItemDataRole.UserRole,
@@ -1742,7 +1755,7 @@ class ShellPanel(QWidget):
             header.setSizeHint(QSize(0, 30))
             lst.addItem(header)
             for entry in members:
-                app = by_path.get(entry["path"])
+                app = by_key.get(entry["path"])
                 if app is None:
                     continue
                 item = QListWidgetItem(self._icon_for(app),
@@ -1809,7 +1822,7 @@ class ShellPanel(QWidget):
         # is dropped. A different app, or the same app after the
         # window, launches normally.
         key = (str((app or {}).get("name", "")),
-               str((app or {}).get("path", "")))
+               app_launcher.app_key(app or {}))
         now = self._time_provider()
         if key == self._last_launch_key and \
                 now - self._last_launch_at < LAUNCH_GUARD_SECONDS:

@@ -243,7 +243,11 @@ def create_dashboard(callbacks):
 
     def _shell_apps():
         from aria import app_launcher
-        return app_launcher.enumerate_apps(
+        # V17: .lnk enumeration MERGED with the AppsFolder
+        # source (Get-StartApps) — Store / per-user apps with
+        # no shortcut (Spotify) show up too. The AppsFolder
+        # half is fail-soft: no PowerShell, no problem.
+        return app_launcher.enumerate_all_apps(
             app_launcher.default_roots())
 
     def _shell_launch(app):

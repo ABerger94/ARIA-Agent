@@ -103,3 +103,90 @@ def test_launch_failures_are_soft():
                                opener=boom) is False
     assert launcher.launch_app({"name": "X"}, opener=boom) is False
     assert launcher.launch_app(None, opener=boom) is False
+
+
+# -- V17: AppsFolder source (Get-StartApps) ------------------------
+
+SPOTIFY_ID = "SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify"
+GET_START_APPS_JSON = (
+    '[{"Name": "Spotify", "AppID": "' + SPOTIFY_ID + '"},'
+    ' {"Name": "Spotify", "AppID": "dupe-id"},'
+    ' {"Name": "  ", "AppID": "blank-name"},'
+    ' {"Name": "No Id", "AppID": ""},'
+    ' {"Name": "Calculator", "AppID": "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"}]'
+)
+
+
+def test_appsfolder_parse_dedupe_and_sort():
+    apps = launcher.enumerate_appsfolder(
+        runner=lambda: GET_START_APPS_JSON)
+    assert [a["name"] for a in apps] == ["Calculator", "Spotify"]
+    spotify = apps[1]
+    assert spotify == {"name": "Spotify", "appid": SPOTIFY_ID}
+
+
+def test_appsfolder_single_app_json_object():
+    # Get-StartApps with ONE app emits a bare object, not a list.
+    apps = launcher.enumerate_appsfolder(
+        runner=lambda: '{"Name": "Spotify", "AppID": "x!y"}')
+    assert apps == [{"name": "Spotify", "appid": "x!y"}]
+
+
+def test_appsfolder_fail_soft_on_broken_source():
+    def boom():
+        raise RuntimeError("no powershell here")
+
+    assert launcher.enumerate_appsfolder(runner=boom) == []
+    assert launcher.enumerate_appsfolder(runner=lambda: "junk") == []
+    assert launcher.enumerate_appsfolder(runner=lambda: "") == []
+    assert launcher.enumerate_appsfolder(
+        runner=lambda: '{"Name": 1}') == []
+
+
+def test_merge_prefers_lnk_and_keeps_folder_only():
+    lnk = [{"name": "Spotify", "path": "/x/Spotify.lnk"},
+           {"name": "Steam", "path": "/x/Steam.lnk"}]
+    folder = [{"name": "Spotify", "appid": SPOTIFY_ID},
+              {"name": "Calculator", "appid": "calc!app"}]
+    merged = launcher.merge_app_sources(lnk, folder)
+    assert [a["name"] for a in merged] == \
+        ["Calculator", "Spotify", "Steam"]
+    # The .lnk twin wins: it carries the real icon.
+    assert merged[1] == {"name": "Spotify",
+                         "path": "/x/Spotify.lnk"}
+
+
+def test_enumerate_all_apps_spotify_appears(tmp_path):
+    roots = _roots(tmp_path)  # Chrome, VS Code, Calculator, Steam
+    apps = launcher.enumerate_all_apps(
+        roots, appsfolder_runner=lambda: GET_START_APPS_JSON)
+    names = [a["name"] for a in apps]
+    # Spotify exists ONLY in the AppsFolder source.
+    assert "Spotify" in names
+    spotify = next(a for a in apps if a["name"] == "Spotify")
+    assert spotify["appid"] == SPOTIFY_ID
+    # And enumeration still works whole when the source dies.
+    def boom():
+        raise RuntimeError("nope")
+    apps = launcher.enumerate_all_apps(
+        roots, appsfolder_runner=boom)
+    assert [a["name"] for a in apps] == \
+        ["Calculator", "Google Chrome", "Steam",
+         "Visual Studio Code"]
+
+
+def test_app_key_and_launch_routing_per_kind():
+    lnk = {"name": "Steam", "path": "/x/Steam.lnk"}
+    folder = {"name": "Spotify", "appid": SPOTIFY_ID}
+    assert launcher.app_kind(lnk) == "lnk"
+    assert launcher.app_kind(folder) == "appsfolder"
+    assert launcher.app_key(lnk) == "/x/Steam.lnk"
+    assert launcher.app_key(folder) == "appid:" + SPOTIFY_ID
+    assert launcher.app_key({}) == ""
+    assert launcher.launch_target(lnk) == "/x/Steam.lnk"
+    assert launcher.launch_target(folder) == \
+        "shell:AppsFolder\\" + SPOTIFY_ID
+    opened = []
+    assert launcher.launch_app(folder, opener=opened.append) \
+        is True
+    assert opened == ["shell:AppsFolder\\" + SPOTIFY_ID]
