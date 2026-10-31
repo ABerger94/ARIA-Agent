@@ -1993,6 +1993,19 @@ def create_dashboard(callbacks):
                 self.orb3d.advance(state, level, _muted)
             else:
                 self.face.advance(state, level, _muted)
+            # Shell Home (V9, 2026-10-30): while the shell is the
+            # active center, her waveform orb ALSO lives in its
+            # header — forward this tick's same (state, level,
+            # muted), no second computation. Gated on the
+            # explicit V7 flag, never visibility: at Shell-Mode
+            # boot the first ticks can run before the window is
+            # shown, which is exactly where isVisible() lies.
+            if getattr(self, '_shell_home_active', False) \
+                    and getattr(self, 'shell', None) is not None:
+                try:
+                    self.shell.advance_orb(state, level, _muted)
+                except Exception:
+                    pass
             self._sync_neural_geometry()
             self.neural.setVisible(self.video is None
                                    or not self.video.isVisible())

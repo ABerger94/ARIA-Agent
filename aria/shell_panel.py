@@ -66,6 +66,16 @@ behaviour is unchanged (single select, double launch, the
 V3 relaunch guard intact), and the command bar still routes
 against ALL apps, pinned or not.
 
+V9 (2026-10-30, Alek's order): the header's static OrbDisc
+is replaced by her real waveform orb
+(``aria.resonance.ResonanceOrb``, transparent, 96px) — the
+dashboard's render_once forwards its (state, level, muted)
+triple to ``advance_orb`` while Shell Home is active (the V7
+flag), so the home screen's orb breathes with her voice. Its
+colours are the resonance module palette's, shifted by the
+dashboard's painted-accent path — Customize reaches it for
+free. The dock's 18px dot stays an OrbDisc.
+
 The card never fabricates: no briefing composed yet yields
 report_text's own honest placeholder line.
 
@@ -87,6 +97,7 @@ import time
 from datetime import datetime
 
 from aria import app_launcher, shell_home
+from aria.resonance import ResonanceOrb
 
 try:
     from PyQt6.QtCore import QFileInfo, QSize, Qt, QTimer, pyqtSignal
@@ -425,8 +436,20 @@ class ShellPanel(QWidget):
 
         # -- header: orb + clock/greeting/date ------------------
         header = QHBoxLayout()
-        self.orb = OrbDisc(self, diameter=84,
-                           colors=_orb_colors(self._accent))
+        # V9 (Alek, 2026-10-30): the header orb is her REAL
+        # waveform orb (aria.resonance.ResonanceOrb), not the
+        # static painted disc — the dashboard forwards its
+        # (state, level, muted) triple here while Shell Home is
+        # active (see advance_orb), so the home screen breathes
+        # with her voice. Transparent, so the shell background
+        # shows through; fixed 96px in the old disc's slot. Its
+        # colours are the resonance module palette's, which the
+        # dashboard's painted-accent path already shifts — the
+        # Customize accent reaches it with no panel wiring.
+        # (The 18px dock dot stays an OrbDisc: a waveform at
+        # that size is mush; it's a status dot.)
+        self.orb = ResonanceOrb(self, transparent_background=True)
+        self.orb.setFixedSize(96, 96)
         header.addWidget(self.orb)
         titles = QVBoxLayout()
         titles.setSpacing(2)
@@ -616,19 +639,38 @@ class ShellPanel(QWidget):
     def set_accent(self, accent):
         """Follow the dashboard's accent live (V4 addendum):
         rebuild the stylesheet from the accent family and repaint
-        both orb discs. Invalid accents are ignored — a bad
-        colour can never cost the shell its theme. Called by the
-        dashboard's apply_accent (Customize) and on Shell Home
-        open, so a colour changed while the shell was closed
-        shows the moment it opens, no restart."""
+        the dock dot. (The header waveform orb follows through
+        the resonance palette instead — see __init__.) Invalid
+        accents are ignored — a bad colour can never cost the
+        shell its theme. Called by the dashboard's apply_accent
+        (Customize) and on Shell Home open, so a colour changed
+        while the shell was closed shows the moment it opens,
+        no restart."""
         accent = _valid_accent(accent)
         if not accent:
             return
         self._accent = accent
         self.setStyleSheet(shell_style(accent))
-        colors = _orb_colors(accent)
-        self.orb.set_colors(*colors)
-        self.dock_orb.set_colors(*colors)
+        # V9: only the dock dot (still an OrbDisc) takes the
+        # shell family's colours here. The header orb is the
+        # ResonanceOrb — its palette lives in aria.resonance
+        # and is shifted by the dashboard's
+        # _apply_painted_accent on this same Customize path,
+        # so there is nothing panel-side to repaint for it.
+        self.dock_orb.set_colors(*_orb_colors(accent))
+
+    # -- the header waveform orb (V9) ----------------------------
+    def advance_orb(self, state, level, muted=False):
+        """Drive the header waveform orb: the dashboard's
+        render_once forwards the SAME (state, level, muted)
+        triple it computed for its own face, and only while
+        Shell Home is active — one source, two faces, no second
+        timer or level computation here. Fail-soft: a bad tick
+        can never cost the shell its frame loop."""
+        try:
+            self.orb.advance(state, level, muted)
+        except Exception:
+            pass
 
     # -- data -------------------------------------------------
     def refresh_apps(self):

@@ -302,10 +302,12 @@ def test_custom_accent_rethemes_panel_and_orbs():
     assert "#57c7d4" not in sheet
     assert "#2b5873" not in sheet
     assert "#d4579c" in sheet
-    # Both orb discs repainted to the accent family.
-    assert panel.orb._core_color.name() == "#d4579c"
+    # The dock dot (still an OrbDisc) repainted to the accent
+    # family. The header orb is the ResonanceOrb since V9 —
+    # its accent path is the resonance palette, proven by the
+    # pixel test in the V9 section below, not by disc colours.
     assert panel.dock_orb._core_color.name() == "#d4579c"
-    assert panel.orb._ring.name() == "#732b3f"
+    assert panel.dock_orb._ring.name() == "#732b3f"
 
 
 def test_set_accent_rethemes_live_and_ignores_invalid():
@@ -314,7 +316,7 @@ def test_set_accent_rethemes_live_and_ignores_invalid():
     panel.set_accent("#e83a9a")
     assert panel._accent == "#e83a9a"
     assert "#57c7d4" not in panel.styleSheet().lower()
-    assert panel.orb._core_color.name() == "#d4579c"
+    assert panel.dock_orb._core_color.name() == "#d4579c"
     panel.set_accent("bogus")
     assert panel._accent == "#e83a9a"
 
@@ -512,3 +514,77 @@ def test_stale_pin_is_skipped_silently():
     assert _names(panel) == ["Steam"]
     assert panel.count_label.text() == "1 pinned"
     assert panel.grid_stack.currentWidget() is panel.app_list
+
+
+# -- V9: the header orb is the waveform orb ---------------------------
+
+def test_header_orb_is_the_waveform_orb():
+    panel, _calls = _panel()
+    from aria.resonance import ResonanceOrb
+    assert isinstance(panel.orb, ResonanceOrb)
+    assert panel.orb._transparent_background
+    # 96px fixed in the old static disc's slot (the orb's own
+    # 280px centerpiece minimum is overridden by the fix).
+    assert panel.orb.minimumWidth() == 96
+    assert panel.orb.maximumWidth() == 96
+    assert panel.orb.minimumHeight() == 96
+    assert panel.orb.maximumHeight() == 96
+    # The dock's status dot stays a painted OrbDisc.
+    assert isinstance(panel.dock_orb, shell_panel.OrbDisc)
+    assert not isinstance(panel.dock_orb, ResonanceOrb)
+
+
+def test_advance_orb_drives_the_waveform():
+    panel, _calls = _panel()
+    for _ in range(6):
+        panel.advance_orb("speaking", 0.9)
+    assert panel.orb.state == "SPEAKING"
+    assert panel.orb.speaking
+    assert panel.orb._amp_disp > 0.3
+    assert len(panel.orb._amp_hist) == 6
+    # Muted + idle are accepted without a crash (the dashboard
+    # forwards whatever the tick computed).
+    panel.advance_orb("idle", 0.0, muted=True)
+    assert panel.orb.muted
+    assert panel.orb.state == "IDLE"
+
+
+def test_header_orb_pixels_follow_resonance_accent():
+    # In the test_resonance style: shift the RESONANCE module
+    # palette to magenta (the dashboard's _apply_painted_accent
+    # does exactly this on a Customize change), drive the shell
+    # orb speaking, render it, and count pixel families. The
+    # palette is module-global, so it is restored in finally.
+    import aria.resonance as resonance
+    panel, _calls = _panel()
+    try:
+        assert resonance.apply_accent("#e83a9a")
+        for _ in range(30):
+            panel.advance_orb("speaking", 0.95)
+        panel.show()
+        _APP.processEvents()
+        img = panel.orb.grab().toImage()
+        magenta = cyan = 0
+        for x in range(img.width()):
+            for y in range(img.height()):
+                c = img.pixelColor(x, y)
+                if c.alpha() < 200:
+                    continue        # transparent surround
+                # Shifted PRI family: strong red, real blue,
+                # suppressed green.
+                if c.red() > 120 and c.blue() > 100 \
+                        and c.green() < 115:
+                    magenta += 1
+                # Stock PRI cyan (#00d4ff): near-zero red,
+                # strong green AND blue.
+                if c.red() < 90 and c.green() > 150 \
+                        and c.blue() > 180:
+                    cyan += 1
+        # Thresholds MEASURED on the real 96px render: the
+        # magenta palette scores magenta 22 / cyan 0; the stock
+        # palette scores magenta 0 / cyan 20. Asserted with
+        # ~2x headroom on the presence side, exact on absence.
+        assert magenta >= 10, (magenta, cyan)
+        assert cyan == 0, (magenta, cyan)
+    finally:
+        resonance.apply_accent(None)

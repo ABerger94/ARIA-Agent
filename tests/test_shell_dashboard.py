@@ -269,3 +269,26 @@ def test_shell_button_is_state_aware(monkeypatch):
         assert not win.right_card.isHidden()
     finally:
         win.close()
+
+
+def test_render_once_forwards_to_shell_orb_only_when_active(monkeypatch):
+    # V9: render_once forwards its (state, level, muted) to the
+    # shell header's waveform orb ONLY while Shell Home is the
+    # active center (the V7 flag) — no forwarding, no second
+    # drive, while the dashboard's own face owns the ticks.
+    window, _calls = _window(monkeypatch)
+    try:
+        orb = window.shell.orb
+        assert len(orb._amp_hist) == 0
+        window.render_once()
+        assert len(orb._amp_hist) == 0          # shell inactive
+        window.open_shell_home()
+        window.render_once()
+        window.render_once()
+        assert len(orb._amp_hist) == 2          # one per tick
+        window.shell_btn.click()                # exit the shell
+        assert not window._shell_is_home()
+        window.render_once()
+        assert len(orb._amp_hist) == 2          # forwarding stopped
+    finally:
+        window.close()

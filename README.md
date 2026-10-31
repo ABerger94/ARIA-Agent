@@ -241,7 +241,9 @@ author's direction: one program, ARIA, with Shell Mode built in.
 
 - **Shell Home** (`aria/shell_panel.py`) — an OS home, not a
   settings panel: big clock, date, and time-of-day greeting with
-  ARIA's orb beside it, the local weather under the date
+  her live waveform orb beside it (the dashboard forwards its
+  voice state/level to the shell's orb while Shell Home is open,
+  so it breathes with her voice), the local weather under the date
   (condition symbol + temperature and the day's high/low, from
   the same wttr.in source her briefings use — fetched off the
   UI thread, refreshed at most every ~15 minutes, and simply
