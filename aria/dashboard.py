@@ -714,8 +714,7 @@ def create_dashboard(callbacks):
             self.shell = (ShellPanel(
                 apps_provider=_shell_apps,
                 on_launch=_shell_launch,
-                on_command=lambda text: callbacks.submit(text),
-                on_exit=lambda: self.exit_shell_home())
+                on_command=lambda text: callbacks.submit(text))
                 if ShellPanel is not None else None)
             if self.shell is not None:
                 self.shell.hide(); _stack.addWidget(self.shell, 0, 0)
@@ -731,7 +730,7 @@ def create_dashboard(callbacks):
             self.mic = QPushButton('Hold to talk'); self.mic.pressed.connect(callbacks.ptt_press); self.mic.released.connect(callbacks.ptt_release); controls.addWidget(self.mic)
             self.voice = QPushButton('Voice on'); self.voice.clicked.connect(frame.toggle_voice); controls.addWidget(self.voice)
             stop = QPushButton('Stop speaking'); stop.clicked.connect(callbacks.interrupt); controls.addWidget(stop)
-            self.shell_btn = QPushButton('Shell Home'); self.shell_btn.setToolTip('Open the ARIA OS home screen'); self.shell_btn.clicked.connect(self.open_shell_home); controls.addWidget(self.shell_btn); cl.addLayout(controls)
+            self.shell_btn = QPushButton('Shell Home'); self.shell_btn.setToolTip('Open the ARIA OS home screen'); self.shell_btn.clicked.connect(self._shell_btn_clicked); controls.addWidget(self.shell_btn); cl.addLayout(controls)
             # Whisper and centerpiece buttons used to live here
             # (Alek, 2026-10-27): whisper is the Voice / audio
             # Settings checkbox, the centerpiece is Settings →
@@ -1618,6 +1617,42 @@ def create_dashboard(callbacks):
                 pass
             self._split_sizes = None
 
+        def _shell_is_home(self):
+            shell = getattr(self, 'shell', None)
+            try:
+                return shell is not None and shell.isVisible()
+            except Exception:
+                return False
+
+        def _sync_shell_btn(self):
+            """State-aware Shell Home button (Alek, 2026-10-30):
+            the center-controls row stays visible under the
+            shell, so a button still reading 'Shell Home' while
+            Shell Home is already open is redundant. Out of the
+            shell it reads 'Shell Home' and opens it; IN the
+            shell it reads 'Dashboard' and exits back to the
+            dashboard. Synced from every enter/exit path so the
+            label can never drift from the real state."""
+            btn = getattr(self, 'shell_btn', None)
+            if btn is None:
+                return
+            try:
+                if self._shell_is_home():
+                    btn.setText('Dashboard')
+                    btn.setToolTip(
+                        'Leave Shell Home — back to the dashboard')
+                else:
+                    btn.setText('Shell Home')
+                    btn.setToolTip('Open the ARIA OS home screen')
+            except Exception:
+                pass
+
+        def _shell_btn_clicked(self):
+            if self._shell_is_home():
+                self.exit_shell_home()
+            else:
+                self.open_shell_home()
+
         def open_shell_home(self):
             """ARIA OS (2026-10-30): bring Shell Home to the
             center, covering every centerpiece. The persisted
@@ -1652,6 +1687,7 @@ def create_dashboard(callbacks):
             self.shell.refresh_clock()
             self.shell.show()
             self.shell.command.setFocus()
+            self._sync_shell_btn()
 
         def exit_shell_home(self):
             """Exit to Windows: leave Shell Home AND fullscreen —
@@ -1668,6 +1704,7 @@ def create_dashboard(callbacks):
             if getattr(self, 'shell', None) is not None:
                 self.shell.hide()
             self._show_centerpiece()
+            self._sync_shell_btn()
 
         def _show_centerpiece(self):
             """Make the stored centerpiece the visible one (unless a
@@ -1699,6 +1736,7 @@ def create_dashboard(callbacks):
                 self._place_room_close()
             else:
                 self.face.show()
+            self._sync_shell_btn()
 
         def _place_map_close(self):
             """Keep the memory map's ✕ in its top-right corner

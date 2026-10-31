@@ -95,12 +95,15 @@ def test_shell_home_opens_and_exit_restores_centerpiece(monkeypatch):
     window.shell_btn.click()
     assert window.shell.isVisible()
     assert not window.face.isVisible()
-    assert window.shell.exit_btn.text() == 'Dashboard'
+    # V5: in the shell, the SAME row button is the Dashboard
+    # button — the panel has no exit button of its own.
+    assert window.shell_btn.text() == 'Dashboard'
 
-    window.shell.exit_btn.click()
+    window.shell_btn.click()
     assert not window.shell.isVisible()
     assert window.face.isVisible()
     assert not window.isFullScreen()
+    assert window.shell_btn.text() == 'Shell Home'
     window.close()
 
 
@@ -134,7 +137,7 @@ def test_shell_home_takes_full_window_and_exit_restores(monkeypatch):
     assert window.shell.isVisible()
     assert not window.left_card.isVisible()
     assert not window.right_card.isVisible()
-    window.shell.exit_btn.click()
+    window.shell_btn.click()
     assert window.left_card.isVisible()
     assert window.right_card.isVisible()
     assert window._body_splitter.sizes() == before
@@ -174,3 +177,24 @@ def test_open_shell_home_reresolves_accent(monkeypatch):
     window.open_shell_home()
     assert window.shell._accent == '#e83a9a'
     window.close()
+
+
+def test_shell_button_is_state_aware(monkeypatch):
+    # V5 (Alek, 2026-10-30): the dashboard's center-controls
+    # button is the SAME button in both states — 'Shell Home'
+    # opens the shell; while the shell is open it reads
+    # 'Dashboard' and exits (restoring the side columns).
+    win, calls = _window(monkeypatch)
+    try:
+        assert win.shell_btn.text() == 'Shell Home'
+        win.shell_btn.click()
+        assert win.shell.isVisible()
+        assert win.shell_btn.text() == 'Dashboard'
+        win.shell_btn.click()
+        assert not win.shell.isVisible()
+        assert win.shell_btn.text() == 'Shell Home'
+        assert not win._shell_full
+        assert not win.left_card.isHidden()
+        assert not win.right_card.isHidden()
+    finally:
+        win.close()

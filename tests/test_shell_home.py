@@ -39,7 +39,9 @@ def test_home_model_shape():
     assert model["date_line"] == "Friday, October 30"
     assert model["app_count"] == 4
     assert model["count_line"] == "4 apps"
-    assert model["exit_label"] == "Dashboard"
+    # V5: no exit_label in the model — the panel has no exit
+    # button; the dashboard's row button owns leaving.
+    assert "exit_label" not in model
     assert shell_home.home_model(APPS[:1], now=now)["count_line"] \
         == "1 app"
 

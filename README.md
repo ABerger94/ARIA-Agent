@@ -285,12 +285,13 @@ author's direction: one program, ARIA, with Shell Mode built in.
   Shell Home (`aria/qthost.py` reads the `shell_mode`
   preference, off by default, via `aria/ui_prefs.py`). Untick
   it and you're back to the classic dashboard boot.
-- **Dashboard** — an always-visible button, bottom right of
-  Shell Home (labelled "Dashboard"; earlier shells called it
-  "Exit to Windows"). One click: fullscreen drops, the shell
-  steps aside, and you're looking at the ordinary Windows
-  desktop with ARIA as a normal window. The escape hatch is
-  sacred.
+- **One button, two states** — the dashboard's center-controls
+  button reads "Shell Home" and opens the shell; while Shell
+  Home is open it reads "Dashboard" and one click exits:
+  fullscreen drops, the side columns come back, and you're
+  looking at the ordinary Windows desktop with ARIA as a normal
+  window. There is deliberately no second exit button inside
+  the shell. The escape hatch is sacred.
 
 **v1 limits — stated plainly.** Explorer is never replaced in v1:
 Shell Mode is a fullscreen dashboard mode, not a registry shell

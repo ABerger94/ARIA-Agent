@@ -24,14 +24,6 @@ from datetime import datetime
 
 from aria import app_launcher
 
-#: The always-visible escape hatch's label — one string, used by
-#: the panel and asserted by the tests so it can never drift.
-#: (V4 addendum, Alek 2026-10-30: renamed from "Exit to Windows"
-#: to "Dashboard" — the button still just exits Shell Home back
-#: to the dashboard; only the words changed.)
-EXIT_LABEL = "Dashboard"
-
-
 def greeting_for(hour, name="Alek"):
     """Time-of-day greeting for the home header."""
     if 5 <= hour < 12:
@@ -62,7 +54,6 @@ def home_model(apps, now=None, name="Alek", limit=24):
         "app_count": len(apps),
         "count_line": (f"{len(apps)} apps" if len(apps) != 1
                        else "1 app"),
-        "exit_label": EXIT_LABEL,
     }
 
 

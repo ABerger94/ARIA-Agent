@@ -37,12 +37,11 @@ NOW = datetime(2026, 10, 30, 15, 47)
 
 
 def _panel(**overrides):
-    calls = {"launch": [], "command": [], "exit": 0}
+    calls = {"launch": [], "command": []}
     kwargs = dict(
         apps=APPS,
         on_launch=calls["launch"].append,
         on_command=calls["command"].append,
-        on_exit=lambda: calls.__setitem__("exit", calls["exit"] + 1),
         now_provider=lambda: NOW,
         briefing_provider=lambda: None,
         research_provider=lambda: "")
@@ -51,12 +50,16 @@ def _panel(**overrides):
     return panel, calls
 
 
-def test_header_and_exit_button():
+def test_header_and_no_exit_button():
     panel, _calls = _panel()
     assert panel.clock_label.text() == "15:47"
     assert panel.greeting_label.text() == "Good afternoon, Alek"
     assert panel.date_label.text() == "Friday, October 30"
-    assert panel.exit_btn.text() == "Dashboard"
+    # V5 (Alek: "I only need one Dashboard button"): the panel
+    # has NO exit button — the dashboard's center-controls
+    # button becomes the Dashboard button while the shell is
+    # open (test_shell_dashboard covers that side).
+    assert not hasattr(panel, "exit_btn")
     assert panel.count_label.text() == "3 apps"
 
 
@@ -195,12 +198,6 @@ def test_v4_rail_is_briefing_only_and_it_fills_the_rail():
     panel.hide()
 
 
-def test_exit_button_fires_callback():
-    panel, calls = _panel()
-    panel.exit_btn.click()
-    assert calls["exit"] == 1
-
-
 # -- V2 layout: tile grid, rail cards, dock pill ------------------
 
 def test_app_grid_is_a_tile_grid_with_icons():
@@ -259,11 +256,11 @@ def test_broken_briefing_provider_falls_back_to_placeholder():
         briefing_mod.report_text(None)
 
 
-def test_dock_holds_command_and_exit_stays_visible():
+def test_dock_holds_command_and_no_exit_button():
     panel, _calls = _panel()
     assert panel.command.parent() is panel.dock
     assert panel.dock.objectName() == "shellDock"
-    assert panel.exit_btn.text() == "Dashboard"
+    assert not hasattr(panel, "exit_btn")
     assert panel.orb is not None
 
 

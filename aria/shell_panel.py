@@ -45,10 +45,13 @@ report_text's own honest placeholder line.
 
 All routing logic lives in aria/shell_home.py and enumeration in
 aria/app_launcher.py (both pure); this file is only the paint.
-Callbacks are injected: on_launch(app), on_command(text),
-on_exit() — the dashboard wires them; tests and screenshots wire
-recorders. Card providers are injected the same way and default
-to the real seams, lazily and fail-soft.
+Callbacks are injected: on_launch(app), on_command(text) — the
+dashboard wires them; tests and screenshots wire recorders.
+There is NO exit button in the panel (V5, Alek 2026-10-30:
+"I only need one Dashboard button") — the dashboard's own
+center-controls button turns into the Dashboard button while
+the shell is open. Card providers are injected the same way
+and default to the real seams, lazily and fail-soft.
 """
 from __future__ import annotations
 
@@ -71,7 +74,6 @@ try:
         QListWidget,
         QListWidgetItem,
         QPlainTextEdit,
-        QPushButton,
         QSizePolicy,
         QVBoxLayout,
         QWidget,
@@ -115,10 +117,6 @@ QFrame#shellDock { background: #101f30; border: 1px solid #2b5873;
               border-radius: 22px; }
 QLineEdit#shellCommand { background: transparent; color: #eaf6ff;
             border: none; padding: 10px 6px; font-size: 15px; }
-QPushButton#shellExit { background: #12303f; color: #eaf6ff;
-    border: 1px solid #2b5873; border-radius: 6px;
-    padding: 10px 18px; font-size: 14px; }
-QPushButton#shellExit:hover { background: #17435a; }
 """
 
 
@@ -286,7 +284,7 @@ class ShellPanel(QWidget):
     """The Shell Home screen. See the module docstring."""
 
     def __init__(self, parent=None, apps=None, apps_provider=None,
-                 on_launch=None, on_command=None, on_exit=None,
+                 on_launch=None, on_command=None,
                  now_provider=None, briefing_provider=None,
                  research_provider=None, accent=None,
                  time_provider=None):
@@ -303,7 +301,6 @@ class ShellPanel(QWidget):
         self._apps = list(apps) if apps is not None else []
         self._on_launch = on_launch
         self._on_command = on_command
-        self._on_exit = on_exit
         self._now_provider = now_provider or datetime.now
         # Monotonic clock for the relaunch guard — injectable so
         # the guard window is testable without real waiting.
@@ -392,7 +389,7 @@ class ShellPanel(QWidget):
         main.addLayout(rail, 1)
         root.addLayout(main, 1)
 
-        # -- bottom dock: command pill + Dashboard button ---------
+        # -- bottom dock: the command pill, full width -----------
         bottom = QHBoxLayout()
         bottom.setSpacing(12)
         self.dock = QFrame()
@@ -409,12 +406,6 @@ class ShellPanel(QWidget):
         self.command.returnPressed.connect(self._submit_command)
         dock_lay.addWidget(self.command, 1)
         bottom.addWidget(self.dock, 1)
-        self.exit_btn = QPushButton(shell_home.EXIT_LABEL)
-        self.exit_btn.setObjectName("shellExit")
-        self.exit_btn.setToolTip(
-            "Leave Shell Mode and return to the Windows desktop")
-        self.exit_btn.clicked.connect(self._exit)
-        bottom.addWidget(self.exit_btn)
         root.addLayout(bottom)
 
         self._timer = QTimer(self)
@@ -580,6 +571,4 @@ class ShellPanel(QWidget):
             if self._on_command is not None:
                 self._on_command(text)
 
-    def _exit(self):
-        if self._on_exit is not None:
-            self._on_exit()
+
