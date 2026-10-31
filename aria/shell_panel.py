@@ -150,6 +150,30 @@ result) and Move to group ▸ — existing groups, Ungrouped,
 and New group… via a name prompt. Search and All Apps are
 unchanged and drag-free.
 
+V16 (2026-10-31, Alek's live witness on bcd52ef5: "briefing
+area needs to be bigger on home shell so i can read it
+better"): his screenshot showed the Briefing card squashed
+to a few lines with dead space above and below the panel.
+Measured cause: the rail was never the constraint — the
+PANEL was. ShellPanel carried Qt's default Preferred size
+policy, so in the dashboard's centerpiece grid cell it sat
+at its size-hint height, vertically centred, while the
+cell (and the window) offered far more; the rail's stretch
+only ever divided that hint height. The panel now claims
+Expanding/Expanding, like the dashboard's own full-bleed
+centerpieces: the cell's full height reaches the rail, the
+Briefing card's stretch takes everything the compact Today
+card (now Maximum-height policy, natural size only) leaves,
+and the briefing body carries a 140px minimum so it can
+never be squeezed back to a sliver. The body type stays at
+the stylesheet's 16px — the ask was area. Same screenshot:
+Today's Open buttons rendered with their text cut at the
+button's edge. Row layout hardened in _today_row: the label
+is Ignored-policy with a zero minimum (it absorbs ALL
+horizontal compression, wrapping as it goes) and every row
+button is Fixed-policy at its full size-hint size, so a
+button can never be shrunk into its own text again.
+
 The card never fabricates: no briefing composed yet yields
 report_text's own honest placeholder line.
 
@@ -725,6 +749,15 @@ class ShellPanel(QWidget):
                  pin_groups_provider=None, pin_groups_writer=None):
         super().__init__(parent)
         self.setObjectName("shellHome")
+        # V16: claim the dashboard centerpiece cell's full
+        # size. With the default Preferred policy the panel
+        # sat at its size-hint height in the grid cell and the
+        # rail (Briefing included) was squeezed into it —
+        # Alek's 2026-10-31 screenshot. Expanding both ways,
+        # the same policy the dashboard's own full-bleed
+        # centerpieces set explicitly.
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.Expanding)
         # Accent (V4 addendum): an explicit accent wins; otherwise
         # resolve the one currently set (Customize / Settings),
         # exactly like the dashboard does at boot. None anywhere
@@ -953,6 +986,12 @@ class ShellPanel(QWidget):
         # refresh_today; the frame is built once here.
         self.today_frame = QFrame()
         self.today_frame.setObjectName("shellCard")
+        # V16: Today stays compact by policy — Maximum
+        # vertical policy means natural height only, so every
+        # spare pixel in the rail belongs to the Briefing.
+        self.today_frame.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Maximum)
         today_lay = QVBoxLayout(self.today_frame)
         today_lay.setContentsMargins(14, 10, 14, 10)
         today_lay.setSpacing(6)
@@ -1081,6 +1120,10 @@ class ShellPanel(QWidget):
         lay.addWidget(head)
         body = QPlainTextEdit()
         body.setObjectName("shellBriefingText")
+        # V16: a floor under the reading area — however tight
+        # the window gets, the briefing never shrinks below a
+        # readable block again.
+        body.setMinimumHeight(140)
         body.setReadOnly(True)
         body.setWordWrapMode(QTextOption.WrapMode.WordWrap)
         body.setHorizontalScrollBarPolicy(
@@ -1330,10 +1373,21 @@ class ShellPanel(QWidget):
         label = QLabel(text)
         label.setObjectName("shellActionText")
         label.setWordWrap(True)
+        # V16: the label absorbs ALL horizontal compression —
+        # Ignored policy + zero minimum, wrapping as it goes —
+        # so a tight rail squeezes the text, never the buttons
+        # (Alek's screenshot: Open buttons cut mid-word).
+        label.setSizePolicy(QSizePolicy.Policy.Ignored,
+                            QSizePolicy.Policy.Preferred)
+        label.setMinimumWidth(0)
         lay.addWidget(label, 1)
         for caption, fn in buttons:
             btn = QPushButton(caption)
             btn.setObjectName("shellActionBtn")
+            # V16: full fixed size — the layout may not shrink
+            # a button below its size hint into its own text.
+            btn.setSizePolicy(QSizePolicy.Policy.Fixed,
+                              QSizePolicy.Policy.Fixed)
             btn.clicked.connect(fn)
             lay.addWidget(btn)
         return row
