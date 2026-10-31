@@ -155,8 +155,18 @@ def test_move_entry_to_section_drops_into_shelf():
 
 def test_ui_prefs_legacy_pins_migrate_ungrouped(tmp_path,
                                                 monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    ui_dir = tmp_path / "ARIA"
+    # V19: this file now sits at the LEGACY (home) location —
+    # pre-V19 the store itself lived there. The canonical
+    # store is the install root; the first read merges the
+    # legacy prefs in, and the entry view is unchanged.
+    home = tmp_path / "home"
+    home.mkdir()
+    install = tmp_path / "install"
+    install.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(ui_prefs, "_INSTALL_ROOT",
+                        str(install))
+    ui_dir = home / "ARIA"
     ui_dir.mkdir()
     # A pre-V14 file: plain ordered path list, no group map.
     (ui_dir / "ui.json").write_text(json.dumps(
@@ -164,6 +174,11 @@ def test_ui_prefs_legacy_pins_migrate_ungrouped(tmp_path,
     assert ui_prefs.get_pinned_entries() == [
         {"path": "/x/steam.lnk", "group": ""},
         {"path": "/x/calc.lnk", "group": ""}]
+    # The merge landed at the canonical location.
+    data = json.loads((install / "ui.json").read_text(
+        encoding="utf-8"))
+    assert data["pinned_apps"] == ["/x/steam.lnk",
+                                   "/x/calc.lnk"]
     ui_prefs.set_pin_groups({"/x/calc.lnk": "Tools"})
     assert ui_prefs.get_pinned_entries() == [
         {"path": "/x/steam.lnk", "group": ""},

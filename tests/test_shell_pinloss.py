@@ -49,6 +49,7 @@ _APP = QApplication.instance() or QApplication([])
 
 import importlib
 shell_panel = importlib.import_module("aria.shell_panel")
+ui_prefs = importlib.import_module("aria.ui_prefs")
 
 NOW = datetime(2026, 10, 31, 8, 55)
 SM = (r"C:\Users\Allen\AppData\Roaming\Microsoft\Windows"
@@ -64,8 +65,19 @@ SPOTIFY_KEY = "appid:SpotifyAB.SpotifyMusic_1.0!Spotify"
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    return tmp_path / "ARIA" / "ui.json"
+    """The real ui_prefs store, hermetically redirected the
+    V19 way: the canonical file is <install root>/ui.json
+    (ui_prefs._INSTALL_ROOT), HOME is a separate empty dir
+    (the legacy location holds nothing unless a test seeds
+    it)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    install = tmp_path / "install"
+    install.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(ui_prefs, "_INSTALL_ROOT",
+                        str(install))
+    return install / "ui.json"
 
 
 def _panel():
@@ -184,3 +196,127 @@ def test_group_action_reveals_the_home(store):
     data = _read(store)
     assert data["pin_groups"] == {SPOTIFY_KEY: "Media"}
     panel.close()
+
+
+# -- V19: the hostile-realistic flow V18's repros bypassed -----
+# V18's fixtures handed the panel a fake app list and a fresh
+# store. Alek's machine has: a REAL Start Menu tree, the REAL
+# enumerate_all_apps merge (AppsFolder twins of .lnk apps
+# included), a ui.json written by V14-era code at the LEGACY
+# home location, and a process whose home can resolve
+# differently between runs. His report on V18: pins still
+# "don't stay pinned" — and the legacy file was empty, i.e.
+# the write/read path, not the rendering. This test drives
+# the whole flow through the real seams.
+
+def test_real_enumeration_legacy_store_flow(tmp_path,
+                                            monkeypatch):
+    app_launcher = importlib.import_module(
+        "aria.app_launcher")
+    # (a) a fake Start Menu tree on disk, real structure.
+    user_programs = tmp_path / "sm-user" / "Programs"
+    machine_programs = tmp_path / "sm-machine" / "Programs"
+    user_programs.mkdir(parents=True)
+    machine_programs.mkdir(parents=True)
+    names = ("Google Chrome", "Microsoft Edge",
+             "File Explorer", "Command Prompt")
+    for n in names:
+        (user_programs / f"{n}.lnk").write_bytes(b"")
+    # A machine-root twin of Chrome: the user root wins.
+    (machine_programs / "Google Chrome.lnk").write_bytes(b"")
+
+    # (b) fake Get-StartApps: twins of two .lnk apps + Spotify.
+    folder_json = json.dumps([
+        {"Name": "Google Chrome", "AppID": "Chrome"},
+        {"Name": "Microsoft Edge", "AppID": "MSEdge"},
+        {"Name": "Spotify",
+         "AppID": "SpotifyAB.SpotifyMusic_1.0!Spotify"}])
+
+    def enumerate_real():
+        return app_launcher.enumerate_all_apps(
+            [str(user_programs), str(machine_programs)],
+            appsfolder_runner=lambda: folder_json)
+
+    apps = enumerate_real()
+    by_name = {a["name"]: a for a in apps}
+    assert len(apps) == 5
+    # The merge kept the .lnk twins (real paths), Spotify is
+    # the AppsFolder entry.
+    assert by_name["Google Chrome"]["path"].endswith(
+        "Google Chrome.lnk")
+    assert "appid" in by_name["Spotify"]
+
+    # (c) the store: canonical at a fake install root, and a
+    # V14-era ui.json at the LEGACY home location — accent,
+    # four pins (the enumerated paths), one group, an
+    # unrelated key.
+    home = tmp_path / "home"
+    install = tmp_path / "install"
+    install.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(ui_prefs, "_INSTALL_ROOT",
+                        str(install))
+    pin_paths = [app_launcher.app_key(by_name[n])
+                 for n in names]
+    legacy = home / "ARIA" / "ui.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({
+        "accent": "#54d9e8",
+        "pinned_apps": pin_paths,
+        "pin_groups": {pin_paths[0]: "Media"},
+        "unrelated_key": {"keep": True},
+    }), encoding="utf-8")
+
+    panel = shell_panel.ShellPanel(
+        apps_provider=enumerate_real,
+        now_provider=lambda: NOW)
+    panel.resize(1600, 900)
+    panel.show()
+    _APP.processEvents()
+    # The legacy prefs migrated and the grouped home renders.
+    assert panel.grid_stack.currentWidget() is panel.shelf_scroll
+    shelves = _shelf_names(panel)
+    assert shelves["Media"] == ["Google Chrome"]
+    assert sorted(shelves[""]) == sorted(names[1:])
+    assert panel.count_label.text() == "4 pinned"
+    data = _read(install / "ui.json")
+    assert data["pinned_apps"] == pin_paths
+    assert data["unrelated_key"] == {"keep": True}
+
+    # Pin + group Spotify through the panel's real actions.
+    spotify = next(a for a in panel._apps
+                   if a["name"] == "Spotify")
+    panel.toggle_pin(spotify)
+    panel.move_pin_to_group(spotify, "Media")
+    _APP.processEvents()
+    panel.close()
+
+    # Restart: a fresh panel over the same store.
+    panel2 = shell_panel.ShellPanel(
+        apps_provider=enumerate_real,
+        now_provider=lambda: NOW)
+    panel2.resize(1600, 900)
+    panel2.show()
+    _APP.processEvents()
+    shelves = _shelf_names(panel2)
+    assert shelves["Media"] == ["Google Chrome", "Spotify"]
+    assert panel2.count_label.text() == "5 pinned"
+    panel2.close()
+
+    # The home switch: a later process whose home resolves
+    # somewhere else entirely must STILL see every pin —
+    # the exact loss Alek reported. (Pre-V19 the store WAS
+    # the home path; this panel came up empty.)
+    other_home = tmp_path / "other-home"
+    other_home.mkdir()
+    monkeypatch.setenv("HOME", str(other_home))
+    panel3 = shell_panel.ShellPanel(
+        apps_provider=enumerate_real,
+        now_provider=lambda: NOW)
+    panel3.resize(1600, 900)
+    panel3.show()
+    _APP.processEvents()
+    assert panel3.count_label.text() == "5 pinned"
+    shelves = _shelf_names(panel3)
+    assert shelves["Media"] == ["Google Chrome", "Spotify"]
+    panel3.close()

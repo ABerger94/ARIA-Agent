@@ -483,6 +483,12 @@ def test_shell_hosted_chrome_steps_aside_and_restores(
 def test_shell_hosted_grouped_pins_survive_reopen(monkeypatch,
                                                   tmp_path):
     monkeypatch.setenv('HOME', str(tmp_path))
+    # V19: the canonical prefs store is the install root
+    # (ui_prefs._INSTALL_ROOT), not ~/ARIA — redirect it to
+    # the tmp dir so the hosted run stays hermetic.
+    import aria.ui_prefs as ui_prefs
+    monkeypatch.setattr(ui_prefs, '_INSTALL_ROOT',
+                        str(tmp_path))
     import aria.app_launcher as launcher
     sm = (r"C:\Users\Allen\AppData\Roaming\Microsoft\Windows"
           r"\Start Menu\Programs")
@@ -527,7 +533,7 @@ def test_shell_hosted_grouped_pins_survive_reopen(monkeypatch,
             a['name'] for a in apps[:4])
         assert shell.count_label.text() == '5 pinned'
         # And the file store really holds it all.
-        data = json.loads((tmp_path / 'ARIA' / 'ui.json')
+        data = json.loads((tmp_path / 'ui.json')
                           .read_text(encoding='utf-8'))
         assert len(data['pinned_apps']) == 5
         assert data['pin_groups'] == {
