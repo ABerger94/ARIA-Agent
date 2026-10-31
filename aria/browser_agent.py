@@ -18,7 +18,13 @@ Safety shape (the design Alek approved):
     instead of re-stashing itself). Keyboard activation gets the
     same treatment: Enter/Space on a focused control is checked
     against the focused control (and, for Enter in a form field,
-    the form's submit controls) before the key is sent.
+    the form's submit controls) before the key is sent. The one
+    exception is approval mode 'auto': a guarded activation
+    then runs without the approval step — Alek's ruling,
+    2026-10-31: "make auto mean auto", extended to these gates
+    the day it was made for run_shell_command. While safe mode
+    is on, the auto lane is closed and the guards park in
+    every mode.
   * Private / loopback URLs are refused (router admin pages, the
     phone bridge itself) unless the browser_agent_allow_lan
     setting is on.
@@ -337,6 +343,49 @@ def set_runner_for_tests(runner) -> None:
     _RUNNER = runner
 
 
+# ---------------- the auto lane (Alek's ruling) ----------------
+
+def _safe_mode_on() -> bool:
+    """aria.config.is_safe_mode(), read lazily and fail-soft.
+
+    This read only closes the guards' auto lane; it is not the
+    safe-mode enforcement itself. An unreadable config therefore
+    reads as not-safe-mode here rather than inventing a block
+    the enforcement layers did not make. (Same helper shape as
+    aria/tools/shelltool.py.)
+    """
+    try:
+        from aria import config as _config
+        fn = getattr(_config, "is_safe_mode", None)
+        return bool(fn()) if callable(fn) else False
+    except Exception:
+        return False
+
+
+def _auto_lane_open(approval_module) -> bool:
+    """True when a guarded activation may proceed with no
+    approval at all: approval mode 'auto' and safe mode off.
+
+    Alek ruled "make auto mean auto" for shell commands
+    (run_shell_command) and extended it the same day to these
+    browser gates: a live activation in auto mode executes —
+    no pending entry, no banner. In the confirm modes this
+    returns False and the guards park exactly as before; while
+    safe mode is on the lane is closed in every mode, so auto
+    never becomes safe mode's unattended-execution hole. The
+    mode is approval's own get_mode() — the same source
+    dispatch's needs_approval consults, never a second store;
+    anything unreadable (even a missing get_mode) reads as
+    not-auto and the activation parks, the pre-ruling
+    behaviour (fail-safe).
+    """
+    try:
+        mode = str(approval_module.get_mode() or "").strip().lower()
+    except Exception:
+        mode = ""
+    return mode == "auto" and not _safe_mode_on()
+
+
 # ---------------- guarded execution ----------------
 
 def _guarded_click(target: str, *, approve_fn=None) -> str:
@@ -368,7 +417,10 @@ def _guarded_click(target: str, *, approve_fn=None) -> str:
                 if callable(_in_replay) else False
         except Exception:
             in_replay = False
-        if not in_replay:
+        # Auto lane (see _auto_lane_open): an approved replay, or
+        # a live call in auto mode with safe mode off, falls
+        # through and clicks; anything else parks below.
+        if not in_replay and not _auto_lane_open(_approval):
             request = approve_fn or _approval.request_approval
             return request(
                 "browser_agent", {"action": "click", "target": target},
@@ -511,7 +563,10 @@ def _guarded_press(key: str, *, approve_fn=None) -> str:
             if callable(_in_replay) else False
     except Exception:
         in_replay = False
-    if not in_replay:
+    # Auto lane (see _auto_lane_open): an approved replay, or a
+    # live press in auto mode with safe mode off, falls through
+    # and presses; anything else parks below.
+    if not in_replay and not _auto_lane_open(_approval):
         request = approve_fn or _approval.request_approval
         if label == _UNLABELLED_CONTROL:
             desc = (f"Browser agent is about to press '{key}' with "

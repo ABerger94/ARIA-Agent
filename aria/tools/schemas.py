@@ -587,9 +587,10 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
                        'user\'s browser or logins) driven one action at a time. Actions: open (url), read '
                        '(page text + numbered interactive elements), click (target: "index:N" from read, a '
                        'CSS selector, or "text=..."), type (target + text), press (key), scroll (direction), '
-                       'back, screenshot, close. A click whose label looks irreversible (pay, place order, '
-                       'send, delete, book...) is NOT executed — it returns a pending approval to show the '
-                       'user. Private/loopback URLs are refused.',
+                       'back, screenshot, close. A click or activation keypress whose label looks irreversible '
+                       '(pay, place order, send, delete, book...) is NOT executed cold — in the confirm-risky '
+                       'and confirm-all approval modes it returns a pending approval to show the user; in auto '
+                       'mode it runs immediately. Private/loopback URLs are refused.',
         'name': 'browser_agent',
         'parameters': {   'properties': {   'action': {'type': 'STRING'},
                                             'url': {'type': 'STRING'},
