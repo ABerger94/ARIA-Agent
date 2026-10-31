@@ -87,6 +87,33 @@ skipping the steps already done, a step that needs you parks as
 checks the result before she calls it done. She never replays a finished
 step and never claims a step she didn't run.
 
+**Durable missions.** `mission_create` (`aria/missions.py`) is the
+hand-it-over-and-walk-away layer: a mission is a fixed plan of tool calls
+you approve once, up front, together with an **authorization envelope** —
+the tools it may use, a spending cap (default $0), and any irreversible
+actions pre-approved by name. Missions and their steps live in the same
+SQLite store as the scheduler, driven by the scheduler's own tick through
+a single-flight executor: one mission runs at a time, the rest queue.
+Lifecycle: `planned → running → (waiting_approval | blocked_input |
+blocked_model) → verifying → done | done_unverified | failed`, plus
+pause/cancel. Every finished step checkpoints its output the moment it
+succeeds and is **never replayed** — after a restart she resumes at the
+first unfinished step. A step inside the envelope runs unattended in
+`auto` approval mode; a step outside it, or an irreversible action the
+envelope didn't name, parks through the *existing* approval store (the
+same banner / Shell card / phone band as everything else — there is no
+second approval path), and because that store is in-memory, a parked
+step whose token expired or died with a restart is simply re-parked
+fresh. After the last step, a verify pass judges the recorded outputs
+against the goal — at most two repair attempts, then the mission closes
+`done_unverified` and says so. The delivery summary (asked / done /
+evidence / parked-or-failed) surfaces as a card on Shell Home's Today
+strip — with Pause/Resume and Cancel — and in the phone bridge's
+Missions section. Four tools: `mission_create`, `mission_list`,
+`mission_pause`, `mission_cancel`. No parallel steps, no missions
+spawning missions, no recurring missions (the scheduler owns
+recurrence).
+
 **Presence.** `aria/presence.py` watches input idle: away past the
 threshold, every *unprompted* path goes silent — proactive speech, the
 briefing, check-ins — while anything you ask for still answers instantly.
@@ -112,7 +139,7 @@ remedy.
 
 ## Capabilities
 
-**130 tools** on a desktop install, organised into progressive toolkits:
+**136 tools** on a desktop install, organised into progressive toolkits:
 only the core schemas ride along per call, and specialist toolkits unlock
 on demand (`load_toolkit`) or automatically from keywords in your request.
 Tools from connected MCP servers join on top of that, namespaced per
@@ -123,7 +150,7 @@ suite:
 
 | Area | What's there |
 |---|---|
-| Computer & files | `launch_app`, `open_app_or_url`, window control (`list_windows`, `focus_window`, `minimize_window`, `close_window`, `window_snap`), GUI control (`gui_click`, `gui_type`), clipboard (`clipboard_read`, `clipboard_write`), `run_python_code` (sandboxed), `run_shell_command` (a real shell behind an on-screen CONFIRM of the exact command — never from routines or delegated tasks), `browser_control` (open a URL, or fetch a page's text), `browser_agent` (a supervised real-browser driver in her own profile — one action per call, irreversible clicks like pay/send/delete are stashed for approval instead of executed, private addresses refused), the File Commander (`file_organize` — dry-run plan first, always; `file_find_advanced`, `find_file`, `file_duplicates`, `disk_usage`), `process_file`, `fetch_url`, `web_search`, `research` (deep multi-source briefs — reads the sources, cites them, cross-checks its own claims, files the brief to the Briefing tab) |
+| Computer & files | `launch_app`, `open_app_or_url`, window control (`list_windows`, `focus_window`, `minimize_window`, `close_window`, `window_snap`), GUI control (`gui_click`, `gui_type`), clipboard (`clipboard_read`, `clipboard_write`), `run_python_code` (sandboxed), `run_shell_command` (a real shell — in auto approval mode it runs on your say-so; in the confirm modes the exact command parks behind an on-screen CONFIRM first — never from routines or delegated tasks), `browser_control` (open a URL, or fetch a page's text), `browser_agent` (a supervised real-browser driver in her own profile — one action per call; irreversible clicks like pay/send/delete execute in auto mode and are stashed for approval in the confirm modes, private addresses refused), the File Commander (`file_organize` — dry-run plan first, always; `file_find_advanced`, `find_file`, `file_duplicates`, `disk_usage`), `process_file`, `fetch_url`, `web_search`, `research` (deep multi-source briefs — reads the sources, cites them, cross-checks its own claims, files the brief to the Briefing tab) |
 | Travel & games | `flight_finder` (builds and opens a Google Flights search — prices live on the page and are never invented), `game_updater` (Steam: list installed games, report flagged updates, queue a validate/update; Epic honestly unsupported) |
 | Media | `media_control` (one tool over her own video player and the system: play/pause, seek by fraction or seconds, volume), `spotify`, `media_key`, `volume`, `dj` — transport is explicit and verified, aimed at the real media session (see NOW PLAYING, below) |
 | Phone node | `phone_status`, `phone_list_apps`, `phone_open_app`, `phone_read_screen` (accessibility tree with tap targets), `phone_notifications`, `phone_tap`, `phone_swipe`, `phone_type`, `phone_key` — via the ARIA Node Android app |
@@ -131,9 +158,9 @@ suite:
 | Connections | Gmail (`gmail_setup`, `read_email`, `send_email`, `triage_email`), calendar (`calendar_setup`, `check_calendar` — RRULE/EXDATE/RDATE recurrence honoured), GitHub (`github_create_repo`, `github_push_file`), MCP (`mcp_setup`, `mcp_connect`, `mcp_disconnect`, `mcp_list_servers`, `mcp_remove_server`) |
 | Routines | `routine_record_start/stop`, `run_routine` (with `{{parameter}}` slots), `list_routines`, `describe_routine`, `delete_routine`, `trust_routine`, `untrust_routine`, `export_routine_pack`, `import_routine_pack` |
 | Scheduling & watches | `set_timer`, `set_reminder`, `set_recurring_task`, `list_scheduled_tasks`, `cancel_scheduled_task`, `break_reminders`; `os_reminder` (registered with the Windows Task Scheduler, so it fires even when ARIA is closed — `set_reminder` cannot promise that); price watches (`watch_price`, `check_price_watches`, `list_price_watches`, `unwatch_price` — the hourly checker actually fires), screen watches (`watch_screen`, `list_screen_watches`, `unwatch_screen`) |
-| Delegation & autonomy | `delegate_task`, `task_status`, `task_cancel`, `task_resume`; `event_trigger` (when-this-then-task: email rules, folder drops, presence return — auto, or ask-first via a pending approval; per-trigger cooldown, every firing logged); `manage_autonomous_goal`, `manage_background_job`, `system_health_audit`, `self_heal_diagnose`; `update_status` (git HEAD + live fleet/task state), `code_helper` (explain / fix / write code via the code model), `dev_agent` (plan + write a complete single-file program) |
+| Delegation & autonomy | `delegate_task`, `task_status`, `task_cancel`, `task_resume`; durable missions (`mission_create`, `mission_list`, `mission_pause`, `mission_cancel` — approved plan + authorization envelope, checkpointed steps, see Architecture); `event_trigger` (when-this-then-task: email rules, folder drops, presence return — auto, or ask-first via a pending approval; per-trigger cooldown, every firing logged); `manage_autonomous_goal`, `manage_background_job`, `system_health_audit`, `self_heal_diagnose`; `update_status` (git HEAD + live fleet/task state), `code_helper` (explain / fix / write code via the code model), `dev_agent` (plan + write a complete single-file program) |
 | Notes, memory & cards | `take_note`, `read_notes`, `journal_write`; `save_memory`, `search_memory`, `forget_memory`, `memory_review`; `mtg_card`, `mtg_advice` (Scryfall, keyless) |
-| Herself | `morning_briefing`, personas (`set_persona`, `get_persona`, `list_personas`), the approval layer's read-only views (`get_approval_mode`, `list_pending_approvals` — approvals themselves resolve only from the dashboard's confirm banner and the mode only in Settings, never by the model), self-edit (`edit_own_code`, `patch_own_code`), `restart_program` (relaunch herself on a direct command — never the computer, never from a routine or delegated task), `notify_phone` (toast + Web Push + missed queue; rate-limited, and never sent from delegated work), `set_backup_mirror` (mirror the memory DB, settings, and chat history to a folder you choose — keys never mirror), `reload_user_tools`, `show_commands`, `hide_commands`, `bridge_token` |
+| Herself | `morning_briefing`, personas (`set_persona`, `get_persona`, `list_personas`), the approval layer's read-only views (`get_approval_mode`, `list_pending_approvals` — approvals themselves resolve only from a human tap: the dashboard's confirm banner, the Shell Home action cards, or the phone bridge's confirmation band, all on one shared store; the mode changes only in Settings, never by the model), self-edit (`edit_own_code`, `patch_own_code`), `restart_program` (relaunch herself on a direct command — never the computer, never from a routine or delegated task), `notify_phone` (toast + Web Push + missed queue; rate-limited, and never sent from delegated work), `set_backup_mirror` (mirror the memory DB, settings, and chat history to a folder you choose — keys never mirror), `reload_user_tools`, `show_commands`, `hide_commands`, `bridge_token` |
 
 **Startup briefing.** Her greeting and the `morning_briefing` tool compose
 the same source-backed report in code: today's calendar (recurring events
@@ -255,11 +282,27 @@ author's direction: one program, ARIA, with Shell Mode built in.
   **whole window**: the System Monitor and Workspace columns
   step aside, and Exit restores them — divider positions
   included — exactly as they were.
+- **Today strip + action cards** — a compact **Today** strip sits
+  in the header band, in line with the clock and greeting: the
+  next calendar event, scheduled tasks due or due within 24h
+  (with **Done** / **Snooze +1h** on one-shot rows — real
+  operations on the scheduler's own table), the unread mail
+  count, and any active durable mission (status + step progress,
+  with **Pause/Resume** and **Cancel**). When something needs
+  the human — a parked approval, a delivered reminder — an
+  **action card** appears below the main row, wired to the same
+  approval store and reminder gate the dashboard banner and the
+  voice tools use. An empty Today hides the strip with no hole;
+  the Briefing's space never depends on it.
 - **App launcher** (`aria/app_launcher.py`) — your actual Start
   Menu, enumerated from its shortcuts (per-user and all-users roots,
-  deduped and sorted), with ranked search: exact matches first,
+  deduped and sorted), **plus the Windows AppsFolder** (PowerShell
+  `Get-StartApps`), so Store and per-user apps with no shortcut
+  appear too and launch through `shell:AppsFolder\<AppID>`. Ranked
+  search: exact matches first,
   then name-prefix, word-prefix, and substring. Tiles show the
-  real shortcut icon on Windows (Qt's icon provider) and a
+  real shortcut icon on Windows (Qt's icon provider) — and for
+  AppsFolder apps, the app's real package icon — and a
   coloured letter tile everywhere else; double-click or Enter
   launches — once: the panel has a single launch path plus a
   same-app relaunch guard, so one double-click opens one window.
@@ -267,12 +310,21 @@ author's direction: one program, ARIA, with Shell Mode built in.
   ![Shell Home app search](docs/images/shell-search.png)
 - **Pinned apps** — Shell Home opens to just the apps you pin:
   right-click any tile (in the full list or in search results)
-  for **Pin to Home** / **Remove from Home**. Pins are Start
-  Menu shortcut paths kept in pin order in `ui.json`
-  (`aria/ui_prefs.py`); a shortcut that disappears is skipped
-  silently. The **All apps** toggle beside the search box
-  reveals the full list; search always searches everything,
-  and with nothing pinned the grid shows a short how-to note
+  for **Pin to Home** / **Remove from Home**. A pin's identity is
+  its shortcut path, or `appid:<AppID>` for an AppsFolder app;
+  pins are kept in pin order in `ui.json` at the install root
+  (`aria/ui_prefs.py` — written atomically, and a pre-V19 copy
+  left under the user home is merged in once, never overwritten);
+  a shortcut that disappears is skipped
+  silently. Pins can carry a **group**: grouped pins render as
+  one horizontal **shelf** per group, and you can drag tiles to
+  reorder them within or across shelves (or use the right-click
+  Move left/right and Move to group menus). The **All apps** toggle beside the search box
+  reveals the full list; search always searches everything —
+  and typing in the search box never hides the pinned view
+  behind a stale query: the query is transient and clears when
+  the view changes.
+  With nothing pinned the grid shows a short how-to note
   instead of a void. The count line follows the view —
   "8 pinned", "210 apps", "3 of 210 apps".
 - **The rail is Briefing, only** — the card fills the rail's whole
@@ -287,8 +339,13 @@ author's direction: one program, ARIA, with Shell Mode built in.
   they were removed at the author's direction — the briefing
   earned the space.) No briefing composed yet reads as the tab's
   own placeholder line; nothing is ever fabricated.
-- **Command bar** (`aria/shell_home.py`) — one input for everything,
-  in the bottom dock pill. An unambiguous app name (`Steam`,
+- **Command bar + palette** (`aria/shell_home.py`) — one input for
+  everything, in the bottom dock pill. Typing opens a **command
+  palette**: apps, a bounded enumeration of your own files and
+  folders, the dashboard's tabs, and ARIA actions (Lock, Open
+  ARIA's Room, Set a reminder…, Mute/Unmute), ranked with your
+  persisted usage history boosting what you actually pick. An
+  unambiguous app name (`Steam`,
   `open Chrome`) launches it. Anything else goes to ARIA as a
   normal conversation turn — through the exact same dispatcher,
   **approval gates, and safe mode** she already has. The shell
@@ -314,8 +371,8 @@ author's direction: one program, ARIA, with Shell Mode built in.
 Shell Mode is a fullscreen dashboard mode, not a registry shell
 swap — the step where a crash could strand you without a desktop is
 later work, and it only happens after v1 is witnessed solid. The
-launcher enumerates Start Menu shortcuts (`.lnk`) only; Microsoft
-Store apps without shortcuts and portable EXEs aren't listed yet.
+launcher enumerates Start Menu shortcuts and AppsFolder apps;
+portable EXEs with neither aren't listed yet.
 
 ---
 
@@ -336,7 +393,16 @@ phone's own camera streaming back as her eyes, flippable between front
 and rear from the header or the in-tab **Flip camera** button, with a
 **Describe what you see** button under it — and Full screen. Inbox takes
 uploads (files land in her inbox for `inbox_list` / `inbox_describe` /
-`inbox_read`). Phone Settings hold speak-replies, the camera toggle and
+`inbox_read`). Above the tabs, on every tab, sit two live bands: the
+**Confirmation needed** band — whenever a call is parked in the
+approval store, the phone shows its full text with phone-sized
+**Confirm** / **Cancel** buttons (`GET /api/approvals`,
+`POST /api/approvals/resolve`, behind the bridge's existing auth) —
+and a **Missions** section with each durable mission's status, step
+progress and, once it settles, its delivery summary
+(`GET /api/missions`). Both are the same shared state the laptop
+shows — resolving on the phone resolves everywhere, exactly once —
+and both are in-page only: no push, no extra install. Phone Settings hold speak-replies, the camera toggle and
 **phone notifications** (Web Push; on iPhone, iOS only delivers push to
 an installed page — Share → Add to Home Screen, open ARIA from that
 icon, then enable). Expiring the QR does not sign out an
@@ -400,9 +466,14 @@ boot and restarts her if she crashes.
 ## Safety model
 
 - **Approval layer.** The mode (`auto`, `confirm-risky`, or
-  `confirm-all`) is set by you in Settings. In the confirm modes a
-  destructive action pauses with a token and waits — and only your
-  tap on the dashboard's confirm banner resolves it. The model has
+  `confirm-all`) is set by you in Settings. **Auto means auto**: in
+  auto mode tools run without a confirm — shell commands and
+  supervised-browser clicks included (safe mode still hard-blocks
+  its list in *every* mode). In the confirm modes a destructive
+  action pauses with a token and waits — and only your tap resolves
+  it, on any of the three surfaces over the one shared store: the
+  dashboard's confirm banner, the Shell Home action cards, or the
+  phone bridge's confirmation band. The model has
   no approve/deny tools and cannot set its own mode: a spoken "yes"
   to ARIA does not execute anything, by design, so a model turn can
   never grant itself permission. Approvals expire after 10 minutes
@@ -490,7 +561,10 @@ console window show/hide),
 `aria/live.py`, `aria/neural_field.py`, `aria/resonance.py`,
 `aria/holo_face.py`, `aria/orb3d.py`, `aria/pet_window.py` (centrepieces and pet),
 `aria/briefing.py`, `aria/memory.py`, `aria/routines.py`,
-`aria/approval.py`, `aria/scheduler.py`, `aria/mcp.py`, `aria/hud.py`
+`aria/approval.py`, `aria/scheduler.py`, `aria/missions.py` (the
+durable mission layer), `aria/data_dir.py` (install-root state
+resolution + legacy migration), `aria/ui_prefs.py` (Shell pins,
+groups and palette history), `aria/mcp.py`, `aria/hud.py`
 (the classic OpenCV HUD + shared telemetry), `arduino/` (robot body
 firmware), `docs/` (robot build guide, tool SDK, installer notes),
 `installer/` (PyInstaller generator + Inno Setup script), `windows/`
@@ -505,6 +579,14 @@ Your voice goes to the speech and provider services you configured (Edge
 TTS, your provider chain, Gemini in Live mode); that is what leaves the
 PC. `aria_keys.json`, logs, the memory DB and the journal are all
 gitignored — they stay on your machine and never get committed.
+Her state files live **in the install folder itself**
+(`aria/data_dir.py`): the approval mode, `ui.json` (pins, groups,
+palette history), the life diary and state, the reminder gate,
+persona/audio/bookmark prefs, screen watches, routines, logs and the
+first-run marker all resolve to the install root — not to a
+home-directory shadow copy. A pre-V20 copy found under the user home
+is migrated once, copy-if-missing (the canonical file wins), and the
+legacy copy is left untouched as an archive; nothing is ever deleted.
 
 ## Credits
 
