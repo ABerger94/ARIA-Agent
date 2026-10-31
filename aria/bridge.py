@@ -1030,6 +1030,20 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     'status': _notify_mod.status(),
                 }).encode('utf-8'))
                 return
+            if self.path.split('?', 1)[0] == '/api/approvals':
+                # Pending approvals for the phone page's confirmation
+                # band (Alek, 2026-10-31: "Confirmation bands, etc
+                # need to show up on the phone bridge as well"). The
+                # SAME snapshot the desktop banner and the Shell Home
+                # action cards render — aria.approval.pending_entries,
+                # full untruncated desc plus the token handle the
+                # resolve endpoint acts on. Read-only: resolving goes
+                # through POST /api/approvals/resolve, never here.
+                from aria import approval as _approval_br
+                self._send(200, json.dumps(
+                    {'pending': _approval_br.pending_entries()}
+                ).encode('utf-8'))
+                return
             if self.path.startswith("/api/say"):
                 qs = self.path.split("?", 1)[1] if "?" in self.path else ""
                 params = dict(p.split("=", 1) for p in qs.split("&") if "=" in p)
@@ -1275,6 +1289,57 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return
             _applock_br.lock()
             self._send(200, b'{"ok":true,"locked":true}')
+            return
+        if self.path == '/api/approvals/resolve':
+            if not self._authed():
+                self._send(401, b'{"error":"not connected"}')
+                return
+            # Resolve a pending approval from the phone (Alek,
+            # 2026-10-31). This is a third SURFACE on the one shared
+            # store, not a second execution route: Confirm calls
+            # approval.approve_token and Cancel calls deny_token —
+            # the exact functions the desktop banner's click and the
+            # Shell Home action cards call — so the entry is popped
+            # once and the replay rides the approve-replay marker
+            # underneath, exactly-once across every surface. The
+            # token is a capability handle: it is never logged here
+            # (the bridge writes no per-request logs at all).
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+            except ValueError:
+                length = -1
+            if length < 0 or length > 4096:
+                self._send(413, b'{"error":"resolve body too large"}')
+                return
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8")) \
+                    if length else {}
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                body = {}
+            token = str(body.get("token") or "").strip()
+            action = str(body.get("action") or "").strip().lower()
+            if not token or action not in ("approve", "confirm",
+                                           "deny", "cancel"):
+                self._send(400, json.dumps(
+                    {"ok": False,
+                     "error": "token and action (approve|deny) required"}
+                ).encode("utf-8"))
+                return
+            from aria import approval as _approval_br
+            if action in ("approve", "confirm"):
+                result = _approval_br.approve_token(token)
+                ok = not result.startswith((
+                    "[Approval error", "[AWAITING_APPROVAL",
+                    "[Duplicate call blocked", "[Safe mode"))
+            else:
+                result = _approval_br.deny_token(token)
+                ok = result.startswith("Denied and dropped")
+            self._send(200, json.dumps({
+                "ok": ok, "result": result,
+                "pending": _approval_br.pending_entries(),
+            }).encode("utf-8"))
             return
         if self.path == '/api/logout':
             if not self._authed():

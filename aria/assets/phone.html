@@ -20,6 +20,7 @@ input{min-width:0;background:#101e2b;border:1px solid var(--line);color:var(--tx
 #log{display:flex;flex-direction:column;gap:14px;min-height:200px;max-height:65vh;overflow:auto}#log>div{max-width:90%;padding:14px 18px;background:#111f2c;border:1px solid var(--line);border-radius:14px}#log>div:has(.you){align-self:flex-end;background:#12313b}#log b{font-size:11px;letter-spacing:1px;color:var(--acc)}#log p{white-space:pre-wrap;margin:6px 0 0;overflow-wrap:anywhere}
 #stage{position:relative;display:flex;justify-content:center;min-height:240px;max-height:480px;background:#080d14;border-radius:16px;overflow:hidden}#face,#eyes{width:100%;max-height:480px;object-fit:contain}#caption{position:absolute;left:12px;right:12px;bottom:12px;background:#08121ee8;border-radius:10px;padding:12px;display:none}#caption.on{display:block}.modes{display:flex;gap:8px;margin:14px 0}.mode-btn{flex:1;border:1px solid var(--line);background:var(--card);color:var(--dim);border-radius:10px;padding:11px}.mode-btn.active{color:var(--acc);border-color:#337188}#lookbtn{width:100%;background:#163443;color:var(--acc);border:1px solid #337188;padding:14px;border-radius:10px}
 #settings{display:flex;flex-direction:column;gap:12px;max-width:600px}.row-btn{text-align:left}.danger{color:#ffa3a7;border-color:#674147}#transport{color:var(--dim);font-size:12px}
+#approvals{border-color:#8a6d1f;background:#1a1607;margin:0 0 24px}#approvals h2{margin-bottom:4px}.approval-card{border-top:1px solid #4a3d14;padding:14px 0 4px}.approval-desc{white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0 12px;color:var(--txt)}.approval-btns{display:flex;gap:10px}.approval-btns button{flex:1;min-height:52px;border-radius:12px;font-weight:700;font-size:16px}.btn-confirm{background:var(--acc);color:#06212a;border:0}.btn-cancel{background:transparent;border:1px solid var(--line);color:var(--txt)}#approval-outcome{color:var(--dim);font-size:14px;margin-top:10px;white-space:pre-wrap;overflow-wrap:anywhere}#approval-refresh{margin-top:10px}
 #mail-search{width:100%;margin-bottom:12px}#mail-list{display:flex;flex-direction:column;gap:8px}.mail-card{text-align:left;width:100%;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;color:var(--txt)}.mail-card:hover{border-color:#3f7a8b}.mail-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:5px}.mail-head strong{font-size:13px;color:var(--acc)}.mail-head time{font-size:11px;color:var(--dim);white-space:nowrap}.mail-card span{display:block;overflow-wrap:anywhere}#mail-detail{margin-top:20px}#mail-body{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.7 system-ui,sans-serif}#mail-from{overflow-wrap:anywhere;color:var(--dim);font-size:12px}#mail-status{font-size:12px;color:var(--dim)}
 body.facemode #app>*:not([data-panel="vision"]){display:none!important}body.facemode [data-panel="vision"]{display:block!important}body.facemode .modes,body.facemode #lookbtn,body.facemode #msgform{display:none!important}body.facemode #stage{position:fixed;inset:0;max-height:none;border-radius:0;z-index:50}body.facemode #face,body.facemode #eyes{width:100%;height:100%;max-height:none;object-fit:contain}body.facemode #caption{display:none!important}
 @media(max-width:650px){#app{padding:20px 16px 120px}.topbar{margin-bottom:24px}.wordmark{font-size:20px}.topbtns .icon-btn{display:none}.grid{grid-template-columns:1fr}.panel{padding:18px}h1{font-size:28px}.stats{margin:20px 0}nav{margin-bottom:20px}nav button{padding:10px}#msgform{padding-left:16px;padding-right:16px}.mail-head{align-items:start}.mail-head time{max-width:110px;white-space:normal;text-align:right}}
@@ -27,6 +28,7 @@ body.facemode #app>*:not([data-panel="vision"]){display:none!important}body.face
 <header class="topbar"><div><div class="wordmark">A.R.I.A.</div><div class="eyebrow">Phone companion</div></div><div class="topbtns"><span id="connection" class="offline" role="status">Connecting…</span><button id="logbtn" class="icon-btn">Conversation</button><button id="cog" class="icon-btn">Settings</button><button id="flipcam" class="icon-btn" style="display:none">Flip camera</button></div></header>
 <div class="eyebrow">Your assistant, within reach</div><h1>Remote control</h1><p class="muted">Talk to ARIA. Check your inbox. Pick up where you left off.</p>
 <div class="stats"><div class="stat"><small>ARIA is</small><strong id="state">Connecting</strong></div><div class="stat"><small>Active engine</small><strong id="provider">Checking connection</strong></div></div>
+<section id="approvals" class="panel" hidden aria-live="polite"><div class="eyebrow">Confirmation needed</div><h2>ARIA is waiting for your OK</h2><div id="approval-list"></div><div id="approval-outcome" role="status"></div><button id="approval-refresh" class="secondary" type="button">Refresh</button></section>
 <nav aria-label="Companion sections"><button data-tab="control" class="selected" aria-selected="true">Control</button><button data-tab="chat">Conversation</button><button data-tab="inbox">Inbox</button><button data-tab="briefing">Briefing</button><button data-tab="vision">Orb &amp; camera</button><button data-tab="settings">Settings</button></nav>
 <section data-panel="control" class="grid"><div class="panel"><div class="eyebrow">Voice connection</div><h2>What can I help with?</h2><p class="muted">Hold while you speak, or tap once to start and again to finish.</p><div class="talk-row"><button id="talk">Hold to talk</button><button id="ptt" type="button">Tap to talk</button></div><span id="astat" role="status">Audio: ready</span><button id="stop-speech" class="secondary" style="margin-top:16px">Stop speaking</button><button id="lock-aria" class="secondary" style="margin-top:16px;margin-left:8px">Lock ARIA</button></div><div class="stack"><div id="notifs" class="panel" hidden><div class="eyebrow">Notifications</div><div id="notif-list"></div></div><div class="panel"><div class="eyebrow">Latest from ARIA</div><p id="recent-reply">Your latest reply will appear here.</p></div><div class="panel"><h2>Start here</h2><div class="shortcuts"><button data-prompt="Give me my morning briefing">Daily briefing</button><button data-prompt="What tasks are running?">My tasks</button><button data-prompt="Check my calendar for today">Today's calendar</button></div></div><div class="tools"><a href="/upload">Send a file</a><a href="/commands">Command reference</a></div></div></section>
 <section data-panel="chat" hidden><div class="section-head"><h2>Conversation</h2><span class="muted">Synced with your laptop</span></div><div id="log"></div></section>
@@ -675,6 +677,64 @@ async function loadNotifs(){
   }catch(e){}
 }
 loadNotifs(); setInterval(loadNotifs, 30000);
+// Confirmation band (Alek, 2026-10-31): the same pending approvals
+// the desktop banner and Shell Home cards show, actionable here —
+// Confirm/Cancel POST to /api/approvals/resolve, which rides the
+// one shared approve_token/deny_token path on the laptop, so a
+// request resolved anywhere disappears everywhere. Buttons are
+// type=button outside any form: Enter can never confirm, and
+// Cancel is rendered first as the safe default. Descriptions are
+// set via textContent at full length — never truncated, never
+// parsed as HTML.
+async function resolveApproval(token,action,pair){
+  pair.forEach(function(b){b.disabled=true;});
+  var out=document.getElementById('approval-outcome');
+  try{
+    var r=await api('/api/approvals/resolve',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({token:token,action:action})});
+    var j=await r.json();
+    out.textContent=(j&&j.result)?j.result:
+      ('That request '+(j&&j.ok?'was resolved.':'could not be resolved.'));
+    if(j&&j.pending){renderApprovals(j.pending);}else{loadApprovals();}
+  }catch(e){
+    out.textContent='Could not reach ARIA to resolve that request.';
+    pair.forEach(function(b){b.disabled=false;});
+  }
+}
+function renderApprovals(es){
+  var box=document.getElementById('approvals');
+  var list=document.getElementById('approval-list');
+  box.hidden=!es.length; list.innerHTML='';
+  es.forEach(function(e){
+    var card=document.createElement('div'); card.className='approval-card';
+    var head=document.createElement('div'); head.className='eyebrow';
+    head.textContent='Waiting: '+(e.tool||'tool');
+    var desc=document.createElement('p'); desc.className='approval-desc';
+    desc.textContent=e.desc||'';
+    var btns=document.createElement('div'); btns.className='approval-btns';
+    var cancel=document.createElement('button');
+    cancel.type='button'; cancel.className='btn-cancel';
+    cancel.textContent='Cancel';
+    var confirm=document.createElement('button');
+    confirm.type='button'; confirm.className='btn-confirm';
+    confirm.textContent='Confirm';
+    var pair=[cancel,confirm];
+    cancel.onclick=function(){resolveApproval(e.token,'deny',pair);};
+    confirm.onclick=function(){resolveApproval(e.token,'approve',pair);};
+    btns.appendChild(cancel); btns.appendChild(confirm);
+    card.appendChild(head); card.appendChild(desc); card.appendChild(btns);
+    list.appendChild(card);
+  });
+}
+async function loadApprovals(){
+  try{
+    var r=await api('/api/approvals'); var j=await r.json();
+    renderApprovals((j&&j.pending)||[]);
+  }catch(e){}
+}
+document.getElementById('approval-refresh').onclick=loadApprovals;
+loadApprovals(); setInterval(loadApprovals, 5000);
 // Phone notifications (Web Push): register the service worker, ask
 // permission, and hand the subscription to the bridge, which stores
 // it for aria/notify.py's push sink.
