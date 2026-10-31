@@ -404,6 +404,13 @@ def create_dashboard(callbacks):
             self._body_splitter = body
             self._split_sizes = None
             self._shell_full = False
+            # Shell Mode V7 (2026-10-30): whether Shell Home is
+            # the active center is tracked EXPLICITLY here, never
+            # derived from widget visibility — at Shell-Mode boot
+            # qthost opens the shell before the window is shown,
+            # and a child's isVisible() stays False under an
+            # unshown parent (see _shell_is_home).
+            self._shell_home_active = False
             left, ll = self.card('SYSTEM MONITOR'); left.setMinimumWidth(220); left.setMaximumWidth(290)
             self.left_card = left
             # The column must FIT the card with no scrolling (Alek,
@@ -704,13 +711,14 @@ def create_dashboard(callbacks):
                     lambda: self.set_centerpiece('orb'))
             # ARIA OS Shell Home (2026-10-30): the shell's home
             # screen, in the same center stack — clock + greeting,
-            # his real Start Menu apps, the command bar, and an
-            # always-visible Exit to Windows. NOT a persisted
-            # centerpiece: it opens from the Shell Home button (or
-            # at boot when Shell Mode is on) and Exit returns the
-            # center to whatever centerpiece Settings holds.
-            # Explorer is never replaced in v1 — the shell is a
-            # fullscreen dashboard mode, and Exit leaves it.
+            # his real Start Menu apps, the command bar. NOT a
+            # persisted centerpiece: it opens from the Shell Home
+            # button (or at boot when Shell Mode is on) and the
+            # same button — reading "Dashboard" while the shell
+            # is open (V5) — returns the center to whatever
+            # centerpiece Settings holds, window state preserved
+            # (V7). Explorer is never replaced in v1 — the shell
+            # is a fullscreen dashboard mode.
             self.shell = (ShellPanel(
                 apps_provider=_shell_apps,
                 on_launch=_shell_launch,
@@ -1618,6 +1626,20 @@ def create_dashboard(callbacks):
             self._split_sizes = None
 
         def _shell_is_home(self):
+            # V7 (Alek's witnessed boot bug, 2026-10-30): state
+            # comes from the explicit _shell_home_active flag, set
+            # on every enter/exit path. Deriving it from
+            # shell.isVisible() desynced at Shell-Mode boot —
+            # qthost calls open_shell_home() BEFORE the window is
+            # shown, and under an unshown parent a shown child
+            # still reports isVisible() == False, so the button
+            # read 'Shell Home' on an already-open shell until a
+            # manual round-trip re-synced it. The visibility check
+            # survives only as a fallback for a window whose flag
+            # was never initialised (partial construction).
+            flag = getattr(self, '_shell_home_active', None)
+            if flag is not None:
+                return bool(flag)
             shell = getattr(self, 'shell', None)
             try:
                 return shell is not None and shell.isVisible()
@@ -1661,6 +1683,7 @@ def create_dashboard(callbacks):
             since boot show up."""
             if getattr(self, 'shell', None) is None:
                 return
+            self._shell_home_active = True
             if self.video is not None and self.video.isVisible():
                 self.video.hide()
             self.face.hide()
@@ -1690,17 +1713,17 @@ def create_dashboard(callbacks):
             self._sync_shell_btn()
 
         def exit_shell_home(self):
-            """Exit to Windows: leave Shell Home AND fullscreen —
-            the dashboard drops back to its normal maximized
-            window over the ordinary Windows desktop. This is
-            the shell's sacred escape hatch (Alek's design rule):
-            it must always work, so it swallows its own errors
-            panel-by-panel rather than dying on one bad widget."""
-            try:
-                if self.isFullScreen():
-                    self.showMaximized()
-            except Exception:
-                pass
+            """Leave Shell Home — back to the dashboard, in
+            whatever window state the dashboard is in. V7
+            addendum (Alek, 2026-10-30): exit PRESERVES the
+            window state — fullscreen stays fullscreen, maximized
+            stays maximized; leaving fullscreen is F11's job, not
+            this button's. (The pre-V7 exit dropped fullscreen to
+            a maximized window.) This is the shell's sacred
+            escape hatch (Alek's design rule): it must always
+            work, so it swallows its own errors panel-by-panel
+            rather than dying on one bad widget."""
+            self._shell_home_active = False
             if getattr(self, 'shell', None) is not None:
                 self.shell.hide()
             self._show_centerpiece()
@@ -1721,6 +1744,9 @@ def create_dashboard(callbacks):
             self.orb3d.hide()
             if getattr(self, 'room', None) is not None:
                 self.room.hide()
+            # Any centerpiece swap leaves Shell Home (V7: the
+            # explicit flag clears here too, with the hide).
+            self._shell_home_active = False
             if getattr(self, 'shell', None) is not None:
                 self.shell.hide()
             if self._centerpiece == 'holo' and self.holo is not None:

@@ -24,7 +24,7 @@ from aria.dashboard import create_dashboard
 _APP = None
 
 
-def _window(monkeypatch):
+def _window(monkeypatch, show=True):
     global _APP
     _APP = QApplication.instance() or QApplication([])
     app = _APP
@@ -80,8 +80,9 @@ def _window(monkeypatch):
         is_running=lambda: True, housekeeping=lambda: None,
         render_frame=lambda: np.zeros((800, 1280, 3), dtype=np.uint8))
     window = create_dashboard(callbacks)
-    window.show()
-    app.processEvents()
+    if show:
+        window.show()
+        app.processEvents()
     return window, calls
 
 
@@ -177,6 +178,76 @@ def test_open_shell_home_reresolves_accent(monkeypatch):
     window.open_shell_home()
     assert window.shell._accent == '#e83a9a'
     window.close()
+
+
+def test_shell_boot_unshown_window_button_reads_dashboard(monkeypatch):
+    # V7 regression (Alek, 2026-10-30): Shell Mode boots through
+    # qthost calling open_shell_home() BEFORE the window is shown.
+    # _shell_is_home() derived state from shell.isVisible(), which
+    # stays False under an unshown parent even after show() — so
+    # the button synced to 'Shell Home' on an already-open shell,
+    # and the first click re-opened instead of exiting. State is
+    # now an explicit flag, so the boot order cannot desync it.
+    # This test reproduces the boot order exactly: the dashboard
+    # is built and NEVER shown before open_shell_home() runs.
+    window, _calls = _window(monkeypatch, show=False)
+    try:
+        assert not window.isVisible()
+        window.open_shell_home()          # the qthost boot order
+        assert window._shell_is_home()
+        assert window.shell_btn.text() == 'Dashboard'
+        assert window._shell_full
+        assert window.left_card.isHidden()
+        assert window.right_card.isHidden()
+        window.shell_btn.click()          # must EXIT, not re-open
+        assert not window._shell_is_home()
+        assert window.shell_btn.text() == 'Shell Home'
+        assert not window._shell_full
+        assert not window.left_card.isHidden()
+        assert not window.right_card.isHidden()
+    finally:
+        window.close()
+
+
+def test_exit_shell_home_preserves_fullscreen(monkeypatch):
+    # V7 addendum (Alek, 2026-10-30): exiting Shell Home via the
+    # Dashboard button used to drop the window out of fullscreen
+    # (exit_shell_home called showMaximized when fullscreen).
+    # Exit now preserves the window state — fullscreen stays
+    # fullscreen; leaving fullscreen is F11's job.
+    window, _calls = _window(monkeypatch)
+    try:
+        app = QApplication.instance()
+        window.showFullScreen()
+        app.processEvents()
+        assert window.isFullScreen()
+        window.open_shell_home()
+        assert window.shell_btn.text() == 'Dashboard'
+        window.shell_btn.click()
+        assert not window._shell_is_home()
+        assert window.isFullScreen()      # still fullscreen
+        assert not window.left_card.isHidden()
+        assert not window.right_card.isHidden()
+    finally:
+        window.close()
+
+
+def test_exit_shell_home_leaves_maximized_state_untouched(monkeypatch):
+    # Companion guard: a non-fullscreen exit changes no window
+    # state either — a maximized dashboard stays maximized.
+    window, _calls = _window(monkeypatch)
+    try:
+        app = QApplication.instance()
+        window.showMaximized()
+        app.processEvents()
+        assert window.isMaximized()
+        window.open_shell_home()
+        window.shell_btn.click()
+        assert not window._shell_is_home()
+        assert window.isMaximized()
+        assert not window.isFullScreen()
+    finally:
+        window.close()
 
 
 def test_shell_button_is_state_aware(monkeypatch):

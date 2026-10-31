@@ -292,11 +292,11 @@ author's direction: one program, ARIA, with Shell Mode built in.
   it and you're back to the classic dashboard boot.
 - **One button, two states** — the dashboard's center-controls
   button reads "Shell Home" and opens the shell; while Shell
-  Home is open it reads "Dashboard" and one click exits:
-  fullscreen drops, the side columns come back, and you're
-  looking at the ordinary Windows desktop with ARIA as a normal
-  window. There is deliberately no second exit button inside
-  the shell. The escape hatch is sacred.
+  Home is open it reads "Dashboard" and one click exits back
+  to the dashboard: the side columns come back and the window
+  keeps its state — fullscreen stays fullscreen (leaving
+  fullscreen is F11's job). There is deliberately no second
+  exit button inside the shell. The escape hatch is sacred.
 
 **v1 limits — stated plainly.** Explorer is never replaced in v1:
 Shell Mode is a fullscreen dashboard mode, not a registry shell
