@@ -15,7 +15,10 @@ Safety shape (the design Alek approved):
     the exact browser_agent call, and runs only if he approves it
     (the approved replay is recognized through
     approval.in_approve_replay, so the confirmed click completes
-    instead of re-stashing itself).
+    instead of re-stashing itself). Keyboard activation gets the
+    same treatment: Enter/Space on a focused control is checked
+    against the focused control (and, for Enter in a form field,
+    the form's submit controls) before the key is sent.
   * Private / loopback URLs are refused (router admin pages, the
     phone bridge itself) unless the browser_agent_allow_lan
     setting is on.
@@ -177,6 +180,87 @@ class BrowserSession:
         loc.fill(text)
         return f"typed {len(text)} chars"
 
+    def focused_info(self):
+        """Describe document.activeElement for the press guard.
+
+        Best-effort DOM probe: the focused element's tag/type/role,
+        whether keyboard activation would activate it, whether it
+        is a form field, a usable label, and the labels of the
+        submit/default controls in its form. The press guard treats
+        a failed probe as unverifiable, never as safe.
+        """
+        return self.page.evaluate(r"""() => {
+            const clean = (value) =>
+                String(value || "").replace(/\s+/g, " ").trim();
+            const labelFor = (el) => {
+                if (!el) return "";
+                let associated = "";
+                try {
+                    associated = (el.labels && el.labels.length)
+                        ? el.labels[0].innerText : "";
+                } catch (_) {}
+                return clean(el.innerText || el.value ||
+                    el.getAttribute("aria-label") || el.title ||
+                    el.getAttribute("placeholder") || el.name ||
+                    associated || "");
+            };
+            const typeOf = (el) =>
+                clean(el.getAttribute && el.getAttribute("type")
+                    || "").toLowerCase();
+            const roleOf = (el) =>
+                clean(el.getAttribute && el.getAttribute("role")
+                    || "").toLowerCase();
+            const isActivatable = (el) => {
+                const tag = el.tagName.toLowerCase();
+                const type = typeOf(el);
+                const role = roleOf(el);
+                return tag === "button" ||
+                    (tag === "a" && el.hasAttribute("href")) ||
+                    (tag === "input" && ["submit", "button", "reset",
+                        "image", "checkbox", "radio"].includes(type)) ||
+                    ["button", "link", "menuitem", "tab", "checkbox",
+                     "radio", "switch"].includes(role) ||
+                    typeof el.onclick === "function";
+            };
+            const el = document.activeElement;
+            if (!el || el === document.body || el === document.documentElement) {
+                return {tag: "body", type: "", role: "",
+                        contenteditable: false, label: "",
+                        activatable: false, is_form_field: false,
+                        form_submit_labels: []};
+            }
+            const tag = el.tagName.toLowerCase();
+            let form = null;
+            try {
+                form = el.form || (el.closest ? el.closest("form") : null);
+            } catch (_) {}
+            const submitLabels = [];
+            if (form) {
+                const controls = form.querySelectorAll(
+                    "button, input, [role='button']");
+                for (const control of controls) {
+                    const ctag = control.tagName.toLowerCase();
+                    const ctype = typeOf(control);
+                    const isSubmit = (ctag === "input" &&
+                            ["submit", "image"].includes(ctype)) ||
+                        (ctag === "button" &&
+                            (ctype === "" || ctype === "submit"));
+                    if (isSubmit) submitLabels.push(labelFor(control));
+                }
+            }
+            return {
+                tag: tag,
+                type: typeOf(el),
+                role: roleOf(el),
+                contenteditable: Boolean(el.isContentEditable),
+                label: labelFor(el),
+                activatable: isActivatable(el),
+                is_form_field: ["input", "textarea", "select"].includes(tag)
+                    || Boolean(el.isContentEditable),
+                form_submit_labels: submitLabels
+            };
+        }""")
+
     def press(self, key):
         self.page.keyboard.press(key)
         return f"pressed {key}"
@@ -297,6 +381,151 @@ def _guarded_click(target: str, *, approve_fn=None) -> str:
     return _RUNNER.call(_do)
 
 
+_UNLABELLED_CONTROL = "unlabelled focused control"
+
+
+def _activation_kind(key):
+    """'enter' / 'space' for activation keys, else None.
+
+    Chords are judged by their final segment (Control+Enter is an
+    Enter activation). Playwright accepts " ", "Space" and the
+    legacy "Spacebar" spelling for the space key.
+    """
+    raw = str(key or "")
+    if raw == " ":
+        return "space"
+    parts = [p.strip() for p in raw.split("+") if p.strip()]
+    if not parts:
+        return None
+    final = parts[-1].strip().lower()
+    if final in ("enter", "numpadenter"):
+        return "enter"
+    if final in ("space", "spacebar", " "):
+        return "space"
+    return None
+
+
+def _focused_activatable(info) -> bool:
+    if "activatable" in info:
+        return bool(info.get("activatable"))
+    tag = str(info.get("tag") or "").strip().lower()
+    typ = str(info.get("type") or "").strip().lower()
+    role = str(info.get("role") or "").strip().lower()
+    return (tag == "button" or tag == "a"
+            or (tag == "input" and typ in (
+                "submit", "button", "reset", "image", "checkbox", "radio"))
+            or role in ("button", "link", "menuitem", "tab", "checkbox",
+                        "radio", "switch"))
+
+
+def _focused_form_field(info) -> bool:
+    if "is_form_field" in info:
+        return bool(info.get("is_form_field"))
+    if info.get("contenteditable") in (True, "true", "True"):
+        return True
+    tag = str(info.get("tag") or "").strip().lower()
+    typ = str(info.get("type") or "").strip().lower()
+    if tag in ("textarea", "select"):
+        return True
+    return tag == "input" and typ not in (
+        "submit", "button", "reset", "image", "checkbox", "radio", "file")
+
+
+def _press_guard_label(info, key):
+    """The irreversible label a press would trigger, or None.
+
+    Pure decision logic for _guarded_press. An activation key is
+    gated when the focused activatable control's own label is
+    irreversible, when that control has no usable label at all
+    (fail closed), or — for Enter only — when focus is in a form
+    field whose form has an irreversibly-labelled submit/default
+    control. Space in a text field is just a space: it never gates
+    on the form's submit labels.
+    """
+    if _activation_kind(key) is None:
+        return None
+    if not isinstance(info, dict):
+        return _UNLABELLED_CONTROL
+    label = str(info.get("label") or info.get("text")
+                or info.get("name") or "").strip()
+    if _focused_activatable(info):
+        if _is_irreversible(label):
+            return label
+        if not label:
+            return _UNLABELLED_CONTROL
+        return None
+    if _activation_kind(key) != "enter":
+        return None
+    if _focused_form_field(info):
+        labels = (info.get("form_submit_labels")
+                  or info.get("submit_labels") or [])
+        if isinstance(labels, str):
+            labels = [labels]
+        for candidate in labels:
+            candidate = str(candidate or "").strip()
+            if _is_irreversible(candidate):
+                return candidate
+    return None
+
+
+def _press_needs_guard(info, key) -> bool:
+    return _press_guard_label(info, key) is not None
+
+
+def _guarded_press(key: str, *, approve_fn=None) -> str:
+    """Focus-check an activation key before sending it.
+
+    Mirrors _guarded_click: the key's effect depends on what is
+    focused, so probe the focused control on the session thread;
+    if the press would trigger an irreversible action, stash an
+    approval for the exact press call and DO NOT press — unless
+    this call IS the approved replay of that exact press. A failed
+    probe on an activation key never results in a press.
+    Non-activation keys pass through with no probe at all.
+    """
+    def _do(runner):
+        session = runner.ensure_session()
+        return session.press(key)
+
+    if _activation_kind(key) is None:
+        return _RUNNER.call(_do)
+
+    def _probe(runner):
+        session = runner.ensure_session()
+        return session.focused_info()
+
+    try:
+        info = _RUNNER.call(_probe)
+    except Exception:
+        return (f"browser_agent: press refused — I could not verify "
+                f"the focused control, so '{key}' was not pressed.")
+    label = _press_guard_label(info, key)
+    if label is None:
+        return _RUNNER.call(_do)
+
+    from aria import approval as _approval
+    try:
+        _in_replay = getattr(_approval, "in_approve_replay", None)
+        in_replay = bool(_in_replay(
+            "browser_agent", {"action": "press", "key": key})) \
+            if callable(_in_replay) else False
+    except Exception:
+        in_replay = False
+    if not in_replay:
+        request = approve_fn or _approval.request_approval
+        if label == _UNLABELLED_CONTROL:
+            desc = (f"Browser agent is about to press '{key}' with "
+                    f"an unlabelled control focused — this cannot "
+                    f"be proven safe.")
+        else:
+            desc = (f"Browser agent is about to press '{key}' — "
+                    f"this would trigger '{label}', which looks "
+                    f"irreversible.")
+        return request(
+            "browser_agent", {"action": "press", "key": key}, desc=desc)
+    return _RUNNER.call(_do)
+
+
 # ---------------- the tool ----------------
 
 def tool_browser_agent(args) -> str:
@@ -333,8 +562,9 @@ def tool_browser_agent(args) -> str:
             return result + ". Call read to see the page."
         if action == "press":
             key = str(args.get("key") or "Enter")
-            return _RUNNER.call(
-                lambda r: r.ensure_session().press(key))
+            result = _guarded_press(key)
+            add_log(f"[browser] press {key}")
+            return result
         if action == "scroll":
             direction = str(args.get("direction") or "down")
             return _RUNNER.call(

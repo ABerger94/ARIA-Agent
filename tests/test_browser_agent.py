@@ -42,6 +42,13 @@ class FakeSession:
     def __init__(self):
         self.clicks = []
         self.typed = []
+        self.presses = []
+        self.focused_calls = 0
+        self.focused_error = None
+        self.focused = {"tag": "body", "type": "", "role": "",
+                        "contenteditable": False, "label": "",
+                        "activatable": False, "is_form_field": False,
+                        "form_submit_labels": []}
         self.started = False
         self.closed = False
 
@@ -68,7 +75,17 @@ class FakeSession:
         self.typed.append((target, text))
         return f"typed {len(text)} chars"
 
+    def focused_info(self):
+        self.focused_calls += 1
+        if self.focused_error is not None:
+            raise self.focused_error
+        info = dict(self.focused)
+        info["form_submit_labels"] = list(
+            info.get("form_submit_labels") or [])
+        return info
+
     def press(self, key):
+        self.presses.append(key)
         return f"pressed {key}"
 
     def scroll(self, direction):
@@ -117,6 +134,7 @@ def test_open_read_type_close_round_trip():
     assert "typed 5 chars" in out and fake.typed == [("index:1", "hello")]
     assert "pressed Enter" in ba.tool_browser_agent(
         {"action": "press", "key": "Enter"})
+    assert fake.presses == ["Enter"]
     assert "Screenshot saved" in ba.tool_browser_agent(
         {"action": "screenshot"})
     assert "closed" in ba.tool_browser_agent({"action": "close"})
@@ -253,3 +271,180 @@ def test_irreversible_click_replay_with_real_approval_module():
         else:
             sys.modules.pop("aria.approval", None)
     print("ok irreversible_replay_real_module")
+
+
+def _set_focus(fake, **updates):
+    fake.focused.update(updates)
+    return fake
+
+
+def _button_focus(label):
+    return {"tag": "button", "type": "", "role": "",
+            "contenteditable": False, "label": label,
+            "activatable": True, "is_form_field": False,
+            "form_submit_labels": []}
+
+
+def _field_focus(label, submit_labels, typ="text"):
+    return {"tag": "input", "type": typ, "role": "",
+            "contenteditable": False, "label": label,
+            "activatable": False, "is_form_field": True,
+            "form_submit_labels": list(submit_labels)}
+
+
+def test_press_decision_logic():
+    place_order = _button_focus("Place order")
+    benign_button = _button_focus("Continue shopping")
+    unlabelled = _button_focus("")
+    send_field = _field_focus("Message", ["Send message"])
+    search_field = _field_focus("Search", ["Search"])
+
+    assert ba._activation_kind("Enter") == "enter"
+    assert ba._activation_kind("NumpadEnter") == "enter"
+    assert ba._activation_kind("Control+Enter") == "enter"
+    assert ba._activation_kind("Space") == "space"
+    assert ba._activation_kind(" ") == "space"
+    assert ba._activation_kind("Spacebar") == "space"
+    assert ba._activation_kind("Tab") is None
+    assert ba._activation_kind("Escape") is None
+    assert ba._activation_kind("ArrowDown") is None
+
+    assert ba._press_needs_guard(place_order, "Enter")
+    assert ba._press_needs_guard(place_order, "Control+Enter")
+    assert ba._press_needs_guard(unlabelled, "Enter")
+    assert not ba._press_needs_guard(benign_button, "Enter")
+    assert not ba._press_needs_guard(benign_button, "Space")
+    assert ba._press_needs_guard(send_field, "Enter")
+    assert not ba._press_needs_guard(search_field, "Enter")
+    # Space in a text field is just a space, even if the form's
+    # submit control would be irreversible on Enter.
+    assert not ba._press_needs_guard(send_field, "Space")
+    assert not ba._press_needs_guard(place_order, "Tab")
+    print("ok press_decision_logic")
+
+
+def test_irreversible_press_is_stashed_not_executed():
+    fake = _install_fake()
+    _set_focus(fake, **_button_focus("Place order"))
+    _mod, stashed = _fake_approval_with_replay(lambda tool, args: False)
+    ba.tool_browser_agent({"action": "open",
+                           "url": "https://shop.example/"})
+    out = ba.tool_browser_agent({"action": "press", "key": "Enter"})
+    assert fake.presses == []                     # never pressed
+    assert "AWAITING_APPROVAL" in out
+    assert stashed and stashed[0][0] == "browser_agent"
+    assert stashed[0][1] == {"action": "press", "key": "Enter"}
+    assert "Enter" in stashed[0][2]
+    assert "Place order" in stashed[0][2]
+    print("ok irreversible_press_stashed")
+
+
+def test_irreversible_press_executes_on_approve_replay():
+    fake = _install_fake()
+    _set_focus(fake, **_button_focus("Place order"))
+    _mod, stashed = _fake_approval_with_replay(
+        lambda tool, args: tool == "browser_agent"
+        and args == {"action": "press", "key": "Enter"})
+    ba.tool_browser_agent({"action": "open",
+                           "url": "https://shop.example/"})
+    out = ba.tool_browser_agent({"action": "press", "key": "Enter"})
+    assert fake.presses == ["Enter"]
+    assert "pressed Enter" in out
+    assert stashed == []
+    print("ok irreversible_press_replay_executes")
+
+
+def test_irreversible_press_replay_for_other_args_still_stashed():
+    fake = _install_fake()
+    _set_focus(fake, **_button_focus("Place order"))
+    _mod, stashed = _fake_approval_with_replay(
+        lambda tool, args: tool == "browser_agent"
+        and args == {"action": "press", "key": "Space"})
+    ba.tool_browser_agent({"action": "open",
+                           "url": "https://shop.example/"})
+    out = ba.tool_browser_agent({"action": "press", "key": "Enter"})
+    assert fake.presses == []
+    assert "AWAITING_APPROVAL" in out
+    assert stashed and stashed[0][1] == {"action": "press",
+                                         "key": "Enter"}
+    print("ok irreversible_press_replay_mismatch_stashed")
+
+
+def test_enter_in_field_with_irreversible_submit_is_stashed():
+    fake = _install_fake()
+    _set_focus(fake, **_field_focus("Message", ["Send message"]))
+    _mod, stashed = _fake_approval_with_replay(lambda tool, args: False)
+    ba.tool_browser_agent({"action": "open",
+                           "url": "https://shop.example/"})
+    out = ba.tool_browser_agent({"action": "press", "key": "Enter"})
+    assert fake.presses == []
+    assert "AWAITING_APPROVAL" in out
+    assert stashed and stashed[0][1] == {"action": "press",
+                                         "key": "Enter"}
+    assert "Send message" in stashed[0][2]
+    print("ok enter_irreversible_submit_stashed")
+
+
+def test_enter_in_field_with_benign_submit_presses():
+    fake = _install_fake()
+    _set_focus(fake, **_field_focus("Search", ["Search"],
+                                    typ="search"))
+    ba.tool_browser_agent({"action": "open",
+                           "url": "https://shop.example/"})
+    out = ba.tool_browser_agent({"action": "press", "key": "Enter"})
+    assert fake.presses == ["Enter"]
+    assert "pressed Enter" in out
+    print("ok enter_benign_submit_presses")
+
+
+def test_space_on_benign_button_and_in_text_field_presses():
+    fake = _install_fake()
+    _set_focus(fake, **_button_focus("Continue shopping"))
+    ba.tool_browser_agent({"action": "open",
+                           "url": "https://shop.example/"})
+    out = ba.tool_browser_agent({"action": "press", "key": "Space"})
+    assert "pressed Space" in out
+    _set_focus(fake, **_field_focus("Message", ["Send message"]))
+    out = ba.tool_browser_agent({"action": "press", "key": " "})
+    assert "pressed  " in out
+    assert fake.presses == ["Space", " "]
+    print("ok space_benign_and_text_presses")
+
+
+def test_non_activation_keys_pass_through_without_probe():
+    fake = _install_fake()
+    fake.focused_error = RuntimeError("probe must not run")
+    ba.tool_browser_agent({"action": "open",
+                           "url": "https://shop.example/"})
+    assert "pressed Tab" in ba.tool_browser_agent(
+        {"action": "press", "key": "Tab"})
+    assert "pressed Escape" in ba.tool_browser_agent(
+        {"action": "press", "key": "Escape"})
+    assert fake.presses == ["Tab", "Escape"]
+    assert fake.focused_calls == 0
+    print("ok non_activation_no_probe")
+
+
+def test_unlabelled_focused_button_enter_is_stashed():
+    fake = _install_fake()
+    _set_focus(fake, **_button_focus(""))
+    _mod, stashed = _fake_approval_with_replay(lambda tool, args: False)
+    ba.tool_browser_agent({"action": "open",
+                           "url": "https://shop.example/"})
+    out = ba.tool_browser_agent({"action": "press", "key": "Enter"})
+    assert fake.presses == []
+    assert "AWAITING_APPROVAL" in out
+    assert stashed and "unlabelled" in stashed[0][2]
+    print("ok unlabelled_button_press_stashed")
+
+
+def test_activation_probe_failure_never_presses():
+    fake = _install_fake()
+    fake.focused_error = RuntimeError("DOM unavailable")
+    ba.tool_browser_agent({"action": "open",
+                           "url": "https://shop.example/"})
+    out = ba.tool_browser_agent({"action": "press", "key": "Enter"})
+    assert fake.presses == []
+    assert "was not pressed" in out
+    assert fake.focused_calls == 1
+    print("ok activation_probe_failure_no_press")
