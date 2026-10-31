@@ -760,6 +760,92 @@ def set_entry_group(entries, path, group):
     return regroup(entries)
 
 
+# ------------------------------------------------------------------
+# V17-B (2026-10-31, Alek's ask): group SHELVES. The grouped
+# pinned view renders one horizontal shelf per group (header +
+# tiles flowing left-to-right) instead of V14's single vertical
+# list. The model generalises with it: a shelf layout IS a list
+# of (group, [keys]) sections, and these helpers convert and
+# move within that shape. The flat group-contiguous entry list
+# stays the storage truth; sections are a view of it.
+# ------------------------------------------------------------------
+
+def pin_sections(entries):
+    """The shelf layout of *entries*: [(group, [entries])] —
+    grouped_entries under its V17 name, kept as the one call
+    the shelf renderer and tests share."""
+    return grouped_entries(entries)
+
+
+def entries_from_shelves(sections):
+    """Rebuild flat entries from a shelf walk: *sections* is
+    [(group, [pin keys in shelf order])] as painted. The flat
+    result is group-contiguous in section order — the exact
+    inverse of pin_sections over the same entries."""
+    out = []
+    for group, keys in sections or []:
+        g = str(group or "").strip()
+        for key in keys or []:
+            path = str(key or "").strip()
+            if path and not any(e["path"] == path for e in out):
+                out.append({"path": path, "group": g})
+    return out
+
+
+def move_entry_in_group(entries, path, delta):
+    """Move one entry *delta* places WITHIN its own group
+    (the shelves' Move left / Move right). Unlike move_entry
+    (the flat V14 move), a group boundary is never crossed:
+    the first tile of a group cannot move left into the group
+    above it. Clamped inside the group; order elsewhere is
+    untouched."""
+    entries = [dict(e) for e in (entries or [])]
+    idx = next((i for i, e in enumerate(entries)
+                if e["path"] == path), None)
+    if idx is None:
+        return entries
+    group = entries[idx]["group"]
+    members = [i for i, e in enumerate(entries)
+               if e["group"] == group]
+    pos = members.index(idx)
+    target = max(0, min(len(members) - 1, pos + int(delta)))
+    if target == pos:
+        return entries
+    entry = entries.pop(idx)
+    members = [i for i, e in enumerate(entries)
+               if e["group"] == group]
+    flat = members[target] if target < len(members) \
+        else members[-1] + 1
+    entries.insert(flat, entry)
+    return entries
+
+
+def move_entry_to_section(entries, path, group, index):
+    """Move one entry into *group* at position *index* within
+    that group's members — a tile dropped onto another shelf.
+    *index* is a member position (0 = first tile of the
+    shelf), clamped to the shelf's ends; a group that does not
+    exist yet forms at the end. The result is regrouped."""
+    group = str(group or "").strip()
+    entries = [dict(e) for e in (entries or [])]
+    idx = next((i for i, e in enumerate(entries)
+                if e["path"] == path), None)
+    if idx is None:
+        return entries
+    entry = entries.pop(idx)
+    entry["group"] = group
+    members = [i for i, e in enumerate(entries)
+               if e["group"] == group]
+    if not members:
+        entries.append(entry)
+        return regroup(entries)
+    within = max(0, min(len(members), int(index)))
+    flat = members[within] if within < len(members) \
+        else members[-1] + 1
+    entries.insert(flat, entry)
+    return regroup(entries)
+
+
 def route_command(text, apps):
     """Classify command-bar text -> an intent dict.
 

@@ -178,7 +178,7 @@ V17 (2026-10-31, Alek's asks): two fixes. (A) Missing apps —
 the launcher also enumerates the Windows AppsFolder
 (Get-StartApps), so Store / per-user apps with no Start Menu
 .lnk (his example: Spotify) appear, launch through
-shell:AppsFolder\<AppID>, and pin under the key appid:<AppID>;
+shell:AppsFolder/<AppID>, and pin under the key appid:<AppID>;
 pin identity everywhere in this panel is now the app KEY
 (app_launcher.app_key) — for .lnk apps the key is the path,
 so existing pins are untouched. (B) Grouped pins render as
@@ -228,6 +228,7 @@ try:
         QMenu,
         QPlainTextEdit,
         QPushButton,
+        QScrollArea,
         QSizePolicy,
         QStackedWidget,
         QVBoxLayout,
@@ -299,6 +300,11 @@ QListWidget#shellPalette { background: #101f30; color: #eaf6ff;
 QListWidget#shellPalette::item { padding: 7px 12px; }
 QListWidget#shellPalette::item:selected { background: #17435a;
               border-radius: 6px; }
+QLabel#shellGroupHeader { color: #57c7d4; font-size: 14px;
+              font-weight: 700; }
+QScrollArea#shellShelfScroll { background: #0e1c2c;
+              border: 1px solid #1b3042; border-radius: 10px; }
+QWidget#shellShelves { background: #0e1c2c; }
 """
 
 
@@ -468,6 +474,90 @@ def _letter_icon(tile, size=48, ink="#0b1622"):
     p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, tile["letter"])
     p.end()
     return QIcon(pm)
+
+
+# -- V17-B: one group's shelf -----------------------------------
+# A shelf is an IconMode tile list like the V8 grid, scoped to
+# one group. Within-shelf drags are Qt's own model moves (the
+# panel persists off rowsMoved, the V14 pattern). A drag from
+# ANOTHER shelf carries the app's pin key in a custom mime
+# format; the drop is handed to the panel, which moves the
+# entry in the pure model and repaints — widget-level drag
+# bookkeeping never becomes state.
+if pyqtSignal is not None:
+
+    class _ShelfList(QListWidget):
+        """One group's horizontal shelf (V17-B)."""
+
+        APP_MIME = "application/x-aria-shell-app-key"
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.group = ""
+            self.on_cross_drop = None  # (key, group, row)
+
+        def supportedDropActions(self):
+            return (Qt.DropAction.CopyAction
+                    | Qt.DropAction.MoveAction)
+
+        def mimeTypes(self):
+            return list(super().mimeTypes()) + [self.APP_MIME]
+
+        def mimeData(self, items):
+            data = super().mimeData(items)
+            for item in items or []:
+                app = item.data(Qt.ItemDataRole.UserRole)
+                if isinstance(app, dict):
+                    key = app_launcher.app_key(app)
+                    if key:
+                        data.setData(
+                            self.APP_MIME,
+                            key.encode("utf-8"))
+                    break
+            return data
+
+        def dragEnterEvent(self, event):
+            if event.source() is self or event.mimeData() \
+                    .hasFormat(self.APP_MIME):
+                event.acceptProposedAction()
+            else:
+                super().dragEnterEvent(event)
+
+        def dragMoveEvent(self, event):
+            if event.source() is self or event.mimeData() \
+                    .hasFormat(self.APP_MIME):
+                event.acceptProposedAction()
+            else:
+                super().dragMoveEvent(event)
+
+        def dropEvent(self, event):
+            md = event.mimeData()
+            if event.source() is not self and md is not None \
+                    and md.hasFormat(self.APP_MIME):
+                key = bytes(md.data(self.APP_MIME)).decode(
+                    "utf-8", "replace")
+                pos = event.position().toPoint()
+                idx = self.indexAt(pos)
+                row = idx.row() if idx.isValid() else self.count()
+                try:
+                    if idx.isValid() and \
+                            self.dropIndicatorPosition() == \
+                            QAbstractItemView.DropIndicatorPosition.BelowItem:
+                        row += 1
+                except Exception:
+                    pass
+                if key and self.on_cross_drop is not None:
+                    self.on_cross_drop(key, self.group, row)
+                # CopyAction: the panel repaints every shelf
+                # from the persisted model, so the source list
+                # must NOT also remove its row itself.
+                event.setDropAction(Qt.DropAction.CopyAction)
+                event.accept()
+                return
+            super().dropEvent(event)
+
+else:  # pragma: no cover - Qt absent (headless tools)
+    _ShelfList = None
 
 
 # -- default card providers: the real seams, lazy + fail-soft ---
@@ -981,6 +1071,24 @@ class ShellPanel(QWidget):
         self.empty_label.setWordWrap(True)
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.grid_stack.addWidget(self.empty_label)
+        # V17-B: the grouped pinned view's page — a scroll
+        # area of group SHELVES (header + horizontal tile
+        # shelf per group), built by _paint_shelves. It is a
+        # stack page of its own so the ungrouped home keeps
+        # rendering through app_list, exactly the V8 grid.
+        self._shelf_lists = []
+        self.shelf_scroll = QScrollArea()
+        self.shelf_scroll.setObjectName("shellShelfScroll")
+        self.shelf_scroll.setWidgetResizable(True)
+        self.shelf_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.shelves_host = QWidget()
+        self.shelves_host.setObjectName("shellShelves")
+        self.shelves_layout = QVBoxLayout(self.shelves_host)
+        self.shelves_layout.setContentsMargins(12, 10, 12, 10)
+        self.shelves_layout.setSpacing(10)
+        self.shelf_scroll.setWidget(self.shelves_host)
+        self.grid_stack.addWidget(self.shelf_scroll)
         left.addWidget(self.grid_stack, 1)
 
         self.count_label = QLabel("")
@@ -1553,11 +1661,12 @@ class ShellPanel(QWidget):
 
     def _pin_menu(self, app):
         """The tile's right-click menu: Pin/Remove (V8), plus
-        — for a pinned app — the V14 arrangement actions (Move
-        up / Move down, Move to group ▸ with the existing
-        groups, Ungrouped, and New group…). Built separately
-        from the exec so tests can inspect and trigger it
-        without a modal grab."""
+        — for a pinned app — the arrangement actions (Move
+        left / Move right — V17-B names for the V14 moves —
+        and Move to group ▸ with the existing groups,
+        Ungrouped, and New group…). Built separately from the
+        exec so tests can inspect and trigger it without a
+        modal grab."""
         menu = QMenu(self)
         action = menu.addAction(self.pin_action_label(app))
         action.triggered.connect(lambda: self.toggle_pin(app))
@@ -1565,11 +1674,14 @@ class ShellPanel(QWidget):
         if path and shell_home.is_pinned(self._pinned_paths(),
                                          path):
             menu.addSeparator()
-            up = menu.addAction("Move up")
-            up.triggered.connect(
+            # V17-B: the shelves (and the grid) flow
+            # left-to-right, so the moves are named for the
+            # direction they move the tile.
+            left = menu.addAction("Move left")
+            left.triggered.connect(
                 lambda _c=False: self.move_pin(app, -1))
-            down = menu.addAction("Move down")
-            down.triggered.connect(
+            right = menu.addAction("Move right")
+            right.triggered.connect(
                 lambda _c=False: self.move_pin(app, 1))
             sub = menu.addMenu("Move to group")
             for name in self._group_names():
@@ -1634,12 +1746,14 @@ class ShellPanel(QWidget):
             pass
 
     def move_pin(self, app, delta):
-        """Move up / Move down: the pure move over the current
-        entries, persisted, repainted."""
+        """Move left / Move right (V17-B; was Move up/down):
+        the pure IN-GROUP move over the current entries —
+        a tile slides along its shelf and never crosses into
+        the neighbouring group — persisted, repainted."""
         path = app_launcher.app_key(app or {})
         if not path:
             return
-        self._write_entries(shell_home.move_entry(
+        self._write_entries(shell_home.move_entry_in_group(
             self._pin_entries(), path, delta))
         self._refilter()
 
@@ -1695,16 +1809,21 @@ class ShellPanel(QWidget):
 
     # -- interactions ------------------------------------------
     def _paint_grid(self, view, results, entries, grouped):
-        """Populate the app list for one _refilter pass.
+        """Populate the grid area for one _refilter pass.
 
         Ungrouped (every view except a grouped pinned home):
-        the V8 icon grid, byte-for-byte behaviour. Grouped
-        pinned home (V14): a list-mode rendering — a bold,
-        inert header row per group ('Pinned' for the ungrouped
-        block), app rows beneath it. The pinned view (either
-        rendering) enables internal drag reorder; search and
-        All Apps disable it — arrangement is a home-view act.
+        the V8 icon grid in app_list, byte-for-byte behaviour.
+        Grouped pinned home (V17-B): group SHELVES in the
+        scroll page — one shelf per group, tiles flowing
+        left-to-right (see _paint_shelves). V14's vertical
+        list rendering is gone; Alek's words were that the
+        groups should run across, not down. The pinned view
+        (either rendering) supports drag reorder; search and
+        All Apps do not — arrangement is a home-view act.
         """
+        if grouped:
+            self._paint_shelves(results, entries)
+            return
         lst = self.app_list
         lst.clear()
         if view == "pinned":
@@ -1715,45 +1834,88 @@ class ShellPanel(QWidget):
             lst.setDragDropMode(
                 QAbstractItemView.DragDropMode.NoDragDrop)
             lst.setMovement(QListWidget.Movement.Static)
-        if not grouped:
-            lst.setViewMode(QListWidget.ViewMode.IconMode)
-            lst.setUniformItemSizes(True)
-            lst.setGridSize(QSize(120, 122))
-            for app in results:
-                item = QListWidgetItem(self._icon_for(app),
-                                       app["name"])
-                item.setData(Qt.ItemDataRole.UserRole, app)
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                # V8 capture probe: with uniformItemSizes and no
-                # explicit hint, a cell's rect came out sized by
-                # the FIRST item's content (81px in one view,
-                # 99px in another) — narrow enough that two-line
-                # names elided instead of wrapping. Pinning every
-                # item's hint to the grid size makes cell geometry
-                # fixed, independent of which app a view happens
-                # to lead with (the pinned view's leader is pin
-                # order, so this mattered most exactly there).
-                item.setSizeHint(lst.gridSize())
-                lst.addItem(item)
-            return
-        lst.setViewMode(QListWidget.ViewMode.ListMode)
-        lst.setUniformItemSizes(False)
-        # The construction grid size (120x122) also drives
-        # ListMode row geometry when set — clear it so the
-        # rows take their own hints (30px headers, 58px apps)
-        # instead of spreading one tile-cell per row.
-        lst.setGridSize(QSize())
+        lst.setViewMode(QListWidget.ViewMode.IconMode)
+        lst.setUniformItemSizes(True)
+        lst.setGridSize(QSize(120, 122))
+        for app in results:
+            item = QListWidgetItem(self._icon_for(app),
+                                   app["name"])
+            item.setData(Qt.ItemDataRole.UserRole, app)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            # V8 capture probe: with uniformItemSizes and no
+            # explicit hint, a cell's rect came out sized by
+            # the FIRST item's content (81px in one view,
+            # 99px in another) — narrow enough that two-line
+            # names elided instead of wrapping. Pinning every
+            # item's hint to the grid size makes cell geometry
+            # fixed, independent of which app a view happens
+            # to lead with (the pinned view's leader is pin
+            # order, so this mattered most exactly there).
+            item.setSizeHint(lst.gridSize())
+            lst.addItem(item)
+
+    # -- group shelves (V17-B) -----------------------------------
+    def _make_shelf_list(self, group):
+        """One group's tile shelf: the V8 grid's own geometry
+        and styling (objectName shellAppList — the same sheet
+        rules), scoped to the group. Drag is DragDrop: model
+        moves within the shelf (rowsMoved persists), drops
+        from sibling shelves arrive through on_cross_drop."""
+        lst = _ShelfList(self.shelves_host)
+        lst.group = group
+        lst.setObjectName("shellAppList")
+        lst.setViewMode(QListWidget.ViewMode.IconMode)
+        lst.setIconSize(QSize(48, 48))
+        lst.setGridSize(QSize(120, 122))
+        lst.setWordWrap(True)
+        lst.setResizeMode(QListWidget.ResizeMode.Adjust)
+        lst.setMovement(QListWidget.Movement.Snap)
+        lst.setUniformItemSizes(True)
+        lst.setDragDropMode(
+            QAbstractItemView.DragDropMode.DragDrop)
+        lst.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        lst.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        lst.itemActivated.connect(self._activate_item)
+        lst.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        lst.customContextMenuRequested.connect(
+            lambda pos, l=lst: self._on_shelf_context_menu(l, pos))
+        try:
+            lst.model().rowsMoved.connect(
+                lambda *_a: self._on_shelf_rows_moved())
+        except Exception:
+            pass
+        lst.on_cross_drop = self._cross_shelf_drop
+        return lst
+
+    def _paint_shelves(self, results, entries):
+        """Rebuild the shelf page from the pin entries: a
+        header label + tile shelf per group, in group order.
+        The shelves are rebuilt per render (like the grid's
+        items) — drag state lives in the persisted model,
+        never in the widgets."""
+        while self.shelves_layout.count():
+            item = self.shelves_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                # Unparent IMMEDIATELY, not just deleteLater:
+                # a deferred delete left the previous render's
+                # shelves alive as orphan children at their
+                # first-render geometry, painting through the
+                # new shelves (caught in the V17 magenta
+                # capture — a ghost column of stale tiles).
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
+        self._shelf_lists = []
         by_key = {app_launcher.app_key(a): a for a in results}
-        for group, members in shell_home.grouped_entries(entries):
-            header = QListWidgetItem(group or "Pinned")
-            header.setData(Qt.ItemDataRole.UserRole,
-                           {"group_header": group})
-            header.setFlags(Qt.ItemFlag.ItemIsEnabled)
-            font = QFont()
-            font.setBold(True)
-            header.setFont(font)
-            header.setSizeHint(QSize(0, 30))
-            lst.addItem(header)
+        for group, members in shell_home.pin_sections(entries):
+            head = QLabel(group or "Pinned")
+            head.setObjectName("shellGroupHeader")
+            self.shelves_layout.addWidget(head)
+            lst = self._make_shelf_list(group)
             for entry in members:
                 app = by_key.get(entry["path"])
                 if app is None:
@@ -1761,8 +1923,101 @@ class ShellPanel(QWidget):
                 item = QListWidgetItem(self._icon_for(app),
                                        app["name"])
                 item.setData(Qt.ItemDataRole.UserRole, app)
-                item.setSizeHint(QSize(0, 58))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                item.setSizeHint(lst.gridSize())
                 lst.addItem(item)
+            self.shelves_layout.addWidget(lst)
+            self._shelf_lists.append((group, lst))
+        self.shelves_layout.addStretch(1)
+        QTimer.singleShot(0, self._fit_shelf_heights)
+
+    def _fit_shelf_heights(self):
+        """Each shelf is exactly as tall as its wrapped rows:
+        rows = ceil(tiles / per-row), per-row from the shelf's
+        live viewport width and the fixed cell width. The
+        scroll area owns any overflow — a shelf never grows a
+        scrollbar of its own.
+
+        The width comes from the SCROLL AREA's viewport (the
+        shelf lists' own widths lag a layout pass behind on a
+        fresh render — fitting against them once froze a
+        100px-wide measurement in as a 4-row shelf)."""
+        try:
+            width = self.shelf_scroll.viewport().width() - 24
+        except Exception:
+            width = 0
+        for _group, lst in self._shelf_lists:
+            try:
+                n = lst.count()
+                cell = lst.gridSize()
+                w = width or lst.viewport().width() \
+                    or lst.width()
+                per_row = max(1, w // max(1, cell.width())) \
+                    if w else 1
+                rows = max(1, -(-n // per_row))
+                lst.setFixedHeight(rows * cell.height() + 4)
+            except Exception:
+                pass
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_shelf_heights()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fit_shelf_heights()
+
+    def _shelf_sections_walk(self):
+        """[(group, [pin keys in painted shelf order])] — the
+        shelf twin of the V14 grid walk, feeding the pure
+        entries_from_shelves rebuild."""
+        sections = []
+        for group, lst in self._shelf_lists:
+            keys = []
+            for i in range(lst.count()):
+                app = lst.item(i).data(Qt.ItemDataRole.UserRole)
+                if isinstance(app, dict):
+                    keys.append(app_launcher.app_key(app))
+            sections.append((group, keys))
+        return sections
+
+    def _on_shelf_rows_moved(self, *_args):
+        """A within-shelf drag finished: persist the painted
+        order (groups are the shelves themselves, so only
+        order can have changed). Same guards as the V14 hook:
+        no persistence during rebuilds or outside the pinned
+        home view."""
+        if self._rebuilding or self._view_all or \
+                (self.search.text() or "").strip():
+            return
+        self._write_entries(shell_home.entries_from_shelves(
+            self._shelf_sections_walk()))
+
+    def _cross_shelf_drop(self, key, group, row):
+        """A tile dropped onto another group's shelf (or a
+        different spot of its own via the mime path): the pure
+        section move decides the new entries, both seams
+        persist them, and the shelves repaint from the model."""
+        if self._view_all or (self.search.text() or "").strip():
+            return
+        self._write_entries(shell_home.move_entry_to_section(
+            self._pin_entries(), key, group, row))
+        self._refilter()
+
+    def _on_shelf_context_menu(self, lst, pos):
+        """Right-click on a shelf tile: the same pin menu as
+        the grid's (Pin/Remove, Move left/right, Move to
+        group) — arrangement acts on the model, so it does
+        not matter which list painted the tile."""
+        item = lst.itemAt(pos)
+        if item is None:
+            return
+        app = item.data(Qt.ItemDataRole.UserRole)
+        if app is None:
+            return
+        lst.setCurrentItem(item)
+        self._pin_menu(app).exec(
+            lst.viewport().mapToGlobal(pos))
 
     def _refilter(self):
         query = self.search.text() if hasattr(self, "search") else ""
@@ -1797,9 +2052,14 @@ class ShellPanel(QWidget):
         # Empty state (V8): the pinned view with nothing to show
         # (zero pins, or every pin stale) puts the guidance note
         # in the grid area instead of a void — the All Apps
-        # toggle above stays reachable either way.
+        # toggle above stays reachable either way. V17-B: a
+        # grouped pinned home shows the shelf page instead of
+        # the grid.
         if view == "pinned" and not results:
             self.grid_stack.setCurrentWidget(self.empty_label)
+        elif grouped:
+            self.grid_stack.setCurrentWidget(self.shelf_scroll)
+            self._fit_shelf_heights()
         else:
             self.grid_stack.setCurrentWidget(self.app_list)
         self._sync_view_toggle()

@@ -71,13 +71,19 @@ def _panel(paths=(), groups=None, **overrides):
 
 
 def _tile_names(panel):
-    return [panel.app_list.item(i).data(
+    names = [panel.app_list.item(i).data(
         Qt.ItemDataRole.UserRole)["name"]
         for i in range(panel.app_list.count())
         if isinstance(panel.app_list.item(i).data(
             Qt.ItemDataRole.UserRole), dict)
         and "group_header" not in panel.app_list.item(i).data(
             Qt.ItemDataRole.UserRole)]
+    # V17-B: a grouped home paints shelves, not the grid.
+    for _group, lst in panel._shelf_lists:
+        names += [lst.item(i).data(
+            Qt.ItemDataRole.UserRole)["name"]
+            for i in range(lst.count())]
+    return names
 
 
 def test_pinned_view_resolves_appid_pin():

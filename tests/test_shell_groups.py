@@ -4,6 +4,14 @@ the additive ui_prefs migration surface, and the panel wiring
 (grouped rendering with headers, Move up/down, Move to group,
 drop persistence) with fake stores — no real ui.json except
 the one hermetic migration test, which writes its own HOME.
+
+V17-B (2026-10-31, Alek's ask — groups should run ACROSS, not
+down): the grouped rendering changed from the single vertical
+list to horizontal group shelves, Move up/down became Move
+left/right (in-group), and drop persistence walks shelves.
+The tests below were updated where that design legitimately
+changed them; the pure V14 model (move_entry, entries_from_
+grid) is unchanged and still covered.
 """
 import json
 import os
@@ -85,6 +93,64 @@ def test_move_entry_and_set_entry_group():
     assert all(e["group"] == "Games" for e in grouped[-2:])
 
 
+# -- V17-B pure shelf model ---------------------------------------
+
+def test_shelf_sections_round_trip():
+    # Stored entries are always group-contiguous (every
+    # writer regroups); the round trip is stated over that
+    # form.
+    entries = shell_home.regroup(shell_home.pin_entries(
+        PATHS, {"/x/steam.lnk": "Games",
+                "/x/discord.lnk": "Games",
+                "/x/calc.lnk": "Tools"}))
+    sections = shell_home.pin_sections(entries)
+    assert [g for g, _m in sections] == ["", "Games", "Tools"]
+    walk = [(g, [e["path"] for e in members])
+            for g, members in sections]
+    assert shell_home.entries_from_shelves(walk) == entries
+
+
+def test_move_entry_in_group_never_crosses_boundary():
+    entries = shell_home.regroup(shell_home.pin_entries(
+        PATHS, {"/x/steam.lnk": "Games",
+                "/x/discord.lnk": "Games"}))
+    # Steam is the FIRST Games tile: moving left must NOT push
+    # it into the ungrouped block above.
+    moved = shell_home.move_entry_in_group(
+        entries, "/x/steam.lnk", -1)
+    assert [e["path"] for e in moved] == \
+        [e["path"] for e in entries]
+    # Discord slides left WITHIN Games.
+    moved = shell_home.move_entry_in_group(
+        entries, "/x/discord.lnk", -1)
+    games = [e["path"] for e in moved if e["group"] == "Games"]
+    assert games == ["/x/discord.lnk", "/x/steam.lnk"]
+    # Calculator (last ungrouped) cannot move right into Games.
+    moved = shell_home.move_entry_in_group(
+        entries, "/x/calc.lnk", 1)
+    assert [e["path"] for e in moved] == \
+        ["/x/chrome.lnk", "/x/calc.lnk", "/x/steam.lnk",
+         "/x/discord.lnk"]
+
+
+def test_move_entry_to_section_drops_into_shelf():
+    entries = shell_home.regroup(shell_home.pin_entries(
+        PATHS, {"/x/steam.lnk": "Games",
+                "/x/discord.lnk": "Games"}))
+    moved = shell_home.move_entry_to_section(
+        entries, "/x/calc.lnk", "Games", 0)
+    calc = next(e for e in moved if e["path"] == "/x/calc.lnk")
+    assert calc["group"] == "Games"
+    games = [e["path"] for e in moved if e["group"] == "Games"]
+    assert games == ["/x/calc.lnk", "/x/steam.lnk",
+                     "/x/discord.lnk"]
+    # A drop past the end clamps to the shelf's end.
+    moved = shell_home.move_entry_to_section(
+        entries, "/x/chrome.lnk", "Games", 99)
+    games = [e["path"] for e in moved if e["group"] == "Games"]
+    assert games[-1] == "/x/chrome.lnk"
+
+
 # -- ui_prefs migration surface -----------------------------------
 
 def test_ui_prefs_legacy_pins_migrate_ungrouped(tmp_path,
@@ -151,26 +217,47 @@ def _items(panel):
     return out
 
 
+def _shelf_items(panel):
+    """[(group, [tile names])] as the shelves paint them."""
+    out = []
+    for group, lst in panel._shelf_lists:
+        names = [lst.item(i).data(
+            Qt.ItemDataRole.UserRole)["name"]
+            for i in range(lst.count())]
+        out.append((group, names))
+    return out
+
+
 def test_ungrouped_home_is_the_v8_grid():
     panel = _panel()
     assert panel.app_list.viewMode() == \
         panel.app_list.ViewMode.IconMode
     assert _items(panel) == [("app", a["name"]) for a in APPS]
+    # V17-B hard constraint: no shelves, grid page showing.
+    assert panel._shelf_lists == []
+    assert panel.grid_stack.currentWidget() is panel.app_list
 
 
-def test_grouped_home_renders_headers():
+def test_grouped_home_renders_shelves():
+    # V17-B replaces V14's test_grouped_home_renders_headers:
+    # groups are horizontal IconMode shelves now, not header
+    # rows in one vertical list.
     panel = _panel({"/x/steam.lnk": "Games",
                     "/x/discord.lnk": "Games"})
-    assert _items(panel) == [
-        ("header", ""), ("app", "Google Chrome"),
-        ("app", "Calculator"),
-        ("header", "Games"), ("app", "Steam"),
-        ("app", "Discord")]
+    assert panel.grid_stack.currentWidget() is \
+        panel.shelf_scroll
+    assert _shelf_items(panel) == [
+        ("", ["Google Chrome", "Calculator"]),
+        ("Games", ["Steam", "Discord"])]
+    for _group, lst in panel._shelf_lists:
+        assert lst.viewMode() == lst.ViewMode.IconMode
+        assert lst.gridSize().width() == 120
+        assert lst.gridSize().height() == 122
 
 
 def test_move_pin_up_persists_order():
     panel = _panel()
-    panel.move_pin(APPS[2], -1)  # Calculator up
+    panel.move_pin(APPS[2], -1)  # Calculator left (was "up")
     assert panel._store["paths"] == \
         ["/x/chrome.lnk", "/x/calc.lnk", "/x/steam.lnk",
          "/x/discord.lnk"]
@@ -180,28 +267,59 @@ def test_move_pin_to_group_persists_and_renders():
     panel = _panel()
     panel.move_pin_to_group(APPS[1], "Games")
     assert panel._store["groups"] == {"/x/steam.lnk": "Games"}
-    assert ("header", "Games") in _items(panel)
+    assert ("Games", ["Steam"]) in _shelf_items(panel)
 
 
-def test_drop_walk_persists_order_and_group():
+def test_within_shelf_drag_persists_order():
     panel = _panel({"/x/steam.lnk": "Games",
                     "/x/discord.lnk": "Games"})
-    # Simulate the painted result of a drag: Calculator moved
-    # below the Games header (take + insert), then the same
-    # rowsMoved hook a real drop fires.
-    lst = panel.app_list
-    idx = next(i for i in range(lst.count())
-               if isinstance(lst.item(i).data(
-                   Qt.ItemDataRole.UserRole), dict)
-               and lst.item(i).data(
-                   Qt.ItemDataRole.UserRole).get("name")
-               == "Calculator")
-    item = lst.takeItem(idx)
-    lst.insertItem(lst.count(), item)
-    panel._on_rows_moved()
+    # Simulate the painted result of a within-shelf drag:
+    # Discord pulled before Steam on the Games shelf (take +
+    # insert), then the same rowsMoved hook a real drop
+    # fires.
+    games = dict(panel._shelf_lists)["Games"]
+    item = games.takeItem(1)  # Discord
+    games.insertItem(0, item)
+    panel._on_shelf_rows_moved()
+    entries = shell_home.pin_entries(panel._store["paths"],
+                                     panel._store["groups"])
+    games_paths = [e["path"] for e in entries
+                   if e["group"] == "Games"]
+    assert games_paths == ["/x/discord.lnk", "/x/steam.lnk"]
+
+
+def test_rerender_leaves_no_orphan_shelves():
+    # Regression (V17-B capture catch): _paint_shelves used
+    # deleteLater alone to clear the old shelves; the deferred
+    # delete never landed and the stale lists stayed as orphan
+    # children at first-render geometry, painting through the
+    # new render after any second _refilter (e.g. an accent
+    # change). Clearing now unparents immediately.
+    from PyQt6.QtWidgets import QListWidget
+    panel = _panel({"/x/steam.lnk": "Games",
+                    "/x/discord.lnk": "Games"})
+    panel._refilter()
+    panel._refilter()
+    lists = [w for w in panel.shelves_host.children()
+             if isinstance(w, QListWidget)]
+    assert len(lists) == len(panel._shelf_lists) == 2
+
+
+def test_cross_shelf_drop_regroups_and_persists():
+    panel = _panel({"/x/steam.lnk": "Games",
+                    "/x/discord.lnk": "Games"})
+    # The drop handler a shelf's mime drop calls: Calculator
+    # dropped at the FRONT of the Games shelf.
+    panel._cross_shelf_drop("/x/calc.lnk", "Games", 0)
     entries = shell_home.pin_entries(panel._store["paths"],
                                      panel._store["groups"])
     calc = next(e for e in entries
                 if e["path"] == "/x/calc.lnk")
     assert calc["group"] == "Games"
-    assert entries[-1]["path"] == "/x/calc.lnk"
+    games = [e["path"] for e in entries
+             if e["group"] == "Games"]
+    assert games == ["/x/calc.lnk", "/x/steam.lnk",
+                     "/x/discord.lnk"]
+    # And the repaint shows it on the Games shelf.
+    assert dict(_shelf_items(panel))["Games"] == \
+        ["Calculator", "Steam", "Discord"]

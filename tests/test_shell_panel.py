@@ -472,9 +472,11 @@ def test_right_click_menu_pins_and_unpins():
     # V14: a PINNED tile's menu also carries the arrangement
     # actions (Move up / Move down / Move to group ▸) after the
     # V8 pin action — the unpinned menu above stays one action.
+    # V17-B renamed the moves Move left / Move right (the
+    # shelves and the grid both flow left-to-right).
     texts = [a.text() for a in menu.actions()]
     assert texts[0] == "Remove from Home"
-    assert "Move up" in texts and "Move down" in texts
+    assert "Move left" in texts and "Move right" in texts
     assert "Move to group" in texts
     menu.actions()[0].trigger()
     assert panel._test_pin_store["paths"] == []
