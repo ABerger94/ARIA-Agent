@@ -262,6 +262,19 @@ def test_approve_token_logs_non_execution_as_such(monkeypatch):
         False)
     monkeypatch.setitem(sys.modules, "aria.tools.dispatch",
                         fake_dispatch)
+    # approve_token resolves the dispatcher with
+    # `from aria.tools import dispatch`, which prefers the
+    # attribute already bound on the real package object (set
+    # when this suite imported the real submodule at its top)
+    # over the sys.modules entry — so bind the fake on the
+    # package too, or the stub silently never takes effect and
+    # the test passes only by accident (it did until the
+    # confirm-all replay fix made the real handler execute the
+    # stashed `git pull` for real).
+    _tools_pkg = sys.modules.get("aria.tools")
+    if _tools_pkg is not None:
+        monkeypatch.setattr(_tools_pkg, "dispatch", fake_dispatch,
+                            raising=False)
 
     approval.request_approval(
         "run_shell_command", {"command": "git pull"})
