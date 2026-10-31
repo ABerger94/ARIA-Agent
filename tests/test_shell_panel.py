@@ -1,7 +1,7 @@
 """Shell Home panel (ARIA OS, 2026-10-30): the real Qt widget,
 offscreen — header paints the model, search filters the list,
 the command bar routes launch vs chat to the injected callbacks,
-Exit to Windows is present and fires its callback, and the
+Dashboard button is present and fires its callback, and the
 Shell Mode boot checkbox reports toggles.
 
 The module-level _APP reference matters: without it the
@@ -28,6 +28,7 @@ _APP = QApplication.instance() or QApplication([])
 
 import importlib
 shell_panel = importlib.import_module("aria.shell_panel")
+briefing_mod = importlib.import_module("aria.briefing")
 
 APPS = [{"name": "Google Chrome", "path": "/x/chrome.lnk"},
         {"name": "Steam", "path": "/x/steam.lnk"},
@@ -46,8 +47,7 @@ def _panel(**overrides):
         now_provider=lambda: NOW,
         shell_mode=False,
         briefing_provider=lambda: None,
-        now_playing_provider=lambda: None,
-        status_provider=lambda: None)
+        research_provider=lambda: "")
     kwargs.update(overrides)
     panel = shell_panel.ShellPanel(**kwargs)
     return panel, calls
@@ -58,7 +58,7 @@ def test_header_and_exit_button():
     assert panel.clock_label.text() == "15:47"
     assert panel.greeting_label.text() == "Good afternoon, Alek"
     assert panel.date_label.text() == "Friday, October 30"
-    assert panel.exit_btn.text() == "Exit to Windows"
+    assert panel.exit_btn.text() == "Dashboard"
     assert panel.count_label.text() == "3 apps"
 
 
@@ -160,17 +160,38 @@ def test_relaunch_guard_blocks_repeat_within_window():
         ["Steam", "Calculator", "Steam"]
 
 
-def test_v3_layout_grid_metrics_and_briefing_scroll():
+def test_v3_layout_grid_metrics():
     from PyQt6.QtCore import QSize
-    from PyQt6.QtWidgets import QScrollArea
     panel, _calls = _panel()
     # Tiles: 48px icons, cells tall enough for two-line names.
     assert panel.app_list.iconSize() == QSize(48, 48)
     assert panel.app_list.gridSize() == QSize(120, 122)
-    # The Briefing body lives inside a scroll area — overflow
-    # scrolls instead of clipping (the witnessed V2 defect).
-    assert isinstance(panel.briefing_scroll, QScrollArea)
-    assert panel.briefing_scroll.widget() is panel.briefing_body
+
+
+def test_v4_rail_is_briefing_only_and_it_fills_the_rail():
+    from PyQt6.QtWidgets import QLabel, QPlainTextEdit
+    panel, _calls = _panel()
+    # Now Playing and Status are GONE — no bodies, no titles.
+    assert not hasattr(panel, "playing_body")
+    assert not hasattr(panel, "status_body")
+    titles = [w.text() for w in panel.findChildren(QLabel)]
+    assert "NOW PLAYING" not in titles
+    assert "STATUS" not in titles
+    assert "BRIEFING" in titles
+    # The Briefing body is a read-only text view (the Briefing
+    # tab's widget family), and it FILLS the rail: at full-window
+    # size the card + view take the rail's whole height, so a
+    # typical briefing reads whole instead of through the V3
+    # card's short scroll window.
+    assert isinstance(panel.briefing_body, QPlainTextEdit)
+    assert panel.briefing_body.isReadOnly()
+    assert panel.briefing_text is panel.briefing_body
+    panel.resize(1600, 900)
+    panel.show()
+    _APP.processEvents()
+    assert panel.briefing_frame.height() > 500
+    assert panel.briefing_body.height() > 450
+    panel.hide()
 
 
 def test_exit_button_fires_callback():
@@ -201,47 +222,52 @@ def test_app_grid_is_a_tile_grid_with_icons():
     assert panel.app_list.item(0).text() == "Steam"
 
 
-def test_cards_show_honest_empty_states_without_data():
+FULL_REPORT = {
+    "generated_at": "2026-10-30T08:00:00-04:00",
+    "text": "Good morning, Alek. You've got: Dentist (3 PM to "
+            "4 PM). More follows.",
+    "sections": [
+        {"title": "Schedule", "key": "schedule",
+         "text": "You've got: Dentist (3 PM to 4 PM).", "sources": []},
+        {"title": "Weather", "key": "weather",
+         "text": "In Dundalk it's 61 degrees and clear.",
+         "sources": [{"title": "National Weather Service",
+                      "url": "https://example.com/nws"}]},
+    ]}
+
+
+def test_briefing_shows_placeholder_without_a_briefing():
     panel, _calls = _panel()
-    assert "No briefing yet" in panel.briefing_body.text()
-    assert panel.playing_body.text() == "Nothing playing"
-    # Status provider gave nothing; only the panel's own shell
-    # mode state may speak.
-    assert panel.status_body.text() == "Shell Mode boot: off"
+    # report_text(None): the tab's own honest placeholder.
+    assert panel.briefing_body.toPlainText() == \
+        briefing_mod.report_text(None)
 
 
-def test_cards_render_provider_data():
-    report = {"sections": [
-        {"label": "Today's schedule", "text": "Schedule: dentist.",
-         "status": "ok"}]}
-    info = {"title": "Artist - Track", "app": "Spotify",
-            "playing": True}
-    status = {"safe_mode": True, "approval_mode": "confirm-all",
-              "voice_enabled": False}
-    panel, _calls = _panel(briefing_provider=lambda: report,
-                           now_playing_provider=lambda: info,
-                           status_provider=lambda: status)
-    assert panel.briefing_body.text() == "Schedule: dentist."
-    assert panel.playing_body.text() == \
-        "Artist - Track\nPlaying · Spotify"
-    assert panel.status_body.text() == \
-        "Approvals: confirm-all\nSafe mode: on\nVoice: off\n" \
-        "Shell Mode boot: off"
+def test_briefing_body_is_the_briefing_tab_text_verbatim():
+    panel, _calls = _panel(briefing_provider=lambda: FULL_REPORT)
+    assert panel.briefing_body.toPlainText() == \
+        briefing_mod.report_text(FULL_REPORT)
+    # Research rides along exactly like the tab's load.
+    panel2, _calls2 = _panel(
+        briefing_provider=lambda: FULL_REPORT,
+        research_provider=lambda: "RESEARCH BRIEFS\nA brief.")
+    assert panel2.briefing_body.toPlainText() == \
+        briefing_mod.report_text(FULL_REPORT) + \
+        "\nRESEARCH BRIEFS\nA brief."
 
 
-def test_broken_card_provider_falls_back_to_empty_state():
+def test_broken_briefing_provider_falls_back_to_placeholder():
     def boom():
         raise RuntimeError("seam exploded")
     panel, _calls = _panel(briefing_provider=boom,
-                           now_playing_provider=boom,
-                           status_provider=boom)
-    assert "No briefing yet" in panel.briefing_body.text()
-    assert panel.playing_body.text() == "Nothing playing"
+                           research_provider=boom)
+    assert panel.briefing_body.toPlainText() == \
+        briefing_mod.report_text(None)
 
 
 def test_dock_holds_command_and_exit_stays_visible():
     panel, _calls = _panel()
     assert panel.command.parent() is panel.dock
     assert panel.dock.objectName() == "shellDock"
-    assert panel.exit_btn.text() == "Exit to Windows"
+    assert panel.exit_btn.text() == "Dashboard"
     assert panel.orb is not None

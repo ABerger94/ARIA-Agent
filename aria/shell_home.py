@@ -26,7 +26,10 @@ from aria import app_launcher
 
 #: The always-visible escape hatch's label — one string, used by
 #: the panel and asserted by the tests so it can never drift.
-EXIT_LABEL = "Exit to Windows"
+#: (V4 addendum, Alek 2026-10-30: renamed from "Exit to Windows"
+#: to "Dashboard" — the button still just exits Shell Home back
+#: to the dashboard; only the words changed.)
+EXIT_LABEL = "Dashboard"
 
 
 def greeting_for(hour, name="Alek"):
@@ -65,11 +68,14 @@ def home_model(apps, now=None, name="Alek", limit=24):
 
 # ------------------------------------------------------------------
 # V2 presentation models (2026-10-30): tile grid + rail cards.
-# Still pure — the panel gathers real values through the seams
-# (aria.briefing.latest_briefing, aria.smtc.now_playing_any,
-# aria.config / aria.approval) and these formatters decide what
-# the cards say. No seam, no data: an honest empty state, never
-# a plausible-looking fabrication.
+# Still pure — formatters decide what cards say from real values;
+# no data: an honest empty state, never a fabrication.
+# V4 (2026-10-30, Alek's order): the rail is Briefing ONLY — the
+# panel composes the full Briefing-tab text via briefing_full_text
+# and no longer renders Now Playing / Status at all. The
+# now_playing_card / status_card formatters below are retained,
+# tested, and deliberately UNUSED by the panel (kept to avoid
+# churn; briefing_card likewise remains for its section model).
 # ------------------------------------------------------------------
 
 #: Letter-tile palette (mock family) — picked deterministically
@@ -119,6 +125,28 @@ def briefing_card(report):
         return {"title": "Briefing", "empty": True,
                 "lines": ["Briefing is empty right now."]}
     return {"title": "Briefing", "empty": False, "lines": lines}
+
+
+def briefing_full_text(report, research_text=""):
+    """The Shell Home Briefing card's body (V4, 2026-10-30):
+    EXACTLY the Workspace Briefing tab's text — nothing trimmed,
+    summarised, or re-wrapped at this layer.
+
+    That text is ``aria.briefing.report_text(report)`` (header
+    line, intro, every section as TITLE + text, plus source
+    blocks), with the research section appended exactly the way
+    the dashboard's Briefing-tab load appends it (a blank-free
+    ``"\\n" + section`` join, only when a section exists). The
+    panel gathers *research_text* through its guarded seam —
+    research can never break this composition. For a None
+    *report*, report_text already yields the tab's honest
+    placeholder line.
+    """
+    from aria.briefing import report_text
+    text = report_text(report)
+    if research_text:
+        text += "\n" + research_text
+    return text
 
 
 def now_playing_card(info):

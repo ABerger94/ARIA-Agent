@@ -16,6 +16,7 @@ sys.modules.setdefault("aria", pkg)
 
 import importlib
 shell_home = importlib.import_module("aria.shell_home")
+briefing = importlib.import_module("aria.briefing")
 
 APPS = [{"name": "Google Chrome", "path": "/x/chrome.lnk"},
         {"name": "Chromium", "path": "/x/chromium.lnk"},
@@ -38,7 +39,7 @@ def test_home_model_shape():
     assert model["date_line"] == "Friday, October 30"
     assert model["app_count"] == 4
     assert model["count_line"] == "4 apps"
-    assert model["exit_label"] == "Exit to Windows"
+    assert model["exit_label"] == "Dashboard"
     assert shell_home.home_model(APPS[:1], now=now)["count_line"] \
         == "1 app"
 
@@ -191,3 +192,50 @@ def test_status_card_only_states_what_it_was_given():
     # Unknown values are omitted, never guessed.
     card = shell_home.status_card(safe_mode=True)
     assert card["lines"] == ["Safe mode: on"]
+
+
+# -- V4: briefing_full_text — the Briefing tab's exact text -------
+
+FULL_REPORT = {
+    "generated_at": "2026-10-30T08:00:00-04:00",
+    "text": "Good morning, Alek. You've got: Dentist (3 PM to "
+            "4 PM). More follows.",
+    "sections": [
+        {"title": "Schedule", "key": "schedule",
+         "text": "You've got: Dentist (3 PM to 4 PM).", "sources": []},
+        {"title": "Weather", "key": "weather",
+         "text": "In Dundalk it's 61 degrees and clear.",
+         "sources": [{"title": "National Weather Service",
+                      "url": "https://example.com/nws"}]},
+        {"title": "Tech news", "key": "tech_news",
+         "text": "In tech: a sample headline.",
+         "sources": [{"title": "Sample headline",
+                      "url": "https://example.com/story"}]},
+    ]}
+
+
+def test_briefing_full_text_none_is_the_tab_placeholder():
+    assert shell_home.briefing_full_text(None) == \
+        briefing.report_text(None)
+    assert "will appear here after startup" in \
+        shell_home.briefing_full_text(None)
+
+
+def test_briefing_full_text_is_report_text_verbatim():
+    text = shell_home.briefing_full_text(FULL_REPORT)
+    assert text == briefing.report_text(FULL_REPORT)
+    # Header + intro + section TITLES — the pieces the old
+    # section-texts-only card never showed.
+    assert text.startswith("DAILY BRIEFING")
+    assert "SCHEDULE\n" in text
+    assert "WEATHER\n" in text
+    # Non-news source blocks ride along, like the tab.
+    assert "National Weather Service" in text
+
+
+def test_briefing_full_text_research_append():
+    base = briefing.report_text(FULL_REPORT)
+    assert shell_home.briefing_full_text(FULL_REPORT, "") == base
+    research = "RESEARCH BRIEFS\nA sample brief body."
+    assert shell_home.briefing_full_text(FULL_REPORT, research) == \
+        base + "\n" + research

@@ -241,9 +241,9 @@ author's direction: one program, ARIA, with Shell Mode built in.
 
 - **Shell Home** (`aria/shell_panel.py`) — an OS home, not a
   settings panel: big clock, date, and time-of-day greeting with
-  ARIA's orb beside it, a **tile grid** of your apps, a right rail
-  of live cards, and the command bar as a dock pill along the
-  bottom. Open it any time with the **Shell Home** button in the
+  ARIA's orb beside it, a **tile grid** of your apps, a right
+  rail given over to the Briefing card, and the command bar as
+  a dock pill along the bottom. Open it any time with the **Shell Home** button in the
   dashboard's centre column. Opening it gives Shell Home the
   **whole window**: the System Monitor and Workspace columns
   step aside, and Exit restores them — divider positions
@@ -258,15 +258,18 @@ author's direction: one program, ARIA, with Shell Mode built in.
   same-app relaunch guard, so one double-click opens one window.
 
   ![Shell Home app search](docs/images/shell-search.png)
-- **Rail cards** — **Briefing** (the last composed briefing's own
-  sections, from `aria/briefing.py`, shown complete — the card is
-  tall and scrolls internally, so a long briefing wraps and
-  scrolls instead of clipping), **Now Playing** (the live
-  SMTC session, from `aria/smtc.py`), and **Status** (approval
-  mode, safe mode, voice — read from the real settings). Cards
-  never fabricate: no briefing yet or nothing playing reads as
-  exactly that, and a setting that can't be read is omitted, not
-  guessed.
+- **The rail is Briefing, only** — the card fills the rail's whole
+  height and carries **the same text as the Workspace Briefing
+  tab**: `report_text` of the last composed briefing (header,
+  intro, every titled section, source blocks) plus the research
+  section, appended the same guarded way the tab appends it —
+  composed by the pure `briefing_full_text` helper in
+  `aria/shell_home.py` and shown in a read-only view at reading
+  size, so a typical briefing reads whole on the home screen.
+  (Earlier shells also carried Now Playing and Status cards;
+  they were removed at the author's direction — the briefing
+  earned the space.) No briefing composed yet reads as the tab's
+  own placeholder line; nothing is ever fabricated.
 - **Command bar** (`aria/shell_home.py`) — one input for everything,
   in the bottom dock pill. An unambiguous app name (`Steam`,
   `open Chrome`) launches it. Anything else goes to ARIA as a
@@ -282,10 +285,12 @@ author's direction: one program, ARIA, with Shell Mode built in.
   (`aria/qthost.py` reads the `shell_mode` preference, off by
   default, via `aria/ui_prefs.py`). Untick it and you're back to the
   classic dashboard boot.
-- **Exit to Windows** — an always-visible button, bottom right of
-  Shell Home. One click: fullscreen drops, the shell steps aside,
-  and you're looking at the ordinary Windows desktop with ARIA as a
-  normal window. The escape hatch is sacred.
+- **Dashboard** — an always-visible button, bottom right of
+  Shell Home (labelled "Dashboard"; earlier shells called it
+  "Exit to Windows"). One click: fullscreen drops, the shell
+  steps aside, and you're looking at the ordinary Windows
+  desktop with ARIA as a normal window. The escape hatch is
+  sacred.
 
 **v1 limits — stated plainly.** Explorer is never replaced in v1:
 Shell Mode is a fullscreen dashboard mode, not a registry shell

@@ -1,36 +1,40 @@
 """Shell Home — the ARIA OS home screen panel (2026-10-30).
 
-The front door of Shell Mode, restyled in V2 to feel like an OS
-home rather than a settings page: a clock + greeting header with
-ARIA's orb beside it, a **tile grid** of his real Start Menu apps
-(icon + name), a right rail of live cards — **Briefing**,
-**Now Playing**, **Status** — fed only by real seams already in
-the codebase (``aria.briefing.latest_briefing``,
-``aria.smtc.now_playing_any``, ``aria.config`` /
-``aria.approval``), and the command bar as a bottom dock pill.
+The front door of Shell Mode: a clock + greeting header with
+ARIA's orb beside it, a **tile grid** of his real Start Menu
+apps (icon + name), a right rail, and the command bar as a
+bottom dock pill.
 
 V3 (2026-10-30, Alek's witnessed verdict + approved redesign):
-the dashboard now gives Shell Home the FULL window (both side
-columns step aside), so this panel paints at reading size —
-card body text at 12pt-equivalent, no fixed heights that can
-clip, tile names wrapping to two lines, and the Briefing card
-tall and internally scrollable with the complete briefing text.
-V3 also fixes the witnessed double-launch: V2 connected BOTH
-``itemActivated`` and ``itemDoubleClicked`` to the same launch
-handler, and one double-click fires both — there is exactly one
-launch signal now, plus a same-app relaunch guard.
+the dashboard gives Shell Home the FULL window (both side
+columns step aside) and the panel paints at reading size; V3
+also fixed the witnessed double-launch (one launch signal path
++ a same-app relaunch guard).
+
+V4 (2026-10-30, Alek's direct order after witnessing V3): the
+rail held Briefing / Now Playing / Status cards and the
+Briefing body still rendered as a short scroll window of
+section texts — he ordered the other two cards GONE and the
+Briefing card extended to fill the rail, carrying **the same
+text as the Workspace Briefing tab**: ``report_text`` of the
+latest briefing plus the guarded research-section append,
+composed by the pure ``shell_home.briefing_full_text`` helper
+and rendered in a read-only text view that fills the card at
+12pt-equivalent type. The rail is now: Briefing card + the
+Shell Mode boot checkbox, nothing else. (The pure
+now_playing/status formatters remain in shell_home.py, unused
+by this panel, per the V4 brief's no-churn call.)
+
 Type (or later, say) what you want in the dock; an unambiguous
 app name launches it, everything else goes to ARIA as a normal
 turn through the dashboard's existing submit path, approval
-gates and all. The **Exit to Windows** button is always visible,
+gates and all. The **Dashboard** button is always visible,
 bottom right: one click and the shell steps aside — Shell Mode
 never replaces explorer.exe, so Windows was never gone, just
 covered.
 
-Cards never fabricate: a seam that has nothing (no briefing
-composed yet, no media session, an unreadable setting) yields
-an honest empty state or an omitted line, via the pure
-formatters in aria/shell_home.py.
+The card never fabricates: no briefing composed yet yields
+report_text's own honest placeholder line.
 
 All routing logic lives in aria/shell_home.py and enumeration in
 aria/app_launcher.py (both pure); this file is only the paint.
@@ -49,7 +53,8 @@ from aria import app_launcher, shell_home
 
 try:
     from PyQt6.QtCore import QFileInfo, QSize, Qt, QTimer
-    from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
+    from PyQt6.QtGui import (QColor, QFont, QIcon, QPainter, QPixmap,
+                             QTextOption)
     from PyQt6.QtWidgets import (
         QCheckBox,
         QFileIconProvider,
@@ -59,8 +64,8 @@ try:
         QLineEdit,
         QListWidget,
         QListWidgetItem,
+        QPlainTextEdit,
         QPushButton,
-        QScrollArea,
         QSizePolicy,
         QVBoxLayout,
         QWidget,
@@ -93,12 +98,8 @@ QFrame#shellCard { background: #0e1c2c; border: 1px solid #1b3042;
               border-radius: 10px; }
 QLabel#shellCardTitle { color: #57c7d4; font-size: 14px;
               font-weight: 700; }
-QLabel#shellCardBody { color: #dceef7; font-size: 16px;
-              background: #0e1c2c; }
-QLabel#shellCardBodyEmpty { color: #8fb8c9; font-size: 16px;
-              font-style: italic; background: #0e1c2c; }
-QScrollArea#shellCardScroll { background: #0e1c2c;
-              border: none; }
+QPlainTextEdit#shellBriefingText { background: #0e1c2c;
+              color: #dceef7; border: none; font-size: 16px; }
 QScrollBar:vertical { background: #0e1c2c; width: 10px; }
 QScrollBar::handle:vertical { background: #2b5873;
               border-radius: 5px; min-height: 24px; }
@@ -176,32 +177,15 @@ def _default_briefing():
         return None
 
 
-def _default_now_playing():
+def _default_research():
+    """The research section for the Briefing card, guarded
+    exactly like the dashboard's Briefing-tab load: research can
+    never break the render, so any failure is an empty string."""
     try:
-        from aria import smtc
-        return smtc.now_playing_any()
+        from aria.research import research_section_text
+        return research_section_text() or ""
     except Exception:
-        return None
-
-
-def _default_status():
-    out = {}
-    try:
-        from aria import config
-        safe = config.get_setting("safe_mode", None)
-        if safe is not None:
-            out["safe_mode"] = bool(safe)
-        voice = config.get_setting("voice_enabled", None)
-        if voice is not None:
-            out["voice_enabled"] = bool(voice)
-    except Exception:
-        pass
-    try:
-        from aria import approval
-        out["approval_mode"] = approval.get_mode()
-    except Exception:
-        pass
-    return out or None
+        return ""
 
 
 class ShellPanel(QWidget):
@@ -211,7 +195,7 @@ class ShellPanel(QWidget):
                  on_launch=None, on_command=None, on_exit=None,
                  now_provider=None, shell_mode=None,
                  on_shell_mode=None, briefing_provider=None,
-                 now_playing_provider=None, status_provider=None,
+                 research_provider=None,
                  time_provider=None):
         super().__init__(parent)
         self.setObjectName("shellHome")
@@ -228,11 +212,9 @@ class ShellPanel(QWidget):
         self._time_provider = time_provider or time.monotonic
         self._last_launch_key = None
         self._last_launch_at = 0.0
-        self.briefing_scroll = None  # set by the Briefing card
+        self.briefing_text = None  # set by the Briefing card
         self._briefing_provider = briefing_provider or _default_briefing
-        self._now_playing_provider = (now_playing_provider
-                                      or _default_now_playing)
-        self._status_provider = status_provider or _default_status
+        self._research_provider = research_provider or _default_research
         self._icon_provider = None
 
         root = QVBoxLayout(self)
@@ -298,17 +280,13 @@ class ShellPanel(QWidget):
 
         rail = QVBoxLayout()
         rail.setSpacing(10)
-        # Briefing takes the rail's slack and scrolls internally:
-        # the full briefing, wrapped, never clipped mid-line.
-        self.briefing_frame, self.briefing_body = self._make_card(
-            "BRIEFING", scroll_body=True)
+        # V4: the Briefing card IS the rail — it takes all the
+        # vertical space the three V2/V3 cards used, and its body
+        # is the Briefing tab's full text in a view that fills
+        # the card. Now Playing and Status are gone entirely.
+        self.briefing_frame, self.briefing_body = \
+            self._make_briefing_card()
         rail.addWidget(self.briefing_frame, 1)
-        self.playing_frame, self.playing_body = self._make_card(
-            "NOW PLAYING")
-        rail.addWidget(self.playing_frame)
-        self.status_frame, self.status_body = self._make_card(
-            "STATUS")
-        rail.addWidget(self.status_frame)
 
         if shell_mode is None:
             try:
@@ -326,7 +304,7 @@ class ShellPanel(QWidget):
         main.addLayout(rail, 1)
         root.addLayout(main, 1)
 
-        # -- bottom dock: command pill + Exit to Windows ---------
+        # -- bottom dock: command pill + Dashboard button ---------
         bottom = QHBoxLayout()
         bottom.setSpacing(12)
         self.dock = QFrame()
@@ -360,62 +338,36 @@ class ShellPanel(QWidget):
         self._refilter()
 
     # -- construction helpers -----------------------------------
-    def _make_card(self, title, scroll_body=False):
+    def _make_briefing_card(self):
+        """The rail's one card (V4): title + a read-only text
+        view that FILLS the card. Same widget family as the
+        Workspace Briefing tab (a plain-text view), word wrap on,
+        card-coloured background via its stylesheet rule — the
+        view owns its surface, so the V3 white-slab failure mode
+        (a label inheriting the light app palette) cannot recur.
+        A scrollbar appears only when a briefing outgrows even
+        this full-rail card; a typical one fits whole."""
         frame = QFrame()
         frame.setObjectName("shellCard")
         lay = QVBoxLayout(frame)
         lay.setContentsMargins(14, 10, 14, 12)
         lay.setSpacing(4)
-        head = QLabel(title)
+        head = QLabel("BRIEFING")
         head.setObjectName("shellCardTitle")
         lay.addWidget(head)
-        body = QLabel("")
-        body.setObjectName("shellCardBody")
-        body.setWordWrap(True)
-        # The label NEVER paints its own background: its palette
-        # is the app palette (light Window), and inside the
-        # scroll area that becomes a white slab under light
-        # text. The card frame owns the surface; the label is
-        # text only. (First V3 capture caught the slab.)
-        body.setAutoFillBackground(False)
-        body.setAlignment(Qt.AlignmentFlag.AlignTop
-                          | Qt.AlignmentFlag.AlignLeft)
-        if scroll_body:
-            # The label sizes to its full wrapped content; the
-            # scroll area is the card's viewport onto it. Nothing
-            # clips: overflow becomes a scrollbar, not an elision.
-            # Background discipline: the area's stylesheet rule
-            # paints it the CARD colour (never transparent) — the
-            # body label auto-fills with its inherited Window
-            # palette colour, and a transparent/broken link in
-            # that chain drops it back to the app palette's light
-            # Window colour: a white slab under light text, which
-            # is exactly what the first V3 capture caught.
-            scroll = QScrollArea()
-            scroll.setObjectName("shellCardScroll")
-            scroll.setFrameShape(QFrame.Shape.NoFrame)
-            scroll.setWidgetResizable(True)
-            scroll.setHorizontalScrollBarPolicy(
-                Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            scroll.setVerticalScrollBarPolicy(
-                Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-            body.setMargin(6)
-            scroll.setWidget(body)
-            scroll.setMinimumHeight(190)
-            lay.addWidget(scroll, 1)
-            frame.setSizePolicy(QSizePolicy.Policy.Preferred,
-                                QSizePolicy.Policy.Expanding)
-            self.briefing_scroll = scroll
-        else:
-            lay.addWidget(body)
+        body = QPlainTextEdit()
+        body.setObjectName("shellBriefingText")
+        body.setReadOnly(True)
+        body.setWordWrapMode(QTextOption.WrapMode.WordWrap)
+        body.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        lay.addWidget(body, 1)
+        frame.setSizePolicy(QSizePolicy.Policy.Preferred,
+                            QSizePolicy.Policy.Expanding)
+        self.briefing_text = body
         return frame, body
-
-    def _set_card(self, body_label, card):
-        body_label.setText("\n".join(card["lines"]))
-        body_label.setObjectName(
-            "shellCardBodyEmpty" if card["empty"] else "shellCardBody")
-        body_label.style().unpolish(body_label)
-        body_label.style().polish(body_label)
 
     def _icon_for(self, app):
         tile = shell_home.tile_model(app)
@@ -449,27 +401,22 @@ class ShellPanel(QWidget):
         self.count_label.setText(model["count_line"])
 
     def refresh_cards(self):
-        """Repaint the rail cards from their providers (fail-soft:
-        a broken seam reads as that card's empty state)."""
+        """Repaint the rail's one card (V4): the Briefing tab's
+        exact text — report_text of the latest briefing plus the
+        guarded research append, composed by the pure helper.
+        Fail-soft: a broken briefing seam reads as the None
+        report (report_text's placeholder), and the research
+        seam is guarded inside its provider."""
         try:
             report = self._briefing_provider()
         except Exception:
             report = None
-        self._set_card(self.briefing_body,
-                       shell_home.briefing_card(report))
         try:
-            info = self._now_playing_provider()
+            research = self._research_provider() or ""
         except Exception:
-            info = None
-        self._set_card(self.playing_body,
-                       shell_home.now_playing_card(info))
-        try:
-            status = self._status_provider()
-        except Exception:
-            status = None
-        args = dict(status) if isinstance(status, dict) else {}
-        args.setdefault("shell_mode", self.shell_mode_box.isChecked())
-        self._set_card(self.status_body, shell_home.status_card(**args))
+            research = ""
+        self.briefing_body.setPlainText(
+            shell_home.briefing_full_text(report, research))
 
     def _tick(self):
         self.refresh_clock()

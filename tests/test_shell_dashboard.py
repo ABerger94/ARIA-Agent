@@ -3,7 +3,7 @@
 Offscreen Qt, services stubbed like test_room_dashboard.py: the
 Shell Home button opens the shell panel over the centerpiece,
 its command bar routes chat text through the dashboard's normal
-submit callback, and Exit to Windows hides the shell, leaves
+submit callback, and the Dashboard button hides the shell, leaves
 fullscreen, and restores the persisted centerpiece.
 """
 import os
@@ -95,7 +95,7 @@ def test_shell_home_opens_and_exit_restores_centerpiece(monkeypatch):
     window.shell_btn.click()
     assert window.shell.isVisible()
     assert not window.face.isVisible()
-    assert window.shell.exit_btn.text() == 'Exit to Windows'
+    assert window.shell.exit_btn.text() == 'Dashboard'
 
     window.shell.exit_btn.click()
     assert not window.shell.isVisible()
