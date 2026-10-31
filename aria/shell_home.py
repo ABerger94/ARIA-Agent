@@ -333,6 +333,55 @@ def view_count_line(view, shown, total):
     return f"{total} app" if total == 1 else f"{total} apps"
 
 
+# ------------------------------------------------------------------
+# V11 (2026-10-31, Alek's order): action cards — pending approvals
+# and delivered-but-unacknowledged reminders surface IN Shell Home
+# instead of waiting behind the Dashboard. These helpers only
+# DECIDE what a card says from snapshots the real seams hand over
+# (aria.approval.pending_entries — whose own docstring names UI
+# surfaces as its consumer — and aria.reminder_gate.pending_cards).
+# Resolution never happens here and never happens through a
+# second store: the panel's buttons call approval.approve_token /
+# deny_token and scheduler.tool_acknowledge_reminders, the exact
+# paths the dashboard banner and the voice tool use.
+# ------------------------------------------------------------------
+
+def approval_card(entries):
+    """The approval action card from a pending_entries()
+    snapshot: the OLDEST open request (the dashboard banner
+    shows the same one), or None when nothing is pending.
+    Entries without a token cannot be resolved from any
+    surface and are skipped rather than painted dead."""
+    usable = [e for e in (entries or [])
+              if isinstance(e, dict) and e.get("token")]
+    if not usable:
+        return None
+    first = usable[0]
+    return {"token": first["token"],
+            "tool": str(first.get("tool") or ""),
+            "desc": str(first.get("desc") or ""),
+            "age_s": int(first.get("age_s") or 0),
+            "pending": len(usable)}
+
+
+def reminder_card(cards):
+    """The reminder action card from a pending_cards()
+    snapshot (delivered reminder cards still awaiting
+    acknowledgement): the first message plus the count, or
+    None when nothing is waiting. Cards with no message text
+    carry nothing to acknowledge and are skipped."""
+    messages = []
+    for card in cards or []:
+        if isinstance(card, dict):
+            text = str(card.get("message") or "").strip()
+            if text:
+                messages.append(text)
+    if not messages:
+        return None
+    return {"count": len(messages), "message": messages[0],
+            "messages": messages}
+
+
 def route_command(text, apps):
     """Classify command-bar text -> an intent dict.
 

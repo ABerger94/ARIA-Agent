@@ -88,6 +88,20 @@ intentional multi-hue exception — those stand in for app
 icons). With a non-default accent, no stock stylesheet hex
 survives; with none, the sheet is byte-identical stock.
 
+V11 (2026-10-31, Alek's order): action cards. A pending
+approval (aria.approval's store, read via the pending_entries
+snapshot that module documents as the UI-surface seam) shows
+a card above the dock with the request's description and
+Approve/Deny buttons wired to approve_token / deny_token —
+the SAME resolution path the dashboard's ConfirmBanner uses,
+no parallel policy, no second store. A delivered reminder
+still awaiting acknowledgement (aria.reminder_gate's
+pending_cards over the scheduler's gate store) shows a card
+with its text and a "Got it" button wired to
+scheduler.tool_acknowledge_reminders — the voice tool's path.
+Cards poll on the panel's existing refresh tick; with nothing
+pending there are no cards and zero visual change.
+
 The card never fabricates: no briefing composed yet yields
 report_text's own honest placeholder line.
 
@@ -183,6 +197,15 @@ QMenu { background: #101f30; color: #eaf6ff;
             border: 1px solid #1b3042; }
 QMenu::item { padding: 6px 22px; }
 QMenu::item:selected { background: #17435a; }
+QFrame#shellActionCard { background: #0e1c2c;
+              border: 1px solid #57c7d4; border-radius: 10px; }
+QLabel#shellActionTitle { color: #57c7d4; font-size: 14px;
+              font-weight: 700; }
+QLabel#shellActionText { color: #eaf6ff; font-size: 15px; }
+QPushButton#shellActionBtn { background: #101f30; color: #dceef7;
+            border: 1px solid #1b3042; border-radius: 6px;
+            padding: 8px 18px; font-size: 14px; }
+QPushButton#shellActionBtn:hover { background: #17435a; }
 """
 
 
@@ -417,6 +440,64 @@ def _default_save_pins(paths):
         pass
 
 
+# -- V11 action-card providers: the real seams, lazy + fail-soft -
+
+def _default_approvals():
+    """Pending-approval snapshot: aria.approval.pending_entries
+    — the read its own docstring reserves for UI surfaces."""
+    try:
+        from aria import approval
+        return approval.pending_entries()
+    except Exception:
+        return []
+
+
+def _default_resolve_approval(token, ok):
+    """Resolve an approval EXACTLY as the dashboard's confirm
+    banner does: deny drops it inline; approve runs
+    approve_token — which EXECUTES the stashed call and can
+    take seconds — on a daemon thread, never the UI thread."""
+    try:
+        from aria import approval
+        if not ok:
+            approval.deny_token(token)
+            return
+
+        def work():
+            try:
+                approval.approve_token(token)
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True,
+                         name="shell-approve").start()
+    except Exception:
+        pass
+
+
+def _default_reminders():
+    """Delivered-but-unacknowledged reminder cards:
+    reminder_gate.pending_cards over the scheduler's own gate
+    store — the same store the scheduler's tick writes."""
+    try:
+        from aria import reminder_gate
+        from aria.scheduler import _gate_store
+        return reminder_gate.pending_cards(_gate_store())
+    except Exception:
+        return []
+
+
+def _default_ack_reminders():
+    """Acknowledge through scheduler.tool_acknowledge_reminders
+    — literally the voice tool's code path (it clears the gate
+    store's delivered list AND deletes the inbox card files)."""
+    try:
+        from aria.scheduler import tool_acknowledge_reminders
+        tool_acknowledge_reminders()
+    except Exception:
+        pass
+
+
 class ShellPanel(QWidget):
     """The Shell Home screen. See the module docstring."""
 
@@ -430,7 +511,9 @@ class ShellPanel(QWidget):
                  now_provider=None, briefing_provider=None,
                  research_provider=None, accent=None,
                  time_provider=None, weather_provider=None,
-                 pinned_provider=None, pinned_writer=None):
+                 pinned_provider=None, pinned_writer=None,
+                 approval_provider=None, approval_resolver=None,
+                 reminder_provider=None, reminder_ack=None):
         super().__init__(parent)
         self.setObjectName("shellHome")
         # Accent (V4 addendum): an explicit accent wins; otherwise
@@ -471,6 +554,20 @@ class ShellPanel(QWidget):
         self._pinned_provider = pinned_provider or _default_pins
         self._pinned_writer = pinned_writer or _default_save_pins
         self._view_all = False
+        # Action cards (V11): injectable seams over the REAL
+        # approval store and reminder gate — the defaults read
+        # and resolve through the same functions the dashboard
+        # banner and the voice tools use. Nothing here keeps a
+        # second copy of pending state; the panel holds only
+        # the token of the card currently painted.
+        self._approval_provider = approval_provider or \
+            _default_approvals
+        self._approval_resolver = approval_resolver or \
+            _default_resolve_approval
+        self._reminder_provider = reminder_provider or \
+            _default_reminders
+        self._reminder_ack = reminder_ack or _default_ack_reminders
+        self._approval_token = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(36, 28, 36, 24)
@@ -603,6 +700,42 @@ class ShellPanel(QWidget):
         main.addLayout(rail, 1)
         root.addLayout(main, 1)
 
+        # -- action cards (V11): approvals + reminders ----------
+        # Painted only while something is actually pending; the
+        # frames start hidden and refresh_actions (on the tick)
+        # owns their visibility — nothing pending, no cards,
+        # zero visual change from V10.
+        self.approval_frame = self._make_action_card(
+            "APPROVAL NEEDED")
+        self.approval_text = self.approval_frame.findChild(
+            QLabel, "shellActionText")
+        approve_row = QHBoxLayout()
+        approve_row.addStretch(1)
+        self.approve_btn = QPushButton("Approve")
+        self.approve_btn.setObjectName("shellActionBtn")
+        self.approve_btn.clicked.connect(
+            lambda: self._resolve_approval(True))
+        approve_row.addWidget(self.approve_btn)
+        self.deny_btn = QPushButton("Deny")
+        self.deny_btn.setObjectName("shellActionBtn")
+        self.deny_btn.clicked.connect(
+            lambda: self._resolve_approval(False))
+        approve_row.addWidget(self.deny_btn)
+        self.approval_frame.layout().addLayout(approve_row)
+        root.addWidget(self.approval_frame)
+
+        self.reminder_frame = self._make_action_card("REMINDER")
+        self.reminder_text = self.reminder_frame.findChild(
+            QLabel, "shellActionText")
+        gotit_row = QHBoxLayout()
+        gotit_row.addStretch(1)
+        self.gotit_btn = QPushButton("Got it")
+        self.gotit_btn.setObjectName("shellActionBtn")
+        self.gotit_btn.clicked.connect(self._ack_reminder)
+        gotit_row.addWidget(self.gotit_btn)
+        self.reminder_frame.layout().addLayout(gotit_row)
+        root.addWidget(self.reminder_frame)
+
         # -- bottom dock: the command pill, full width -----------
         bottom = QHBoxLayout()
         bottom.setSpacing(12)
@@ -629,6 +762,7 @@ class ShellPanel(QWidget):
             self.refresh_apps()
         self.refresh_clock()
         self.refresh_cards()
+        self.refresh_actions()
         self.refresh_weather()
         self._refilter()
 
@@ -663,6 +797,26 @@ class ShellPanel(QWidget):
                             QSizePolicy.Policy.Expanding)
         self.briefing_text = body
         return frame, body
+
+    def _make_action_card(self, title):
+        """One V11 action card frame: a title + a wrapping text
+        label (objectName shellActionText, found by the caller
+        to paint the live content). Starts hidden — cards exist
+        on screen only while their content does."""
+        frame = QFrame()
+        frame.setObjectName("shellActionCard")
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(6)
+        head = QLabel(title)
+        head.setObjectName("shellActionTitle")
+        lay.addWidget(head)
+        text = QLabel("")
+        text.setObjectName("shellActionText")
+        text.setWordWrap(True)
+        lay.addWidget(text)
+        frame.hide()
+        return frame
 
     def _icon_for(self, app):
         tile = shell_home.tile_model(app)
@@ -760,6 +914,70 @@ class ShellPanel(QWidget):
         self.briefing_body.setPlainText(
             shell_home.briefing_full_text(report, research))
 
+    # -- action cards (V11) --------------------------------------
+    def refresh_actions(self):
+        """Repaint the action cards from the real seams: the
+        oldest pending approval (same one the dashboard banner
+        shows) and any delivered reminder awaiting
+        acknowledgement. Pure helpers decide card content; this
+        only paints and toggles visibility. Fail-soft: a broken
+        seam reads as nothing pending — the cards hide rather
+        than guess."""
+        try:
+            entries = self._approval_provider() or []
+        except Exception:
+            entries = []
+        card = shell_home.approval_card(entries)
+        self._approval_token = card["token"] if card else None
+        if card:
+            text = card["desc"] or f"Run {card['tool']}?"
+            if card["pending"] > 1:
+                text += f"  (+{card['pending'] - 1} more waiting)"
+            self.approval_text.setText(text)
+            self.approval_frame.show()
+        else:
+            self.approval_frame.hide()
+        try:
+            cards = self._reminder_provider() or []
+        except Exception:
+            cards = []
+        rcard = shell_home.reminder_card(cards)
+        if rcard:
+            text = rcard["message"]
+            if rcard["count"] > 1:
+                text += f"  (+{rcard['count'] - 1} more)"
+            self.reminder_text.setText(text)
+            self.reminder_frame.show()
+        else:
+            self.reminder_frame.hide()
+
+    def _resolve_approval(self, ok):
+        """Approve/Deny for the painted card: the token captured
+        at paint time goes to the resolver seam (default: the
+        dashboard banner's own approve_token / deny_token path).
+        A card whose request already resolved elsewhere is a
+        no-op there — approve_token/deny_token report unknown
+        tokens without executing anything."""
+        token = self._approval_token
+        if token is None:
+            return
+        try:
+            self._approval_resolver(token, bool(ok))
+        except Exception:
+            pass
+        self.refresh_actions()
+
+    def _ack_reminder(self):
+        """The reminder card's 'Got it': the acknowledgement
+        seam (default: scheduler.tool_acknowledge_reminders,
+        the voice tool's path — clears the gate store and the
+        inbox card files together)."""
+        try:
+            self._reminder_ack()
+        except Exception:
+            pass
+        self.refresh_actions()
+
     # -- weather (V6) -------------------------------------------
     def refresh_weather(self):
         """Kick an off-thread weather fetch, throttled: at most
@@ -809,6 +1027,7 @@ class ShellPanel(QWidget):
     def _tick(self):
         self.refresh_clock()
         self.refresh_cards()
+        self.refresh_actions()
         self.refresh_weather()
 
     # -- pins (V8) ----------------------------------------------
