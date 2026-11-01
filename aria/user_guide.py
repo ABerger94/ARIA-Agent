@@ -94,18 +94,19 @@ TOPICS = (
         <p><b>Tasks is a status feed. Work Center adds project management and controls.</b>
         They overlap, but they are not interchangeable.</p>
         <h3>The workspace’s Tasks tab</h3>
-        <p>Shows delegated background tasks and their results or errors, scheduled
+        <p>Shows delegated background tasks and their statuses, scheduled
         jobs, and Fleet activity such as tools currently running. Use it to answer
-        “What happened to my background task?” or “What is scheduled?”</p>
+        “What is running or queued?” or “What is scheduled?”</p>
         <p>This view is a readout. Give instructions in chat to cancel or resume a
-        delegated task, using its task ID.</p>
+        delegated task, using its task ID. Ask for that task’s status in chat to get
+        its full result or error.</p>
         <h3>Work Center</h3>
         <p>The <b>Work</b> tab shows active executions and saved missions for the
         selected project. Select work to inspect details, pause/resume a mission,
         request cancellation, or review action receipts.</p>
         <p>The other tabs add project settings, deliverables, model budgets and
         usage, resource profiles, and connected computers.</p>
-        <p>Work Center currently does not replace the delegated-task history and
+        <p>Work Center currently does not replace the delegated-task and
         schedule lists in Tasks. A queued job may not appear in its active-work list
         until it starts running.</p>
         <p>Next: <a href="aria-guide:tasks">Background tasks</a>,
