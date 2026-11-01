@@ -52,7 +52,7 @@ def test_rows_for_ui_newest_first_hidden_excluded(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch)
     rows = memory.memory_rows_for_ui()
     assert [r["key"] for r in rows] == ["job", "fav_color"]
-    assert rows[0] == {"category": "fact", "key": "job",
+    assert {k: rows[0][k] for k in ("category","key","value","updated")} == {"category": "fact", "key": "job",
                        "value": "Little Caesars", "updated": "2026-10-26"}
     assert rows[1]["updated"] == "2026-10-20"
 

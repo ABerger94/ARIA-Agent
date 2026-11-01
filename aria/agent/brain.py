@@ -47,13 +47,30 @@ import aria.hud as hud
 from aria import config as _config_silent
 
 HISTORY_TURNS = 12
+from aria import runtime, workspaces
+
 CONVERSATION_HISTORY: List[Dict[str, Any]] = []
+_HISTORY_PROJECT = "default"
 
 PARALLEL_SAFE_TOOLS = {
     "fetch_url", "web_search", "read_file", "find_file",
     "search_memory", "read_screen", "describe_camera", "vision_look", "list_workspace", "list_windows",
     "mtg_card", "list_price_watches", "read_notes", "clipboard_read"
 }
+
+
+def current_history():
+    if _HISTORY_PROJECT == workspaces.current():
+        return CONVERSATION_HISTORY
+    return workspaces.load_history()
+
+
+def append_audit(entry):
+    # A background mission must never append into another project's live turn.
+    with runtime.FOREGROUND_LOCK:
+        history = current_history()
+        history.append(entry)
+        workspaces.save_history(history)
 
 
 def _compact_conversation_history():
@@ -531,6 +548,7 @@ def _run_agent_fast_path(user_prompt: str, say) -> Optional[str]:
     return spoken_ack
 
 
+@runtime.foreground
 def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: bool = False,
               reply_sink: Optional[List[str]] = None, preauthorized: bool = False,
               silent: bool = False) -> str:
@@ -600,6 +618,7 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
     try:
         _empty_retries = 0
         while True:
+            runtime.check_cancelled()
             # A5: AGENT_LOOP_TIME_BUDGET_S was defined in config but
             # never referenced — the tool loop below was uncapped.
             # Enforce it per turn so a runaway tool chain ends with an
@@ -659,6 +678,10 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                 hud.set_hud_subtitle(f"Running on {get_active_provider()} (fallback)")
 
             if not data or not data.get("candidates"):
+                if getattr(runtime.current(), 'budget_error', ''):
+                    message = runtime.current().budget_error
+                    say(message)
+                    return message
                 if chain_all_quarantined():
                     say("All providers are rate-limited right now. I'll be back when the limits reset.")
                     return "All providers rate-limited (429 quarantines)."
@@ -765,7 +788,8 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                         return fname, res
 
                     with ThreadPoolExecutor(max_workers=min(len(function_calls), 4)) as ex:
-                        outs = list(ex.map(_run_one, function_calls))
+                        outs = list(ex.map(lambda call: call(),
+                        [runtime.copied_call(_run_one, fc) for fc in function_calls]))
                     for fname, res in outs:
                         response_parts.append({"functionResponse": {"name": fname, "response": {"output": res}}})
             else:
@@ -775,6 +799,7 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                     tripped = _check_sentinel(fname, fargs)
                     if tripped:
                         break
+                    runtime.check_cancelled()
                     res = _timed_execute(fname, fargs, "")
                     response_parts.append({"functionResponse": {"name": fname, "response": {"output": res}}})
 
@@ -792,6 +817,8 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
             hud.set_hud_state("thinking")
             hud.draw_hud()
 
+    except runtime.Cancelled:
+        return 'Work cancelled. Any action already in flight keeps its receipt.'
     except Exception as e:
         # Merger Phase 1 (blueprint SS3.2): an exception escaping the
         # whole agent loop is a classified abort in the failure

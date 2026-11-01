@@ -53,6 +53,7 @@ APPROVAL_EXPIRY_S = 600  # pending approvals die after 10 minutes
 # destructive when dry_run=false (its default is dry_run=true = plan only).
 # manage_background_job is only destructive on action=start (shell=True).
 DESTRUCTIVE_TOOLS = frozenset({
+    "desktop_control",
     "run_python_code",
     "write_file",
     "gui_click",
@@ -137,10 +138,14 @@ def add_resolution_listener(fn) -> None:
 
 
 def _notify_resolution(token, entry, approved, result) -> None:
+    from aria import workspaces
+    ctx = entry.get('execution_context')
+    project = ctx['project'] if ctx else workspaces.current()
     for fn in list(_RESOLUTION_LISTENERS):
         try:
-            fn(token, entry.get("tool"), dict(entry.get("args")
-               or {}), approved, result)
+            with workspaces.use(project):
+                fn(token, entry.get("tool"), dict(entry.get("args")
+                   or {}), approved, result)
         except Exception as _e_silent:
             config.log_silent("_notify_resolution", _e_silent)
 
@@ -312,12 +317,18 @@ def request_approval(tool: str, args=None, desc=None) -> str:
     if desc is None:
         desc = _describe_tool(tool, args)
     desc = config.redact(str(desc))
+    from aria import runtime
+    ctx = runtime.current()
     _PENDING[token] = {
         "token": token,
         "tool": tool,
         "args": dict(args or {}),
         "desc": desc,
         "created_ts": time.time(),
+        "origin_context": ctx,
+        "execution_context": {'project': ctx.project, 'cancel': ctx.cancel,
+                              'operation_id': runtime.operation_id(),
+                              'budget_scope': ctx.budget_scope, 'spend_cap': ctx.spend_cap},
     }
     # Surfaces in the OPS Log tab via add_log.
     config.add_log(f"[approval] AWAITING_APPROVAL token={token} tool={tool}: {desc}")
@@ -361,9 +372,22 @@ def approve_token(token: str) -> str:
     _replay_local.current = (entry["tool"], dict(entry.get("args") or {}))
     try:
         from aria.tools import dispatch as _dispatch  # lazy: no import cycle
-        result, _ok = _dispatch.execute_tool(
-            entry["tool"], entry["args"], preauthorized=True)
+        from aria import runtime
+        ctx = entry['execution_context']
+        with runtime.execution('approval', project=ctx['project'], cancel=ctx['cancel'],
+                               budget_scope=ctx['budget_scope'], spend_cap=ctx['spend_cap']):
+            with runtime.operation(ctx['operation_id']):
+                result, _ok = _dispatch.execute_tool(
+                    entry["tool"], entry["args"], preauthorized=True)
         result = str(result)
+        origin = entry.get('origin_context')
+        if origin is not None:
+            import hashlib
+            signature = entry['tool'] + ':' + hashlib.md5(
+                json.dumps(entry['args'] or {}, sort_keys=True, default=str).encode(),
+                usedforsecurity=False).hexdigest()
+            with origin.lock:
+                origin.calls[signature] = result
         # A replay can come back WITHOUT executing — re-parked
         # behind a fresh approval, duplicate-blocked, safe-mode
         # refused — and logging that as "executed" made a dead

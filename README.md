@@ -1,3 +1,14 @@
+## Reliability and Work Center update
+
+Open **Work Center** beside Settings for project workspaces, execution controls,
+file deliverables, model budgets and connected computers. This release also
+fixes mission replay after crashes, false completion states, shared turn-state
+collisions and semantic-memory buffer errors. Existing data remains in Personal.
+
+- [Work Center and execution behavior](docs/WORK-CENTER.md)
+- [Second-laptop companion](docs/DESKTOP-COMPANION.md)
+- [Locked installation and Windows build](docs/INSTALLER.md)
+
 # A.R.I.A. — Adaptive Robotic Intelligence Agent
 
 A personal desktop assistant with a face, a voice, and a memory — she lives on

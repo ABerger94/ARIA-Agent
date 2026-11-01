@@ -174,7 +174,9 @@ _FEED = _Feed()
 
 def start():
     """Start publishing band levels (idempotent)."""
-    _FEED.start()
+    from aria.resource_policy import optional_enabled
+    if optional_enabled("loopback"):
+        _FEED.start()
 
 
 def stop():

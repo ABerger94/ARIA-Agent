@@ -33,6 +33,8 @@ from typing import Any, Callable, Dict, List, Optional
 from aria import config as _config
 from aria.config import add_log
 from aria.agent import taskstore
+from aria import runtime, workspaces
+from aria.outcome import normalize, FAILED
 
 
 class TaskStatus(Enum):
@@ -63,6 +65,8 @@ class Task:
     on_complete: Any = field(compare=False, default=None)
     resume: Any = field(compare=False, default=None)
     resumed_from: str = field(compare=False, default="")
+    execution_scope: str = field(compare=False, default="")
+    project: str = field(compare=False, default="default")
     started_at: float = field(compare=False, default=0.0)
     cancel_flag: threading.Event = field(
         compare=False, default_factory=threading.Event)
@@ -118,6 +122,7 @@ class TaskQueue:
                on_complete: Optional[Callable] = None,
                resume_from: str = "") -> str:
         resume_state = None
+        execution_scope = ""
         if resume_from:
             rec = taskstore.get(resume_from)
             if rec is None:
@@ -125,6 +130,7 @@ class TaskQueue:
             if rec.get("status") not in taskstore.RESUMABLE_STATUSES:
                 raise ValueError(
                     f"task {resume_from} is {rec.get('status')}, not resumable")
+            execution_scope = rec.get("execution_scope") or f"task:{resume_from}"
             resume_state = {"plan": rec.get("plan"),
                             "completed": rec.get("completed") or [],
                             "results": rec.get("results") or {}}
@@ -140,6 +146,8 @@ class TaskQueue:
             on_complete=on_complete,
             resume=resume_state,
             resumed_from=resume_from,
+            project=workspaces.current(),
+            execution_scope=execution_scope or f"task:{task_id}",
         )
         with self._condition:
             self._queue.append(task)
@@ -152,7 +160,7 @@ class TaskQueue:
     def cancel(self, task_id: str) -> bool:
         with self._lock:
             task = self._tasks.get(task_id)
-            if not task:
+            if not task or task.project != workspaces.current():
                 return False
             if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED,
                                TaskStatus.CANCELLED):
@@ -165,7 +173,7 @@ class TaskQueue:
     def get_status(self, task_id: str) -> Optional[dict]:
         with self._lock:
             task = self._tasks.get(task_id)
-            if not task:
+            if not task or task.project != workspaces.current():
                 return None
             elapsed = (time.time() - task.started_at) if (
                 task.status == TaskStatus.RUNNING and task.started_at) else 0.0
@@ -184,7 +192,7 @@ class TaskQueue:
             return [
                 {"task_id": t.task_id, "goal": t.goal[:50],
                  "status": t.status.value}
-                for t in self._tasks.values()
+                for t in self._tasks.values() if t.project == workspaces.current()
             ]
 
     def pending_count(self) -> int:
@@ -220,11 +228,17 @@ class TaskQueue:
         return None
 
     def _run_task(self, task: Task) -> None:
+        with runtime.execution('task', project=task.project,
+                               execution_id=f'task:{task.task_id}', cancel=task.cancel_flag,
+                               budget_scope=task.execution_scope or f'task:{task.task_id}'):
+            self._run_task_bound(task)
+
+    def _run_task_bound(self, task: Task) -> None:
         add_log(f"Task running: [{task.task_id}] {task.goal[:60]}")
         # Journal first (Gap fill 3): the record exists before any
         # step runs, so a crash mid-task leaves a resumable trace.
         taskstore.create(task.task_id, task.goal,
-                         resumed_from=task.resumed_from)
+                         resumed_from=task.resumed_from, execution_scope=task.execution_scope)
 
         def _ckpt(state: dict) -> None:
             taskstore.checkpoint(task.task_id, state)
@@ -256,14 +270,16 @@ class TaskQueue:
             with self._lock:
                 if task.cancel_flag.is_set():
                     task.status = TaskStatus.CANCELLED
+                elif normalize(result).status == FAILED:
+                    task.status = TaskStatus.FAILED
+                    task.error = str(result)
                 else:
                     task.status = TaskStatus.COMPLETED
                     task.result = result
             taskstore.finish(
                 task.task_id,
-                "cancelled" if task.cancel_flag.is_set() else "completed",
-                result=str(result))
-            if task.on_complete and not task.cancel_flag.is_set():
+                task.status.value, result=str(result), error=task.error)
+            if task.on_complete and task.status == TaskStatus.COMPLETED:
                 try:
                     task.on_complete(task.task_id, result)
                 except Exception as e:
@@ -271,7 +287,11 @@ class TaskQueue:
             add_log(f"Task completed: [{task.task_id}]")
         except Exception as e:
             from aria.agent.taskexec import TaskBlocked
-            if isinstance(e, TaskBlocked):
+            if isinstance(e, runtime.Cancelled):
+                taskstore.finish(task.task_id, "cancelled")
+                with self._lock:
+                    task.status = TaskStatus.CANCELLED
+            elif isinstance(e, TaskBlocked):
                 # Parked, not failed: checkpoint persisted, reason
                 # recorded, resumable via the task_resume tool.
                 taskstore.checkpoint(task.task_id, e.state)

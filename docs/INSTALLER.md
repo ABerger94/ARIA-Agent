@@ -1,70 +1,57 @@
-# ARIA Windows installer — build guide
+# Build and install ARIA for Windows
 
-How to produce the `ARIA-Setup-<ver>.exe` Windows installer. Everything runs
-on a **Windows machine** (pywin32 / pycaw / pygetwindow are Windows-only);
-the one-folder bundle must be built there too.
+Supported runtime: Python 3.12, Windows x64. The source installation and frozen
+app both keep data at their installation root; new projects live beneath its
+workspace. `ARIA_DATA_ROOT` can explicitly select a separate data root.
 
-## 0. Prereqs (Windows)
+## Install from source
 
-- Python 3.12 from python.org (the `py` launcher must resolve `py -3.12`)
-- This repo, cloned or pulled fresh
-- Inno Setup 6 (https://jrsoftware.org/isdl.php)
-
-## 1. Install Python deps
-
-```bat
-cd <repo>
-py -3.12 -m pip install -r requirements.txt
-py -3.12 -m pip install pyinstaller
+```powershell
+py -3.12 -m pip install --require-hashes -r requirements-lock.txt
+py -3.12 aria.py
 ```
 
-## 2. Sanity-check the build command (optional, works on Linux too)
+The lock contains the complete Windows dependency resolution and package
+hashes. It includes native Qt WebEngine support and resolves the previous
+py-vapid/cryptography incompatibility. `requirements.txt` is the editable input.
 
-```bat
-py -3.12 installer\build_installer.py --dry-run
+## Build an executable and installer
+
+Install Inno Setup 6, then run from a fresh Windows checkout:
+
+```powershell
+py -3.12 -m pip install --require-hashes -r requirements-build-lock.txt
+py -3.12 -m pip check
+py -3.12 aria.py --diagnostics
+py -3.12 installer/build_installer.py
+.\dist\ARIA\ARIA.exe --diagnostics
+iscc installer/ARIA-Setup.iss
 ```
 
-This prints the exact PyInstaller command without executing it. If you are
-validating on Linux, exit code 0 + the word `pyinstaller` in the output is
-the green light — the real build still happens on Windows.
+The one-folder build lives at `dist/ARIA/`; setup is
+`installer/Output/ARIA-Setup-1.1.0.exe`. The installer is per-user and needs no
+administrator privileges. It creates Start Menu and optional desktop shortcuts.
+Qt assets, the face mesh, the persona seed and lazy package modules are bundled.
+Frozen COM and life-room workers use explicit executable entry modes rather
+than trying to execute source files with the frozen launcher.
 
-## 3. Build the one-folder bundle
+Diagnostics create the real native dashboard and Work Center against temporary
+state, stay offline and check the isolated Windows COM helper. They do not
+start microphones or prove physical-device compatibility. Test real speech,
+media and camera behavior on the target laptop before replacing a working
+installation. Keep the existing workspace and credentials when updating.
 
-```bat
-py -3.12 installer\build_installer.py
+## Regenerate locks
+
+Using uv from a dependency-update environment:
+
+```text
+uv pip compile requirements.txt --python-platform x86_64-pc-windows-msvc --python-version 3.12 --generate-hashes --output-file requirements-lock.txt
+uv pip compile requirements-build.in --python-platform x86_64-pc-windows-msvc --python-version 3.12 --generate-hashes --output-file requirements-build-lock.txt
+uv pip compile requirements-test.in --python-version 3.12 --output-file requirements-test.txt
 ```
 
-This runs `py_compile` over the tree first (fails fast on syntax errors),
-then PyInstaller in `--onedir` mode. Output lands in `dist\ARIA\`.
-
-What gets bundled: the `aria.py` launcher, `aria/assets` (fonts), `soul.md`,
-plus `--collect-submodules aria.tools aria.agent` and `--hidden-import`
-entries for the lazily-imported modules (`aria.persona`, `aria.first_run`,
-`aria.tools.usertools`, `aria.mcp`, `aria.ops_screen`, `aria.inbox`,
-`aria.ical`). If a new lazily-imported module is added later, extend
-`HIDDEN_IMPORTS` in `installer/build_installer.py`.
-
-## 4. Compile the installer
-
-Open `installer\ARIA-Setup.iss` in Inno Setup and press **Compile**
-(Ctrl+F9). The setup exe lands in `installer\Output\ARIA-Setup-1.0.0.exe`.
-
-What the installer does:
-- Per-user install to `%LOCALAPPDATA%\Programs\ARIA` (no admin needed)
-- Start Menu shortcut + optional desktop icon
-- Deletes `~/ARIA/.first_run_done` so the **first-run wizard** fires on
-  first launch (skippable via `skip` / Ctrl+C — it re-verifies keys)
-- Uninstall leaves `~/ARIA` user data (memory, schedules, keys) in place
-
-## 5. Test
-
-1. Run the setup exe on a clean Windows user account.
-2. Launch ARIA from the Start Menu — the first-run wizard should check
-   Python version, cv2/PIL, and prompt for missing API keys.
-3. Type `skip` at a key prompt to confirm skipping works; the wizard
-   must not block startup.
-
-## Versioning
-
-Bump `#define MyAppVersion` at the top of `installer/ARIA-Setup.iss`
-before compiling a release build.
+CI runs all discovered suites in separate processes, real browser acceptance,
+and a Windows job installing the actual build lock, checking startup, building
+the app and compiling Inno Setup. Download the `ARIA-Windows` workflow artifact
+for the packaged outputs after that job passes.

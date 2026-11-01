@@ -49,6 +49,22 @@ try:
 except Exception:
     pass
 
+# Small helper/diagnostic entry points must run before importing desktop dependencies.
+if '--diagnostics' in sys.argv:
+    from aria.diagnostics import main as _diagnostics
+    sys.exit(_diagnostics())
+if '--com-host' in sys.argv:
+    from aria.comhost import main as _com_main
+    sys.exit(_com_main())
+if '--life-process' in sys.argv:
+    _index = sys.argv.index('--life-process')
+    sys.argv = [sys.argv[0]] + sys.argv[_index + 1:]
+    from aria.life_process import run as _life_main
+    sys.exit(_life_main(sys.argv[1] if len(sys.argv) > 1 else None))
+if '--desktop-node' in sys.argv:
+    from aria.desktop_node import main as _node_main
+    sys.exit(_node_main(sys.argv[sys.argv.index('--desktop-node') + 1:]))
+
 from aria import *
 from aria.main import main, start_all, handle_action
 

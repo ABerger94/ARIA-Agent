@@ -4,6 +4,7 @@ Manages autonomous ambient awareness, habit tracking, and memory distillation.
 """
 
 from __future__ import annotations
+from aria import workspaces
 
 import json
 import os
@@ -152,7 +153,7 @@ def process_event_queue(speak_fn: Callable[[str], None],
 def _get_user_name() -> str:
     try:
         with DB_LOCK:
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
             cur = conn.cursor()
             cur.execute("SELECT value FROM memory WHERE key = 'name' OR key = 'user_name' ORDER BY key ASC LIMIT 1")
             r = cur.fetchone()
@@ -410,7 +411,7 @@ def _parts_text(contents: Any) -> str:
 def _consolidation_watermark() -> int:
     try:
         with DB_LOCK:
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
             cur = conn.cursor()
             r = cur.execute("SELECT value FROM memory WHERE category='system' AND key='_consolidation_wm'").fetchone()
             conn.close()
@@ -421,7 +422,7 @@ def _consolidation_watermark() -> int:
 
 def _set_consolidation_watermark(chat_id: int):
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
         conn.execute("INSERT OR REPLACE INTO memory(category,key,value) VALUES('system','_consolidation_wm',?)",
                      (str(chat_id),))
         conn.commit()
@@ -441,7 +442,7 @@ def idle_consolidation_loop(is_busy_fn: Callable[[], bool],
 
             wm = _consolidation_watermark()
             with DB_LOCK:
-                conn = sqlite3.connect(DB_PATH)
+                conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
                 rows = conn.execute("SELECT id,sender,message FROM chat_history WHERE id>? ORDER BY id LIMIT 40",
                                     (wm,)).fetchall()
                 conn.close()

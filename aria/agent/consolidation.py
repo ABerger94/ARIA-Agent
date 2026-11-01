@@ -30,6 +30,7 @@ never break the loop that calls it.
 """
 
 from __future__ import annotations
+from aria import workspaces
 
 import json
 import os
@@ -45,11 +46,11 @@ from aria.config import add_log
 
 # ------------------------------------------------------------ storage
 def _queue_path() -> str:
-    return os.path.join(_config.WORKSPACE_DIR, "memory_contradictions.json")
+    return workspaces.path("memory_contradictions.json")
 
 
 def _retired_path() -> str:
-    return os.path.join(_config.WORKSPACE_DIR, "memory_retired.json")
+    return workspaces.path("memory_retired.json")
 
 
 def _read_json_list(path: str) -> List[dict]:
@@ -81,7 +82,7 @@ def _existing(key: str) -> Optional[Tuple[str, str]]:
     from aria.memory import DB_LOCK, DB_PATH
     try:
         with DB_LOCK:
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
             row = conn.execute(
                 "SELECT category, value FROM memory WHERE key = ?",
                 (key,)).fetchone()
@@ -95,7 +96,7 @@ def _existing(key: str) -> Optional[Tuple[str, str]]:
 def _delete(key: str) -> None:
     from aria.memory import DB_LOCK, DB_PATH
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
         conn.execute("DELETE FROM memory WHERE key = ?", (key,))
         conn.commit()
         conn.close()

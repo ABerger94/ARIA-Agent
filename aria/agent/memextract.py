@@ -177,7 +177,8 @@ def maybe_extract_async(user_text: str, assistant_text: str) -> bool:
         if user_text == _LAST_INPUT:
             return False
         _LAST_INPUT = user_text
-    t = threading.Thread(target=_worker, args=(user_text, assistant_text),
+    from aria import runtime
+    t = threading.Thread(target=runtime.copied_call(_worker, user_text, assistant_text),
                          daemon=True, name="aria-memextract")
     t.start()
     return True

@@ -14,6 +14,8 @@ import urllib.error
 import numpy as np
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+from collections import OrderedDict
+from aria import workspaces
 
 from aria.config import (
     WORKSPACE_DIR, SPINE_PATH, RESUME_PATH, EMBED_MODEL,
@@ -23,6 +25,17 @@ from aria import config as _config_silent
 
 DB_PATH = os.path.join(WORKSPACE_DIR, "aria_memory.db")
 CHAT_LOG_FILE = os.path.join(WORKSPACE_DIR, "chat_history.md")
+_EMBED_CACHE = OrderedDict()
+_EMBED_LOCK = threading.Lock()
+_SPINE_LOCK = threading.Lock()
+
+
+def db_path():
+    return workspaces.path("aria_memory.db", DB_PATH)
+
+
+def _project_file(name, legacy):
+    return workspaces.path(name, legacy)
 DB_LOCK = threading.Lock()
 
 _SPINE_BOOT_KEYS = []
@@ -46,9 +59,10 @@ def spine_append(event_type, payload):
                "type": event_type}
         for k, v in (payload or {}).items():
             evt[k] = redact(v) if isinstance(v, str) else v
-        with open(SPINE_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(evt, ensure_ascii=False) + "\n")
-            f.flush()
+        with open(_project_file("memory_spine.jsonl", SPINE_PATH), "a", encoding="utf-8") as f:
+            with _SPINE_LOCK:
+                f.write(json.dumps(evt, ensure_ascii=False) + "\n")
+                f.flush()
     except Exception as e:
         add_log("Spine append failed: %s" % e)
 
@@ -56,8 +70,19 @@ def spine_append(event_type, payload):
 def _spine_tail(n=40):
     """Last n spine events, oldest first. Empty list if no spine yet."""
     try:
-        with open(SPINE_PATH, encoding="utf-8") as f:
-            lines = f.readlines()
+        if n <= 0:
+            return []
+        with open(_project_file("memory_spine.jsonl", SPINE_PATH), "rb") as f:
+            f.seek(0, os.SEEK_END)
+            position, chunks, count = f.tell(), [], 0
+            while position > 0 and count <= n:
+                size = min(position, 8192)
+                position -= size
+                f.seek(position)
+                chunk = f.read(size)
+                chunks.append(chunk)
+                count += chunk.count(b"\n")
+            lines = b"".join(reversed(chunks)).decode("utf-8", errors="replace").splitlines()
         out = []
         for line in lines[-n:]:
             line = line.strip()
@@ -111,7 +136,7 @@ def _spine_unbroken_thread(limit_chars=1500):
         text = "\n".join(_spine_digest(_spine_tail(40)))[:1200]
         card = ""
         try:
-            with open(RESUME_PATH, encoding="utf-8") as f:
+            with open(_project_file("where_we_left_off.md", RESUME_PATH), encoding="utf-8") as f:
                 card = f.read(600)
         except Exception as _e_silent:
             _config_silent.log_silent("_spine_unbroken_thread", _e_silent)
@@ -146,7 +171,7 @@ def _spine_write_resume_card():
         rows = []
         try:
             with DB_LOCK:
-                conn = sqlite3.connect(DB_PATH)
+                conn = sqlite3.connect(db_path())
                 rows = conn.execute(
                     "SELECT id, kind, prompt, next_run FROM scheduled_tasks"
                     " ORDER BY next_run").fetchall()
@@ -160,7 +185,7 @@ def _spine_write_resume_card():
         else:
             lines.append("(none)")
         lines.append("")
-        with open(RESUME_PATH, "w", encoding="utf-8") as f:
+        with open(_project_file("where_we_left_off.md", RESUME_PATH), "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
     except Exception as e:
         try:
@@ -172,15 +197,19 @@ def _spine_write_resume_card():
 
 def init_databases():
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_path())
         cur = conn.cursor()
         cur.execute('''CREATE TABLE IF NOT EXISTS memory (
             id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT, key TEXT,
             value TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        try:
-            cur.execute("ALTER TABLE memory ADD COLUMN embedding BLOB")
-        except Exception as _e_silent:
-            _config_silent.log_silent("init_databases", _e_silent)
+        if 'embedding' not in {r[1] for r in cur.execute('PRAGMA table_info(memory)')}:
+            cur.execute('ALTER TABLE memory ADD COLUMN embedding BLOB')
+        columns = {r[1] for r in cur.execute("PRAGMA table_info(memory)")}
+        for name, sql_type in (("source", "TEXT"), ("confidence", "REAL"),
+                               ("embedding_model", "TEXT")):
+            if name not in columns:
+                cur.execute(f"ALTER TABLE memory ADD COLUMN {name} {sql_type}")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_memory_updated ON memory(updated_at DESC)")
         # Ensure memory keys are unique and deduplicated
         try:
             cur.execute("DELETE FROM memory WHERE rowid NOT IN (SELECT MIN(rowid) FROM memory GROUP BY key)")
@@ -231,7 +260,7 @@ def init_databases():
         conn.close()
 
 
-def _embed(text):
+def _embed_uncached(text):
     """Ollama Cloud embedding (768-dim, same as the retired model).
     Returns list[float] or None."""
     if not OLLAMA_CLOUD_API_KEY or OLLAMA_CLOUD_API_KEY == "INSERT":
@@ -251,8 +280,10 @@ def _embed(text):
         # worse than the toll. So it stays synchronous and the toll is
         # capped instead: on timeout the turn proceeds with core
         # memories only (the graceful path that already existed).
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            return json.loads(resp.read().decode())["embedding"]
+        from aria import usage
+        with usage.attempt('ollama_cloud', EMBED_MODEL, {**payload, 'max_tokens':0}, 'memory embedding'):
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return json.loads(resp.read().decode())["embedding"]
     except urllib.error.HTTPError as e:
         if e.code == 429:
             quarantine_key(OLLAMA_CLOUD_API_KEY, 60, 429)
@@ -266,29 +297,48 @@ def _embed(text):
         return None
 
 
+def _embed(text):
+    cache_key = (workspaces.current(), EMBED_MODEL, text[:2000])
+    with _EMBED_LOCK:
+        hit = _EMBED_CACHE.get(cache_key)
+        if hit and time.monotonic() - hit[0] < 3600:
+            _EMBED_CACHE.move_to_end(cache_key)
+            return list(hit[1])
+    vector = _embed_uncached(text)
+    if vector:
+        with _EMBED_LOCK:
+            _EMBED_CACHE[cache_key] = (time.monotonic(), tuple(vector))
+            while len(_EMBED_CACHE) > 256:
+                _EMBED_CACHE.popitem(last=False)
+    return vector
+
+
 def _pack_embedding(vec):
     if not vec:
         return None
     return np.array(vec, dtype=np.float32).tobytes()
 
 
-def memory_save(category: str, key: str, value: str):
+def memory_save(category: str, key: str, value: str, *, source="conversation", confidence=1.0):
     # every save joins the spine; the key feeds the resume card.
     spine_append("memory_save", {"category": category, "key": key,
                                  "value": value})
     _SPINE_BOOT_KEYS.append(key)
     vec = _embed(f"{key}: {value}")
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_path())
         cur = conn.cursor()
-        cur.execute('''INSERT INTO memory (category, key, value, embedding, updated_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        cur.execute('''INSERT INTO memory (category, key, value, embedding, source, confidence, embedding_model, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(key) DO UPDATE SET
                 category=excluded.category,
                 value=excluded.value,
                 embedding=excluded.embedding,
+                source=excluded.source, confidence=excluded.confidence,
+                embedding_model=excluded.embedding_model,
                 updated_at=excluded.updated_at''',
-            (category, key, value, _pack_embedding(vec)))
+            (category, key, value, _pack_embedding(vec), source,
+             max(0.0, min(1.0, float(confidence))), EMBED_MODEL if vec else None))
         conn.commit()
         conn.close()
     add_log(f"Memory saved: [{key}]")
@@ -298,7 +348,7 @@ def memory_get(category: str, key: str) -> str:
     """Read a single memory value by category+key. Returns "" when absent."""
     try:
         with DB_LOCK:
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(db_path())
             cur = conn.cursor()
             r = cur.execute("SELECT value FROM memory WHERE category=? AND key=?",
                             (category, key)).fetchone()
@@ -313,7 +363,7 @@ def memory_search_semantic(query: str, top_k: int = 5) -> str:
     qvec = _embed(query)
     rows = []
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_path())
         cur = conn.cursor()
         cur.execute("SELECT category, key, value, embedding FROM memory")
         rows = cur.fetchall()
@@ -331,7 +381,7 @@ def memory_search_semantic(query: str, top_k: int = 5) -> str:
             e = np.frombuffer(emb, dtype=np.float32)
             if len(e) != qlen:
                 continue  # stored under a retired embedding model; skip until re-saved
-            e /= (np.linalg.norm(e) or 1)
+            e = e / (np.linalg.norm(e) or 1)
             scored.append((float(np.dot(q, e)), cat, k, v))
         scored.sort(reverse=True)
         hits = [(c, k, v) for s, c, k, v in scored[:top_k] if s > 0.35]
@@ -346,7 +396,7 @@ def memory_search_semantic(query: str, top_k: int = 5) -> str:
 
 def memory_get_all() -> str:
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_path())
         cur = conn.cursor()
         cur.execute("SELECT category, key, value FROM memory WHERE key NOT LIKE '\\_%' ESCAPE '\\' ORDER BY updated_at DESC LIMIT 15")
         rows = cur.fetchall()
@@ -365,9 +415,9 @@ def memory_rows_for_ui() -> List[Dict[str, str]]:
     unreadable store reads as empty, never as an exception."""
     try:
         with DB_LOCK:
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(db_path())
             cur = conn.cursor()
-            cur.execute("SELECT category, key, value, updated_at FROM memory "
+            cur.execute("SELECT category, key, value, updated_at, source, confidence, embedding_model FROM memory "
                         "WHERE key NOT LIKE '\\_%' ESCAPE '\\' "
                         "ORDER BY updated_at DESC LIMIT 500")
             rows = cur.fetchall()
@@ -375,14 +425,16 @@ def memory_rows_for_ui() -> List[Dict[str, str]]:
     except Exception:
         return []
     return [{"category": c or "", "key": k, "value": v or "",
-             "updated": (u or "")[:10]} for c, k, v, u in rows]
+             "updated": (u or "")[:10], "source": source or "legacy",
+             "confidence": confidence, "embedding_model": model}
+            for c, k, v, u, source, confidence, model in rows]
 
 
 def memory_forget_key(key: str) -> bool:
     """Forget exactly one stored fact by key (the Memory tab's
     per-row ✕). True when a row was actually removed."""
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_path())
         cur = conn.cursor()
         cur.execute("DELETE FROM memory WHERE key=?", (key,))
         gone = cur.rowcount
@@ -401,7 +453,7 @@ def memory_map_points() -> List[Dict[str, Any]]:
     category ring. An unreadable store reads as empty."""
     try:
         with DB_LOCK:
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(db_path())
             cur = conn.cursor()
             cur.execute("SELECT category, key, value, updated_at, embedding "
                         "FROM memory WHERE key NOT LIKE '\\_%' ESCAPE '\\' "
@@ -430,9 +482,9 @@ def build_prompt_memories(query: str = "", top_k: int = 6) -> str:
     Always includes core identity facts, dynamic semantic search matches,
     and excludes internal ephemeral keys (prefixed with _)."""
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_path())
         cur = conn.cursor()
-        cur.execute("SELECT category, key, value FROM memory WHERE key NOT LIKE '\\_%' ESCAPE '\\'")
+        cur.execute("SELECT category, key, value FROM memory WHERE key NOT LIKE '\\_%' ESCAPE '\\' ORDER BY updated_at DESC, id DESC")
         all_rows = cur.fetchall()
         conn.close()
 
@@ -455,7 +507,7 @@ def build_prompt_memories(query: str = "", top_k: int = 6) -> str:
             qlen = len(q)
             scored = []
             with DB_LOCK:
-                conn = sqlite3.connect(DB_PATH)
+                conn = sqlite3.connect(db_path())
                 cur = conn.cursor()
                 cur.execute("SELECT category, key, value, embedding FROM memory WHERE embedding IS NOT NULL AND key NOT LIKE '\\_%' ESCAPE '\\'")
                 rows_with_emb = cur.fetchall()
@@ -504,15 +556,26 @@ def register_chat_listener(fn):
     if fn not in _CHAT_LOG_LISTENERS:
         _CHAT_LOG_LISTENERS.append(fn)
 
+_PROJECT_DISPLAY_LOGS = {}
+
+
 def get_display_chat_log():
-    return DISPLAY_CHAT_LOG
+    if workspaces.current() == 'default':
+        return DISPLAY_CHAT_LOG
+    path = db_path()
+    if path not in _PROJECT_DISPLAY_LOGS:
+        with DB_LOCK:
+            with sqlite3.connect(path) as conn:
+                rows = conn.execute('SELECT timestamp,sender,message FROM chat_history ORDER BY id DESC LIMIT 1000').fetchall()
+        _PROJECT_DISPLAY_LOGS[path] = [(str(t)[11:16], who, msg) for t, who, msg in reversed(rows)]
+    return _PROJECT_DISPLAY_LOGS[path]
 
 def log_conversation(sender: str, message: str):
     redacted_msg = redact(str(message))
     spine_append("chat", {"sender": sender, "message": redacted_msg})
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     ts_short = datetime.now().strftime("%H:%M:%S")
-    DISPLAY_CHAT_LOG.append((ts_short, sender, redacted_msg))
+    get_display_chat_log().append((ts_short, sender, redacted_msg))
     if len(DISPLAY_CHAT_LOG) > 60:
         DISPLAY_CHAT_LOG.pop(0)
 
@@ -524,7 +587,7 @@ def log_conversation(sender: str, message: str):
 
     with DB_LOCK:
         try:
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(db_path())
             conn.execute("INSERT INTO chat_history (timestamp, sender, message) VALUES (?, ?, ?)",
                          (ts, sender, redacted_msg))
             conn.commit()
@@ -533,8 +596,8 @@ def log_conversation(sender: str, message: str):
             add_log(f"DB err: {e}")
 
     try:
-        need_header = not os.path.exists(CHAT_LOG_FILE) or os.path.getsize(CHAT_LOG_FILE) == 0
-        with open(CHAT_LOG_FILE, "a", encoding="utf-8") as f:
+        need_header = not os.path.exists(_project_file("chat_history.md", CHAT_LOG_FILE)) or os.path.getsize(_project_file("chat_history.md", CHAT_LOG_FILE)) == 0
+        with open(_project_file("chat_history.md", CHAT_LOG_FILE), "a", encoding="utf-8") as f:
             if need_header:
                 f.write("# A.R.I.A. Master Conversation & Action Log\n\n---\n")
             f.write(f"\n### [{ts}] {sender.upper()}:\n{redacted_msg}\n")
@@ -552,7 +615,7 @@ def memory_db_probe() -> bool:
     if _MEMORY_DB_OK is None or now - _MEMORY_DB_T > 10:
         try:
             with DB_LOCK:
-                conn = sqlite3.connect(DB_PATH)
+                conn = sqlite3.connect(db_path())
                 conn.execute("SELECT 1").fetchone()
                 conn.close()
             _MEMORY_DB_OK = True
@@ -568,7 +631,7 @@ def memory_forget_entries(query: str) -> int:
     if not q:
         return 0
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_path())
         cur = conn.cursor()
         cur.execute("SELECT id FROM memory WHERE category != 'system' AND (lower(key) LIKE ? OR lower(value) LIKE ?)",
                     (f"%{q}%", f"%{q}%"))
@@ -586,7 +649,7 @@ def goal_db_create(title: str, description: str, interval_s: int = 0, priority: 
     now = time.time()
     next_run = now + max(0, delay_s)
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_path())
         cur = conn.cursor()
         cur.execute("""INSERT INTO autonomous_goals
                    (title, description, priority, interval_s, next_run, status, created_at, updated_at)
@@ -600,7 +663,7 @@ def goal_db_create(title: str, description: str, interval_s: int = 0, priority: 
 
 def goal_db_list(status_filter: Optional[str] = None) -> List[Dict[str, Any]]:
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_path())
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
         if status_filter:
@@ -617,7 +680,7 @@ def goal_db_list(status_filter: Optional[str] = None) -> List[Dict[str, Any]]:
 
 def goal_db_get_due(now_ts: float) -> List[Dict[str, Any]]:
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_path())
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
         rows = cur.execute(
@@ -645,7 +708,7 @@ def goal_db_update(goal_id: int, status: Optional[str] = None, last_result: Opti
     params.append(goal_id)
 
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_path())
         cur = conn.cursor()
         cur.execute(f"UPDATE autonomous_goals SET {', '.join(updates)} WHERE id = ?", params)
         affected = cur.rowcount
@@ -656,7 +719,7 @@ def goal_db_update(goal_id: int, status: Optional[str] = None, last_result: Opti
 
 def goal_db_delete(goal_id: int) -> bool:
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_path())
         cur = conn.cursor()
         cur.execute("DELETE FROM autonomous_goals WHERE id = ?", (goal_id,))
         affected = cur.rowcount
@@ -669,7 +732,7 @@ def incident_db_log(category: str, source: str, error_text: str, diagnosis: str,
                     action_taken: str, resolved: int = 0) -> int:
     now = time.time()
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_path())
         cur = conn.cursor()
         cur.execute("""INSERT INTO autonomous_incidents
                    (timestamp, category, source, error_text, diagnosis, action_taken, resolved)
@@ -684,7 +747,7 @@ def incident_db_log(category: str, source: str, error_text: str, diagnosis: str,
 
 def incident_db_list(limit: int = 10) -> List[Dict[str, Any]]:
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_path())
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
         rows = cur.execute(
@@ -697,7 +760,7 @@ def incident_db_list(limit: int = 10) -> List[Dict[str, Any]]:
 def job_db_create(name: str, command: str, pid: int, log_file: str) -> int:
     now = time.time()
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_path())
         cur = conn.cursor()
         cur.execute("""INSERT INTO background_jobs
                    (name, command, pid, status, started_at, log_file)
@@ -712,7 +775,7 @@ def job_db_create(name: str, command: str, pid: int, log_file: str) -> int:
 def job_db_update(job_id: int, status: str, exit_code: Optional[int] = None) -> bool:
     now = time.time()
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_path())
         cur = conn.cursor()
         cur.execute("""UPDATE background_jobs
                    SET status = ?, exit_code = ?, finished_at = ?
@@ -726,7 +789,7 @@ def job_db_update(job_id: int, status: str, exit_code: Optional[int] = None) -> 
 
 def job_db_list(limit: int = 10) -> List[Dict[str, Any]]:
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_path())
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
         rows = cur.execute(

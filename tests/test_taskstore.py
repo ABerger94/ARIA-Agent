@@ -138,7 +138,7 @@ def test_need_input_parks_with_checkpoint():
     print("ok need_input_parks_with_checkpoint")
 
 
-def test_verifier_fail_parks_pass_and_garbage_do_not():
+def test_verifier_fail_and_garbage_park_explicit_pass_completes():
     calls = []
     ex = _executor(calls, {"web_search": ["a"], "read_notes": ["b"]},
                    verifier=lambda g, c, r: "results look fabricated")
@@ -155,7 +155,7 @@ def test_verifier_fail_parks_pass_and_garbage_do_not():
                                     "results": {}}, verify=True) \
         == "SUMMARY-OK"
 
-    # LLM-shaped verdicts: FAIL parsed, nonsense passes open.
+    # Invalid verdicts never prove completion.
     ex3 = _executor([], {"web_search": ["a"], "read_notes": ["b"]},
                     llm=lambda prompt, system=None:
                         "VERDICT: FAIL — no evidence")
@@ -167,9 +167,8 @@ def test_verifier_fail_parks_pass_and_garbage_do_not():
         assert "no evidence" in b.reason
     ex4 = _executor([], {"web_search": ["a"], "read_notes": ["b"]},
                     llm=lambda prompt, system=None: "whatever, ship it")
-    assert ex4.execute("g", resume={"plan": _PLAN, "completed": [],
-                                    "results": {}}, verify=True) \
-        == "SUMMARY-OK"
+    with __import__('pytest').raises(taskexec.TaskBlocked, match='no usable verdict'):
+        ex4.execute('g', resume={'plan':_PLAN, 'completed':[], 'results':{}}, verify=True)
     print("ok verifier_fail_parks_pass_and_garbage_do_not")
 
 

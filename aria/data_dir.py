@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import shutil
 import tempfile
 import threading
@@ -58,8 +59,9 @@ import threading
 #: The install root, computed exactly as aria/config.py
 #: computes ROOT_DIR. A module global read at call time so
 #: tests can redirect every store hermetically.
-_ROOT = os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__)))
+_ROOT = os.path.abspath(os.environ.get('ARIA_DATA_ROOT') or (
+    os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)
+    else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 _LOCK = threading.RLock()
 
@@ -71,8 +73,9 @@ _ATTEMPTED = set()
 def _true_root() -> str:
     """The install root from this file's location, ignoring
     any test redirection of _ROOT."""
-    return os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__)))
+    return os.path.abspath(os.environ.get('ARIA_DATA_ROOT') or (
+        os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)
+        else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
 def root() -> str:

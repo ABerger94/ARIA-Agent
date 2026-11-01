@@ -103,6 +103,7 @@ _SPOT_BTNS: List[Tuple[int, int, int, int, str]] = []  # rebuilt per draw
 
 # ---------------------------------------------------------------- state
 STAGED_FILE: Optional[str] = None
+_PROJECT_STAGED_FILES = {}
 ACTIVITY_SCROLL = 0
 _MIC_HELD = False
 _BOOT_AT = time.time()
@@ -129,7 +130,9 @@ def set_ptt_callbacks(press, release) -> None:
 
 
 def staged_file() -> Optional[str]:
-    return STAGED_FILE
+    from aria import workspaces
+    project = workspaces.current()
+    return STAGED_FILE if project == 'default' else _PROJECT_STAGED_FILES.get(project)
 
 
 def scroll_activity(delta: int) -> None:
@@ -500,7 +503,11 @@ def receive_file(path: str) -> str:
     never block the render loop; the organ reports back through the
     event ring + a chat-log line when it finishes)."""
     global STAGED_FILE
-    STAGED_FILE = str(path)
+    from aria import workspaces
+    if workspaces.current() == 'default':
+        STAGED_FILE = str(path)
+    else:
+        _PROJECT_STAGED_FILES[workspaces.current()] = str(path)
     name = _basename(str(path)) or str(path)
     add_log(f"File received: {name}")
     try:
@@ -518,7 +525,8 @@ def _start_file_processing(path: str) -> None:
             fileproc.process_and_report(path)
         except Exception as e:
             add_log(f"File processing failed to start: {e}")
-    threading.Thread(target=_run, daemon=True).start()
+    from aria import runtime
+    threading.Thread(target=runtime.copied_call(_run), daemon=True).start()
 
 
 def _browse_for_file() -> None:
@@ -543,7 +551,8 @@ def _browse_for_file() -> None:
                 receive_file(path)
         except Exception as e:
             add_log(f"File browse failed: {e}")
-    threading.Thread(target=_run, daemon=True).start()
+    from aria import runtime
+    threading.Thread(target=runtime.copied_call(_run), daemon=True).start()
 
 
 def submit_typed() -> bool:
@@ -865,8 +874,8 @@ def _draw_drop_zone(canvas) -> None:
     _txt_center(canvas, "or click to browse", (x0 + x1) // 2, y0 + 54, 11, DIM, False)
     _txt_center(canvas, "Images - Video - Audio - PDF", (x0 + x1) // 2, y0 + 78, 10, FAINT, False)
     _txt_center(canvas, "Docs - Code - Data", (x0 + x1) // 2, y0 + 94, 10, FAINT, False)
-    if STAGED_FILE:
-        name = _basename(STAGED_FILE) or STAGED_FILE
+    if staged_file():
+        name = _basename(staged_file()) or staged_file()
         _txt_center(canvas, f"staged: {name[:30]}", (x0 + x1) // 2, y0 + 112, 10, OK, False)
 
 

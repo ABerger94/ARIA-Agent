@@ -399,6 +399,13 @@ def create_dashboard(callbacks):
             self.clock.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             head.addWidget(self.clock)
             self.settings_button = QPushButton('Settings'); self.settings_button.clicked.connect(self.settings); head.addWidget(self.settings_button)
+            self.work_button = QPushButton('Work Center')
+            def open_work_center():
+                from aria.work_center import create_work_center
+                self._work_center = create_work_center(self, callbacks)
+                self._work_center.show()
+            self.work_button.clicked.connect(open_work_center)
+            head.addWidget(self.work_button)
             layout.addLayout(head)
             body = QSplitter(Qt.Orientation.Horizontal); layout.addWidget(body, 1)
             # Shell Mode V3 (2026-10-30): the splitter + side
@@ -744,6 +751,13 @@ def create_dashboard(callbacks):
             self.mic = QPushButton('Hold to talk'); self.mic.pressed.connect(callbacks.ptt_press); self.mic.released.connect(callbacks.ptt_release); controls.addWidget(self.mic)
             self.voice = QPushButton('Voice on'); self.voice.clicked.connect(frame.toggle_voice); controls.addWidget(self.voice)
             stop = QPushButton('Stop speaking'); stop.clicked.connect(callbacks.interrupt); controls.addWidget(stop)
+            cancel_work = QPushButton('Cancel work')
+            def cancel_foreground():
+                from aria import runtime
+                runtime.cancel_work(kind='foreground')
+                callbacks.interrupt()
+            cancel_work.clicked.connect(cancel_foreground)
+            controls.addWidget(cancel_work)
             self.shell_btn = QPushButton('Shell Home'); self.shell_btn.setToolTip('Open the ARIA OS home screen'); self.shell_btn.clicked.connect(self._shell_btn_clicked); controls.addWidget(self.shell_btn); cl.addLayout(controls)
             # Whisper and centerpiece buttons used to live here
             # (Alek, 2026-10-27): whisper is the Voice / audio
@@ -1354,6 +1368,9 @@ def create_dashboard(callbacks):
                 txt.setWordWrap(True)
                 row.addWidget(txt, 1)
                 meta = QLabel(f"{r['category']} · {r['updated']}")
+                meta.setToolTip(f'Source: {r.get("source", "legacy")}\n'
+                                f'Confidence: {r.get("confidence", "not recorded")}\n'
+                                f'Embedding: {r.get("embedding_model") or "not recorded"}')
                 meta.setStyleSheet('color: #829aaf;')
                 row.addWidget(meta)
                 rm = QPushButton(); rm.setFixedSize(22, 22)

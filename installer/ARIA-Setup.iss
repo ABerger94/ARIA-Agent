@@ -9,7 +9,7 @@
 ; and clears the first-run flag so the wizard fires on first launch.
 
 #define MyAppName "A.R.I.A."
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "Alek Berger"
 #define MyAppExeName "ARIA.exe"
 

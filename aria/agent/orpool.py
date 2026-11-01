@@ -32,6 +32,7 @@ Kill switch: ARIA_ORPOOL=0 (config.ORPOOL_ENABLED).
 """
 
 from __future__ import annotations
+from aria import usage, runtime
 
 import base64
 import json
@@ -191,10 +192,33 @@ class OrPool:
             return sorted(self._parked)
 
     # -- one model ------------------------------------------------------
-    def _call(self, model: str, messages: List[dict],
+    def _call(self, model: str, messages: List[dict], max_tokens=DEFAULT_MAX_TOKENS,
+              temperature=DEFAULT_TEMPERATURE, response_format=None):
+        runtime.check_cancelled()
+        # The single-attempt transport wrapper accounts retries independently.
+        original = self._transport
+        def metered(url, *, headers, json, timeout):
+            runtime.check_cancelled()
+            payload = dict(json)
+            payload['max_tokens'] = min(payload.get('max_tokens', 2048), usage.max_output_tokens())
+            ticket = usage.reserve('openrouter', model, payload, reason='background pool role/fallback')
+            start = time.monotonic()
+            try:
+                response = original(url, headers=headers, json=payload, timeout=timeout)
+                tokens = response.json().get('usage') if response.status_code == 200 else None
+                usage.finish(ticket, usage=tokens, latency_ms=int((time.monotonic()-start)*1000),
+                             status='ok' if response.status_code == 200 else 'error')
+                return response
+            except Exception:
+                usage.finish(ticket, latency_ms=int((time.monotonic()-start)*1000), status='error')
+                raise
+        # Don't mutate the shared pool transport; each call gets a local adapter.
+        return self._call_unmetered(model, messages, max_tokens, temperature, response_format, transport=metered)
+
+    def _call_unmetered(self, model: str, messages: List[dict],
               max_tokens: int = DEFAULT_MAX_TOKENS,
               temperature: float = DEFAULT_TEMPERATURE,
-              response_format: Optional[dict] = None) -> Optional[str]:
+              response_format: Optional[dict] = None, *, transport=None) -> Optional[str]:
         payload: Dict = {
             "model": model,
             "messages": messages,
@@ -208,7 +232,7 @@ class OrPool:
             return None
         for attempt in range(1, MAX_RETRIES_PER_MODEL + 1):
             try:
-                resp = self._transport(
+                resp = (transport or self._transport)(
                     API_URL, headers=self._headers(), json=payload,
                     timeout=REQUEST_TIMEOUT)
                 if resp.status_code == 429:
@@ -228,6 +252,8 @@ class OrPool:
                 logger.warning("[orpool] %s → HTTP %s (attempt %s/%s)",
                                model, resp.status_code, attempt,
                                MAX_RETRIES_PER_MODEL)
+            except (usage.BudgetExceeded, runtime.Cancelled):
+                raise
             except Exception as e:
                 # His client distinguished Timeout for the log line;
                 # the recovery is identical (retry once, then move on).

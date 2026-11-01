@@ -35,13 +35,14 @@ import time
 from typing import Any, Dict, List, Optional
 
 from aria import config as _config
+from aria import workspaces
 
 _LOCK = threading.Lock()
 RESUMABLE_STATUSES = ("blocked", "failed", "interrupted")
 
 
 def _path() -> str:
-    return os.path.join(_config.WORKSPACE_DIR, "delegated_tasks.json")
+    return workspaces.path("delegated_tasks.json", os.path.join(_config.WORKSPACE_DIR, "delegated_tasks.json"))
 
 
 def _load() -> Dict[str, Any]:
@@ -72,13 +73,13 @@ def _save(data: Dict[str, Any]) -> None:
         _config.log_silent("taskstore_save", e)
 
 
-def create(task_id: str, goal: str, resumed_from: str = "") -> Dict[str, Any]:
+def create(task_id: str, goal: str, resumed_from: str = "", execution_scope: str = "") -> Dict[str, Any]:
     """Open a journal record for a task about to run."""
     rec = {
         "task_id": task_id, "goal": goal, "status": "running",
         "plan": None, "completed": [], "results": {},
         "blocked_reason": "", "result": "", "error": "",
-        "resumed_from": resumed_from,
+        "resumed_from": resumed_from, "execution_scope": execution_scope or f"task:{task_id}",
         "created_at": time.time(), "updated_at": time.time(),
         "checkpoint_at": 0.0,
     }

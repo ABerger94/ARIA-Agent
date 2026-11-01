@@ -39,6 +39,8 @@ from aria.tools.dispatch import (
 from aria import config as _config_silent
 
 # Global runtime flags
+from aria import runtime, resource_policy
+
 RUNNING: bool = True
 
 
@@ -71,7 +73,7 @@ def _init_wiring():
     speech.set_speech_state_hook(lambda st: hud.set_hud_state(st))
     speech.set_speech_log_hook(add_log)
     set_spine_hook(memory.spine_append)
-    set_history_hook(lambda entry: agent.CONVERSATION_HISTORY.append(entry))
+    set_history_hook(lambda entry: agent.brain.append_audit(entry))
 
     # 2. Chat history listener
     memory.register_chat_listener(hud.add_display_chat)
@@ -116,7 +118,7 @@ def _init_wiring():
 def _submit_typed(text: str) -> None:
     """Route a typed directive (frame command bar) to the brain — the
     same handle_action path voice commands take."""
-    threading.Thread(target=handle_action, args=("voice", text),
+    threading.Thread(target=runtime.copied_call(handle_action, "voice", text),
                      daemon=True).start()
 
 
@@ -209,6 +211,11 @@ def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silen
 
     low = user_text.lower().strip()
 
+    if low in {'cancel work', 'cancel task', 'stop working', 'stop work'}:
+        count = runtime.cancel_work(kind='foreground')
+        speech.interrupt_speech()
+        return f'Cancellation requested for {count} foreground execution(s).'
+
     # 1. Stop words
     if any(low == w or low.startswith(w + " ") for w in speech.STOP_WORDS):
         speech.interrupt_speech()
@@ -240,7 +247,7 @@ def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silen
     try:
         from aria import bookmark as _bookmark
         save_ack = _bookmark.try_save(user_text,
-                                      agent.brain.CONVERSATION_HISTORY)
+                                      agent.brain.current_history())
         if save_ack is not None:
             say(save_ack)
             return save_ack
@@ -923,7 +930,7 @@ def _start_life():
     lives. Setting: 'life_enabled' (default on)."""
     global _LIFE_SUPERVISOR
     try:
-        if not _config_silent.get_setting('life_enabled', True):
+        if not resource_policy.optional_enabled('life') or not _config_silent.get_setting('life_enabled', True):
             return
         from aria.life_supervisor import LifeSupervisor
         sup = LifeSupervisor(_life_control, log=add_log,
@@ -967,6 +974,11 @@ def _start_live_if_configured() -> bool:
     try:
         if str(_config_silent.get_setting(
                 'voice_mode', 'pipeline')).lower() != 'live':
+            return False
+        from aria import usage
+        policy = usage.settings()
+        if any(policy.get(k) is not None for k in ('daily_budget_usd', 'task_budget_usd')):
+            add_log('Budgeted project: pipeline voice is used so each model call can be reserved.')
             return False
         from aria import live as _live
         from aria.tools import dispatch as _dispatch
@@ -1035,9 +1047,9 @@ def start_all():
     hud.start_volume_manager()
 
     # 4. Background threads
-    threading.Thread(target=vision.face_track_loop,
-                     args=(lambda: agent.BUSY_PROCESSING,),
-                     daemon=True).start()
+    if resource_policy.optional_enabled('face_tracking'):
+        threading.Thread(target=vision.face_track_loop,
+                         args=(lambda: agent.BUSY_PROCESSING,), daemon=True).start()
 
     threading.Thread(target=scheduler.scheduler_loop,
                      args=(lambda: agent.BUSY_PROCESSING, lambda p: handle_action("scheduled", p)),
@@ -1300,6 +1312,7 @@ def _qt_callbacks():
         ptt_release=_ptt_falling_edge,
         toggle_whisper=toggle_whisper_mode,
         interrupt=speech.interrupt_speech,
+        cancel_work=lambda: runtime.cancel_work(kind='foreground'),
     )
 
 

@@ -202,8 +202,12 @@ def _probe_model_text(model: str, api_key: str) -> Optional[str]:
             headers={"Authorization": f"Bearer {api_key}",
                      "Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        from aria import usage
+        with usage.attempt('ollama_cloud', model, payload, 'vision model probe') as measured:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            measured['usage'] = {'prompt_tokens':data.get('prompt_eval_count'),
+                                 'completion_tokens':data.get('eval_count')}
         if (data.get("message") or {}).get("content", "").strip():
             return None
         return "empty reply"
@@ -251,7 +255,9 @@ def _ollama_native_vision_call(sys_prompt: str, contents: Any) -> Optional[str]:
     messages.append({"role": "user",
                      "content": "\n".join(texts) or "Describe what you see.",
                      "images": images})
-    payload = {"model": model, "stream": False, "messages": messages}
+    from aria import usage
+    payload = {"model": model, "stream": False, "messages": messages,
+               "options": {"num_predict": usage.max_output_tokens()}}
     try:
         req = urllib.request.Request(
             "https://ollama.com/api/chat",
@@ -259,8 +265,11 @@ def _ollama_native_vision_call(sys_prompt: str, contents: Any) -> Optional[str]:
             headers={"Authorization": f"Bearer {OLLAMA_CLOUD_API_KEY}",
                      "Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        with usage.attempt('ollama_cloud', model, payload, 'native image analysis') as measured:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            measured['usage'] = {'prompt_tokens':data.get('prompt_eval_count'),
+                                 'completion_tokens':data.get('eval_count')}
         text = (data.get("message") or {}).get("content", "").strip()
         return text or None
     except urllib.error.HTTPError as e:

@@ -47,6 +47,8 @@ def _default_command() -> List[str]:
     the helper would inherit every main-process dependency and
     import side-effect, the opposite of isolation. Run by path,
     comhost.py needs nothing but the stdlib and the COM libraries."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--com-host"]
     return [sys.executable,
             os.path.join(os.path.dirname(os.path.abspath(__file__)),
                          "comhost.py")]

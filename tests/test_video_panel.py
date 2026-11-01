@@ -86,6 +86,8 @@ def test_panel_command_signal_and_snapshot(tmp_path):
 
 
 def _dashboard_stubs(monkeypatch):
+    from aria import ui_prefs
+    monkeypatch.setattr(ui_prefs, "get_centerpiece", lambda: "orb")
     calls = []
     data = dict(cpu=25, mem=40, battery='80%', uptime_s=600,
                 active_provider='Ollama',

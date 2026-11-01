@@ -148,7 +148,8 @@ def test_vision_hook_attached():
 def _canned_contents():
     return [{'role': 'user', 'parts': [{'text': 'describe'}, {'inline_data': {'mime_type': 'image/jpeg', 'data': 'QUJD'}}]}]
 
-def test_vision_uses_chain_not_gemini():
+def test_vision_uses_chain_not_gemini(monkeypatch):
+    monkeypatch.setattr(vision, "_ollama_native_vision_call", lambda *a, **k: None)
     calls = {}
 
     def fake_provider_call(sys_prompt, contents, tool_decls=None, on_text_chunk=None, model_override=None, **kwargs):
@@ -163,7 +164,8 @@ def test_vision_uses_chain_not_gemini():
     assert out == 'a red bicycle', out
     assert calls['override'] == 'gemma4:31b-cloud', calls
 
-def test_vision_chain_down_falls_back_cleanly():
+def test_vision_chain_down_falls_back_cleanly(monkeypatch):
+    monkeypatch.setattr(vision, "_ollama_native_vision_call", lambda *a, **k: None)
 
     def dead_provider_call(*a, **k):
         return None
@@ -707,7 +709,7 @@ def test_dynamic_routing_role_cooldown():
     import time as _time
     logged = []
     cooldown = {}
-    ns = {'_ROLE_MODEL_COOLDOWN': cooldown, 'OLLAMA_VISION_MODEL': 'gemma4:31b-cloud', 'OLLAMA_CODE_MODEL': 'qwen3-coder:480b-cloud', 'time': _time, 'Optional': Optional, 'add_log': lambda m: logged.append(m)}
+    ns = {'usage': types.SimpleNamespace(settings=lambda: {}), '_ROLE_MODEL_COOLDOWN': cooldown, 'OLLAMA_VISION_MODEL': 'gemma4:31b-cloud', 'OLLAMA_CODE_MODEL': 'qwen3-coder:480b-cloud', 'time': _time, 'Optional': Optional, 'add_log': lambda m: logged.append(m)}
     fn = _extract_fn('agent/providers.py', 'resolve_role_model', ns)
     assert fn('code') == 'qwen3-coder:480b-cloud'
     assert fn('vision') == 'gemma4:31b-cloud'

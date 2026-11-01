@@ -1,0 +1,3 @@
+-r requirements.txt
+-c requirements-lock.txt
+PyInstaller>=6.10,<7

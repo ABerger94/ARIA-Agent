@@ -672,6 +672,19 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
         'name': 'restart_program',
         'parameters': {'properties': {}, 'type': 'OBJECT'}}]
 
+ALL_FUNCTION_DECLARATIONS.append({
+    'name': 'desktop_control',
+    'description': 'Perform one action on an explicitly named connected desktop companion. '
+                   'Use only enabled node capabilities. Timeout means uncertain, never automatically repeat an effect.',
+    'parameters': {'type':'OBJECT', 'properties': {
+        'node': {'type':'STRING'}, 'action': {'type':'STRING', 'enum': [
+            'system_info','list_files','read_file','write_file','read_screen','click','type','key','open_url']},
+        'arguments': {'type':'OBJECT', 'properties': {
+            'path': {'type':'STRING'}, 'content': {'type':'STRING'}, 'text': {'type':'STRING'},
+            'x': {'type':'INTEGER'}, 'y': {'type':'INTEGER'}, 'url': {'type':'STRING'},
+            'keys': {'type':'ARRAY', 'items': {'type':'STRING'}}}},
+        'question': {'type':'STRING'}}, 'required':['node','action']}})
+
 TOOLS_DECLARATION = [
     {"function_declarations": ALL_FUNCTION_DECLARATIONS}
 ]
@@ -858,6 +871,8 @@ COMMAND_GUIDE = [   ('Memory', 'save_memory', 'remember my Doja playlist is spot
     ('Autonomy', 'update_status', 'what version are you running and what is in flight?'),
     ('Autonomy', 'code_helper', 'explain this code to me'),
     ('Autonomy', 'dev_agent', 'write me a small program that renames these files')]
+
+TOOLKITS["phone"]["tools"].append("desktop_control")
 
 _DECLS_BY_NAME = {d["name"]: d for d in ALL_FUNCTION_DECLARATIONS}
 

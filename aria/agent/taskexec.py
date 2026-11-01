@@ -110,14 +110,8 @@ def _is_failure(out: Any) -> bool:
     Approval-gate and safe-mode results are failures too — they are
     never a step's success (the executor special-cases them to an
     abort before classification; see execute())."""
-    if not isinstance(out, str):
-        return False
-    return (out.startswith("[Tool Error")
-            or out.startswith("[Argument error")
-            or out.startswith("Unknown tool:")
-            or out.startswith("[AWAITING_APPROVAL")
-            or out.startswith("[Safe mode:")
-            or "Traceback (most recent call last)" in out)
+    from aria.outcome import normalize, FAILED
+    return normalize(out).status == FAILED
 
 
 def _substitute(value: Any, results: Dict[int, str]) -> Any:
@@ -155,6 +149,10 @@ class TaskBlocked(Exception):
         self.state = state
 
 
+from aria import runtime
+from aria.outcome import normalize, ResultText, UNVERIFIED, STARTED, ASK
+
+
 class AgentExecutor:
     """Runs one delegated goal end-to-end under the SS3.3 caps."""
 
@@ -180,8 +178,8 @@ class AgentExecutor:
             try:
                 return self._verifier(goal, completed, results)
             except Exception as e:
-                add_log(f"taskexec: verifier errored ({e}); passing open")
-                return None
+                add_log(f"taskexec: verifier errored ({e}); outcome unverified")
+                return "Verification unavailable; recorded work needs review"
         llm = self._llm or planner._default_llm
         evidence = "\n".join(
             f"- step {s.get('step')} ({s.get('tool', '?')}): "
@@ -196,15 +194,15 @@ class AgentExecutor:
                 "'VERDICT: FAIL — <one short reason>'. Judge only "
                 "the evidence above; missing evidence is a FAIL.")
         except Exception as e:
-            add_log(f"taskexec: verifier unavailable ({e}); passing open")
-            return None
+            add_log(f"taskexec: verifier unavailable ({e}); outcome unverified")
+            return "Verification unavailable; recorded work needs review"
         text = (out or "").strip()
         if text.startswith("VERDICT: PASS"):
             return None
         if text.startswith("VERDICT: FAIL"):
             return text.split("—", 1)[-1].strip() or "verifier rejected the result"
-        add_log("taskexec: verifier verdict unparseable; passing open")
-        return None
+        add_log("taskexec: verifier verdict unparseable; outcome unverified")
+        return "Verification returned no usable verdict"
 
     # -- failure classification via Phase 1 -----------------------------
     def _classify_and_surface(self, tool: str, out: str, *,
@@ -232,18 +230,18 @@ class AgentExecutor:
         t0 = time.time()
 
         def _cancelled() -> bool:
-            return bool(cancel_flag and cancel_flag.is_set())
+            return runtime.current().cancel.is_set() or bool(cancel_flag and cancel_flag.is_set())
 
         def _over_budget() -> bool:
             return (time.time() - t0) > budget_s
 
-        def _finish_outcome(text: str) -> str:
+        def _finish_outcome(text: str, status="failed") -> str:
             if speak:
                 try:
                     speak(text)
                 except Exception:
                     pass
-            return text
+            return ResultText(text, status)
 
         def _state() -> Dict[str, Any]:
             return {"goal": goal, "plan": plan,
@@ -329,9 +327,16 @@ class AgentExecutor:
                         return "Task cancelled."
                     attempt += 1
                     try:
-                        out = self._tool_runner(tool, params)
+                        from aria.action_journal import signature
+                        op = f"{runtime.current().budget_scope or runtime.current().id}:step:{step.get('step')}:{signature(tool, params)}"
+                        with runtime.operation(op):
+                            out = self._tool_runner(tool, params)
+                    except runtime.Cancelled:
+                        raise
                     except Exception as e:
                         out = f"[Tool Error: {type(e).__name__}: {e}]"
+                    if normalize(out).status in (UNVERIFIED, STARTED, ASK) and not str(out).startswith('[AWAITING_APPROVAL'):
+                        raise TaskBlocked(str(out), _state())
                     # Approval gate / safe mode FIRST: those strings
                     # are never a success — they need the user, not
                     # a retry — abort the task deterministically.
@@ -361,6 +366,9 @@ class AgentExecutor:
                         step_done = True
                         _checkpoint()
                         break
+                    from aria.tool_policy import retry_safe
+                    if _is_failure(out) and not retry_safe(tool):
+                        raise TaskBlocked('An action with effects failed; check its receipt before another attempt. ' + str(out), _state())
                     rec = self._classify_and_surface(
                         tool, out, critical=bool(step.get("critical")),
                         attempt=attempt)
@@ -401,7 +409,7 @@ class AgentExecutor:
                             f"verifier: {rejection}", _state())
                 summary = self._summarizer(goal, completed)
                 add_log(f"taskexec: task complete — {summary[:80]}")
-                return _finish_outcome(summary)
+                return _finish_outcome(summary, status="done")
 
             if replans >= max_replans:
                 rec = failures.surface_failure(

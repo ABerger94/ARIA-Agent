@@ -228,7 +228,9 @@ def test_csv_stats():
     print("ok csv_stats")
 
 
-def test_pdf_stdlib_extract():
+def test_pdf_stdlib_extract(monkeypatch):
+    for module in ("pdfplumber", "pypdf", "PyPDF2"):
+        monkeypatch.setitem(sys.modules, module, None)
     r = fileproc.process_file(P_PDF, pool=NO_POOL)
     assert r["detail"]["pages"] == 2, r["detail"]
     assert r["detail"]["extractor"] == "stdlib-streams", r["detail"]

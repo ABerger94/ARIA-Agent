@@ -5,6 +5,12 @@ risky tool audit logging, HUD feedback transitions, and progressive schema paylo
 """
 
 import contextlib
+import uuid
+from collections.abc import MutableMapping
+from aria import runtime, workspaces, action_journal
+from aria import config as _config_mod
+from aria.outcome import ToolResult, normalize
+from aria.tool_policy import DESKTOP, FILE_ARGUMENTS, retry_safe
 import time
 import re
 from typing import Dict, List, Optional, Set, Tuple, Callable, Any
@@ -54,20 +60,21 @@ def delegated_scope():
     finally:
         _SCOPE.delegated = prev
 
-# Progressive Toolkit State
-_LOADED_TOOLKITS: Set[str] = {"core"}
+# Compatibility views for extensions/tests; the backing state belongs to the
+# current execution, never to another foreground turn or background worker.
+class _ContextMapping(MutableMapping):
+    def __init__(self, name): self.name = name
+    def _data(self): return getattr(runtime.current(), self.name)
+    def __getitem__(self, key): return self._data()[key]
+    def __setitem__(self, key, value): self._data()[key] = value
+    def __delitem__(self, key): del self._data()[key]
+    def __iter__(self): return iter(dict(self._data()))
+    def __len__(self): return len(self._data())
+    def clear(self): self._data().clear()
 
-# Turn Context State
-_TURN_CALLS: Dict[str, str] = {}
-_LAST_USER_MESSAGE: str = ""
-_LAST_OPEN_TARGET: str = ""
-_TURN_NUDGED: bool = False
-_LAST_TOOL_EXECUTED: Tuple[Optional[str], float] = (None, 0.0)
-
-# Self-Repair State (Part 2 of the self-repair upgrade)
-# Consecutive failures per tool-call signature within the current turn.
-_TURN_FAILURES: Dict[str, int] = {}
-_REPAIR_BUDGET = 2  # repair attempts per failing call before she must stop and report
+_TURN_CALLS = _ContextMapping('calls')
+_TURN_FAILURES = _ContextMapping('failures')
+_REPAIR_BUDGET = 2
 
 # Pluggable Subsystem Hooks
 _SPINE_HOOK: Callable[[str, dict], None] = default_spine_append
@@ -99,9 +106,11 @@ def set_history_hook(fn: Callable[[dict], None]) -> None:
     _HISTORY_HOOK = fn
 
 
-def register_tool(name: str, handler: Callable[[dict], str]) -> None:
+def register_tool(name: str, handler: Callable[[dict], str], *, replay_safe=False) -> None:
     """Register or override a tool execution handler."""
     _REGISTRY[name] = handler
+    from aria.tool_policy import declare_replay_safe
+    declare_replay_safe(name, replay_safe)
 
 
 def get_registered_tools() -> Dict[str, Callable[[dict], str]]:
@@ -114,9 +123,9 @@ def tool_load_toolkit(name: str) -> str:
     """Progressively unlock specialist toolkit."""
     tk_name = (name or "").strip().lower()
     if tk_name in TOOLKITS:
-        if tk_name in _LOADED_TOOLKITS:
+        if tk_name in runtime.current().toolkits:
             return f"Toolkit '{tk_name}' is already loaded."
-        _LOADED_TOOLKITS.add(tk_name)
+        runtime.current().toolkits.add(tk_name)
         return (f"Toolkit '{tk_name}' loaded. You can now call: "
                 f"{', '.join(TOOLKITS[tk_name]['tools'])}.")
     return (f"Unknown toolkit '{tk_name}'. Available: "
@@ -125,8 +134,7 @@ def tool_load_toolkit(name: str) -> str:
 
 def reset_toolkits() -> None:
     """Reset progressive toolkits back to default {'core'}."""
-    global _LOADED_TOOLKITS
-    _LOADED_TOOLKITS = {"core"}
+    runtime.current().toolkits = {"core"}
 
 
 # Keyword map for dynamic zero-turn toolkit auto-resolution
@@ -163,21 +171,21 @@ def auto_resolve_toolkits(prompt: str) -> List[str]:
     p_low = prompt.lower()
     newly_loaded: List[str] = []
     for tk, patterns in KEYWORD_TOOLKIT_MAP.items():
-        if tk in TOOLKITS and tk not in _LOADED_TOOLKITS:
+        if tk in TOOLKITS and tk not in runtime.current().toolkits:
             if any(re.search(pat, p_low) for pat in patterns):
-                _LOADED_TOOLKITS.add(tk)
+                runtime.current().toolkits.add(tk)
                 newly_loaded.append(tk)
     return newly_loaded
 
 
 def get_loaded_toolkits() -> Set[str]:
     """Return set of currently loaded toolkit names."""
-    return set(_LOADED_TOOLKITS)
+    return set(runtime.current().toolkits)
 
 
 def get_active_declarations() -> List[Dict[str, Any]]:
     """Return API function declarations for currently loaded toolkits."""
-    return get_toolkit_declarations(_LOADED_TOOLKITS)
+    return get_toolkit_declarations(runtime.current().toolkits)
 
 
 def get_toolkits_prompt() -> str:
@@ -188,26 +196,24 @@ def get_toolkits_prompt() -> str:
 # --- Turn Context Management ---
 def reset_turn_state(user_message: str = "") -> None:
     """Reset per-turn state caches."""
-    global _TURN_CALLS, _TURN_NUDGED, _LAST_USER_MESSAGE
     _TURN_CALLS.clear()
     _TURN_FAILURES.clear()
-    _TURN_NUDGED = False
-    _LAST_USER_MESSAGE = user_message
+    runtime.current().nudged = False
+    runtime.current().user_message = user_message
 
 
 def set_turn_context(user_message: str = "", last_open_target: str = "", turn_nudged: bool = False) -> None:
     """Set turn context variables for guard evaluations."""
-    global _LAST_USER_MESSAGE, _LAST_OPEN_TARGET, _TURN_NUDGED
     if user_message:
-        _LAST_USER_MESSAGE = user_message
+        runtime.current().user_message = user_message
     if last_open_target:
-        _LAST_OPEN_TARGET = last_open_target
-    _TURN_NUDGED = turn_nudged
+        runtime.current().open_target = last_open_target
+    runtime.current().nudged = turn_nudged
 
 
 def get_last_tool_executed() -> Tuple[Optional[str], float]:
     """Return (fn_name, timestamp) of last executed tool."""
-    return _LAST_TOOL_EXECUTED
+    return runtime.current().last_tool
 
 
 # --- Core Dispatch Execution ---
@@ -297,17 +303,43 @@ def _repair_or_exhaust(fn_name: str, args: dict, err_str: str) -> str:
 
 
 def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple[str, bool]:
+    ctx = runtime.current()
+    parent = runtime.operation_id()
+    depth = runtime.DISPATCH_DEPTH.get()
+    op = (f'{parent}/nested:{call_signature(fn_name, args)}' if parent and depth
+          else parent or uuid.uuid4().hex)
+    token = runtime.DISPATCH_DEPTH.set(depth + 1)
+    try:
+        with runtime.operation(op):
+            with ctx.lock if not retry_safe(fn_name) else contextlib.nullcontext():
+                return _execute_tool(fn_name, args, preauthorized=preauthorized)
+    finally:
+        runtime.DISPATCH_DEPTH.reset(token)
+
+
+def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple[str, bool]:
     """Dispatch one tool with full validation, sandboxing, and audit logging.
     Returns (result_text, False) — confirmation gating was removed; the bool is
     kept for call-site compatibility.
     """
-    global _LAST_OPEN_TARGET, _TURN_NUDGED, _LAST_TOOL_EXECUTED
     
+    runtime.check_cancelled()
+    for key in FILE_ARGUMENTS.get(fn_name, ()):
+        path = (args or {}).get(key)
+        if not path:
+            continue
+        if fn_name in {'read_file','write_file'}:
+            import os
+            clean = str(path).strip().replace('\\','/').lstrip('/')
+            if '..' in clean: clean = os.path.basename(clean)
+            path = os.path.join(workspaces.path('', builtins.WORKSPACE_DIR), clean)
+        if not workspaces.file_allowed(path):
+            return ('status=failed reason="File is outside this project’s configured roots"', False)
     # Auto-resolve parent toolkit if called directly
     if fn_name in TOOL_TO_TOOLKIT:
         parent_tk = TOOL_TO_TOOLKIT[fn_name]
-        if parent_tk not in _LOADED_TOOLKITS:
-            _LOADED_TOOLKITS.add(parent_tk)
+        if parent_tk not in runtime.current().toolkits:
+            runtime.current().toolkits.add(parent_tk)
 
     # 1. Log to spine
     if _SPINE_HOOK:
@@ -360,7 +392,6 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
     # routine replay) or the mode is auto. Lazy import: no import cycle.
     # 3a. Safe mode: shell, GUI control, and email are hard-blocked.
     if not preauthorized:
-        from aria import config as _config_mod
         if _config_mod.is_safe_mode() and _config_mod.is_safe_mode_blocked(fn_name):
             return (f"[Safe mode: '{fn_name}' is disabled. "
                     f"Disable safe mode to use shell, GUI control, or email.]",
@@ -373,13 +404,13 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
 
     # 4. Risky tools safety & audit
     if fn_name in RISKY_TOOLS:
-        nudge, _TURN_NUDGED = stale_target_check(
-            fn_name, args, _LAST_OPEN_TARGET, _LAST_USER_MESSAGE, _TURN_NUDGED
+        nudge, runtime.current().nudged = stale_target_check(
+            fn_name, args, runtime.current().open_target, runtime.current().user_message, runtime.current().nudged
         )
         if nudge:
             return nudge, False
         if fn_name == "open_app_or_url":
-            _LAST_OPEN_TARGET = (args or {}).get("target", "")
+            runtime.current().open_target = (args or {}).get("target", "")
 
         # Record action in model history hook (audit trail)
         if _HISTORY_HOOK:
@@ -399,7 +430,7 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
             prev_face = _HUD_HOOK("coding")
         except Exception as _e_silent:
             _config_mod.log_silent("execute_tool", _e_silent)
-    _LAST_TOOL_EXECUTED = (fn_name, time.time())
+    runtime.current().last_tool = (fn_name, time.time())
 
     # 6. Execute Handler
     # Fleet registry (aria/fleet.py, the Mark-LVI port): the call
@@ -413,11 +444,20 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
             fn_name, _fleet_mod.detail_for(fn_name, args or {}))
     except Exception:
         _fleet_token = None
+    operation_id = runtime.operation_id() or uuid.uuid4().hex
+    cached = action_journal.begin(operation_id, fn_name, args or {})
+    if cached is not None:
+        return str(cached), False
+    previous_scope = getattr(_SCOPE, 'preauthorized', False)
     _SCOPE.preauthorized = bool(preauthorized)
     try:
         handler = _REGISTRY.get(fn_name)
         if handler:
-            r = handler(args or {})
+            runtime.check_cancelled()
+            lock = runtime.DESKTOP_LOCK if fn_name in DESKTOP else contextlib.nullcontext()
+            with lock:
+                runtime.check_cancelled()
+                r = handler(args or {})
         else:
             # Unknown tool name: NEVER execute a fuzzy match directly.
             # Argument validation, safe mode, and approval above all ran
@@ -444,8 +484,14 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
                      f"want — it was NOT run.")
             else:
                 r = f"Unknown tool: {fn_name}"
+    except runtime.Cancelled:
+        action_journal.finish(operation_id, ToolResult('unverified',
+            'status=unverified reason="Cancelled before the action completed"'))
+        raise
     except Exception as e:
         try:
+            if not retry_safe(fn_name):
+                raise RuntimeError('Automatic retry is disabled for tools with effects')
             from aria.agent.self_healing import attempt_auto_heal
             healed, healed_res, heal_msg = attempt_auto_heal(fn_name, args or {}, e, handler)
             if healed:
@@ -455,7 +501,7 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
         except Exception:
             r = f"[Tool Error: {e}]"
     finally:
-        _SCOPE.preauthorized = False
+        _SCOPE.preauthorized = previous_scope
         if _HUD_HOOK and prev_face:
             try:
                 _HUD_HOOK(prev_face)
@@ -463,7 +509,7 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
                 _config_mod.log_silent("execute_tool", _e_silent)
 
     # Autonomous Self-Healing on tool output returning recoverable failure
-    if isinstance(r, str) and ("Traceback (most recent call last)" in r or "FileNotFoundError" in r or "No such file or directory" in r or "ModuleNotFoundError" in r or "unicodeescape" in r) and "[Autonomous Self-Healing:" not in r:
+    if retry_safe(fn_name) and isinstance(r, str) and ("Traceback (most recent call last)" in r or "FileNotFoundError" in r or "No such file or directory" in r or "ModuleNotFoundError" in r or "unicodeescape" in r) and "[Autonomous Self-Healing:" not in r:
         try:
             from aria.agent.self_healing import attempt_auto_heal
             healed, healed_res, heal_msg = attempt_auto_heal(fn_name, args or {}, r, handler)
@@ -475,8 +521,16 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
         except Exception as _e_silent:
             _config_mod.log_silent("execute_tool", _e_silent)
 
+    # Commit the real receipt BEFORE the caller's mission/task checkpoint.
+    structured = action_journal.add_evidence(fn_name, args or {}, normalize(r))
+    action_journal.finish(operation_id, structured)
+    try:
+        from aria import deliverables
+        deliverables.capture(operation_id, fn_name, structured)
+    except Exception as exc:
+        default_add_log(f'Deliverable indexing failed: {exc}')
     # 7. Truncation and caching
-    r = truncate_output(str(r), MAX_TOOL_OUTPUT)
+    r = truncate_output(str(structured), MAX_TOOL_OUTPUT)
     _TURN_CALLS[sig] = r
 
     # 7b. ARIA ULTIMATE (Module 1) — routine capture. Records the call into the
@@ -736,6 +790,8 @@ def _init_default_registry():
     from aria.tools import gaptools as _gaptools_mod
     _REGISTRY["notify_phone"] = lambda a: _notify_mod.tool_notify_phone(a)
     _REGISTRY["set_backup_mirror"] = lambda a: _backup_mirror_mod.tool_set_backup_mirror(a)
+    from aria.desktop_control import tool_desktop_control
+    _REGISTRY['desktop_control'] = tool_desktop_control
     _REGISTRY["run_shell_command"] = lambda a: _shelltool_mod.tool_run_shell_command(a)
     _REGISTRY["flight_finder"] = lambda a: _gaptools_mod.tool_flight_finder(a)
     _REGISTRY["game_updater"] = lambda a: _gaptools_mod.tool_game_updater(a)

@@ -5,6 +5,7 @@ work schedule integration, and break nudges.
 """
 
 from __future__ import annotations
+from aria import workspaces
 
 import json
 import os
@@ -231,7 +232,7 @@ def tool_briefing() -> str:
 def sched_add(kind: str, prompt: str, delay_s: int = 0, interval_s: int = 0) -> int:
     nxt = datetime.now() + timedelta(seconds=delay_s if kind == "once" else interval_s)
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
         cur = conn.cursor()
         cur.execute("""INSERT INTO scheduled_tasks (kind, prompt, interval_s, next_run, created)
                        VALUES (?, ?, ?, ?, ?)""",
@@ -246,7 +247,7 @@ def sched_add(kind: str, prompt: str, delay_s: int = 0, interval_s: int = 0) -> 
 
 def sched_list() -> List[Tuple[Any, ...]]:
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
         cur = conn.cursor()
         cur.execute("SELECT id, kind, prompt, interval_s, next_run FROM scheduled_tasks ORDER BY next_run")
         rows = cur.fetchall()
@@ -256,7 +257,7 @@ def sched_list() -> List[Tuple[Any, ...]]:
 
 def sched_cancel(task_id: int) -> bool:
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
         n = conn.execute("DELETE FROM scheduled_tasks WHERE id = ?", (task_id,)).rowcount
         conn.commit()
         conn.close()
@@ -273,7 +274,7 @@ def sched_snooze(task_id: int, delay_s: int = 3600) -> bool:
     nxt = (datetime.now() + timedelta(seconds=delay_s)).strftime(
         "%Y-%m-%d %H:%M:%S")
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
         n = conn.execute(
             "UPDATE scheduled_tasks SET next_run = ? "
             "WHERE id = ? AND kind = 'once'",
@@ -294,7 +295,7 @@ def sched_add_on_return(message: str) -> int:
     sentinel next_run so the timed due-query never picks it up; the
     reminder gate delivers it after Alek returns to the laptop."""
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
         cur = conn.cursor()
         cur.execute("""INSERT INTO scheduled_tasks (kind, prompt, interval_s, next_run, created)
                        VALUES (?, ?, ?, ?, ?)""",
@@ -310,7 +311,7 @@ def sched_add_on_return(message: str) -> int:
 def sched_on_return_rows():
     """(tid, message, created_datetime) for pending on-return rows."""
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
         cur = conn.cursor()
         cur.execute("SELECT id, prompt, created FROM scheduled_tasks "
                     "WHERE kind = 'on_return' ORDER BY created")
@@ -448,7 +449,7 @@ def tool_break_reminders(enabled: Any = True) -> str:
 def _fire_brief(tid: int, interval_s: int, is_busy_fn: Optional[Callable[[], bool]] = None):
     nxt = datetime.now() + timedelta(seconds=interval_s or 3600)
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
         conn.execute("UPDATE scheduled_tasks SET next_run = ?, kind = 'brief' WHERE id = ?",
                      (nxt.strftime("%Y-%m-%d %H:%M:%S"), tid))
         conn.commit()
@@ -495,117 +496,122 @@ def scheduler_loop(is_busy_fn: Optional[Callable[[], bool]] = None,
             time.sleep(5)
             continue
         try:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            due = []
-            with DB_LOCK:
-                conn = sqlite3.connect(DB_PATH)
-                cur = conn.cursor()
-                cur.execute("SELECT id, kind, prompt, interval_s FROM scheduled_tasks WHERE next_run <= ?", (now,))
-                due = cur.fetchall()
-                conn.close()
-
-            for tid, kind, prompt, interval_s in due:
-                if kind == "once":
-                    # Quiet hours (pass 6): a timed reminder that
-                    # falls due overnight waits for the first
-                    # eligible tick — deferred, never dropped.
-                    try:
-                        from aria.reminder_gate import timed_eligible
-                        if not timed_eligible(datetime.now()):
-                            if tid not in _deferred_logged:
-                                _deferred_logged.add(tid)
-                                add_log(f"Reminder #{tid} held: quiet hours")
-                            continue
-                    except Exception:
-                        pass
+            for project in workspaces.list_projects():
+                with workspaces.use(project['id']):
+                    from aria import memory
+                    if not os.path.exists(memory.db_path()):
+                        memory.init_databases()
+                    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    due = []
                     with DB_LOCK:
-                        conn = sqlite3.connect(DB_PATH)
-                        conn.execute("DELETE FROM scheduled_tasks WHERE id = ?", (tid,))
-                        conn.commit()
+                        conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
+                        cur = conn.cursor()
+                        cur.execute("SELECT id, kind, prompt, interval_s FROM scheduled_tasks WHERE next_run <= ?", (now,))
+                        due = cur.fetchall()
                         conn.close()
-                    _bump_sched_count(-1)
-                    add_log(f"Reminder #{tid} firing")
-                    try:  # Module 5 event bus: never break scheduling
-                        from aria.events import emit_reminder_fired
-                        emit_reminder_fired(tid, prompt)
+
+                    for tid, kind, prompt, interval_s in due:
+                        if kind == "once":
+                            # Quiet hours (pass 6): a timed reminder that
+                            # falls due overnight waits for the first
+                            # eligible tick — deferred, never dropped.
+                            try:
+                                from aria.reminder_gate import timed_eligible
+                                if not timed_eligible(datetime.now()):
+                                    if tid not in _deferred_logged:
+                                        _deferred_logged.add(tid)
+                                        add_log(f"Reminder #{tid} held: quiet hours")
+                                    continue
+                            except Exception:
+                                pass
+                            with DB_LOCK:
+                                conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
+                                conn.execute("DELETE FROM scheduled_tasks WHERE id = ?", (tid,))
+                                conn.commit()
+                                conn.close()
+                            _bump_sched_count(-1)
+                            add_log(f"Reminder #{tid} firing")
+                            try:  # Module 5 event bus: never break scheduling
+                                from aria.events import emit_reminder_fired
+                                emit_reminder_fired(tid, prompt)
+                            except Exception as _e_silent:
+                                _config_silent.log_silent("scheduler_loop", _e_silent)
+                            busy = is_busy_fn() if is_busy_fn else False
+                            if not busy:
+                                speech.speak(prompt)
+                            else:
+                                speech._SPEECH_QUEUE.put(prompt)
+                        elif kind == "brief" or _BRIEF_PROMPT_RE.search(prompt or ""):
+                            _fire_brief(tid, interval_s, is_busy_fn)
+                        elif kind == "screenwatch":
+                            # ARIA ULTIMATE (Module 7): reschedule, then run the check.
+                            nxt = datetime.now() + timedelta(seconds=interval_s or 300)
+                            with DB_LOCK:
+                                conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
+                                conn.execute("UPDATE scheduled_tasks SET next_run = ? WHERE id = ?",
+                                             (nxt.strftime("%Y-%m-%d %H:%M:%S"), tid))
+                                conn.commit(); conn.close()
+                            try:
+                                from aria.screenwatch import check_watch
+                                check_watch(prompt or "")
+                            except Exception as _sw_err:
+                                add_log(f"Screenwatch check failed: {_sw_err}")
+                        elif kind == "pricecheck":
+                            # ARIA ULTIMATE: hourly price-watch check pass.
+                            nxt = datetime.now() + timedelta(seconds=interval_s or 3600)
+                            with DB_LOCK:
+                                conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
+                                conn.execute("UPDATE scheduled_tasks SET next_run = ? WHERE id = ?",
+                                             (nxt.strftime("%Y-%m-%d %H:%M:%S"), tid))
+                                conn.commit(); conn.close()
+                            try:
+                                from aria import pricecheck as _pricecheck_mod
+                                add_log(_pricecheck_mod.check_price_watches())
+                            except Exception as _pc_err:
+                                add_log(f"Pricecheck failed: {_pc_err}")
+                        else:
+                            nxt = datetime.now() + timedelta(seconds=interval_s or 3600)
+                            with DB_LOCK:
+                                conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
+                                conn.execute("UPDATE scheduled_tasks SET next_run = ? WHERE id = ?",
+                                             (nxt.strftime("%Y-%m-%d %H:%M:%S"), tid))
+                                conn.commit()
+                                conn.close()
+                            add_log(f"Recurring task #{tid} firing")
+                            try:  # Module 5 event bus: never break scheduling
+                                from aria.events import emit_task_fired
+                                emit_task_fired(tid, "interval", prompt, interval_s)
+                            except Exception as _e_silent:
+                                _config_silent.log_silent("scheduler_loop", _e_silent)
+                            if run_agent_fn:
+                                threading.Thread(target=run_agent_fn,
+                                                 args=(f"[Scheduled task] {prompt}",),
+                                                 daemon=True).start()
+
+                    # ARIA ULTIMATE (Module 5): inbox poller — emits inbox_new_file
+                    # events for new inbox arrivals. Never break scheduling.
+                    try:
+                        from aria.events import poll_inbox
+                        poll_inbox()
                     except Exception as _e_silent:
                         _config_silent.log_silent("scheduler_loop", _e_silent)
-                    busy = is_busy_fn() if is_busy_fn else False
-                    if not busy:
-                        speech.speak(prompt)
-                    else:
-                        speech._SPEECH_QUEUE.put(prompt)
-                elif kind == "brief" or _BRIEF_PROMPT_RE.search(prompt or ""):
-                    _fire_brief(tid, interval_s, is_busy_fn)
-                elif kind == "screenwatch":
-                    # ARIA ULTIMATE (Module 7): reschedule, then run the check.
-                    nxt = datetime.now() + timedelta(seconds=interval_s or 300)
-                    with DB_LOCK:
-                        conn = sqlite3.connect(DB_PATH)
-                        conn.execute("UPDATE scheduled_tasks SET next_run = ? WHERE id = ?",
-                                     (nxt.strftime("%Y-%m-%d %H:%M:%S"), tid))
-                        conn.commit(); conn.close()
+
+                    # Reminder gate (pass 6): on-return delivery + card
+                    # reconciliation. Never break scheduling.
                     try:
-                        from aria.screenwatch import check_watch
-                        check_watch(prompt or "")
-                    except Exception as _sw_err:
-                        add_log(f"Screenwatch check failed: {_sw_err}")
-                elif kind == "pricecheck":
-                    # ARIA ULTIMATE: hourly price-watch check pass.
-                    nxt = datetime.now() + timedelta(seconds=interval_s or 3600)
-                    with DB_LOCK:
-                        conn = sqlite3.connect(DB_PATH)
-                        conn.execute("UPDATE scheduled_tasks SET next_run = ? WHERE id = ?",
-                                     (nxt.strftime("%Y-%m-%d %H:%M:%S"), tid))
-                        conn.commit(); conn.close()
-                    try:
-                        from aria import pricecheck as _pricecheck_mod
-                        add_log(_pricecheck_mod.check_price_watches())
-                    except Exception as _pc_err:
-                        add_log(f"Pricecheck failed: {_pc_err}")
-                else:
-                    nxt = datetime.now() + timedelta(seconds=interval_s or 3600)
-                    with DB_LOCK:
-                        conn = sqlite3.connect(DB_PATH)
-                        conn.execute("UPDATE scheduled_tasks SET next_run = ? WHERE id = ?",
-                                     (nxt.strftime("%Y-%m-%d %H:%M:%S"), tid))
-                        conn.commit()
-                        conn.close()
-                    add_log(f"Recurring task #{tid} firing")
-                    try:  # Module 5 event bus: never break scheduling
-                        from aria.events import emit_task_fired
-                        emit_task_fired(tid, "interval", prompt, interval_s)
+                        _reminder_gate_tick(is_busy_fn)
                     except Exception as _e_silent:
                         _config_silent.log_silent("scheduler_loop", _e_silent)
-                    if run_agent_fn:
-                        threading.Thread(target=run_agent_fn,
-                                         args=(f"[Scheduled task] {prompt}",),
-                                         daemon=True).start()
 
-            # ARIA ULTIMATE (Module 5): inbox poller — emits inbox_new_file
-            # events for new inbox arrivals. Never break scheduling.
-            try:
-                from aria.events import poll_inbox
-                poll_inbox()
-            except Exception as _e_silent:
-                _config_silent.log_silent("scheduler_loop", _e_silent)
-
-            # Reminder gate (pass 6): on-return delivery + card
-            # reconciliation. Never break scheduling.
-            try:
-                _reminder_gate_tick(is_busy_fn)
-            except Exception as _e_silent:
-                _config_silent.log_silent("scheduler_loop", _e_silent)
-
-            # Durable missions (2026-10-31): the mission
-            # executor's tick — cheap when idle (one indexed
-            # SELECT), single-flight worker thread when a
-            # mission is runnable. Never break scheduling.
-            try:
-                from aria import missions as _missions_mod
-                _missions_mod.executor_tick()
-            except Exception as _e_silent:
-                _config_silent.log_silent("scheduler_loop", _e_silent)
+                    # Durable missions (2026-10-31): the mission
+                    # executor's tick — cheap when idle (one indexed
+                    # SELECT), single-flight worker thread when a
+                    # mission is runnable. Never break scheduling.
+                    try:
+                        from aria import missions as _missions_mod
+                        _missions_mod.executor_tick()
+                    except Exception as _e_silent:
+                        _config_silent.log_silent("scheduler_loop", _e_silent)
         except Exception as e:
             add_log(f"Scheduler err: {e}")
         time.sleep(10)

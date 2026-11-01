@@ -38,7 +38,7 @@ from datetime import datetime
 from typing import Optional
 
 from aria.command_lane import normalize
-from aria import data_dir
+from aria import data_dir, workspaces
 
 SAVE_PHRASES = {"save this for later", "bookmark this"}
 RESUME_PHRASES = {"where were we", "pick up where we left off",
@@ -53,7 +53,7 @@ ACTIONS_MAX = 12
 def default_path() -> str:
     # Install root via aria.data_dir (V20); first resolve
     # migrates any real legacy ~/ARIA/bookmark.json.
-    return data_dir.path("bookmark.json")
+    return workspaces.path("bookmark.json", data_dir.path("bookmark.json"))
 
 
 def is_save(text: str) -> bool:

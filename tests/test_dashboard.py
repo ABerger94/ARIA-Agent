@@ -654,6 +654,8 @@ def test_no_customize_or_extensions_buttons_on_dashboard(monkeypatch, tmp_path):
 
 
 def test_orb_publish_falls_back_when_composite_fails(monkeypatch, tmp_path):
+    from aria import ui_prefs
+    monkeypatch.setattr(ui_prefs, 'get_centerpiece', lambda: 'orb')
     # Alek, 2026-10-27 07:17: after the composite landed, the
     # bridge orb VANISHED — a failing composite must degrade to
     # the plain grab, never to no frames at all.

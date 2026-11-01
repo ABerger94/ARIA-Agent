@@ -29,19 +29,19 @@ from __future__ import annotations
 
 import threading
 from typing import Optional
+from aria import workspaces
 
 MAX_CHARS = 8000
 PREVIEW_CHARS = 80
 
 _LOCK = threading.Lock()
-_PENDING: Optional[dict] = None  # {"text", "chars", "truncated"}
+_PENDING: dict = {}  # {"text", "chars", "truncated"}
 
 
 def set_pending(text: str) -> Optional[dict]:
     """Stage a clipboard snapshot. Returns the staged summary, or
     None when the text is empty / whitespace-only (nothing staged,
     any previous staging left untouched)."""
-    global _PENDING
     t = text or ""
     if not t.strip():
         return None
@@ -49,17 +49,17 @@ def set_pending(text: str) -> Optional[dict]:
     if truncated:
         t = t[:MAX_CHARS]
     with _LOCK:
-        _PENDING = {"text": t, "chars": len(t), "truncated": truncated}
-        return dict(_PENDING)
+        _PENDING[workspaces.current()] = {"text": t, "chars": len(t), "truncated": truncated}
+        return dict(_PENDING[workspaces.current()])
 
 
 def pending_summary() -> Optional[dict]:
     """What is staged, without the full text: {chars, truncated,
     preview} — enough for the dashboard chip. None when empty."""
     with _LOCK:
-        if _PENDING is None:
+        if workspaces.current() not in _PENDING:
             return None
-        p = _PENDING
+        p = _PENDING.get(workspaces.current())
     flat = " ".join(p["text"].split())
     preview = flat[:PREVIEW_CHARS] + ("…" if len(flat) > PREVIEW_CHARS else "")
     return {"chars": p["chars"], "truncated": p["truncated"],
@@ -67,18 +67,16 @@ def pending_summary() -> Optional[dict]:
 
 
 def clear_pending() -> None:
-    global _PENDING
     with _LOCK:
-        _PENDING = None
+        _PENDING.pop(workspaces.current(), None)
 
 
 def consume_block() -> Optional[str]:
     """Take the staged text as a formatted context block for the
     next user turn, clearing the staging. None when empty."""
-    global _PENDING
     with _LOCK:
-        p = _PENDING
-        _PENDING = None
+        p = _PENDING.get(workspaces.current())
+        _PENDING.pop(workspaces.current(), None)
     if p is None:
         return None
     note = " (truncated to the first 8000 characters)" if p["truncated"] else ""

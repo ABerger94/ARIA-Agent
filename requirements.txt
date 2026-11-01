@@ -7,17 +7,9 @@
 #
 #   Install:  py -3.12 -m pip install -r requirements.txt
 #
-# WARNING: several pins below were carried from the audit and are NOT yet
-# verified against the laptop's actual environment. Regenerate this file
-# from the working laptop before treating it as final:
-#   py -3.12 -m pip freeze
-# and commit the result (keeping this header).
-#
-# Installability audit (2026-10-21, crash round 4): EVERY pin below was
-# checked against the PyPI JSON API for a CP312/win_amd64-compatible
-# wheel (the laptop has no MSVC/Rust toolchain, so a pin whose only
-# artifacts are sdists or other-platform wheels can never install).
-# Bumps from that audit are commented at their pins.
+# Editable dependency input. Install requirements-lock.txt for the complete
+# hash-verified CP312/Windows resolution. Native CI checks the actual lock,
+# imports, Qt startup, isolated COM helper, frozen executable and installer.
 opencv-python==4.8.0.76
 numpy==1.26.2
 # COM ISOLATION (crash round 5, 2026-10-21): pyttsx3 (below),
@@ -48,7 +40,8 @@ python-dateutil>=2.8,<3
 # windows never deliver drop events). ARIA_UI_HOST=cv2, or a missing /
 # failed Qt, falls back to the classic window. Floor pin: the laptop
 # already satisfies this (PyQt6 installed for Mark-XXXIX-OR).
-PyQt6>=6.6.0
+PyQt6>=6.6.0,<7
+PyQt6-WebEngine>=6.6.0,<7
 pyserial==3.5
 # pyautogui is sdist-only on PyPI (0.9.54 is the latest upstream
 # release — no wheel-shipping version exists to bump to). It is
@@ -99,7 +92,7 @@ pygetwindow==0.0.9; sys_platform == "win32"
 duckduckgo-search==8.0.1
 aiohttp==3.9.0
 requests==2.31.0
-cryptography==41.0.0
+cryptography>=46,<47
 # Optional: MCP client support (mcp_* tools). Pin <2: the v2 SDK renamed
 # FastMCP and changed client APIs; ARIA targets the v1 API.
 mcp==1.0.0
@@ -123,12 +116,8 @@ tzdata>=2025.1
 # voice works without it, Live simply reports unavailable.
 google-genai>=2.8.0,<3
 
-# Web Push phone notifications (aria/notify.py) — optional at runtime:
-# without these, notifications still toast in the Activity log and
-# queue, only the phone push sink is absent. Pins verified
-# 2026-10-27 for CP312 against the pinned cryptography==41.0.0
-# (pywebpush 2.x needs cryptography>=47 — do not bump without it);
-# http-ece is sdist-only but pure Python, the pyautogui class.
+# Web Push dependencies are resolved together in the Windows lockfile.
+# py-vapid 1.9.6 requires cryptography>=46 (resolver-verified).
 pywebpush==1.14.1
 py-vapid==1.9.6
 http-ece==1.2.1

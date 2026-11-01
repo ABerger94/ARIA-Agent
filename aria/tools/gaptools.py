@@ -140,7 +140,8 @@ def _run_python(code: str) -> str:
 def _workspace_dir() -> Path:
     try:
         from aria import config
-        return Path(config.WORKSPACE_DIR)
+        from aria import workspaces
+        return Path(workspaces.path("", config.WORKSPACE_DIR))
     except Exception:
         return Path(__file__).resolve().parents[2] / "workspace"
 

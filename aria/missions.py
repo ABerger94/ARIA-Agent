@@ -1,70 +1,26 @@
-"""ARIA Durable Mission Layer v1 (Alek's design, approved
-2026-10-31: "I like it. Build it out fully.").
+"""Durable missions with reviewed plans, isolated execution and action receipts.
 
-A mission is a job handed to ARIA once, in plain language, that
-outlives the conversation, a restart, and Alek's shift. She
-plans it (the plan is fixed at creation — no LLM replanning),
-works it step by step, only bothers him at the points the
-authorization envelope says matter, and hands back a result
-with evidence.
+The approved v1 plan/envelope and shared approval store remain the authority.
+State lives in the current project's SQLite database. A single-flight worker
+continues approved missions across project switches. Safe mode is checked
+before preauthorized execution.
 
-Design contract (as approved):
-  * Persistence: missions + mission_steps tables in the SAME
-    SQLite store the scheduler runs on (aria.memory.DB_PATH —
-    <install root>/workspace/aria_memory.db, the store V20
-    confirmed canonical), written through DB_LOCK like the
-    scheduler's own tables. State therefore lives at the
-    install root, never home-derived.
-  * Lifecycle: planned -> running -> (waiting_approval |
-    blocked_input | blocked_model) -> verifying -> done |
-    done_unverified | failed, plus paused / cancelled as user
-    controls. The scheduler's 10s loop calls executor_tick();
-    a single-flight worker thread runs ONE mission at a time,
-    others queue in creation order.
-  * Checkpoints: a step's output is written to its row the
-    moment it succeeds. Completed steps are NEVER replayed —
-    after a restart the executor resumes at the first step
-    whose status is not 'done' (a step interrupted mid-flight
-    re-runs; it was never checkpointed).
-  * The envelope is the contract, set at creation: allowed
-    tools, a spending cap (default $0 — recorded as contract;
-    v1 has no billing seam to meter, so the cap binds by
-    keeping purchase-shaped tools out of the envelope unless
-    named), and irreversible actions pre-approved BY TOOL NAME.
-    A step inside the envelope under approval mode 'auto'
-    runs without asking (auto means auto). A step outside the
-    envelope, or an irreversible action NOT named in it, parks
-    through the EXISTING approval store (aria.approval) in
-    every mode — so it surfaces on the dashboard banner, the
-    Shell action cards, and the phone bridge band, and resolves
-    through the one approve_token / deny_token path. No new
-    approval path exists here.
-  * Safe mode hard-blocks its usual list inside missions too
-    (checked executor-side before any preauthorized dispatch,
-    because preauthorized dispatch skips that check by design).
-  * The plan-approval gate is the one new gate: mission_create
-    parks the plan itself in the approval store as a
-    'mission_create' replay carrying the mission id. Confirm
-    replays it and unlocks execution; Deny cancels the mission.
-  * Verification: after the last step, a verify pass judges
-    the recorded step outputs against the goal (deterministic
-    in v1: every step done, output present and not
-    failure-shaped; an injected verifier may overrule). Max 2
-    repair attempts (the offending steps re-run), then the
-    mission closes done_unverified and SAYS so.
-  * Quiet hours / presence govern speech only — this module
-    never speaks. Delivery is the stored summary, surfaced on
-    the Shell Today strip and the phone bridge Missions
-    section (in-page only, no push).
+A receipt is committed before the mission checkpoint. Recorded effects are
+not repeated after a restart or verifier rejection. An interrupted request
+without a receipt is uncertain and requires reconciliation; only explicitly
+replay-safe reads may retry automatically. Started/ask/unverified results do
+not prove completion. A mission's model spend cap is enforced by the model
+usage ledger, with owner-configured prices. Pause and cancellation prevent
+new steps and preserve receipts for work already in flight.
 
-Cuts honored: no parallel steps, no missions spawning missions
-(mission tools are refused as steps), no new providers, no
-recurring missions (the scheduler owns recurrence).
+Alek's original plan-gate design: 2026-10-31. No model self-approval path is
+introduced; record_receipt is a trusted UI operation, never a model tool.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 import threading
@@ -74,6 +30,9 @@ from typing import Any, Dict, List, Optional
 from aria import config as _config
 from aria.config import add_log
 from aria import memory as _memory
+from aria import runtime, workspaces, action_journal
+from aria.outcome import normalize, FAILED, UNVERIFIED, STARTED, ASK
+from aria.tool_policy import retry_safe
 
 MAX_STEP_RETRIES = 2
 MAX_VERIFY_ATTEMPTS = 2
@@ -119,7 +78,7 @@ def _now() -> str:
 
 def _ensure_tables() -> None:
     with _memory.DB_LOCK:
-        conn = sqlite3.connect(_memory.DB_PATH)
+        conn = sqlite3.connect(_memory.db_path())
         try:
             conn.execute("""CREATE TABLE IF NOT EXISTS missions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -151,7 +110,7 @@ def _ensure_tables() -> None:
 
 def _exec(sql: str, params=()) -> int:
     with _memory.DB_LOCK:
-        conn = sqlite3.connect(_memory.DB_PATH)
+        conn = sqlite3.connect(_memory.db_path())
         try:
             cur = conn.execute(sql, params)
             conn.commit()
@@ -162,7 +121,7 @@ def _exec(sql: str, params=()) -> int:
 
 def _query(sql: str, params=()) -> List[tuple]:
     with _memory.DB_LOCK:
-        conn = sqlite3.connect(_memory.DB_PATH)
+        conn = sqlite3.connect(_memory.db_path())
         try:
             return conn.execute(sql, params).fetchall()
         finally:
@@ -236,12 +195,7 @@ def _is_failure(out: Any) -> bool:
     """ARIA's tool-result failure convention (same markers
     taskexec watches). Approval / safe-mode strings are handled
     before this is consulted."""
-    if not isinstance(out, str):
-        return False
-    return (out.startswith("[Tool Error")
-            or out.startswith("[Argument error")
-            or out.startswith("Unknown tool:")
-            or "Traceback (most recent call last)" in out)
+    return normalize(out).status == FAILED
 
 
 def _known_tools() -> set:
@@ -273,6 +227,12 @@ def create_mission(goal: str, steps: List[Dict[str, Any]], *,
     if not steps:
         return ("[Mission error: a mission needs at least one "
                 "step.]")
+    try:
+        spend_cap = float(spend_cap)
+        if not math.isfinite(spend_cap) or spend_cap < 0:
+            raise ValueError()
+    except (ValueError, TypeError):
+        return '[Mission error: model spend cap must be a finite nonnegative number.]'
     known = _known_tools()
     clean_steps = []
     for i, s in enumerate(steps):
@@ -332,7 +292,7 @@ def _plan_text(m: Dict[str, Any], steps: List[Dict[str, Any]]) -> str:
                      f"{json.dumps(s['args'])[:160]}")
     lines.append(
         f"Envelope: tools [{', '.join(env.get('allowed_tools') or [])}]; "
-        f"spend cap ${env.get('spend_cap', 0):g}; pre-approved "
+        f"model spend cap ${env.get('spend_cap', 0):g}; pre-approved "
         f"irreversible: "
         f"{', '.join(env.get('pre_approved_irreversible') or []) or 'none'}.")
     lines.append(
@@ -440,22 +400,10 @@ def _on_approval_resolved(token, tool, args, approved, result):
                         note=f"Step {idx + 1} ({stool}) was "
                              f"safe-mode blocked after approval.")
                 return
-            if _is_failure(result):
-                _set_step(step_id, status="failed", output=result,
-                          approval_token=None)
-                _finish(mid, "failed",
-                        note=f"Step {idx + 1} ({stool}) failed "
-                             f"after approval: {result[:200]}")
-                return
-            # Success: this IS the checkpoint — the step's real
-            # output, recorded once, never replayed.
-            _set_step(step_id, status="done",
-                      output=result[:_OUTPUT_CAP],
-                      approval_token=None)
-            if m["status"] == "waiting_approval":
-                _set_mission(mid, status="running")
-            add_log(f"[mission] #{mid} step {idx + 1} approved "
-                    f"and completed")
+            step = next(s for s in _step_rows(mid) if s['id'] == step_id)
+            if not _handle_step_result(mid, step, result):
+                if m['status'] == 'waiting_approval':
+                    _exec("UPDATE missions SET status='running' WHERE id=? AND status='waiting_approval'", (mid,))
             return
         # A parked PLAN resolved by Deny (Confirm replays into
         # approve_plan, which flips the flag itself).
@@ -516,6 +464,18 @@ def _reconcile_parked() -> None:
 
 
 def executor_tick() -> bool:
+    # Keep approved work running even after the desktop switches projects.
+    for project in workspaces.list_projects():
+        with workspaces.use(project['id']):
+            import os
+            if not os.path.exists(_memory.db_path()):
+                _memory.init_databases()
+            if _executor_tick():
+                return True
+    return False
+
+
+def _executor_tick() -> bool:
     """Called from scheduler_loop (guarded there like every
     other subsystem tick). Starts the worker thread when a
     runnable mission exists and none is running. Returns True
@@ -535,15 +495,25 @@ def executor_tick() -> bool:
             return False
         _worker_alive = True
         mid = rows[0][0]
-    threading.Thread(target=_run_mission_guarded, args=(mid,),
+    threading.Thread(target=runtime.copied_call(_mission_entry, mid),
                      daemon=True, name="aria-mission").start()
     return True
+
+
+def _mission_entry(mid):
+    mission = _mission_row(mid)
+    with runtime.execution('mission', execution_id=f'mission:{workspaces.current()}:{mid}',
+                           budget_scope=f'mission:{mid}',
+                           spend_cap=mission['envelope'].get('spend_cap')):
+        _run_mission_guarded(mid)
 
 
 def _run_mission_guarded(mid: int) -> None:
     global _worker_alive
     try:
         _run_mission(mid)
+    except runtime.Cancelled:
+        _finish(mid, 'cancelled', note='Cancelled; an in-flight action may still need reconciliation.')
     except Exception as e:
         try:
             add_log(f"[mission] #{mid} executor error: {e}")
@@ -563,6 +533,7 @@ def _run_mission(mid: int) -> None:
     from aria import approval as _approval
     from aria.tools import dispatch as _dispatch
     while True:
+        runtime.check_cancelled()
         m = _mission_row(mid)
         if m is None or m["status"] in TERMINAL or \
                 m["status"] == "paused":
@@ -578,6 +549,12 @@ def _run_mission(mid: int) -> None:
             except ValueError:
                 pass
         steps = _step_rows(mid)
+        if any(s['status'] == 'uncertain' for s in steps):
+            _set_mission(mid, status='blocked_input')
+            return
+        if any(s['status'] == 'waiting' for s in steps):
+            _set_mission(mid, status='waiting_approval')
+            return
         step = next((s for s in steps
                      if s["status"] in ("pending", "running")),
                     None)
@@ -614,26 +591,32 @@ def _run_mission(mid: int) -> None:
         may_run = allowed and (not _is_irreversible(tool)
                                or pre_ok)
         mode = _approval.get_mode()
-        if may_run and mode == "auto":
-            # Inside the envelope + auto: run without asking.
-            result = _execute_step(_dispatch, tool, args,
-                                   preauthorized=True)
-        elif may_run:
-            # Inside the envelope under a confirm mode: the
-            # dispatcher's own gate decides — non-destructive
-            # runs, destructive parks in the shared store.
-            result = _execute_step(_dispatch, tool, args,
-                                   preauthorized=False)
-        else:
-            # Outside the envelope (or an irreversible action
-            # not named in it): park in the shared store in
-            # EVERY mode — the envelope fork Alek approved.
-            result = _approval.request_approval(
-                tool, args,
-                desc=f"Mission #{mid} step {step['idx'] + 1}: "
-                     f"{_approval._describe_tool(tool, args)} "
-                     f"(outside the mission's envelope — goal: "
-                     f"{m['goal']})")
+        # One logical action id survives restarts and approval replay. Only
+        # explicitly replay-safe reads get a new id for an intentional retry.
+        operation_id = f"mission:{mid}:step:{step['id']}"
+        if retry_safe(tool):
+            operation_id += f":retry:{step['retries']}:verify:{m['verify_attempts']}"
+        with runtime.operation(operation_id):
+            if may_run and mode == "auto":
+                # Inside the envelope + auto: run without asking.
+                result = _execute_step(_dispatch, tool, args,
+                                       preauthorized=True)
+            elif may_run:
+                # Inside the envelope under a confirm mode: the
+                # dispatcher's own gate decides — non-destructive
+                # runs, destructive parks in the shared store.
+                result = _execute_step(_dispatch, tool, args,
+                                       preauthorized=False)
+            else:
+                # Outside the envelope (or an irreversible action
+                # not named in it): park in the shared store in
+                # EVERY mode — the envelope fork Alek approved.
+                result = _approval.request_approval(
+                    tool, args,
+                    desc=f"Mission #{mid} step {step['idx'] + 1}: "
+                         f"{_approval._describe_tool(tool, args)} "
+                         f"(outside the mission's envelope — goal: "
+                         f"{m['goal']})")
         if _handle_step_result(mid, step, result):
             return  # parked / blocked / finished — stop here
         # else the step completed (or was re-queued for retry);
@@ -678,9 +661,15 @@ def _handle_step_result(mid: int, step: Dict[str, Any],
         add_log(f"[mission] #{mid} blocked on input: "
                 f"{question[:80]}")
         return True
+    structured = normalize(result)
+    if structured.status in (UNVERIFIED, STARTED, ASK):
+        _set_step(step['id'], status='uncertain', output=str(structured)[:_OUTPUT_CAP])
+        _set_mission(mid, status='blocked_input')
+        add_log(f'[mission] #{mid} needs evidence for step {idx + 1}; it will not be replayed')
+        return True
     if _is_failure(result):
         retries = int(step["retries"] or 0) + 1
-        if retries <= MAX_STEP_RETRIES:
+        if retry_safe(step["tool"]) and retries <= MAX_STEP_RETRIES:
             _set_step(step["id"], status="pending",
                       retries=retries, output=result[:_OUTPUT_CAP])
             add_log(f"[mission] #{mid} step {idx + 1} failed "
@@ -710,6 +699,8 @@ def _verify(mid: int) -> bool:
     worker loop should re-enter."""
     m = _mission_row(mid)
     steps = _step_rows(mid)
+    if m['status'] in TERMINAL or m['status'] == 'paused':
+        return True
     _set_mission(mid, status="verifying")
     verdict: Optional[bool] = None
     if _VERIFIER is not None:
@@ -736,6 +727,10 @@ def _verify(mid: int) -> bool:
         # injected verifier rejected wholesale, the last step —
         # its output is the mission's final evidence).
         targets = bad or steps[-1:]
+        if any(not retry_safe(s['tool']) for s in targets):
+            _finish(mid, 'done_unverified', note='Verification did not pass. '
+                    'Actions with effects were preserved; check their receipts instead of repeating them.')
+            return True
         for s in targets:
             _set_step(s["id"], status="pending", output=None)
         _set_mission(mid, status="running")
@@ -778,10 +773,9 @@ def _finish(mid: int, status: str, note: str = "") -> None:
     m = _mission_row(mid)
     if m is None or m["status"] in TERMINAL:
         return
-    _set_mission(mid, status=status)
-    m = _mission_row(mid)
+    m["status"] = status
     steps = _step_rows(mid)
-    _set_mission(mid, summary=_build_summary(m, steps, note))
+    _set_mission(mid, status=status, summary=_build_summary(m, steps, note))
     add_log(f"[mission] #{mid} {status}: {m['goal'][:80]}")
 
 
@@ -817,11 +811,12 @@ def cancel_mission(mid: int) -> str:
     steps = _step_rows(mid)
     waiting = [s for s in steps if s["status"] == "waiting"
                and s["approval_token"]]
+    runtime.cancel_work(f'mission:{workspaces.current()}:{mid}')
     _finish(mid, "cancelled",
             note="Cancelled by Alek — remaining steps will "
                  "not run.")
     for s in steps:
-        if s["status"] in ("pending", "running", "waiting"):
+        if s["status"] in ("pending", "running", "waiting", "uncertain"):
             _set_step(s["id"], status="cancelled",
                       approval_token=None)
     # Clear any parked approval from every surface (the
@@ -1001,3 +996,17 @@ def tool_mission_cancel(args: dict) -> str:
     if not mid:
         return "[Mission error: mission_id is required.]"
     return cancel_mission(mid)
+
+
+def record_receipt(mid, step_id, reference):
+    """User attests a checked external receipt from Work Center. Never model-callable."""
+    reference = str(reference).strip()
+    if not reference:
+        raise ValueError('Enter the receipt or evidence you checked')
+    step = next(s for s in _step_rows(mid) if s['id'] == step_id)
+    if step['status'] != 'uncertain':
+        raise ValueError('This step is not awaiting reconciliation')
+    result = f'status=done action={step["tool"]} user_checked_receipt={reference}'
+    action_journal.finish(f'mission:{mid}:step:{step_id}', result)
+    _set_step(step_id, status='done', output=result, approval_token=None)
+    _set_mission(mid, status='running')

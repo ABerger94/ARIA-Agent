@@ -1,0 +1,14 @@
+# Linux test harness; the Windows job installs the actual product lock.
+pytest==8.4.2
+ruff==0.17.3
+numpy==1.26.2
+Pillow==10.0.0
+python-dateutil==2.9.0.post0
+tzdata>=2025.1
+psutil==5.9.4
+PyQt6>=6.6,<7
+PyQt6-WebEngine>=6.6,<7
+opencv-python-headless==4.11.0.86
+qrcode==8.2
+aiohttp==3.9.0
+requests==2.31.0

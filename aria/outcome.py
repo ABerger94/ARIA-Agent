@@ -64,6 +64,7 @@ that load before the rest of the package is ready.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 # The three words a tool may answer with, plus the one that asks and
@@ -77,6 +78,58 @@ ASK = "ask"
 STARTED = "started"
 
 _KINDS = (DONE, UNVERIFIED, FAILED, ASK, STARTED)
+
+
+class ResultText(str):
+    """String-compatible result for legacy public APIs that still carries status."""
+    def __new__(cls, text, status=DONE):
+        value = super().__new__(cls, text)
+        value.status = status
+        return value
+
+
+@dataclass(frozen=True)
+class ToolResult:
+    """Execution's result contract; legacy string tools are adapted at the boundary."""
+    status: str
+    text: str
+    receipt: dict = field(default_factory=dict)
+    artifacts: tuple = ()
+
+    def __str__(self):
+        legacy = self.text.startswith(('[AWAITING_APPROVAL', 'NEED_INPUT:', '[Tool Error',
+                                       '[Argument error', 'Unknown tool:', '[Safe mode',
+                                       '[Approval error', '[Duplicate call blocked'))
+        if self.status != DONE and not legacy and kind_of(self.text) != self.status:
+            return f'status={self.status} {self.text}'
+        return self.text
+
+    @property
+    def complete(self):
+        return self.status == DONE
+
+
+def normalize(value):
+    if isinstance(value, ToolResult):
+        return value
+    if isinstance(value, ResultText):
+        return ToolResult(value.status, str(value))
+    if isinstance(value, dict) and value.get('status') in _KINDS:
+        return ToolResult(value['status'], str(value.get('text', '')),
+                          value.get('receipt') or {}, tuple(value.get('artifacts') or ()))
+    text = str(value or '')
+    status = kind_of(text)
+    if status is None:
+        if text.startswith('[AWAITING_APPROVAL') or text.startswith('NEED_INPUT:'):
+            status = ASK
+        elif (text.startswith(('[Tool Error', '[Argument error', 'Unknown tool:',
+                               '[Safe mode', '[Approval error', '[Duplicate call blocked'))
+              or 'Traceback (most recent call last)' in text):
+            status = FAILED
+        else:
+            # Existing tools return human text; preserve that public API.
+            status = DONE if text.strip() else UNVERIFIED
+    return ToolResult(status, text)
 
 
 def _render(value: Any) -> str:

@@ -118,6 +118,14 @@ for _mod_name in ("ddgs", "duckduckgo_search"):
     _m.DDGS = _DDGS
     sys.modules[_mod_name] = _m
 
+# Registry coverage must not depend on host OS window APIs.
+_windows = types.ModuleType('pygetwindow')
+_windows.getAllTitles = lambda: []
+_windows.getAllWindows = lambda: []
+_windows.getWindowsWithTitle = lambda title: []
+_windows.getActiveWindow = lambda: None
+sys.modules['pygetwindow'] = _windows
+
 config = importlib.import_module("aria.config")
 # Hermetic paths BEFORE any module value-copies them from config.
 os.makedirs(os.path.join(TMP, "workspace"), exist_ok=True)

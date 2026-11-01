@@ -34,6 +34,7 @@ BUILD_PATH = os.path.join(REPO_ROOT, "build")
 ADD_DATA = [
     (os.path.join("aria", "assets"), os.path.join("aria", "assets")),
     ("soul.md", "."),
+    (os.path.join("aria", "face_model.obj"), "aria"),
     ("LICENSES", "LICENSES"),
 ]
 
@@ -48,8 +49,7 @@ HIDDEN_IMPORTS = [
 ]
 
 COLLECT_SUBMODULES = [
-    "aria.tools",
-    "aria.agent",
+    "aria",
 ]
 
 
@@ -60,6 +60,7 @@ def build_command():
         "--noconfirm", "--clean",
         "--onedir",
         "--name", APP_NAME,
+        "--icon", os.path.join(REPO_ROOT, "aria", "assets", "aria.ico"),
         "--distpath", DIST_PATH,
         "--workpath", BUILD_PATH,
     ]

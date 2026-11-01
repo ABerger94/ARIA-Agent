@@ -26,6 +26,8 @@ _APP = None
 
 
 def _window(monkeypatch):
+    from aria import ui_prefs
+    monkeypatch.setattr(ui_prefs, "get_centerpiece", lambda: "orb")
     global _APP
     _APP = QApplication.instance() or QApplication([])
     app = _APP

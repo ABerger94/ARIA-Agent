@@ -28,3 +28,24 @@ Thumbs.db
 .idea/
 
 inbox/
+
+# Local workspaces and acceptance output
+workspaces.json
+test-results/
+dist/
+build/
+*.spec
+.aria-companion/
+*.key
+
+approval.json
+reminder_gate.json
+ui.json
+ui_prefs.json
+audio.json
+bookmark.json
+persona.json
+routines/
+
+.venv/
+validation-results/

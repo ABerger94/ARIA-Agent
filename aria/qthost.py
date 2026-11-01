@@ -302,8 +302,24 @@ def run_qt_host(callbacks) -> int:
         is_dashboard = dashboard_enabled()
         window = create_dashboard(callbacks) if is_dashboard else create_window(callbacks)
         timer = QTimer(window)
-        timer.timeout.connect(window.render_once)
+        from aria import resource_policy, hud
+        def tick():
+            active = str(hud.CURRENT_STATE) in {'thinking', 'speaking', 'listening', 'coding'}
+            minimized = window.isMinimized()
+            try:
+                battery = resource_policy.metrics().get('on_battery', False)
+            except Exception:
+                battery = False
+            timer.setInterval(resource_policy.interval(active=active, minimized=minimized, battery=battery))
+            if minimized:
+                callbacks.housekeeping()
+                if not callbacks.is_running():
+                    window.close()
+            else:
+                window.render_once()
+        timer.timeout.connect(tick)
         timer.start(TICK_MS)
+        window._render_timer = timer
         if is_dashboard:
             # Alek, 2026-10-27: she opens FULL WINDOW — maximized
             # from the first frame, on a cold start and on every
@@ -328,6 +344,7 @@ def run_qt_host(callbacks) -> int:
                 window.showMaximized()
         else:
             window.show()
+        resource_policy.mark_ready()
         window.raise_()
         window.activateWindow()
         return int(app.exec())

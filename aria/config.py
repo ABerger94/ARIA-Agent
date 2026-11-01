@@ -4,6 +4,7 @@ Centralized paths, keys, pool rotation, secret redaction, and global parameters.
 """
 
 import os
+import sys
 import json
 import re
 import secrets
@@ -11,7 +12,9 @@ from collections import deque
 from datetime import datetime
 
 # Root paths
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT_DIR = os.path.abspath(os.environ.get('ARIA_DATA_ROOT') or (
+    os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)
+    else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 WORKSPACE_DIR = os.path.join(ROOT_DIR, "workspace")
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
 
@@ -314,6 +317,11 @@ SCHEDULE_DB = os.path.join(WORKSPACE_DIR, "scheduler.db")
 PRICE_WATCH_DB = os.path.join(WORKSPACE_DIR, "price_watches.db")
 MASTER_LOG_PATH = os.path.join(WORKSPACE_DIR, "aria_master_log.md")
 SOUL_PATH = os.path.join(ROOT_DIR, "soul.md")
+if not os.path.exists(SOUL_PATH) and getattr(sys, 'frozen', False):
+    import shutil
+    _bundled_soul = os.path.join(getattr(sys, '_MEIPASS', ROOT_DIR), 'soul.md')
+    if os.path.isfile(_bundled_soul):
+        shutil.copyfile(_bundled_soul, SOUL_PATH)
 SETTINGS_FILE = os.path.join(WORKSPACE_DIR, "settings.json")
 MOOD_FILE = os.path.join(WORKSPACE_DIR, "mood.json")
 
@@ -471,6 +479,7 @@ def set_setting(key: str, value):
 # or new users. Enabled via ARIA_SAFE_MODE=1 env var or the "safe_mode"
 # setting. Checked in dispatch.execute_tool before anything runs.
 SAFE_MODE_BLOCKED_TOOLS = frozenset({
+    "desktop_control",
     "run_python_code",
     "manage_background_job",
     "gui_click",

@@ -1,66 +1,91 @@
-name: ARIA v1 tests
+name: ARIA acceptance
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
-  test:
+  isolated-suites:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Qt runtime libraries
-        # A large share of the loop below is Qt suites (neural field,
-        # orb3d, the shell suites, room, news tab) plus cv2 suites —
-        # they need the same system libraries the dashboard job
-        # installs, or they die at import/collection.
+      - name: Native Qt libraries
         run: sudo apt-get update -qq && sudo apt-get install -y libegl1 libgl1 libglib2.0-0 libxkbcommon0 libdbus-1-3 libxtst6 libxkbfile1 libxcomposite1 libxdamage1 libxrandr2 libnss3 libasound2t64 libpulse0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 libxcb-randr0 libxcb-shape0 libxcb-sync1 libxcb-shm0 libxcb-render0 libxcb-xfixes0 libxrender1 libxi6 libxext6 libxshmfence1 libgbm1 libdrm2 libfontconfig1 libx11-xcb1 libxkbcommon-x11-0
-      - name: Install lint deps
-        run: pip install ruff pytest numpy pillow python-dateutil tzdata psutil==5.9.4 PyQt6 PyQt6-WebEngine opencv-python-headless
-      - name: Ruff — no unused imports
-        run: python -m ruff check aria/ --select F401 --exclude '__init__.py'
-      - name: Test suites (pytest)
+      - name: Test dependencies
+        run: python -m pip install -r requirements-test.txt
+      - name: Lint and syntax
+        run: |
+          python -m ruff check aria/ --select F401 --exclude '__init__.py'
+          python -m compileall -q aria installer scripts
+      - name: Discover all suites (one process per file)
         env:
           QT_QPA_PLATFORM: offscreen
-        # Each suite file stubs sys.modules at import time; run each in its
-        # own process so stubs cannot leak across files (same convention as
-        # tests/_run_suite.py). A failure in any file still fails the job.
-        run: |
-          python -m pytest tests/test_headless.py tests/test_providers.py -q
-          for f in tests/test_briefing.py tests/test_calendar_recurrence.py tests/test_phone_sessions.py tests/test_mailview.py tests/test_failures.py tests/test_orpool.py tests/test_memextract.py tests/test_tasks.py tests/test_taskstore.py tests/test_consolidation.py tests/test_cooldowns.py tests/test_media_control.py tests/test_frame.py tests/test_qthost.py tests/test_fileproc.py tests/test_vision_look.py tests/test_comhost.py tests/test_comclient.py tests/test_isolation.py tests/test_selfedit.py tests/test_bridge.py tests/test_bridge_approvals.py tests/test_registry.py tests/test_commands_pages.py tests/test_ultimate_a.py tests/test_ultimate_b.py tests/test_ultimate_c.py tests/test_ultimate_d.py tests/test_ultimate_e.py tests/test_ical.py tests/test_presence.py tests/test_live.py tests/test_speech_voice.py tests/test_pricecheck.py tests/test_mailview.py tests/test_neural_field.py tests/test_face_frame.py tests/test_visemes.py tests/test_routines_pack.py tests/test_node_hub.py tests/test_smtc.py tests/test_spotify.py tests/test_hud_telemetry.py tests/test_hud_ascii.py tests/test_fleet.py tests/test_outcome.py tests/test_notify.py tests/test_backup_mirror.py tests/test_shelltool.py tests/test_gaptools.py tests/test_live_depth.py tests/test_restart_program.py tests/test_desktop_shortcut.py tests/test_main_vision_pip.py tests/test_memory_tab.py tests/test_memory_map.py tests/test_orb3d.py tests/test_confirm_e2e.py tests/test_approve_replay_dupguard.py tests/test_shell_approve_replay.py tests/test_shell_auto_mode.py tests/test_news_tab.py tests/test_gemini_pool.py tests/test_transcribe_decode.py tests/test_dispatch_unknown_tool.py tests/test_agent_state.py tests/test_live_lock.py tests/test_console_window.py tests/test_research.py tests/test_triggers.py tests/test_browser_agent.py tests/test_browser_auto_mode.py tests/test_dev_agent_no_exec.py tests/test_no_self_approval.py tests/test_log_silent.py tests/test_browser_control_launch.py tests/test_dispatch_browser_control.py tests/test_generated_write_parity.py tests/test_dispatch_generated_write.py tests/test_mcp_approval.py tests/test_mcp_discovered_policy.py tests/test_mcp_setup_transport.py tests/test_selfedit_approval.py tests/test_life_sim.py tests/test_life_process.py tests/test_room_panel.py tests/test_room_dashboard.py tests/test_life_diary.py tests/test_command_lane.py tests/test_context_attach.py tests/test_bookmark.py tests/test_reminder_gate.py tests/test_routine_auth.py tests/test_routine_wrapper_auth.py tests/test_app_launcher.py tests/test_shell_home.py tests/test_shell_panel.py tests/test_shell_dashboard.py tests/test_shell_actions.py tests/test_shell_palette.py tests/test_shell_today.py tests/test_shell_groups.py tests/test_shell_rail.py tests/test_shell_v21_layout.py tests/test_shell_appsfolder.py tests/test_launch_app_approval.py tests/test_data_dir_migration.py tests/test_no_bridge_token_tool.py tests/test_missions.py tests/test_mission_plan_forgery.py tests/test_fetch_url_scheme.py; do python -m pytest "$f" -q || exit 1; done
+          QTWEBENGINE_DISABLE_SANDBOX: "1"
+        run: python scripts/test_suites.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-test-results
+          path: test-results/
 
-  native-dashboard:
+  browser:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Qt runtime libraries
+      - name: Browser runtime
         run: sudo apt-get update -qq && sudo apt-get install -y libegl1 libgl1 libglib2.0-0 libxkbcommon0 libdbus-1-3 libxtst6 libxkbfile1 libxcomposite1 libxdamage1 libxrandr2 libnss3 libasound2t64 libpulse0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 libxcb-randr0 libxcb-shape0 libxcb-sync1 libxcb-shm0 libxcb-render0 libxcb-xfixes0 libxrender1 libxi6 libxext6 libxshmfence1 libgbm1 libdrm2 libfontconfig1 libx11-xcb1 libxkbcommon-x11-0 xvfb xauth
-      - name: UI test dependencies
-        run: pip install pytest PyQt6 PyQt6-WebEngine numpy pillow qrcode opencv-python-headless
-      - name: Real offscreen dashboard acceptance
+      - run: python -m pip install -r requirements-test.txt
+      - name: Real browser acceptance
+        env:
+          QTWEBENGINE_DISABLE_SANDBOX: "1"
+        run: QT_QPA_PLATFORM=xcb xvfb-run -a python -m pytest tests/test_phone_browser.py -q -s
+
+  windows-release:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-build-lock.txt
+      - name: Install the locked product and build tools
+        run: |
+          python -m pip install --require-hashes -r requirements-build-lock.txt
+          python -m pip check
+          python -m pip install pytest==8.4.2
+      - name: Native Windows import, UI, COM and install acceptance
         env:
           QT_QPA_PLATFORM: offscreen
+        run: python -m pytest tests/test_windows_acceptance.py -q
+      - name: Build the distributable
+        run: python installer/build_installer.py
+      - name: Boot the frozen application in diagnostic mode
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: dist/ARIA/ARIA.exe --diagnostics
+      - name: Compile the per-user installer
+        shell: pwsh
         run: |
-          python -m pytest tests/test_dashboard.py -q
-          python -m pytest tests/test_resonance.py -q
-          python -m pytest tests/test_confirm_banner.py -q
-          python -m pytest tests/test_metric_bar.py -q
-          python -m pytest tests/test_video_panel.py -q
-          python -m pytest tests/test_panels.py -q
-          python -m pytest tests/test_customize.py -q
-          python -m pytest tests/test_holo_face.py -q
-          python -m pytest tests/test_news_tab.py -q
-          python -m pytest tests/test_pet_window.py -q
-          python -m pytest tests/test_ui_panels.py -q
-          python -m pytest tests/test_applock.py -q
-          python -m pytest tests/test_missions_shell.py -q
-          python -c "from PyQt6.QtWebEngineWidgets import QWebEngineView"
-          QT_QPA_PLATFORM=xcb xvfb-run -a python -m pytest tests/test_phone_browser.py -q -s
+          $ariaIscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
+          if (-not $ariaIscc) { $ariaIscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $ariaIscc)) { choco install innosetup --yes --no-progress; $ariaIscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $ariaIscc installer/ARIA-Setup.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ARIA-Windows
+          path: |
+            dist/ARIA/
+            installer/Output/*.exe

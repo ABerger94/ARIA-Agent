@@ -207,7 +207,8 @@ class NodeHub:
             # with one phone in the house that is simply the phone,
             # and with several it is the one that most recently
             # proved it is alive.
-            return max(self._nodes.values(), key=lambda n: n.connected_at)
+            phones = [n for n in self._nodes.values() if n.kind != 'desktop']
+            return max(phones, key=lambda n: n.connected_at) if phones else None
 
     # ── commands (tools side) ─────────────────────────────────────────
 

@@ -73,6 +73,15 @@ _ORIG_WRITE = dispatch._REGISTRY.get('write_file')
 def _stub_write(args):
     args = dict(args or {})
     _WRITES.append(args)
+    from aria.tools import builtins
+    from aria import config
+    builtins.WORKSPACE_DIR = os.path.join(_TMPHOME, 'files')
+    os.makedirs(builtins.WORKSPACE_DIR, exist_ok=True)
+    config.WORKSPACE_DIR = builtins.WORKSPACE_DIR
+    target = os.path.join(builtins.WORKSPACE_DIR, args['filename'])
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, 'w', encoding='utf-8') as stream:
+        stream.write(str(args.get('content', '')))
     return (f"Successfully wrote {len(str(args.get('content', '')))} "
             f"characters to {args.get('filename', '')}.")
 

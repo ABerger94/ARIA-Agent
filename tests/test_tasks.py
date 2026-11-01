@@ -90,7 +90,7 @@ class ScriptedTool:
 
 
 def _register(name, tool):
-    dispatch.register_tool(name, tool)
+    dispatch.register_tool(name, tool, replay_safe=True)
     return tool
 
 
@@ -351,7 +351,7 @@ def test_queue_executor_end_to_end():
     steps = [_step("fake_e2e", params={"x": "a"}),
              _step("fake_e2e", params={"x": "{prev}"})]
     ex = taskexec.AgentExecutor(
-        llm=lambda p, s: _plan_json(steps),
+        llm=lambda p, s=None: "VERDICT: PASS" if s is None else _plan_json(steps),
         summarizer=lambda goal, completed: "E2E SUMMARY",
         sleep_fn=lambda s: None)
     q = taskqueue.TaskQueue(executor_factory=lambda: ex)

@@ -81,7 +81,8 @@ class LifeSupervisor:
         self._proc = None
 
     def _spawn(self):
-        args = [sys.executable, "-m", "aria.life_process"]
+        args = ([sys.executable, "--life-process"] if getattr(sys, "frozen", False)
+                else [sys.executable, "-m", "aria.life_process"])
         if self.p["dir"]:
             args.append(self.p["dir"])
         self._proc = self._popen(

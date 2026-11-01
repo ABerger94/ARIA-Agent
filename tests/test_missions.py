@@ -335,8 +335,8 @@ def test_verify_failure_closes_done_unverified(env):
     row = _pump(mid, {"done_unverified"})
     assert row["status"] == "done_unverified", row
     assert "did not pass" in (row["summary"] or "")
-    # 1 initial run + 2 repair re-runs of the last step.
-    assert len(_calls("fake_note")) == 3
+    # An unknown tool may have effects: verification must preserve its receipt.
+    assert len(_calls("fake_note")) == 1
 
 
 def test_mission_tools_reject_bad_input(env):

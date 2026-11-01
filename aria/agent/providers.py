@@ -35,6 +35,7 @@ from aria.config import (
 )
 from aria import config as _config_silent
 from aria.agent.cooldown import CooldownRegistry
+from aria import runtime, usage
 
 ACTIVE_PROVIDER = PROVIDER_CHAIN[0] if PROVIDER_CHAIN else "ollama_cloud"
 
@@ -357,6 +358,7 @@ class OpenAICompatProvider(Provider):
         self._stream_usage = None
         try:
             for raw_line in resp:
+                runtime.check_cancelled()
                 line = raw_line.decode("utf-8", errors="replace").strip()
                 if not line.startswith("data: "):
                     continue
@@ -428,20 +430,25 @@ class OpenAICompatProvider(Provider):
             return None
         messages = gemini_contents_to_oai_messages(system_instruction, contents)
         tools = gemini_decls_to_oai_tools(tool_decls) if tool_decls else None
-        payload: Dict[str, Any] = {"model": self.model, "messages": messages}
+        runtime.check_cancelled()
+        payload: Dict[str, Any] = {"model": self.model, "messages": messages,
+                                   "max_tokens": usage.max_output_tokens()}
         if tools:
             payload["tools"] = tools
         url = self.base_url + "/chat/completions"
         body = json.dumps(payload).encode("utf-8")
 
-        t0 = time.time()
+        ticket = usage.reserve(self.name, self.model, payload)
+        t0, usage_data, request_ok = time.time(), None, False
         try:
+            runtime.check_cancelled()
             if on_text_chunk:
                 payload["stream"] = True
                 sbody = json.dumps(payload).encode("utf-8")
                 req = urllib.request.Request(url, data=sbody, headers=self._headers())
                 with urllib.request.urlopen(req, timeout=PROVIDER_CALL_TIMEOUT_S) as resp:
                     parts = self._parse_sse_stream(resp, on_text_chunk)
+                usage_data, request_ok = getattr(self, "_stream_usage", None), True
                 _record_call_stats(self.name, int((time.time() - t0) * 1000),
                                    getattr(self, "_stream_usage", None))
                 return {"candidates": [{"content": {"parts": parts}}]}
@@ -450,7 +457,10 @@ class OpenAICompatProvider(Provider):
                 data = json.loads(resp.read().decode("utf-8"))
             _record_call_stats(self.name, int((time.time() - t0) * 1000),
                                data.get("usage"))
+            usage_data, request_ok = data.get("usage"), True
             return {"candidates": [{"content": {"parts": oai_response_to_parts(data)}}]}
+        except runtime.Cancelled:
+            raise
         except urllib.error.HTTPError as e:
             try:
                 detail = e.read().decode("utf-8", errors="replace")[:200]
@@ -504,6 +514,10 @@ class OpenAICompatProvider(Provider):
             self.last_error = f"{type(e).__name__}: {e}"[:200]
             add_log(f"{self.name}: error: {e}")
             return None
+        finally:
+            usage.finish(ticket, usage=usage_data, latency_ms=int((time.time() - t0) * 1000),
+                         status='ok' if request_ok else 'error')
+
 
 def _gemini_providers() -> List[Provider]:
     """One provider per pooled Gemini key (Alek, 2026-10-27).
@@ -570,6 +584,9 @@ def resolve_role_model(role: str) -> Optional[str]:
     being hammered every turn).
     """
     r = (role or "default").strip().lower()
+    override = usage.settings().get("role_models", {}).get(r)
+    if override:
+        return override
     tag: Optional[str] = None
     if r == "vision":
         tag = OLLAMA_VISION_MODEL or None
@@ -811,7 +828,7 @@ def provider_call(
     the other providers would 400/404/403 and quarantine THEIR keys).
     """
     global ACTIVE_PROVIDER
-    chain = _build_chain()
+    chain = usage.order(_build_chain())
     if not chain:
         add_log("provider_call: chain is empty, nothing configured")
         return None
@@ -838,6 +855,7 @@ def provider_call(
     ignore_pairs = bool(candidates) and all(
         _model_in_cooldown(p.name, _eff_model(p)) for p in candidates)
     for provider in chain:
+        runtime.check_cancelled()
         if only_provider and provider.name != only_provider:
             continue
         if not provider.is_available():
@@ -856,6 +874,12 @@ def provider_call(
                 provider, system_instruction, contents, tool_decls,
                 on_text_chunk, model_override,
             )
+        except runtime.Cancelled:
+            raise
+        except usage.BudgetExceeded as exc:
+            runtime.current().budget_error = str(exc)
+            add_log(f'Budget: {exc}')
+            continue
         except Exception as e:  # never let one provider kill the turn
             add_log(f"provider {provider.name} raised: {e}")
             _note_failover(provider.name)

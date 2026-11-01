@@ -1,3 +1,4 @@
+from aria import workspaces
 """
 ARIA Built-in Tool Implementations.
 Standard operational tools for file I/O, web retrieval, system/window interaction,
@@ -129,11 +130,11 @@ def tool_fetch_url(url: str) -> str:
 # ---------------- File Tools ----------------
 def tool_write_file(filename: str, content: str) -> str:
     """Save content to a file in the workspace directory (supports nested subdirectories)."""
-    os.makedirs(WORKSPACE_DIR, exist_ok=True)
+    os.makedirs(workspaces.path("", WORKSPACE_DIR), exist_ok=True)
     clean = filename.strip().replace("\\", "/").lstrip("/")
     if ".." in clean:
         clean = os.path.basename(clean)
-    path = os.path.join(WORKSPACE_DIR, clean)
+    path = os.path.join(workspaces.path("", WORKSPACE_DIR), clean)
     parent_dir = os.path.dirname(path)
     if parent_dir:
         os.makedirs(parent_dir, exist_ok=True)
@@ -148,10 +149,10 @@ def tool_read_file(filename: str) -> str:
     clean = filename.strip().replace("\\", "/").lstrip("/")
     if ".." in clean:
         clean = os.path.basename(clean)
-    path = os.path.join(WORKSPACE_DIR, clean)
+    path = os.path.join(workspaces.path("", WORKSPACE_DIR), clean)
     if not os.path.exists(path):
         # Fallback to base name in workspace root
-        path = os.path.join(WORKSPACE_DIR, os.path.basename(filename))
+        path = os.path.join(workspaces.path("", WORKSPACE_DIR), os.path.basename(filename))
     if not os.path.exists(path):
         return f"File '{filename}' does not exist."
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
@@ -836,7 +837,7 @@ def note_read(date_str: str = "today") -> str:
     """Read voice notes from a given date."""
     day = _resolve_note_date(date_str)
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
         cur = conn.cursor()
         cur.execute("SELECT key, value FROM memory WHERE category='note' AND key LIKE ? ORDER BY key",
                     (f"note {day}%",))
