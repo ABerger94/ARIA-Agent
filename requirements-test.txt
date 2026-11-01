@@ -42,20 +42,24 @@ psutil==5.9.4
     # via -r requirements-test.in
 pygments==2.21.0
     # via pytest
-pyqt6==6.10.2
+pyqt6==6.11.0
     # via
     #   -r requirements-test.in
     #   pyqt6-webengine
-pyqt6-qt6==6.10.2
-    # via pyqt6
+pyqt6-qt6==6.11.2
+    # via
+    #   -r requirements-test.in
+    #   pyqt6
 pyqt6-sip==13.13.0
     # via
     #   pyqt6
     #   pyqt6-webengine
-pyqt6-webengine==6.10.0
+pyqt6-webengine==6.11.0
     # via -r requirements-test.in
-pyqt6-webengine-qt6==6.10.2
-    # via pyqt6-webengine
+pyqt6-webengine-qt6==6.11.2
+    # via
+    #   -r requirements-test.in
+    #   pyqt6-webengine
 pytest==8.4.2
     # via -r requirements-test.in
 python-dateutil==2.9.0.post0

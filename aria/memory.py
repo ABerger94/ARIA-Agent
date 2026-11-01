@@ -567,6 +567,7 @@ def get_display_chat_log():
         with DB_LOCK:
             with sqlite3.connect(path) as conn:
                 rows = conn.execute('SELECT timestamp,sender,message FROM chat_history ORDER BY id DESC LIMIT 1000').fetchall()
+            conn.close()
         _PROJECT_DISPLAY_LOGS[path] = [(str(t)[11:16], who, msg) for t, who, msg in reversed(rows)]
     return _PROJECT_DISPLAY_LOGS[path]
 

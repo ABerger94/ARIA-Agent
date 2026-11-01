@@ -29,6 +29,7 @@ def settings():
     return workspaces.get().get('settings', {})
 
 
+@contextmanager
 def _connect():
     from aria import memory
     conn = sqlite3.connect(memory.db_path(), timeout=10)
@@ -40,7 +41,11 @@ def _connect():
     for name in ('input_rate','output_rate'):
         if name not in columns: conn.execute(f'ALTER TABLE model_usage ADD COLUMN {name} REAL')
     conn.commit()
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def max_output_tokens():

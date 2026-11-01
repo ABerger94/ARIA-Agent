@@ -80,3 +80,11 @@ def test_budget_does_not_leak_between_projects(env, monkeypatch):
         usage.reserve('free','m',{})
         assert len(usage.recent()) == 1
     with runtime.execution('task', project=b): assert usage.recent() == []
+
+
+@pytest.mark.parametrize('module', [action_journal, deliverables, usage])
+def test_receipt_connections_release_windows_file_handles(env, module):
+    with module._connect() as conn:
+        assert conn.execute('SELECT 1').fetchone() == (1,)
+    with pytest.raises(sqlite3.ProgrammingError, match='closed'):
+        conn.execute('SELECT 1')

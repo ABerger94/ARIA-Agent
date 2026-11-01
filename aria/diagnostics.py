@@ -45,7 +45,10 @@ def main():
         window.show(); app.processEvents(); window.render_once()
         center = create_work_center(window, app_main._qt_callbacks())
         center.show(); app.processEvents(); center.refresh()
+        from PyQt6.QtCore import QTimer, QEvent
+        for timer in window.findChildren(QTimer): timer.stop()
         center.close(); window.close(); app.processEvents()
+        app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         from aria.tools.dispatch import get_registered_tools
         checks = {'status':'ok', 'database':True, 'native_dashboard':True,
                   'work_center':True, 'tools':len(get_registered_tools())}
@@ -57,6 +60,8 @@ def main():
                 checks['com_helper'] = bool(result)
             finally:
                 client.close()
+        import gc
+        gc.collect()
         print(json.dumps(checks), flush=True)
         return 0
 

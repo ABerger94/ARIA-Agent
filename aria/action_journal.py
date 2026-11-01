@@ -9,12 +9,14 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import contextmanager
 import time
 
 from aria.outcome import ToolResult, normalize, DONE, FAILED, UNVERIFIED
 from aria.tool_policy import retry_safe
 
 
+@contextmanager
 def _connect():
     from aria import memory
     db = sqlite3.connect(memory.db_path(), timeout=10)
@@ -23,7 +25,11 @@ def _connect():
         state TEXT NOT NULL, result TEXT, receipt TEXT, artifacts TEXT,
         created REAL NOT NULL, updated REAL NOT NULL)''')
     db.commit()
-    return db
+    try:
+        with db:
+            yield db
+    finally:
+        db.close()
 
 
 def signature(tool, args):

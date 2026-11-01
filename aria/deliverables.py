@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 import time
 from pathlib import Path
 
 
+@contextmanager
 def _connect():
     from aria import memory
     conn = sqlite3.connect(memory.db_path(), timeout=10)
@@ -15,7 +17,11 @@ def _connect():
         path TEXT NOT NULL, sha256 TEXT, evidence TEXT NOT NULL, created REAL NOT NULL,
         UNIQUE(action_id,path,sha256))''')
     conn.commit()
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def capture(action_id, tool, result):
