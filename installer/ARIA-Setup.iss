@@ -35,7 +35,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [InstallDelete]
 ; First-run flag: force the wizard on first launch after a (re)install.
 ; The wizard is skippable ("skip" / Ctrl+C), so upgrades just re-verify keys.
-Type: files; Name: "{userprofile}\ARIA\.first_run_done"
+Type: files; Name: "{app}\.first_run_done"
 
 [Files]
 Source: "..\dist\ARIA\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
