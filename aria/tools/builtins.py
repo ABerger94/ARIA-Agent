@@ -63,12 +63,47 @@ def tool_web_search(query: str) -> str:
         return f"Search error: {e}"
 
 
+def _is_http_url(url: str) -> bool:
+    """True only for absolute http(s) URLs. Everything else — file://,
+    ftp://, data:, javascript:, schemeless strings — is not a web fetch,
+    and must never reach a URL opener (urllib speaks file:// too)."""
+    try:
+        return urllib.parse.urlparse(url).scheme.lower() in ("http", "https")
+    except Exception:
+        return False
+
+
+def _http_only_opener() -> urllib.request.OpenerDirector:
+    """An opener that can speak http(s) only: no FileHandler, no
+    FTPHandler, so even an http(s) response redirecting to file://
+    cannot escape the scheme gate — the redirect re-enters this opener
+    and hits UnknownHandler. ProxyHandler is kept so proxied hosts
+    behave exactly as they did under urlopen."""
+    opener = urllib.request.OpenerDirector()
+    for handler in (
+        urllib.request.ProxyHandler(),
+        urllib.request.UnknownHandler(),
+        urllib.request.HTTPHandler(),
+        urllib.request.HTTPSHandler(),
+        urllib.request.HTTPDefaultErrorHandler(),
+        urllib.request.HTTPRedirectHandler(),
+        urllib.request.HTTPErrorProcessor(),
+    ):
+        opener.add_handler(handler)
+    return opener
+
+
+_HTTP_ONLY_OPENER = _http_only_opener()
+
+
 def _fetch_html(url: str) -> Optional[str]:
+    if not _is_http_url(url):
+        return None
     try:
         req = urllib.request.Request(
             url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with _HTTP_ONLY_OPENER.open(req, timeout=10) as resp:
             return resp.read().decode("utf-8", errors="replace")
     except Exception:
         return None
