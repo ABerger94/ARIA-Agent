@@ -23,6 +23,8 @@ from aria.agent import providers as pv
 KEY = 'test-only-provider-key'
 OK = {'choices': [{'message': {'content': 'Done.'}}]}
 SIGNATURE = {'google': {'thought_signature': 'opaque/base64+signature=='}}
+REAL_RESERVE = pv.usage.reserve
+REAL_FINISH = pv.usage.finish
 
 
 class Response:
@@ -184,6 +186,28 @@ def test_missing_keys_are_not_reported_as_rate_limits(monkeypatch):
     assert pv.provider_call('', []) is None
     assert 'No model provider is configured' in pv.provider_failure_message()
     assert 'rate limit' not in pv.provider_failure_message()
+
+
+def test_hello_reaches_the_provider_with_legacy_limits_and_no_prices(monkeypatch, tmp_path):
+    from aria import memory
+    monkeypatch.setattr(memory, 'db_path', lambda: str(tmp_path / 'usage.db'))
+    monkeypatch.setattr(pv.usage, 'settings', lambda: {
+        'daily_budget_usd': 0, 'task_budget_usd': 0, 'model_rates': {}})
+    monkeypatch.setattr(pv.usage, 'reserve', REAL_RESERVE)
+    monkeypatch.setattr(pv.usage, 'finish', REAL_FINISH)
+    monkeypatch.setattr(pv, '_build_chain', lambda: [provider('mistral')])
+    requests = []
+    def serve(req, **kwargs):
+        requests.append(json.loads(req.data))
+        return Response(OK)
+    monkeypatch.setattr(pv.urllib.request, 'urlopen', serve)
+    with runtime.execution('foreground'):
+        result = pv.provider_call('', [{'role': 'user', 'parts': [{'text': 'hello'}]}])
+        assert result['candidates'][0]['content']['parts'] == [{'text': 'Done.'}]
+        assert runtime.current().budget_error == ''
+    assert requests[0]['messages'][0]['content'] == 'hello'
+    assert pv.usage.recent()[0]['status'] == 'ok'
+    assert 'Project spending limits: OFF' in pv.connection_report()
 
 
 def test_background_failure_cannot_replace_foreground_diagnostics(monkeypatch):

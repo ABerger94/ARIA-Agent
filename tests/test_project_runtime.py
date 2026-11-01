@@ -47,7 +47,7 @@ def test_spine_tail_reads_unicode_from_end(env, monkeypatch):
 
 
 def test_budget_reservations_are_atomic_and_unpriced_calls_refused(env):
-    workspaces.update_settings({'task_budget_usd': .006,
+    workspaces.update_settings({'enforce_model_budget': True, 'task_budget_usd': .006,
         'model_rates': {'test:m': {'input':0, 'output':2}}, 'max_output_tokens':2048})
     with runtime.execution('task', budget_scope='shared'):
         ticket = usage.reserve('test', 'm', {})
@@ -75,7 +75,8 @@ def test_budget_does_not_leak_between_projects(env, monkeypatch):
     for pid in [a,b]:
         with workspaces.use(pid):
             memory.init_databases()
-            workspaces.update_settings({'task_budget_usd':0,'model_rates':{'free:m':{'input':0,'output':0}}})
+            workspaces.update_settings({'enforce_model_budget':True, 'task_budget_usd':0,
+                                        'model_rates':{'free:m':{'input':0,'output':0}}})
     with runtime.execution('task', project=a):
         usage.reserve('free','m',{})
         assert len(usage.recent()) == 1
@@ -88,3 +89,35 @@ def test_receipt_connections_release_windows_file_handles(env, module):
         assert conn.execute('SELECT 1').fetchone() == (1,)
     with pytest.raises(sqlite3.ProgrammingError, match='closed'):
         conn.execute('SELECT 1')
+
+
+@pytest.mark.parametrize('limits', [
+    {'daily_budget_usd': 0}, {'task_budget_usd': 0},
+    {'daily_budget_usd': 5, 'task_budget_usd': 1},
+])
+def test_existing_budget_values_do_not_block_hello_without_opt_in(env, limits):
+    workspaces.update_settings({**limits, 'model_rates': {}})
+    assert not usage.project_budget_enabled()
+    with runtime.execution('foreground'):
+        ticket = usage.reserve('mistral', 'mistral-small-latest', {'messages': [{'content': 'hello'}]})
+        usage.finish(ticket, usage={'prompt_tokens': 10, 'completion_tokens': 5})
+    row = usage.recent()[0]
+    assert row['status'] == 'ok' and row['cost'] is None and row['estimated']
+
+
+def test_explicitly_enabled_project_limit_still_refuses_unknown_prices(env):
+    workspaces.update_settings({'enforce_model_budget': True, 'daily_budget_usd': 1, 'model_rates': {}})
+    assert usage.project_budget_enabled()
+    with runtime.execution('foreground'), pytest.raises(usage.BudgetExceeded, match='Spending limits are enabled'):
+        usage.reserve('mistral', 'mistral-small-latest', {})
+
+
+def test_explicit_mission_cap_applies_even_when_project_limits_are_off(env):
+    workspaces.update_settings({'enforce_model_budget': False, 'model_rates': {}})
+    with runtime.execution('mission', spend_cap=0):
+        with pytest.raises(usage.BudgetExceeded, match='approved spending cap'):
+            usage.reserve('mistral', 'mistral-small-latest', {})
+    workspaces.update_settings({'model_rates': {'test:m': {'input': 0, 'output': 1}}})
+    with runtime.execution('mission', spend_cap=0):
+        with pytest.raises(usage.BudgetExceeded, match='budget would be exceeded'):
+            usage.reserve('test', 'm', {})

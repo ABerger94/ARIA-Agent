@@ -11,7 +11,7 @@ def create_work_center(parent=None, callbacks=None):
     from PyQt6.QtGui import QDesktopServices
     from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget,
         QFormLayout, QComboBox, QLineEdit, QPlainTextEdit, QPushButton, QLabel,
-        QListWidget, QListWidgetItem, QInputDialog)
+        QListWidget, QListWidgetItem, QInputDialog, QCheckBox, QScrollArea)
     from aria import workspaces, memory, runtime, missions, deliverables, usage, resource_policy
 
     dialog = QDialog(parent)
@@ -44,25 +44,38 @@ def create_work_center(parent=None, callbacks=None):
         return call
 
     project_page = page('Project settings')
-    form = QFormLayout(); project_page.addLayout(form)
+    settings_content = QWidget()
+    settings_layout = QVBoxLayout(settings_content)
+    area = QScrollArea(); area.setWidgetResizable(True); area.setWidget(settings_content)
+    project_page.addWidget(area, 1)
+    form = QFormLayout(); settings_layout.addLayout(form)
+    dialog.enforce_budget = QCheckBox('Enforce spending limits')
+    dialog.enforce_budget.setToolTip('Off by default. Enable only when you want local USD limits and have configured model prices.')
+    form.addRow(dialog.enforce_budget)
     dialog.daily_budget = QLineEdit(); dialog.task_budget = QLineEdit()
     dialog.output_tokens = QLineEdit()
     form.addRow('Daily model budget (USD; empty = unlimited)', dialog.daily_budget)
     form.addRow('Per-task model budget (USD; empty = unlimited)', dialog.task_budget)
+    def budget_toggled(enabled):
+        dialog.daily_budget.setEnabled(enabled)
+        dialog.task_budget.setEnabled(enabled)
+    dialog.enforce_budget.toggled.connect(budget_toggled)
     form.addRow('Maximum output tokens per model call', dialog.output_tokens)
     dialog.provider_order = QLineEdit(); form.addRow('Provider preference (comma-separated)', dialog.provider_order)
     dialog.role_models = QPlainTextEdit(); dialog.role_models.setMaximumHeight(80)
     form.addRow('Role models (JSON: code / vision)', dialog.role_models)
     dialog.rates = QPlainTextEdit(); dialog.rates.setMaximumHeight(120)
     form.addRow('USD per million tokens (JSON)', dialog.rates)
-    note = QLabel('Example: {"gemini:your-model":{"input":0.10,"output":0.40}}. '
-                  'Enter your provider’s actual prices. Budgeted work refuses unpriced models. '
+    note = QLabel('Spending limits are off by default. Chat works without model prices; usage is still logged. '
+                  'To enforce limits, enable the checkbox and enter actual prices. '
+                  'Example: {"gemini:your-model":{"input":0.10,"output":0.40}}. '
+                  'Enforced limits refuse unpriced models. '
                   'Missing usage remains an estimate. Daily budgets use UTC.')
-    note.setWordWrap(True); project_page.addWidget(note)
+    note.setWordWrap(True); settings_layout.addWidget(note)
     dialog.roots = QPlainTextEdit(); dialog.roots.setMaximumHeight(80)
     form.addRow('File roots (one absolute directory per line; empty = unrestricted)', dialog.roots)
     save = QPushButton('Save project settings'); project_page.addWidget(save)
-    project_page.addStretch()
+    settings_layout.addStretch()
 
     work_page = page('Work')
     dialog.work_list = QListWidget(); work_page.addWidget(dialog.work_list, 1)
@@ -123,6 +136,8 @@ def create_work_center(parent=None, callbacks=None):
 
     def load_settings():
         value = workspaces.get(dialog.project.currentData()).get('settings', {})
+        dialog.enforce_budget.setChecked(value.get('enforce_model_budget') is True)
+        budget_toggled(dialog.enforce_budget.isChecked())
         for field, key in [(dialog.daily_budget, 'daily_budget_usd'), (dialog.task_budget, 'task_budget_usd')]:
             field.setText('' if value.get(key) is None else str(value[key]))
         dialog.output_tokens.setText(str(value.get('max_output_tokens', 2048)))
@@ -132,7 +147,7 @@ def create_work_center(parent=None, callbacks=None):
         dialog.roots.setPlainText('\n'.join(value.get('file_roots', [])))
 
     def save_settings():
-        value = {}
+        value = {'enforce_model_budget': dialog.enforce_budget.isChecked()}
         for field, key in [(dialog.daily_budget,'daily_budget_usd'), (dialog.task_budget,'task_budget_usd')]:
             amount = float(field.text()) if field.text().strip() else None
             if amount is not None and (amount < 0 or not math.isfinite(amount)): raise ValueError('Budgets must be nonnegative numbers')
@@ -147,9 +162,22 @@ def create_work_center(parent=None, callbacks=None):
             if not isinstance(price, dict): raise ValueError('Each model needs input and output prices')
             for key in ('input','output'):
                 if not math.isfinite(float(price[key])) or float(price[key]) < 0: raise ValueError('Prices must be nonnegative numbers')
+        if value['enforce_model_budget']:
+            if not any(value[key] is not None for key in ('daily_budget_usd', 'task_budget_usd')):
+                raise ValueError('Enter a daily or per-task limit, or turn off Enforce spending limits.')
+            if not value['model_rates']:
+                raise ValueError('Add model prices before enabling spending limits, or turn the checkbox off to use chat without prices.')
         value['file_roots'] = [str(Path(v.strip()).expanduser().resolve()) for v in dialog.roots.toPlainText().splitlines() if v.strip()]
         workspaces.update_settings(value, dialog.project.currentData())
-        message.setText('Project settings saved. In-flight work keeps its project; new calls use these settings.')
+        if value['enforce_model_budget']:
+            import sys
+            main_module = sys.modules.get('aria.main')
+            live_manager = getattr(main_module, '_LIVE_MANAGER', None)
+            if live_manager is not None:
+                live_manager.stop()
+                main_module._LIVE_MANAGER = None
+        mode = 'ON' if value['enforce_model_budget'] else 'OFF; usage is tracked without blocking unpriced models'
+        message.setText(f'Project settings saved. Spending limits: {mode}. New calls use these settings.')
     save.clicked.connect(guarded(save_settings))
 
     def change_project():

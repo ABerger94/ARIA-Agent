@@ -117,13 +117,17 @@ def provider_failure_message() -> str:
 def connection_report() -> str:
     """Copyable diagnostics containing no credentials or response bodies."""
     health = provider_health()
-    lines = ['ARIA model connections']
-    for provider in _build_chain():
+    mode = 'ON' if usage.project_budget_enabled() else 'OFF (usage tracking only)'
+    lines = ['ARIA model connections', 'Project spending limits: ' + mode]
+    chain = _build_chain()
+    for provider in chain:
         state = health.get(provider.name, {}).get('summary')
         if not state:
             state = 'ready; not tested' if provider.is_available() else 'not configured or quarantined'
         lines.append(f'{provider.name} / {provider.model}: {state}')
-    return '\n'.join(lines) if len(lines) > 1 else lines[0] + '\nNo providers configured.'
+    if not chain:
+        lines.append('No providers configured.')
+    return '\n'.join(lines)
 
 
 def _note_failover(failed_name: str) -> None:

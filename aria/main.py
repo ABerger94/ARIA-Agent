@@ -977,7 +977,7 @@ def _start_live_if_configured() -> bool:
             return False
         from aria import usage
         policy = usage.settings()
-        if any(policy.get(k) is not None for k in ('daily_budget_usd', 'task_budget_usd')):
+        if usage.project_budget_enabled(policy):
             add_log('Budgeted project: pipeline voice is used so each model call can be reserved.')
             return False
         from aria import live as _live

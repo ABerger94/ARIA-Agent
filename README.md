@@ -2,6 +2,9 @@
 
 Open **Settings → User Guide** for searchable offline help, a **Tasks vs Work Center**
 explanation, and prompt examples you can copy and edit before sending in chat.
+Local model spending limits are **off by default**, including older saved budget
+values. Enable **Work Center → Project settings → Enforce spending limits** only
+when you want them; chat does not require model-price JSON.
 
 Open **Work Center** beside Settings for project workspaces, execution controls,
 file deliverables, model budgets and connected computers. This release also

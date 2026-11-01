@@ -199,20 +199,26 @@ TOPICS = (
             ('Request a saved result', 'Write a concise summary of [source file] and save it as [full output path]. Tell me the exact path and verify that the file exists.'),
         )),
     GuideTopic('budgets', 'Models and budgets', """
-        <p>In <b>Work Center → Project settings</b>, set a daily model budget, per-task
-        model budget, maximum output tokens, and preferred providers/models.
-        Click <b>Save project settings</b>. Blank budget fields mean unlimited.</p>
+        <p><b>Spending limits are off by default.</b> Ordinary chat works without
+        entering model-price JSON. Usage is still logged; costs stay unknown when
+        no prices are supplied. Existing saved budget values do not enable enforcement.</p>
+        <p>To use local limits, open <b>Work Center → Project settings</b>, check
+        <b>Enforce spending limits</b>, enter a daily or per-task budget and model
+        prices, then click <b>Save project settings</b>. Blank limit fields mean unlimited.
+        Turn the checkbox off and save to return to usage tracking without local limits.</p>
         <p>Enter your provider’s actual <b>USD per million input/output tokens</b> in
         the model-rates JSON. Prices are owner-configured; ARIA does not fetch or
         guess your bill. The form’s numbers are examples, not current prices.</p>
-        <p>Budgeted work refuses unpriced models. If a request is blocked, check the
+        <p>Explicitly enforced limits refuse unpriced models. If a request is blocked, check the
         selected model, its rates, remaining allowance, and any separate mission cap.
         Daily limits use <b>UTC</b>.</p>
         <p><b>Models and resources</b> shows model attempts, latency, cost records,
         scope, and reasons. Reservations are conservative; missing provider usage
         stays estimated or unknown. These limits govern ARIA’s model calls, not
         purchases or all activity on an external provider account.</p>
-        <p>Gemini Live is disabled for budgeted projects; the normal speech pipeline
+        <p>A mission's approved spending cap is separate and still applies even
+        when project limits are off. Provider account charges and quotas still apply.</p>
+        <p>Gemini Live is disabled while project spending limits are enforced; the normal speech pipeline
         remains available. Provider keys are managed in Settings → Connections.</p>
         """),
     GuideTopic('resources', 'Performance profiles', """
@@ -314,8 +320,9 @@ TOPICS = (
         project-budget failures have different remedies.</li>
         <li><b>Waiting:</b> inspect Work Center → Work for the current mission step,
         required approval, missing input, or unverified outcome.</li>
-        <li><b>Budget blocked:</b> check actual model rates, project limits, and the
-        mission’s separate spending cap.</li>
+        <li><b>Budget blocked:</b> turn off <b>Enforce spending limits</b> in Work Center
+        → Project settings and save if you want normal chat without a local cap.
+        If you want limits, configure actual model prices. Mission caps apply separately.</li>
         <li><b>File not found:</b> check the current project, exact path, file roots,
         and Deliverables. A record is not a backup.</li>
         <li><b>Second laptop missing:</b> check the companion is running, the bridge

@@ -16,7 +16,10 @@ existing failover hook re-arms pipeline voice.
 
 Project settings include provider order, code/vision role-model overrides,
 maximum response tokens, optional file-tool roots and daily/per-task model
-budgets. Empty budgets preserve unlimited behavior. File roots constrain file
+budgets. **Enforce spending limits is off by default**, including existing
+installs with saved limit values. Ordinary chat does not need price JSON.
+Select that checkbox and save to opt into limits; empty budget fields mean
+unlimited on that axis. File roots constrain file
 tools, not arbitrary shell or Python code; existing approval and safe-mode
 policies govern those tools.
 
@@ -58,6 +61,12 @@ backup. Missing or changed files are reported explicitly.
 
 ## Model budgets
 
+Usage tracking works without local spending limits or configured prices.
+To enforce a project budget, check **Work Center → Project settings → Enforce
+spending limits**, enter a daily or per-task limit and actual model prices,
+then save. Uncheck it and save to stop local project limits from blocking
+requests. Saved numerical limits alone do not enable enforcement.
+
 Prices are configured by the owner in USD per million input/output tokens:
 
 ```json
@@ -73,7 +82,7 @@ The ledger records provider, model, task scope, latency and routing reason.
 Daily limits use UTC. A mission's existing `spend_cap` now bounds its model
 calls, defaults to zero, and requires configured zero-priced models or an
 explicitly approved larger cap for model-using tools. It is not a purchase or
-external-service billing gateway. Gemini Live is disabled for budgeted projects
+external-service billing gateway. Gemini Live is disabled while project limits are enforced
 because its realtime session cannot use this per-request reservation contract.
 
 ## Resource profiles

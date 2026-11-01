@@ -1,7 +1,8 @@
 """Persistent model attempts and atomic budget reservations.
 
-Prices are user-configured USD per million tokens, never guessed. Bounded work
-refuses an unpriced model. Missing usage keeps the conservative reservation
+Project limits are explicitly opt-in; normal chat needs no configured prices.
+Prices are user-configured USD per million tokens, never guessed. Explicitly
+bounded work refuses an unpriced model. Missing usage keeps the conservative reservation
 and is labelled estimated; it is never reported as provider-billed spend.
 """
 from __future__ import annotations
@@ -52,15 +53,28 @@ def max_output_tokens():
     return max(64, min(16384, int(settings().get('max_output_tokens', 2048))))
 
 
+def project_budget_enabled(policy=None):
+    """Project limits are opt-in, including installs with older saved values."""
+    policy = settings() if policy is None else policy
+    return policy.get('enforce_model_budget') is True and any(
+        policy.get(key) is not None for key in ('daily_budget_usd', 'task_budget_usd'))
+
+
 def reserve(provider, model, payload, reason='configured provider order'):
     ctx, policy = runtime.current(), settings()
-    daily = policy.get('daily_budget_usd')
-    task_cap = ctx.spend_cap if ctx.spend_cap is not None else policy.get('task_budget_usd')
+    enforce = project_budget_enabled(policy)
+    daily = policy.get('daily_budget_usd') if enforce else None
+    task_cap = ctx.spend_cap if ctx.spend_cap is not None else (
+        policy.get('task_budget_usd') if enforce else None)
     provider_key = canonical_provider(provider)
     rates = policy.get('model_rates', {}).get(f'{provider_key}:{model}')
     bounded = daily is not None or task_cap is not None
     if rates is None and bounded:
-        raise BudgetExceeded(f'No configured price for {provider_key}:{model}; budgeted call refused')
+        if ctx.spend_cap is not None:
+            raise BudgetExceeded(f'This work has an approved spending cap, but no price is configured '
+                                 f'for {provider_key}:{model}. Add model prices in Work Center → Project settings.')
+        raise BudgetExceeded(f'Spending limits are enabled, but no price is configured for {provider_key}:{model}. '
+                             'Add model prices or turn off Enforce spending limits in Work Center → Project settings.')
     amount = None
     input_rate = output_rate = None
     if rates is not None:
