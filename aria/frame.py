@@ -303,14 +303,19 @@ def _provider_rows() -> Tuple[str, List[Dict[str, str]]]:
         from aria.agent import providers as pv
         from aria import config as cfg
         now = time.time()
+        health = pv.provider_health()
         rows = []
         for p in pv._build_chain():
             state = "live" if p.is_available() else "standby"
             q_until = cfg._KEY_QUARANTINE_UNTIL.get(getattr(p, "api_key", ""), 0)
             if q_until > now:
                 state = "quarantined"
+            last = health.get(p.name, {})
+            if last.get('status') == 'error' and state != 'quarantined':
+                state = 'error'
             rows.append({"name": p.name, "state": state,
-                         "model": getattr(p, "model", "")})
+                         "model": getattr(p, "model", ""),
+                         "last_result": last.get('summary', '')})
         return pv.get_active_provider() or "", rows
     except Exception:
         return "", []

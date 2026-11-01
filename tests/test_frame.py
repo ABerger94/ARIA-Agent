@@ -90,6 +90,7 @@ class _P:
 
 _mod("aria.agent.providers",
      _build_chain=lambda: [_P("Ollama", True), _P("Groq", False)],
+     provider_health=lambda: {},
      get_active_provider=lambda: "Ollama")
 _mod("aria.agent.workers",
      list_background_jobs=lambda limit=25: [{"status": "running"},
@@ -128,6 +129,16 @@ def test_voice_pathway_badges():
     assert frame.voice_pathway({"voice_enabled": True, "voice_ready": True})[0] == "VOICE: EDGE"
     assert frame.voice_pathway({"voice_enabled": True, "voice_ready": False})[0] == "VOICE: SAPI"
     assert frame.voice_pathway({"voice_enabled": False, "voice_ready": True})[0] == "VOICE: MUTED"
+
+
+def test_provider_failure_appears_in_the_readout(monkeypatch):
+    pv = sys.modules['aria.agent.providers']
+    monkeypatch.setattr(pv, 'provider_health', lambda: {
+        'Ollama': {'status': 'error', 'summary': 'provider rejected the request (HTTP 400)'}})
+    active, rows = frame._provider_rows()
+    assert active == 'Ollama'
+    assert rows[0]['state'] == 'error'
+    assert rows[0]['last_result'] == 'provider rejected the request (HTTP 400)'
 
 
 def test_mic_state_from_subsystems():

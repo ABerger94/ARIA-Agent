@@ -41,7 +41,7 @@ from aria.tools.dispatch import (
 import aria.speech as speech
 from aria.agent.shortcuts import check_voice_shortcut
 from aria.agent.providers import provider_call, get_active_provider, get_last_call_stats
-from aria.agent.providers import resolve_role_model, chain_all_quarantined
+from aria.agent.providers import resolve_role_model
 from aria.agent import sentinel
 import aria.hud as hud
 from aria import config as _config_silent
@@ -678,15 +678,12 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                 hud.set_hud_subtitle(f"Running on {get_active_provider()} (fallback)")
 
             if not data or not data.get("candidates"):
-                if getattr(runtime.current(), 'budget_error', ''):
-                    message = runtime.current().budget_error
-                    say(message)
-                    return message
-                if chain_all_quarantined():
-                    say("All providers are rate-limited right now. I'll be back when the limits reset.")
-                    return "All providers rate-limited (429 quarantines)."
-                say("API connection dropped. Standing by.")
-                return "API rate limit or connection drop."
+                from aria.agent.providers import provider_failure_message
+                message = provider_failure_message()
+                hud.set_hud_subtitle(message)
+                log_conversation('A.R.I.A.', message)
+                say(message)
+                return message
 
             candidate = data["candidates"][0]
             model_parts = candidate.get("content", {}).get("parts", [])

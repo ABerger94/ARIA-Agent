@@ -19,6 +19,7 @@ _STATE_COLORS = {
     'live': '#00ff88',
     'standby': '#829aaf',
     'quarantined': '#ff6b00',
+    'error': '#ff6b6b',
 }
 
 
@@ -54,6 +55,8 @@ def _providers_html(active, rows) -> str:
             f'{html.escape(state)}'
             + (f' · {model}' if model else '')
             + marker)
+        if row.get('last_result'):
+            lines.append('Last result: ' + html.escape(str(row['last_result'])))
     return '<br>'.join(lines)
 
 
@@ -73,7 +76,7 @@ def build_providers_widget(parent=None):
     content the standalone dialog shows, so the Settings dialog's
     Providers tab and the dialog can never drift apart. Read-only:
     keys and chain order live in config, not in this surface."""
-    from PyQt6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
+    from PyQt6.QtWidgets import QApplication, QLabel, QPushButton, QVBoxLayout, QWidget
 
     w = QWidget(parent)
     lay = QVBoxLayout(w)
@@ -95,10 +98,24 @@ def build_providers_widget(parent=None):
     refresh_btn = QPushButton('Refresh')
     refresh_btn.clicked.connect(refresh)
     lay.addWidget(refresh_btn)
+    copy_btn = QPushButton('Copy connection report')
+    status = QLabel('')
+    status.setWordWrap(True)
+    def copy_report():
+        try:
+            from aria.agent.providers import connection_report
+            QApplication.clipboard().setText(connection_report())
+            status.setText('Connection report copied. API keys and response bodies are omitted.')
+        except Exception:
+            status.setText('Connection report unavailable.')
+    copy_btn.clicked.connect(copy_report)
+    lay.addWidget(copy_btn)
+    lay.addWidget(status)
     lay.addStretch()
     w._refresh = refresh
     w._body = body
     w._stats = stats_label
+    w._copy_report = copy_btn
     return w
 
 

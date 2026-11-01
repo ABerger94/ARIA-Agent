@@ -568,6 +568,29 @@ def _unload_brain_stubbed():
         _BRAIN_SYS_SNAPSHOT = None
         _BRAIN_PARENT_VISION = None
 
+
+def test_run_agent_reports_the_provider_cause_in_voice_and_conversation():
+    import threading
+    brain = _load_brain_stubbed()
+    try:
+        message = "I couldn't get a model response. gemini: provider rejected the request (HTTP 400)."
+        sys.modules['aria.agent.providers'].provider_failure_message = lambda: message
+        brain.speech._SPEECH_STOP = threading.Event()
+        brain._run_agent_fast_path = lambda *a: None
+        brain.build_system_instruction = lambda *a: 'Test system instruction'
+        brain._compact_conversation_history = lambda: None
+        brain._maybe_restart_after_self_edit = lambda *a: None
+        spoken, conversation, subtitles = [], [], []
+        brain.log_conversation = lambda who, text: conversation.append((who, text))
+        brain.hud.set_hud_subtitle = subtitles.append
+        result = brain.run_agent.__wrapped__('Test request', reply_sink=spoken, silent=True)
+        assert result == message and spoken == [message]
+        assert ('A.R.I.A.', message) in conversation
+        assert message in subtitles
+        assert 'standing by' not in result.lower()
+    finally:
+        _unload_brain_stubbed()
+
 def _install_vision_stub(fn):
     """Install a fake aria.vision (both sys.modules and the parent attr,
     since `from aria import vision` prefers the parent attribute)."""

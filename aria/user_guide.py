@@ -308,6 +308,10 @@ TOPICS = (
     GuideTopic('troubleshooting', 'When work gets stuck', """
         <ul><li><b>No answer:</b> check the configured provider, key, connection, and
         budget. Restart after a provider-key change.</li>
+        <li><b>Model request failed:</b> open Settings → Providers and click Refresh
+        to see the last result. Copy connection report shares a summary without
+        API keys or response bodies. Authentication, quota, model, network, and
+        project-budget failures have different remedies.</li>
         <li><b>Waiting:</b> inspect Work Center → Work for the current mission step,
         required approval, missing input, or unverified outcome.</li>
         <li><b>Budget blocked:</b> check actual model rates, project limits, and the

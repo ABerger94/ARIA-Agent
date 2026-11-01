@@ -32,6 +32,8 @@ class ExecutionContext:
     operation_id: str = ''
     budget_scope: str = ''
     spend_cap: float | None = None
+    budget_error: str = ''
+    provider_failures: list = field(default_factory=list)
     started: float = field(default_factory=time.time)
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 

@@ -17,8 +17,12 @@ quarantined and retried automatically once the quarantine expires.
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
+import math
+import re
 import socket
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -45,6 +49,81 @@ ACTIVE_PROVIDER = PROVIDER_CHAIN[0] if PROVIDER_CHAIN else "ollama_cloud"
 PROVIDER_STATS: Dict[str, Any] = {
     "failovers": 0, "calls": {}, "last_failover": None,
 }
+
+# Sanitized session diagnostics for Settings. Turn failures stay on the
+# execution context, so a background task cannot overwrite a foreground error.
+_HEALTH_LOCK = threading.RLock()
+_PROVIDER_HEALTH: Dict[str, Dict[str, Any]] = {}
+
+
+def provider_health() -> Dict[str, Dict[str, Any]]:
+    with _HEALTH_LOCK:
+        return copy.deepcopy(_PROVIDER_HEALTH)
+
+
+def _record_provider_failure(provider, *, kind=None, code=None, retry_at=0):
+    error = str(getattr(provider, 'last_error', '') or '')
+    match = re.search(r'\bHTTP (\d{3})\b', error)
+    code = code or (int(match.group(1)) if match else None)
+    if kind is None:
+        if code in (401, 403): kind = 'auth'
+        elif code == 429: kind = 'rate_limit'
+        elif code == 402: kind = 'billing'
+        elif code in (404, 410): kind = 'model'
+        elif code == 400: kind = 'request'
+        elif code and code >= 500: kind = 'server'
+        elif any(word in error.lower() for word in ('network', 'timeout', 'connection', 'urlerror')):
+            kind = 'network'
+        else: kind = 'response'
+    descriptions = {
+        'auth': 'API key or permission rejected',
+        'rate_limit': 'rate limit or provider quota reached',
+        'billing': 'provider billing or credits required',
+        'model': 'model or endpoint unavailable',
+        'request': 'provider rejected the request',
+        'server': 'provider service error',
+        'network': 'network connection failed or timed out',
+        'response': 'no usable model response',
+        'unconfigured': 'API key, model, or endpoint not configured',
+        'cooldown': 'temporarily cooling down after a failed request',
+        'budget': 'project model budget blocked this request',
+    }
+    summary = descriptions[kind] + (f' (HTTP {code})' if code else '')
+    if retry_at > time.time():
+        summary += f'; retry in about {math.ceil(retry_at - time.time())} seconds'
+    entry = {'provider': provider.name, 'model': getattr(provider, 'model', ''),
+             'kind': kind, 'code': code, 'summary': summary, 'status': 'error',
+             'checked_at': time.time()}
+    runtime.current().provider_failures.append(entry)
+    with _HEALTH_LOCK:
+        _PROVIDER_HEALTH[provider.name] = entry
+
+
+def provider_failure_message() -> str:
+    ctx = runtime.current()
+    if ctx.budget_error:
+        return ctx.budget_error
+    failures = ctx.provider_failures
+    configured = [f for f in failures if f['kind'] != 'unconfigured']
+    if failures and not configured:
+        return ('No model provider is configured. Add an API key in '
+                'Settings → Connections, then restart ARIA.')
+    if not configured:
+        return 'No model provider responded. Check Settings → Providers for connection details.'
+    detail = '; '.join(f"{f['provider']}: {f['summary']}" for f in configured[:3])
+    return f"I couldn't get a model response. {detail}. Check Settings → Providers for details."
+
+
+def connection_report() -> str:
+    """Copyable diagnostics containing no credentials or response bodies."""
+    health = provider_health()
+    lines = ['ARIA model connections']
+    for provider in _build_chain():
+        state = health.get(provider.name, {}).get('summary')
+        if not state:
+            state = 'ready; not tested' if provider.is_available() else 'not configured or quarantined'
+        lines.append(f'{provider.name} / {provider.model}: {state}')
+    return '\n'.join(lines) if len(lines) > 1 else lines[0] + '\nNo providers configured.'
 
 
 def _note_failover(failed_name: str) -> None:
@@ -104,6 +183,7 @@ def _synth_tool_id(name: str, args: Dict[str, Any]) -> str:
 def gemini_contents_to_oai_messages(
     system_instruction: str,
     contents: List[Dict[str, Any]],
+    include_extra_content: bool = True,
 ) -> List[Dict[str, Any]]:
     """Gemini parts-based contents -> OpenAI chat messages.
 
@@ -135,14 +215,17 @@ def gemini_contents_to_oai_messages(
                 # providers; otherwise synthesize a stable one.
                 tid = fc.get("_oai_id") or _synth_tool_id(name, args)
                 pending_ids.setdefault(name, []).append(tid)
-                tool_calls.append({
+                tool_call = {
                     "id": tid,
                     "type": "function",
                     "function": {
                         "name": name,
                         "arguments": json.dumps(args),
                     },
-                })
+                }
+                if include_extra_content and isinstance(fc.get('_oai_extra_content'), dict):
+                    tool_call['extra_content'] = copy.deepcopy(fc['_oai_extra_content'])
+                tool_calls.append(tool_call)
             msg: Dict[str, Any] = {
                 "role": "assistant",
                 # Never None: several OpenAI-compatible servers (Ollama
@@ -152,6 +235,10 @@ def gemini_contents_to_oai_messages(
             }
             if tool_calls:
                 msg["tool_calls"] = tool_calls
+            if include_extra_content:
+                for part in parts:
+                    if isinstance(part.get('_oai_message_extra_content'), dict):
+                        msg['extra_content'] = copy.deepcopy(part['_oai_message_extra_content'])
             messages.append(msg)
         else:
             # user role: text parts -> user message; functionResponse -> tool.
@@ -275,6 +362,8 @@ def oai_response_to_parts(resp_json: Dict[str, Any]) -> List[Dict[str, Any]]:
         content = msg.get("content")
         if isinstance(content, str) and content:
             parts.append({"text": content})
+        if isinstance(msg.get('extra_content'), dict):
+            parts.append({'_oai_message_extra_content': copy.deepcopy(msg['extra_content'])})
         for tc in msg.get("tool_calls") or []:
             fn = (tc or {}).get("function", {}) or {}
             raw_args = fn.get("arguments") or "{}"
@@ -284,13 +373,16 @@ def oai_response_to_parts(resp_json: Dict[str, Any]) -> List[Dict[str, Any]]:
                 args = {}
             if not isinstance(args, dict):
                 args = {}
-            parts.append({
-                "functionCall": {
-                    "name": fn.get("name", ""),
-                    "args": args,
-                    "_oai_id": tc.get("id"),
-                }
-            })
+            call = {
+                "name": fn.get("name", ""),
+                "args": args,
+                "_oai_id": tc.get("id"),
+            }
+            # Gemini requires this opaque signature on the next tool-result
+            # request. Preserve it verbatim; never invent or log a signature.
+            if isinstance(tc.get('extra_content'), dict):
+                call['_oai_extra_content'] = copy.deepcopy(tc['extra_content'])
+            parts.append({'functionCall': call})
     except Exception as e:
         add_log(f"oai_response_to_parts parse error: {e}")
     return parts
@@ -303,6 +395,15 @@ def oai_response_to_parts(resp_json: Dict[str, Any]) -> List[Dict[str, Any]]:
 # A5: per-attempt socket timeout for every provider leg (see
 # OpenAICompatProvider.call for the rationale). Was a hard-coded 90s.
 PROVIDER_CALL_TIMEOUT_S = 30
+
+
+def _merge_extra_content(target, incoming):
+    """Merge streamed extension objects without changing opaque signatures."""
+    for key, value in incoming.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            _merge_extra_content(target[key], value)
+        else:
+            target[key] = copy.deepcopy(value)
 
 
 class Provider:
@@ -334,7 +435,8 @@ class OpenAICompatProvider(Provider):
         self.last_error: Optional[str] = None
 
     def is_available(self) -> bool:
-        return bool(self.base_url and self.model) and not key_is_quarantined(self.api_key)
+        return bool(self.base_url and self.model and self.api_key
+                    and self.api_key != 'INSERT') and not key_is_quarantined(self.api_key)
 
     def _headers(self) -> Dict[str, str]:
         # Groq sits behind Cloudflare, which 403s (error 1010) Python's
@@ -355,6 +457,7 @@ class OpenAICompatProvider(Provider):
         the final chunk) into self._stream_usage."""
         text_buf = ""
         tc_accum: Dict[int, Dict[str, Any]] = {}
+        message_extra = {}
         self._stream_usage = None
         try:
             for raw_line in resp:
@@ -372,6 +475,8 @@ class OpenAICompatProvider(Provider):
                 if isinstance(chunk.get("usage"), dict):
                     self._stream_usage = chunk["usage"]
                 delta = ((chunk.get("choices") or [{}])[0]).get("delta", {}) or {}
+                if isinstance(delta.get('extra_content'), dict):
+                    _merge_extra_content(message_extra, delta['extra_content'])
                 c = delta.get("content")
                 if isinstance(c, str) and c:
                     text_buf += c
@@ -390,6 +495,8 @@ class OpenAICompatProvider(Provider):
                         acc["name"] = fn["name"]
                     if fn.get("arguments"):
                         acc["args"] += fn["arguments"]
+                    if isinstance(tc.get('extra_content'), dict):
+                        _merge_extra_content(acc.setdefault('extra_content', {}), tc['extra_content'])
         finally:
             if on_text_chunk:
                 try:
@@ -400,6 +507,8 @@ class OpenAICompatProvider(Provider):
         parts: List[Dict[str, Any]] = []
         if text_buf:
             parts.append({"text": text_buf})
+        if message_extra:
+            parts.append({'_oai_message_extra_content': message_extra})
         for idx in sorted(tc_accum):
             acc = tc_accum[idx]
             try:
@@ -408,13 +517,14 @@ class OpenAICompatProvider(Provider):
                 args = {}
             if not isinstance(args, dict):
                 args = {}
-            parts.append({
-                "functionCall": {
-                    "name": acc["name"] or "",
-                    "args": args,
-                    "_oai_id": acc["id"],
-                }
-            })
+            call = {
+                "name": acc["name"] or "",
+                "args": args,
+                "_oai_id": acc["id"],
+            }
+            if acc.get('extra_content'):
+                call['_oai_extra_content'] = acc['extra_content']
+            parts.append({'functionCall': call})
         return parts
 
     def call(self, system_instruction, contents, tool_decls=None, on_text_chunk=None):
@@ -428,7 +538,11 @@ class OpenAICompatProvider(Provider):
         self.last_error = None
         if not self.is_available():
             return None
-        messages = gemini_contents_to_oai_messages(system_instruction, contents)
+        # Google-specific extensions must not leak into a fallback provider's
+        # strict OpenAI payload. Gemini pooled keys share the same wire format.
+        messages = gemini_contents_to_oai_messages(
+            system_instruction, contents,
+            include_extra_content=self.name == 'gemini' or self.name.startswith('gemini_'))
         tools = gemini_decls_to_oai_tools(tool_decls) if tool_decls else None
         runtime.check_cancelled()
         payload: Dict[str, Any] = {"model": self.model, "messages": messages,
@@ -472,7 +586,7 @@ class OpenAICompatProvider(Provider):
                 add_log(f"{self.name}: rate-limited (429), key quarantined 60s: "
                         f"{detail[:120]}")
                 return None
-            if e.code in (400, 401, 402, 403, 404):
+            if e.code in (400, 401, 403):
                 # 400 is a malformed request (OUR payload), not a bad key:
                 # never quarantine — the key is fine and the main loop must
                 # not pay for a bad vision payload or model tag.
@@ -485,7 +599,7 @@ class OpenAICompatProvider(Provider):
                     add_log(f"{self.name}: 400 payload shape: "
                             f"{_payload_fingerprint(payload)}")
                     return None
-                # 401/403 (bad key) and 402/404 keep the long quarantine.
+                # Only authentication/permission failures quarantine a key.
                 quarantine_key(self.api_key, KEY_QUARANTINE_DURATION_S, e.code)
                 add_log(f"{self.name}: HTTP {e.code} ({key_mask(self.api_key)}): "
                         f"{detail[:120]}")
@@ -494,12 +608,12 @@ class OpenAICompatProvider(Provider):
                 # Transient: move on now, retried next turn (no quarantine).
                 add_log(f"{self.name}: HTTP {e.code}, moving on")
                 return None
-            if e.code == 410:
-                # Gone: the model tag is retired, not a key problem. Never
-                # quarantine the key — the role-model fallback in
+            if e.code in (402, 404, 410):
+                # Billing/model errors do not invalidate credentials. The
+                # role-model fallback in
                 # _attempt_provider_call parks the dead tag and retries the
                 # default model; on a default model the chain just moves on.
-                add_log(f"{self.name}: HTTP 410 (model/tag retired, key NOT quarantined): "
+                add_log(f"{self.name}: HTTP {e.code} (key NOT quarantined): "
                         f"{detail[:120]}")
                 return None
             add_log(f"{self.name}: unhandled HTTP {e.code}")
@@ -507,7 +621,8 @@ class OpenAICompatProvider(Provider):
         except (urllib.error.URLError, TimeoutError, ConnectionError,
                 socket.timeout) as e:
             self.last_error = f"network drop: {e}"[:200]
-            quarantine_key(self.api_key, 60, "network_drop")
+            # A network failure says nothing about key validity. Provider/model
+            # cooldowns already handle failover and permit recovery next turn.
             add_log(f"{self.name}: network drop, moving on")
             return None
         except Exception as e:
@@ -781,6 +896,8 @@ def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
                 system_instruction, contents,
                 tool_decls=tool_decls, on_text_chunk=on_text_chunk,
             )
+        except (runtime.Cancelled, usage.BudgetExceeded):
+            raise
         except Exception as e:
             data = None
             provider.last_error = f"raised: {e}"
@@ -799,6 +916,8 @@ def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
                 system_instruction, contents,
                 tool_decls=tool_decls, on_text_chunk=on_text_chunk,
             )
+        except (runtime.Cancelled, usage.BudgetExceeded):
+            raise
         except Exception as e:
             data = None
             provider.last_error = f"raised: {e}"
@@ -828,6 +947,9 @@ def provider_call(
     the other providers would 400/404/403 and quarantine THEIR keys).
     """
     global ACTIVE_PROVIDER
+    ctx = runtime.current()
+    ctx.provider_failures = []
+    ctx.budget_error = ''
     chain = usage.order(_build_chain())
     if not chain:
         add_log("provider_call: chain is empty, nothing configured")
@@ -859,14 +981,28 @@ def provider_call(
         if only_provider and provider.name != only_provider:
             continue
         if not provider.is_available():
+            key = getattr(provider, 'api_key', '')
+            if not key or key == 'INSERT' or not getattr(provider, 'model', ''):
+                _record_provider_failure(provider, kind='unconfigured')
+            else:
+                code = _config_silent._KEY_QUARANTINE_CODE.get(key)
+                retry_at = _config_silent._KEY_QUARANTINE_UNTIL.get(key, 0)
+                kind = 'network' if code == 'network_drop' else None
+                _record_provider_failure(provider, kind=kind,
+                                         code=code if isinstance(code, int) else None,
+                                         retry_at=retry_at)
             continue
         if not ignore_cooldowns and _provider_in_cooldown(provider.name):
             add_log(f"provider {provider.name} in failure cooldown, skipping")
+            _record_provider_failure(provider, kind='cooldown',
+                                     retry_at=_PROVIDER_COOLDOWN.until(provider.name))
             continue
         if not ignore_pairs and _model_in_cooldown(
                 provider.name, _eff_model(provider)):
             add_log(f"model {_eff_model(provider)} on provider "
                     f"{provider.name} in failure cooldown, skipping")
+            _record_provider_failure(provider, kind='cooldown',
+                                     retry_at=_MODEL_COOLDOWN.until(_pair_key(provider.name, _eff_model(provider))))
             continue
         _note_call(provider.name)
         try:
@@ -877,14 +1013,22 @@ def provider_call(
         except runtime.Cancelled:
             raise
         except usage.BudgetExceeded as exc:
-            runtime.current().budget_error = str(exc)
+            ctx.budget_error = str(exc)
+            _record_provider_failure(provider, kind='budget')
             add_log(f'Budget: {exc}')
             continue
         except Exception as e:  # never let one provider kill the turn
             add_log(f"provider {provider.name} raised: {e}")
-            _note_failover(provider.name)
+            provider.last_error = f'raised: {type(e).__name__}'
             data = None
         if data and data.get("candidates"):
+            ctx.budget_error = ''
+            with _HEALTH_LOCK:
+                _PROVIDER_HEALTH[provider.name] = {
+                    'provider': provider.name, 'model': getattr(provider, 'model', ''),
+                    'status': 'ok', 'summary': 'last model request succeeded',
+                    'checked_at': time.time(),
+                }
             _note_provider_ok(provider.name)
             _note_model_ok(provider.name, _eff_model(provider))
             if ACTIVE_PROVIDER != provider.name:
@@ -897,6 +1041,7 @@ def provider_call(
                               getattr(provider, "last_error", None))
         _note_model_failed(provider.name, _eff_model(provider),
                            getattr(provider, "last_error", None))
+        _record_provider_failure(provider)
         add_log(f"provider {provider.name} returned nothing, trying next")
     add_log("provider_call: chain exhausted, all providers down")
     return None

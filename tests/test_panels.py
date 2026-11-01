@@ -69,12 +69,14 @@ def test_providers_dialog_renders_chain_and_stats(monkeypatch):
     frame = types.ModuleType('aria.frame')
     frame._provider_rows = lambda: ('groq', [
         {'name': 'groq', 'state': 'live', 'model': 'llama-3.3'},
-        {'name': 'gemini', 'state': 'quarantined', 'model': 'flash'},
+        {'name': 'gemini', 'state': 'quarantined', 'model': 'flash',
+         'last_result': 'provider rejected the request (HTTP 400)'},
     ])
     providers = types.ModuleType('aria.agent.providers')
     providers.PROVIDER_STATS = {
         'failovers': 2, 'calls': {'groq': 5, 'gemini': 1},
         'last_failover': ('gemini', 123.0)}
+    providers.connection_report = lambda: 'ARIA model connections\ngemini / flash: provider rejected the request (HTTP 400)'
     # aria/agent/__init__ eagerly imports the brain (and speech stack);
     # stub the package so the leaf stub is reachable without it.
     agent_pkg = types.ModuleType('aria.agent')
@@ -92,6 +94,10 @@ def test_providers_dialog_renders_chain_and_stats(monkeypatch):
     assert 'groq' in all_text and 'llama-3.3' in all_text
     assert 'quarantined' in all_text and 'ACTIVE' in all_text
     assert 'Failovers: 2' in all_text and 'Calls: 6' in all_text
+    assert 'Last result: provider rejected the request (HTTP 400)' in all_text
+    from PyQt6.QtWidgets import QPushButton
+    next(b for b in dlg.findChildren(QPushButton) if b.text() == 'Copy connection report').click()
+    assert QApplication.clipboard().text() == providers.connection_report()
     dlg.close(); app.processEvents()
 
 
