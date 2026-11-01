@@ -85,6 +85,7 @@ class ComHostClient:
         self._stopping = False
         self._attempt = 0
         self._exhausted_at: Optional[float] = None
+        self._spawn_error = ''
         self._try_spawn()
 
     # -- lifecycle ---------------------------------------------------
@@ -97,8 +98,10 @@ class ComHostClient:
                 proc = subprocess.Popen(
                     self._command, stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE, text=True, bufsize=1)
-            except Exception:
+            except Exception as exc:
+                self._spawn_error = f'{type(exc).__name__}: {exc}'
                 return False
+            self._spawn_error = ''
             self._proc = proc
             self._spawned_at = time.monotonic()
             self._up = True
@@ -239,7 +242,8 @@ class ComHostClient:
                 proc = self._proc
                 if proc is not None:
                     return proc
-        raise ComHostDown("comhost is down")
+        detail = f' ({self._spawn_error})' if self._spawn_error else ''
+        raise ComHostDown('comhost is down' + detail)
 
     def _send_tracked(self, op: str,
                       payload: Optional[Dict[str, Any]] = None):

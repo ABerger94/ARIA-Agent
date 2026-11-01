@@ -231,3 +231,13 @@ def test_f_default_command_is_the_comhost_file():
     assert cmd[0] == sys.executable
     assert cmd[1].endswith(os.path.join("aria", "comhost.py"))
     assert os.path.exists(cmd[1])
+
+
+def test_spawn_failure_reports_the_original_error(tmp_path):
+    client = ComHostClient(command=[str(tmp_path / 'missing-audio-helper')])
+    try:
+        import pytest
+        with pytest.raises(ComHostDown, match='FileNotFoundError'):
+            client.request('ping')
+    finally:
+        client.close()
