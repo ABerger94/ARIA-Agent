@@ -7,6 +7,7 @@ continuous JSONL spine logging, and shutdown resume card generation.
 
 import os
 import json
+import re
 import sqlite3
 import threading
 import urllib.request
@@ -297,13 +298,21 @@ def _embed_uncached(text):
         return None
 
 
-def _embed(text):
+def _cached_embedding(text):
     cache_key = (workspaces.current(), EMBED_MODEL, text[:2000])
     with _EMBED_LOCK:
         hit = _EMBED_CACHE.get(cache_key)
         if hit and time.monotonic() - hit[0] < 3600:
             _EMBED_CACHE.move_to_end(cache_key)
             return list(hit[1])
+    return None
+
+
+def _embed(text):
+    cached = _cached_embedding(text)
+    if cached is not None:
+        return cached
+    cache_key = (workspaces.current(), EMBED_MODEL, text[:2000])
     vector = _embed_uncached(text)
     if vector:
         with _EMBED_LOCK:
@@ -477,7 +486,7 @@ def memory_map_points() -> List[Dict[str, Any]]:
     return out
 
 
-def build_prompt_memories(query: str = "", top_k: int = 6) -> str:
+def build_prompt_memories(query: str = "", top_k: int = 6, *, local_only=False) -> str:
     """Build a compact, highly relevant memory block for LLM system prompt.
     Always includes core identity facts, dynamic semantic search matches,
     and excludes internal ephemeral keys (prefixed with _)."""
@@ -500,7 +509,7 @@ def build_prompt_memories(query: str = "", top_k: int = 6) -> str:
 
     # 2. Add semantically relevant memories if query exists
     if query:
-        qvec = _embed(query)
+        qvec = _cached_embedding(query) if local_only else _embed(query)
         if qvec:
             q = np.array(qvec, dtype=np.float32)
             q /= (np.linalg.norm(q) or 1)
@@ -528,8 +537,28 @@ def build_prompt_memories(query: str = "", top_k: int = 6) -> str:
                     break
                 selected[k] = (cat, v)
 
-    # 3. If space remains, backfill with most recent durable facts
-    if len(selected) < top_k + len(core_keys):
+    # Foreground prompts never wait on an embedding service and never insert
+    # unrelated recent tasks simply because they were saved most recently.
+    if local_only and query:
+        stop = {'the', 'and', 'for', 'that', 'this', 'what', 'with', 'you', 'your',
+                'can', 'could', 'would', 'please', 'are', 'how', 'does', 'about',
+                'do', 'did', 'is', 'it', 'me', 'my', 'we', 'to', 'of', 'in', 'on',
+                'an', 'as', 'be', 'by', 'or', 'at', 'am', 'if', 'so', 'not', 'just'}
+        terms = set(re.findall(r'[^\W_]{2,}', query.casefold())) - stop
+        ranked = []
+        for index, (cat, key, value) in enumerate(all_rows):
+            if key in selected:
+                continue
+            labels = set(re.findall(r'[^\W_]{2,}', f'{cat} {key}'.casefold()))
+            words = set(re.findall(r'[^\W_]{2,}', str(value).casefold()))
+            score = 2 * len(terms & labels) + len(terms & words)
+            if score:
+                ranked.append((-score, index, cat, key, value))
+        remaining = min(top_k, max(0, top_k + len(core_keys) - len(selected)))
+        for _, _, cat, key, value in sorted(ranked)[:remaining]:
+            selected[key] = (cat, value)
+    # Full semantic recall retains the existing recent-fact fallback.
+    if not local_only and len(selected) < top_k + len(core_keys):
         for cat, k, v in all_rows[:top_k + len(core_keys)]:
             if k not in selected:
                 selected[k] = (cat, v)

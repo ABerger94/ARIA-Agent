@@ -121,6 +121,13 @@ def create_settings_dialog(parent, callbacks):
     dialog.guide_button.clicked.connect(lambda: tabs.setCurrentIndex(guide_index))
     general.addRow('Help and prompt examples', dialog.guide_button)
     dialog.startup = QCheckBox('Read a daily briefing when ARIA starts'); dialog.startup.setChecked(bool(config.get_setting('startup_briefing', True))); general.addRow(dialog.startup)
+    dialog.model_wait = QComboBox()
+    for label, seconds in [('8 seconds — fast fallback', 8), ('15 seconds', 15), ('30 seconds', 30)]:
+        dialog.model_wait.addItem(label, seconds)
+    wait_index = dialog.model_wait.findData(config.get_setting('foreground_provider_timeout_s', 8))
+    dialog.model_wait.setCurrentIndex(max(0, wait_index))
+    dialog.model_wait.setToolTip('How long an interactive model connection may stall before trying a fallback. Delegated tasks and missions keep their longer timeout.')
+    general.addRow('Model connection wait', dialog.model_wait)
     dialog.safe = QCheckBox('Safe mode — block shell, GUI control, email sending, and robot motion'); dialog.safe.setChecked(config.is_safe_mode()); general.addRow(dialog.safe)
     if os.environ.get('ARIA_SAFE_MODE', '').lower() in ('1', 'true', 'yes'):
         dialog.safe.setEnabled(False); dialog.safe.setToolTip('Safe mode is forced by the ARIA_SAFE_MODE environment variable.')
@@ -420,6 +427,7 @@ def create_settings_dialog(parent, callbacks):
             # General tab's preset combo — both set the same accent.
             final_accent = getattr(dialog, '_customize_hex', None) or dialog.accent.currentData()
             values.update(startup_briefing=dialog.startup.isChecked(), safe_mode=dialog.safe.isChecked(),
+                          foreground_provider_timeout_s=dialog.model_wait.currentData(),
                           voice_enabled=dialog.voice.isChecked(), ui_accent=final_accent,
                           tts_voice=dialog.tts.currentText(), briefing_name=dialog.name.text().strip(),
                           briefing_city=dialog.city.text().strip(), briefing_timezone=dialog.zone.text().strip(),

@@ -591,6 +591,36 @@ def test_run_agent_reports_the_provider_cause_in_voice_and_conversation():
     finally:
         _unload_brain_stubbed()
 
+
+def test_greeting_never_calls_a_model_or_continues_old_linkedin_work():
+    brain = _load_brain_stubbed()
+    try:
+        brain.CONVERSATION_HISTORY = [{'role': 'user', 'parts': [{'text': 'Build an old LinkedIn scraper'}]}]
+        def unexpected(*args, **kwargs):
+            raise AssertionError('A greeting reached model/context work')
+        brain.provider_call = unexpected
+        brain.build_system_instruction = unexpected
+        spoken = []
+        result = brain.run_agent.__wrapped__('hello', silent=True, reply_sink=spoken)
+        assert result == "I'm here. What can I help with?"
+        assert spoken == [result] and 'LinkedIn' not in result
+        assert brain.CONVERSATION_HISTORY[-2]['parts'][0]['text'] == 'User: hello'
+    finally:
+        _unload_brain_stubbed()
+
+
+def test_system_prompt_uses_local_recall_and_prioritizes_the_newest_message():
+    brain = _load_brain_stubbed()
+    try:
+        seen = []
+        brain.build_prompt_memories = lambda text, **kwargs: seen.append((text, kwargs)) or 'Local memory'
+        text = brain.build_system_instruction('A new question')
+        assert seen == [('A new question', {'local_only': True})]
+        assert 'Answer the newest user message' in text
+        assert 'not instructions to continue an old task' in text
+    finally:
+        _unload_brain_stubbed()
+
 def _install_vision_stub(fn):
     """Install a fake aria.vision (both sys.modules and the parent attr,
     since `from aria import vision` prefers the parent attribute)."""

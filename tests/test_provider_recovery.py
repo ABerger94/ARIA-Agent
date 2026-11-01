@@ -48,6 +48,7 @@ def isolated(monkeypatch):
     pv.clear_model_cooldown()
     pv.clear_role_model_cooldown()
     pv._PROVIDER_HEALTH.clear()
+    pv._RECENT_FOREGROUND_PROVIDER.clear()
     monkeypatch.setattr(pv.usage, 'reserve', lambda *a, **k: 'test-reservation')
     monkeypatch.setattr(pv.usage, 'finish', lambda *a, **k: None)
     monkeypatch.setattr(pv.usage, 'order', lambda chain: chain)
@@ -221,3 +222,93 @@ def test_background_failure_cannot_replace_foreground_diagnostics(monkeypatch):
         pv._record_provider_failure(inner)
         assert 'groq' in pv.provider_failure_message()
     assert pv.provider_failure_message() == first
+
+
+def test_interactive_stall_timeout_is_shorter_than_background(monkeypatch):
+    monkeypatch.setattr(config, 'get_setting', lambda key, default=None: default)
+    waits = []
+    def serve(req, timeout):
+        waits.append(timeout)
+        return Response(OK)
+    monkeypatch.setattr(pv.urllib.request, 'urlopen', serve)
+    with runtime.execution('foreground'):
+        assert provider().call('', [])
+    with runtime.execution('delegated'):
+        assert provider().call('', [])
+    assert waits == [8, 30]
+
+
+def test_working_fallback_gets_the_next_interactive_turn(monkeypatch):
+    a, b = provider(), provider('groq')
+    a.base_url, b.base_url = 'https://slow.invalid/v1', 'https://ready.invalid/v1'
+    monkeypatch.setattr(pv, '_build_chain', lambda: [a, b])
+    monkeypatch.setattr(pv.usage, 'settings', lambda: {})
+    calls = []
+    def serve(req, **kwargs):
+        calls.append(req.full_url)
+        if 'slow.invalid' in req.full_url:
+            raise urllib.error.URLError('temporary disconnect')
+        return Response(OK)
+    monkeypatch.setattr(pv.urllib.request, 'urlopen', serve)
+    with runtime.execution('foreground'):
+        assert pv.provider_call('', [])
+    with runtime.execution('foreground'):
+        assert pv.provider_call('', [])
+    assert len(calls) == 3
+    assert ['slow.invalid' in url for url in calls] == [True, False, False]
+    assert 'last attempt' in pv.connection_report()
+
+
+def test_explicit_project_provider_preference_remains_authoritative(monkeypatch):
+    a, b = provider(), provider('groq')
+    monkeypatch.setattr(pv, '_build_chain', lambda: [a, b])
+    monkeypatch.setattr(pv.usage, 'settings', lambda: {'provider_order': ['gemini', 'groq']})
+    monkeypatch.setattr(pv.urllib.request, 'urlopen', lambda *a, **k: Response(OK))
+    import time
+    with runtime.execution('foreground') as ctx:
+        pv._RECENT_FOREGROUND_PROVIDER[ctx.project] = ('groq', time.monotonic())
+        assert pv.provider_call('', [])
+        assert pv.get_active_provider() == 'gemini'
+
+
+def test_unreachable_gemini_host_is_not_retried_for_each_pooled_key(monkeypatch):
+    a, b, c = provider(), provider('gemini_2'), provider('groq')
+    a.base_url = b.base_url = 'https://unreachable.invalid/v1'
+    c.base_url = 'https://ready.invalid/v1'
+    monkeypatch.setattr(pv, '_build_chain', lambda: [a, b, c])
+    calls = []
+    def serve(req, **kwargs):
+        calls.append(req.full_url)
+        if 'unreachable.invalid' in req.full_url:
+            raise urllib.error.URLError('host unavailable')
+        return Response(OK)
+    monkeypatch.setattr(pv.urllib.request, 'urlopen', serve)
+    assert pv.provider_call('', [])
+    assert len(calls) == 2
+
+
+def test_heartbeat_only_stream_cannot_keep_interactive_call_waiting(monkeypatch):
+    clock = iter([0, 3, 9])
+    monkeypatch.setattr(pv.time, 'monotonic', lambda: next(clock))
+    chunks = []
+    with pytest.raises(TimeoutError, match='No model output'):
+        provider()._parse_sse_stream(Response(lines=[b': heartbeat\n'] * 3),
+                                     chunks.append, first_output_deadline=8)
+    assert chunks == [None]
+
+
+def test_stream_that_has_started_output_can_finish_normally(monkeypatch):
+    clock = [0]
+    monkeypatch.setattr(pv.time, 'monotonic', lambda: clock[0])
+    chunks = []
+    lines = [b'data: {"choices":[{"delta":{"content":"Hello"}}]}\n',
+             b'data: {"choices":[{"delta":{"content":" there."}}]}\n',
+             b'data: [DONE]\n']
+    def stream():
+        yield lines[0]
+        clock[0] = 100
+        yield from lines[1:]
+    parts = provider()._parse_sse_stream(Response(lines=stream()), chunks.append,
+                                         first_output_deadline=8)
+    assert parts == [{'text': 'Hello there.'}]
+    assert chunks == ['Hello', ' there.', None]

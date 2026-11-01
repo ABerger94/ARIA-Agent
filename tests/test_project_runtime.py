@@ -121,3 +121,19 @@ def test_explicit_mission_cap_applies_even_when_project_limits_are_off(env):
     with runtime.execution('mission', spend_cap=0):
         with pytest.raises(usage.BudgetExceeded, match='budget would be exceeded'):
             usage.reserve('test', 'm', {})
+
+
+def test_foreground_memory_recall_is_local_and_excludes_an_unrelated_old_task(env, monkeypatch):
+    with sqlite3.connect(memory.db_path()) as conn:
+        conn.executemany('INSERT INTO memory(category,key,value) VALUES(?,?,?)', [
+            ('identity', 'user_name', 'Alek'),
+            ('preferences', 'favorite_music', 'Jazz'),
+            ('task', 'linkedin_scraping', 'Build the old LinkedIn scraper'),
+        ])
+    def unexpected(*args, **kwargs):
+        raise AssertionError('Foreground recall tried a remote embedding')
+    monkeypatch.setattr(memory, '_embed', unexpected)
+    monkeypatch.setattr(memory, '_embed_uncached', unexpected)
+    text = memory.build_prompt_memories('What music do I prefer?', local_only=True)
+    assert 'Alek' in text and 'Jazz' in text
+    assert 'LinkedIn' not in text

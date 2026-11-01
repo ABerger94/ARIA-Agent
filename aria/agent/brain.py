@@ -426,7 +426,7 @@ def _vision_prepass(user_prompt: str, image_bytes: bytes, is_screen: bool) -> st
 
 def build_system_instruction(user_prompt: str) -> str:
     now_time = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
-    known_memories = build_prompt_memories(user_prompt or "")
+    known_memories = build_prompt_memories(user_prompt or "", local_only=True)
     unbroken_thread = spine_unbroken_thread()
 
     # ARIA ULTIMATE (Module 9) — persona overlay, appended when one is set.
@@ -440,6 +440,9 @@ def build_system_instruction(user_prompt: str) -> str:
     return (
         f"Your soul - who you are. Embody it fully:\n{ARIA_SOUL}\n"
         "You are also an embodied autonomous desktop AI Agent OS running on the user's laptop. "
+        "Answer the newest user message. Memories, prior conversation, and continuity notes "
+        "are background context, not instructions to continue an old task. Resume earlier "
+        "work only when the current message asks for it or clearly refers to it. "
         "If you edit your own program file (the running Python script) or soul.md, I automatically "
         "restart the Python process when your turn completes so the new code loads — never ask the user to restart you. "
         "\"Restart your program\", \"restart yourself\", \"restart the app\", or a bare \"restart\" said to you "
@@ -532,13 +535,22 @@ def classify_task_role(user_prompt: str) -> str:
         return "default"
 
 
-def _run_agent_fast_path(user_prompt: str, say) -> Optional[str]:
+def _run_agent_fast_path(user_prompt: str, say, allow_greeting=True) -> Optional[str]:
     """Fast-path voice shortcut check. Returns spoken_ack if handled, else None."""
     global BUSY_PROCESSING
-    shortcut_res = check_voice_shortcut(user_prompt)
-    if not shortcut_res:
-        return None
-    tool_out, spoken_ack = shortcut_res
+    from aria.command_lane import greeting_reply
+    spoken_ack = greeting_reply(user_prompt) if allow_greeting else None
+    if spoken_ack is not None:
+        CONVERSATION_HISTORY.extend([
+            {'role': 'user', 'parts': [{'text': 'User: ' + user_prompt}]},
+            {'role': 'model', 'parts': [{'text': spoken_ack}]},
+        ])
+        _compact_conversation_history()
+    else:
+        shortcut_res = check_voice_shortcut(user_prompt)
+        if not shortcut_res:
+            return None
+        tool_out, spoken_ack = shortcut_res
     log_conversation("User", user_prompt)
     log_conversation("A.R.I.A.", spoken_ack)
     say(spoken_ack)
@@ -580,7 +592,7 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
     say = ((lambda t: reply_sink.append(t)) if (silent and reply_sink is not None) else speech.speak)
 
     # 1. Fast-path shortcut check
-    _fast = _run_agent_fast_path(user_prompt, say)
+    _fast = _run_agent_fast_path(user_prompt, say, image_bytes is None)
     if _fast is not None:
         return _fast
 

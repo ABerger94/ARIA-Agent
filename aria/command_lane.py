@@ -65,6 +65,16 @@ def match(text: str) -> Optional[Tuple[str, str]]:
     return _PHRASES.get(normalize(text))
 
 
+def greeting_reply(text: str) -> Optional[str]:
+    """Only complete greetings, never a greeting followed by a real request."""
+    if normalize(text) in {
+        'hello', 'hi', 'hey', 'hello aria', 'hi aria', 'hey aria',
+        'hello there', 'hi there', 'hey there',
+    }:
+        return "I'm here. What can I help with?"
+    return None
+
+
 def try_handle(text: str, *,
                control_fn: Optional[Callable[..., str]] = None,
                volume_fn: Optional[Callable[..., str]] = None

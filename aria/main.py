@@ -275,6 +275,18 @@ def handle_action(mode: str = "voice", typed_prompt: Optional[str] = None, silen
             user_text = block + "\n\n" + user_text
 
     # 5. Multimodal context attachment
+    # A plain greeting needs no provider, memory embedding, or foreground
+    # lock. Check after staged text is attached so attachments are not ignored.
+    if mode == 'voice':
+        from aria.command_lane import greeting_reply
+        greeting = greeting_reply(user_text)
+        if greeting is not None:
+            from aria.memory import log_conversation
+            log_conversation('User', user_text)
+            log_conversation('A.R.I.A.', greeting)
+            agent.brain.LAST_ACTIVITY = time.time()
+            say(greeting)
+            return greeting
     image_bytes = None
     is_screen = False
     if mode == "screen" or any(k in low for k in ["screen", "display", "desktop", "my window"]):

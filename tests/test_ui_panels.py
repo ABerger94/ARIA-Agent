@@ -39,11 +39,13 @@ def test_settings_validate_persist_and_apply(monkeypatch, tmp_path):
     dialog.name.setText('Alek'); dialog.city.setText('Dundalk, Maryland'); dialog.zone.setText('Invalid/Zone')
     dialog.save.click(); assert not saved and speech.VOICE_ENABLED
     dialog.zone.setText('America/New_York'); dialog.voice.setChecked(False); dialog.whisper.setChecked(True)
+    dialog.model_wait.setCurrentIndex(dialog.model_wait.findData(15))
     dialog.volume.setValue(80); dialog.topics.setText('science, world economy')
     dialog.connection_fields['GMAIL_APP_PASSWORD'].setText('fixture-password-not-real')
     dialog.save.click()
     assert saved['briefing_city'] == 'Dundalk, Maryland' and saved['briefing_world_topics'] == ['science', 'world economy']
     assert saved['voice_enabled'] is False and speech.VOICE_ENABLED is False
+    assert saved['foreground_provider_timeout_s'] == 15
     assert .8 in calls and 'whisper' in calls
     assert config._KEYS['GMAIL_APP_PASSWORD'] == 'fixture-password-not-real'
     assert dialog.connection_fields['GMAIL_APP_PASSWORD'].text() == ''

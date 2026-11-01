@@ -54,6 +54,7 @@ PROVIDER_STATS: Dict[str, Any] = {
 # execution context, so a background task cannot overwrite a foreground error.
 _HEALTH_LOCK = threading.RLock()
 _PROVIDER_HEALTH: Dict[str, Dict[str, Any]] = {}
+_RECENT_FOREGROUND_PROVIDER = {}
 
 
 def provider_health() -> Dict[str, Dict[str, Any]]:
@@ -61,7 +62,7 @@ def provider_health() -> Dict[str, Dict[str, Any]]:
         return copy.deepcopy(_PROVIDER_HEALTH)
 
 
-def _record_provider_failure(provider, *, kind=None, code=None, retry_at=0):
+def _record_provider_failure(provider, *, kind=None, code=None, retry_at=0, latency_ms=None):
     error = str(getattr(provider, 'last_error', '') or '')
     match = re.search(r'\bHTTP (\d{3})\b', error)
     code = code or (int(match.group(1)) if match else None)
@@ -94,6 +95,8 @@ def _record_provider_failure(provider, *, kind=None, code=None, retry_at=0):
     entry = {'provider': provider.name, 'model': getattr(provider, 'model', ''),
              'kind': kind, 'code': code, 'summary': summary, 'status': 'error',
              'checked_at': time.time()}
+    if latency_ms is not None:
+        entry['latency_ms'] = latency_ms
     runtime.current().provider_failures.append(entry)
     with _HEALTH_LOCK:
         _PROVIDER_HEALTH[provider.name] = entry
@@ -124,6 +127,9 @@ def connection_report() -> str:
         state = health.get(provider.name, {}).get('summary')
         if not state:
             state = 'ready; not tested' if provider.is_available() else 'not configured or quarantined'
+        elapsed = health.get(provider.name, {}).get('latency_ms')
+        if elapsed is not None:
+            state += f'; last attempt {elapsed / 1000:.2f}s'
         lines.append(f'{provider.name} / {provider.model}: {state}')
     if not chain:
         lines.append('No providers configured.')
@@ -401,6 +407,16 @@ def oai_response_to_parts(resp_json: Dict[str, Any]) -> List[Dict[str, Any]]:
 PROVIDER_CALL_TIMEOUT_S = 30
 
 
+def _provider_timeout():
+    """Interactive stalls fail over quickly; delegated/mission calls keep 30s."""
+    if runtime.current().kind != 'foreground':
+        return PROVIDER_CALL_TIMEOUT_S
+    try:
+        return max(3, min(30, float(_config_silent.get_setting('foreground_provider_timeout_s', 8))))
+    except (TypeError, ValueError):
+        return 8
+
+
 def _merge_extra_content(target, incoming):
     """Merge streamed extension objects without changing opaque signatures."""
     for key, value in incoming.items():
@@ -454,7 +470,7 @@ class OpenAICompatProvider(Provider):
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
-    def _parse_sse_stream(self, resp, on_text_chunk) -> List[Dict[str, Any]]:
+    def _parse_sse_stream(self, resp, on_text_chunk, first_output_deadline=None) -> List[Dict[str, Any]]:
         """Accumulate OpenAI SSE deltas -> parts. Feeds on_text_chunk per
         chunk; a final on_text_chunk(None) signals stream completion.
         Captures the `usage` block when the provider sends one (usually in
@@ -466,6 +482,10 @@ class OpenAICompatProvider(Provider):
         try:
             for raw_line in resp:
                 runtime.check_cancelled()
+                if (first_output_deadline is not None and not text_buf
+                        and not any(acc.get('name') for acc in tc_accum.values())
+                        and time.monotonic() >= first_output_deadline):
+                    raise TimeoutError('No model output before the interactive reply deadline')
                 line = raw_line.decode("utf-8", errors="replace").strip()
                 if not line.startswith("data: "):
                     continue
@@ -532,13 +552,10 @@ class OpenAICompatProvider(Provider):
         return parts
 
     def call(self, system_instruction, contents, tool_decls=None, on_text_chunk=None):
-        # Fail fast (Alek 2026-10-05): one attempt, then the turn moves to the
-        # next provider immediately. No retries, no backoff sleeps.
-        # A5: the socket timeout is PROVIDER_CALL_TIMEOUT_S (30s), down
-        # from 90s — this is a conversational loop, and urllib's timeout
-        # bounds each socket operation, so a steadily streaming reply is
-        # not cut off; only a STALLED provider pays it. Worst-case full
-        # chain walk drops from 450s to 150s per brain iteration.
+        # One attempt, then fail over without backoff sleeps. Interactive
+        # connections default to 8s; delegated/mission calls retain 30s.
+        # A stream with only heartbeats also gets a first-output deadline.
+        # Once content or a tool call arrives, normal streaming can continue.
         self.last_error = None
         if not self.is_available():
             return None
@@ -558,20 +575,23 @@ class OpenAICompatProvider(Provider):
 
         ticket = usage.reserve(self.name, self.model, payload)
         t0, usage_data, request_ok = time.time(), None, False
+        timeout = _provider_timeout()
+        first_output_deadline = (time.monotonic() + timeout
+                                 if runtime.current().kind == 'foreground' else None)
         try:
             runtime.check_cancelled()
             if on_text_chunk:
                 payload["stream"] = True
                 sbody = json.dumps(payload).encode("utf-8")
                 req = urllib.request.Request(url, data=sbody, headers=self._headers())
-                with urllib.request.urlopen(req, timeout=PROVIDER_CALL_TIMEOUT_S) as resp:
-                    parts = self._parse_sse_stream(resp, on_text_chunk)
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    parts = self._parse_sse_stream(resp, on_text_chunk, first_output_deadline)
                 usage_data, request_ok = getattr(self, "_stream_usage", None), True
                 _record_call_stats(self.name, int((time.time() - t0) * 1000),
                                    getattr(self, "_stream_usage", None))
                 return {"candidates": [{"content": {"parts": parts}}]}
             req = urllib.request.Request(url, data=body, headers=self._headers())
-            with urllib.request.urlopen(req, timeout=PROVIDER_CALL_TIMEOUT_S) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             _record_call_stats(self.name, int((time.time() - t0) * 1000),
                                data.get("usage"))
@@ -958,6 +978,13 @@ def provider_call(
     if not chain:
         add_log("provider_call: chain is empty, nothing configured")
         return None
+    if ctx.kind == 'foreground' and not usage.settings().get('provider_order'):
+        with _HEALTH_LOCK:
+            recent = _RECENT_FOREGROUND_PROVIDER.get(ctx.project)
+        if recent and time.monotonic() - recent[1] < 300:
+            # Keep explicit project ordering authoritative. Otherwise a working
+            # fallback gets the next turn instead of paying the slow leg again.
+            chain.sort(key=lambda provider: provider.name != recent[0])
     # A5: skip providers inside their failure-cooldown window — unless
     # EVERY candidate is cooling down, in which case walk them anyway:
     # a possibly-sick provider beats a guaranteed-dead turn.
@@ -980,10 +1007,12 @@ def provider_call(
     # pair is cooling, in which case walk them anyway.
     ignore_pairs = bool(candidates) and all(
         _model_in_cooldown(p.name, _eff_model(p)) for p in candidates)
+    failed_endpoints = set()
     for provider in chain:
         runtime.check_cancelled()
         if only_provider and provider.name != only_provider:
             continue
+        endpoint = getattr(provider, 'base_url', '')
         if not provider.is_available():
             key = getattr(provider, 'api_key', '')
             if not key or key == 'INSERT' or not getattr(provider, 'model', ''):
@@ -995,6 +1024,9 @@ def provider_call(
                 _record_provider_failure(provider, kind=kind,
                                          code=code if isinstance(code, int) else None,
                                          retry_at=retry_at)
+            continue
+        if endpoint and endpoint in failed_endpoints:
+            _record_provider_failure(provider, kind='network')
             continue
         if not ignore_cooldowns and _provider_in_cooldown(provider.name):
             add_log(f"provider {provider.name} in failure cooldown, skipping")
@@ -1009,6 +1041,7 @@ def provider_call(
                                      retry_at=_MODEL_COOLDOWN.until(_pair_key(provider.name, _eff_model(provider))))
             continue
         _note_call(provider.name)
+        attempt_started = time.monotonic()
         try:
             data, _used_fallback = _attempt_provider_call(
                 provider, system_instruction, contents, tool_decls,
@@ -1032,7 +1065,10 @@ def provider_call(
                     'provider': provider.name, 'model': getattr(provider, 'model', ''),
                     'status': 'ok', 'summary': 'last model request succeeded',
                     'checked_at': time.time(),
+                    'latency_ms': int((time.monotonic() - attempt_started) * 1000),
                 }
+                if ctx.kind == 'foreground':
+                    _RECENT_FOREGROUND_PROVIDER[ctx.project] = (provider.name, time.monotonic())
             _note_provider_ok(provider.name)
             _note_model_ok(provider.name, _eff_model(provider))
             if ACTIVE_PROVIDER != provider.name:
@@ -1045,7 +1081,9 @@ def provider_call(
                               getattr(provider, "last_error", None))
         _note_model_failed(provider.name, _eff_model(provider),
                            getattr(provider, "last_error", None))
-        _record_provider_failure(provider)
+        _record_provider_failure(provider, latency_ms=int((time.monotonic() - attempt_started) * 1000))
+        if endpoint and ctx.provider_failures[-1]['kind'] == 'network':
+            failed_endpoints.add(endpoint)
         add_log(f"provider {provider.name} returned nothing, trying next")
     add_log("provider_call: chain exhausted, all providers down")
     return None

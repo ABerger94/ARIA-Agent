@@ -36,6 +36,8 @@ TOPICS = (
         <li>Check any approval request and review the result or saved file.</li></ol>
         <p><b>First try:</b> ask for a simple explanation, then a read-only calendar or
         file request once that connection is ready.</p>
+        <p>A plain hello or hi is answered locally. This checks that the app is
+        responsive; inspect Settings → Providers for model-connection details.</p>
         <p>This guide works offline. Examples are starting points: replace bracketed
         details before sending them in chat. Copying an example does not run it.</p>
         <p>Next: <a href="aria-guide:prompts">Write effective prompts</a> or
@@ -232,6 +234,16 @@ TOPICS = (
         <p>Restart ARIA for background-service changes to take effect. The panel shows
         measured CPU, memory, battery, and startup data; savings depend on your machine
         and workload.</p>
+        <p><b>Conversation speed:</b> greetings respond locally, and prompt recall uses
+        local memories or cached embeddings. Explicit memory searches retain semantic
+        recall. Settings → General → <b>Model connection wait</b> controls stalled
+        interactive calls: 8 seconds by default, with 15- and 30-second options.
+        Empty streams also time out while waiting for their first output.
+        Once a reply or tool call starts, it can continue normally; this is
+        not a deadline for the whole task.</p>
+        <p>ARIA reuses a working fallback for subsequent interactive turns when no
+        project provider order is set. A network failure skips other keys on the same
+        unreachable endpoint for that request. Connection reports include attempt times.</p>
         """),
     GuideTopic('computers', 'Connect a second laptop', """
         <p><b>Work Center → Computers</b> shows actual connected nodes and the desktop
