@@ -16,6 +16,7 @@ def test_clean_native_startup_and_com_helper(tmp_path):
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=90)
     assert run.returncode == 0, run.stdout
     assert '"native_dashboard": true' in run.stdout
+    assert '"settings_user_guide": true' in run.stdout
     assert '"com_helper": true' in run.stdout
 
 

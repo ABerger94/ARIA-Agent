@@ -96,8 +96,20 @@ def test_settings_hosts_providers_audio_customize_pet(monkeypatch, tmp_path):
     from PyQt6.QtWidgets import QTabWidget
     tabs = dialog.findChild(QTabWidget)
     titles = [tabs.tabText(i) for i in range(tabs.count())]
-    for wanted in ('Providers', 'Extensions', 'Customize', 'Pet'):
+    for wanted in ('User Guide', 'Providers', 'Extensions', 'Customize', 'Pet'):
         assert wanted in titles, titles
+    # Help is reachable from General, bundled offline, and never submits an
+    # example or saves settings as a side effect of browsing/copying it.
+    dispatched = []
+    callbacks.submit = dispatched.append
+    dialog.guide_button.click()
+    assert tabs.currentWidget() is dialog.user_guide
+    assert dialog.user_guide.show_topic('missions')
+    dialog.user_guide.copy.click()
+    assert QApplication.clipboard().text().startswith('Create a durable mission')
+    assert not dispatched and not saved
+    dialog.user_guide.show_topic('work-center'); app.processEvents()
+    dialog.grab().save(str(tmp_path / 'guide-work-center.png'))
     # Customize hosts the centerpiece choice (Alek, 2026-10-27:
     # the dashboard button moved here): it persists via ui_prefs
     # and reaches the host window immediately.

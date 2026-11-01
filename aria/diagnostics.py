@@ -40,18 +40,24 @@ def main():
         from PyQt6.QtWidgets import QApplication
         from aria.dashboard import create_dashboard
         from aria.work_center import create_work_center
+        from aria.ui_panels import create_settings_dialog
         app = QApplication.instance() or QApplication([])
         window = create_dashboard(app_main._qt_callbacks())
         window.show(); app.processEvents(); window.render_once()
         center = create_work_center(window, app_main._qt_callbacks())
         center.show(); app.processEvents(); center.refresh()
+        settings = create_settings_dialog(window, app_main._qt_callbacks())
+        settings.show(); settings.guide_button.click(); app.processEvents()
+        if not settings.user_guide.show_topic('work-center'):
+            raise RuntimeError('Bundled Work Center user guide is missing')
         from PyQt6.QtCore import QTimer, QEvent
         for timer in window.findChildren(QTimer): timer.stop()
-        center.close(); window.close(); app.processEvents()
+        settings.close(); center.close(); window.close(); app.processEvents()
         app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         from aria.tools.dispatch import get_registered_tools
         checks = {'status':'ok', 'database':True, 'native_dashboard':True,
-                  'work_center':True, 'tools':len(get_registered_tools())}
+                  'work_center':True, 'settings_user_guide':True,
+                  'tools':len(get_registered_tools())}
         if os.name == 'nt':
             from aria.comclient import ComHostClient
             client = ComHostClient()

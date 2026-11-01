@@ -114,6 +114,12 @@ def create_settings_dialog(parent, callbacks):
         w = QWidget(); lay = QVBoxLayout(w); lay.setContentsMargins(18, 22, 18, 22); lay.setSpacing(14)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(w); tabs.addTab(scroll, name); return lay
     general = page('General')
+    from aria.user_guide import UserGuideWidget
+    dialog.user_guide = UserGuideWidget(dialog)
+    guide_index = tabs.addTab(dialog.user_guide, 'User Guide')
+    dialog.guide_button = QPushButton('Open User Guide')
+    dialog.guide_button.clicked.connect(lambda: tabs.setCurrentIndex(guide_index))
+    general.addRow('Help and prompt examples', dialog.guide_button)
     dialog.startup = QCheckBox('Read a daily briefing when ARIA starts'); dialog.startup.setChecked(bool(config.get_setting('startup_briefing', True))); general.addRow(dialog.startup)
     dialog.safe = QCheckBox('Safe mode — block shell, GUI control, email sending, and robot motion'); dialog.safe.setChecked(config.is_safe_mode()); general.addRow(dialog.safe)
     if os.environ.get('ARIA_SAFE_MODE', '').lower() in ('1', 'true', 'yes'):

@@ -1,5 +1,8 @@
 ## Reliability and Work Center update
 
+Open **Settings → User Guide** for searchable offline help, a **Tasks vs Work Center**
+explanation, and prompt examples you can copy and edit before sending in chat.
+
 Open **Work Center** beside Settings for project workspaces, execution controls,
 file deliverables, model budgets and connected computers. This release also
 fixes mission replay after crashes, false completion states, shared turn-state
