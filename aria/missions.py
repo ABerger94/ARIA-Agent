@@ -908,10 +908,44 @@ def list_text(limit: int = 10) -> str:
 
 def tool_mission_create(args: dict) -> str:
     a = args or {}
-    if a.get("_approve_plan") and a.get("_mission_id"):
-        # The plan gate's replay (approve_token, preauthorized):
-        # unlock the mission instead of creating a duplicate.
-        return approve_plan(int(a["_mission_id"]))
+    if "_approve_plan" in a or "_mission_id" in a:
+        # Private plan-gate arguments. The ONLY legitimate
+        # caller of this branch is _park_plan's stashed replay,
+        # executed by approve_token() after the user's banner
+        # tap — and approve_token() marks exactly that replay
+        # (tool + args) on the thread. An ordinary model call
+        # carrying these keys is a forged plan approval: the
+        # schema never declares them, and a generic
+        # preauthorized scope (routine replay, skill step) is
+        # NOT enough — routines carry preauthorized too. Fail
+        # closed: refuse, approve nothing, create nothing.
+        # (ChatGPT x ARIA loop pass 11, 2026-10-31: the old
+        # code honoured the flags on any call, so a model
+        # could unlock its own pending mission plan, and the
+        # approve branch ran before goal/steps validation, so
+        # even a bare {"_mission_id": N, "_approve_plan": true}
+        # unlocked it.)
+        try:
+            from aria import approval as _approval
+            _is_replay = _approval.in_approve_replay(
+                "mission_create", a)
+        except Exception:
+            _is_replay = False
+        if not _is_replay:
+            return ("[Mission error: plan approval is only "
+                    "honoured on the user's approval tap — a "
+                    "mission_create call carrying _approve_plan "
+                    "or _mission_id outside an approve-token "
+                    "replay is refused, and nothing was "
+                    "approved or created.]")
+        try:
+            mid = int(a.get("_mission_id") or 0)
+        except Exception:
+            mid = 0
+        if not mid:
+            return ("[Mission error: the plan-approval replay "
+                    "carries no mission id.]")
+        return approve_plan(mid)
     raw_steps = a.get("steps")
     if isinstance(raw_steps, str):
         try:
