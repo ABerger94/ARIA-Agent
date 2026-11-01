@@ -528,22 +528,45 @@ def tool_send_email(to: str, subject: str, body: str) -> str:
     msg["To"] = to
     msg["Subject"] = subject or "(no subject)"
     msg.set_content(body or "")
-    
+
+    # Two-phase submission (ChatGPT x ARIA loop pass 13): only a
+    # failure BEFORE send_message is known not to have sent, so only
+    # that phase retries. Once send_message returns, the mail is
+    # sent — a later failure (e.g. the audit-log write) must not
+    # trigger a resend. And if send_message itself raises, delivery
+    # is AMBIGUOUS (the server may have accepted it before the error
+    # surfaced), so the outcome is reported as unknown WITHOUT
+    # resending: a duplicate is worse than an honest unknown.
     for _sa in range(2):
         try:
             with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as s:
                 s.starttls()
                 s.login(user, pw)
-                s.send_message(msg)
-            add_log(f"Email sent to {to}: {subject}")
-            return f"Email sent to {to}: '{subject}'."
+                try:
+                    s.send_message(msg)
+                except smtplib.SMTPAuthenticationError:
+                    raise  # outer handler: login was rejected, nothing sent
+                except Exception as send_e:
+                    return (f"[Email send outcome unknown for {to}: the send "
+                            f"attempt raised {type(send_e).__name__} — it may "
+                            f"have been delivered. It was NOT resent; check "
+                            f"Sent Mail before retrying.]")
         except smtplib.SMTPAuthenticationError:
             return ("Gmail rejected the login. The app password is wrong or was revoked - "
                     "ask the user to generate a fresh one at myaccount.google.com/apppasswords "
                     "and call gmail_setup again.")
         except Exception as e:
+            # Connect / TLS / login failure: nothing was submitted.
             add_log(f"Email send attempt {_sa + 1}/2 failed ({type(e).__name__}) - retrying...")
             time.sleep(3)
+            continue
+        # Submitted: the audit log is best-effort from here — its
+        # failure must never look like a send failure.
+        try:
+            add_log(f"Email sent to {to}: {subject}")
+        except Exception:
+            pass
+        return f"Email sent to {to}: '{subject}'."
     return f"Could not send email to {to}."
 
 

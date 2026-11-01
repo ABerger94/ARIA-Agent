@@ -27,6 +27,22 @@ SAFE_AUTO_PACKAGES = {
     "tqdm", "scipy", "psutil", "pyyaml", "yaml", "rich", "pydantic"
 }
 
+# Tools self-healing must NEVER re-execute (ChatGPT x ARIA loop
+# pass 13, fixing pass 12's runner-up): their handlers have effects
+# outside the process that cannot be undone — a sent email cannot
+# be unsent. Heuristic 6 used to re-call the handler for ANY tool
+# name on a permission-shaped error, and dispatch's output trigger
+# fires on error words appearing anywhere in a result string, so a
+# successfully sent email whose subject contained both
+# "FileNotFoundError" and "PermissionError" was sent twice under one
+# approval. Refusing the replay here closes BOTH the
+# output-triggered and the exception-triggered paths, because both
+# funnel through attempt_auto_heal; the dispatcher duplicate guard
+# cannot help (it only records the call AFTER healing runs).
+# This set is the retry-eligibility list: a side-effect tool joins
+# it when a specimen shows healing could re-execute it, not before.
+NO_AUTO_REPLAY_TOOLS = frozenset({"send_email"})
+
 
 def record_incident(category: str, source: str, error_text: str,
                     diagnosis: str, action_taken: str, resolved: bool = False) -> int:
@@ -177,6 +193,18 @@ def attempt_auto_heal(fn_name: str, args: dict, error_or_output: Any,
 
     diag = diagnose_error(fn_name, err_str, args)
     cat = diag["category"]
+
+    # --- Guard 0: never re-execute a side-effect tool (pass 13). ---
+    # A refused replay is not a failure to diagnose: the incident is
+    # still recorded, and the caller falls back to its repair text
+    # (which never re-executes the handler) instead of a duplicate.
+    if fn_name in NO_AUTO_REPLAY_TOOLS:
+        record_incident(cat, fn_name, err_str, diag["diagnosis"],
+                        "Refused automatic replay: side-effect tool — "
+                        "re-execution could duplicate an effect that "
+                        "already happened",
+                        resolved=False)
+        return False, error_or_output, ""
 
     # --- Heuristic 1: Missing Directory on write_file ---
     if cat == "PATH_NOT_FOUND" and fn_name == "write_file":

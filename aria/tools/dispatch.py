@@ -522,7 +522,26 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
                 _config_mod.log_silent("execute_tool", _e_silent)
 
     # Autonomous Self-Healing on tool output returning recoverable failure
-    if retry_safe(fn_name) and isinstance(r, str) and ("Traceback (most recent call last)" in r or "FileNotFoundError" in r or "No such file or directory" in r or "ModuleNotFoundError" in r or "unicodeescape" in r) and "[Autonomous Self-Healing:" not in r:
+    # — gated to retry-safe tools (effects tools never re-fire here),
+    # and a handler that RETURNED a string reported its own outcome,
+    # so its text is content, not an execution status. send_email
+    # echoes the subject verbatim, so a successfully sent email whose
+    # subject contained error words used to re-fire healing and
+    # re-send (pass 13). A success-shaped result never triggers this
+    # branch; genuine failures still surface via the exception path
+    # above or via bracket-marked error strings.
+    _healable_output = (
+        retry_safe(fn_name)
+        and isinstance(r, str)
+        and "[Autonomous Self-Healing:" not in r
+        and not (fn_name == "send_email" and r.startswith("Email sent to "))
+        and ("Traceback (most recent call last)" in r
+             or "FileNotFoundError" in r
+             or "No such file or directory" in r
+             or "ModuleNotFoundError" in r
+             or "unicodeescape" in r)
+    )
+    if _healable_output:
         try:
             from aria.agent.self_healing import attempt_auto_heal
             healed, healed_res, heal_msg = attempt_auto_heal(fn_name, args or {}, r, handler)
