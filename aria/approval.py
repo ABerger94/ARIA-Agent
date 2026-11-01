@@ -37,6 +37,7 @@ lazily inside functions — never at module level (no import cycles).
 # ============================================================================
 
 import json
+import os
 import secrets
 import threading
 import time
@@ -110,6 +111,19 @@ DESTRUCTIVE_TOOLS = frozenset({
     # separate user-click path (aria/app_launcher.py) and is
     # untouched by this gate.
     "launch_app",
+    # export_routine_pack writes an arbitrary caller-chosen path:
+    # export_pack makedirs()s the destination's parent and opens
+    # ZipFile in 'w' mode, silently truncating whatever file was
+    # already there. Ungated, one model call could clobber an
+    # unrelated file with a routine pack (ChatGPT x ARIA loop
+    # finding, pass 12 runner-up, fixed pass 13). Gating it means
+    # under confirm-risky / confirm-all the call pauses with a
+    # description naming the exact destination, and the dispatch
+    # gate freezes that destination into the pending entry, so
+    # the approve-token replay writes exactly the approved file.
+    # Auto mode and trusted-routine replays are unchanged: they
+    # skip the gate by design (preauthorized=True).
+    "export_routine_pack",
 })
 
 # In-memory pending approvals: token -> {token, tool, args, desc, created_ts}.
@@ -301,6 +315,24 @@ def _describe_tool(tool: str, args) -> str:
             return f"open '{a.get('target', '')}'"
         if tool == "launch_app":
             return f"launch app '{a.get('name', '')}'"
+        if tool == "export_routine_pack":
+            # The pending entry freezes the resolved destination (see
+            # dispatch's approval gate + routines.freeze_export_args),
+            # so this description names the exact file the tap will
+            # write — never a placeholder the replay re-derives.
+            names = str(a.get("names_csv", "") or "").strip() or "all routines"
+            dest = str(a.get("dest_path", "") or "").strip() or \
+                "(default routines pack in the install root)"
+            overwrite = _as_bool(a.get("overwrite"), default=False)
+            if overwrite:
+                fate = ("REPLACING the existing file there"
+                        if os.path.exists(dest) else
+                        "creating it (no file there yet)")
+            else:
+                fate = ("refused if a file already exists there — "
+                        "overwrite was not approved")
+            return (f"export routine pack ({names}) to '{dest}' "
+                    f"({fate})")
         if tool == "move_head_servos":
             return f"move head servos (pan={a.get('pan', 90)} tilt={a.get('tilt', 45)})"
     except Exception as _e_silent:

@@ -400,7 +400,20 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
         from aria import approval as _approval_mod
         _approval_mod.purge_expired()
         if _approval_mod.needs_approval(fn_name, args or {}):
-            return _approval_mod.request_approval(fn_name, args or {}), False
+            _gate_args = dict(args or {})
+            if fn_name == "export_routine_pack":
+                # Freeze the resolved destination into the pending
+                # entry (pass 13 export fix): an empty dest_path
+                # would otherwise be re-derived at replay time with
+                # a fresh timestamp, writing a different file than
+                # the one the user approved. Freezing creates
+                # nothing — it only rewrites the stashed args.
+                try:
+                    from aria import routines as _routines_mod
+                    _gate_args = _routines_mod.freeze_export_args(_gate_args)
+                except Exception:
+                    pass
+            return _approval_mod.request_approval(fn_name, _gate_args), False
 
     # 4. Risky tools safety & audit
     if fn_name in RISKY_TOOLS:
@@ -891,7 +904,7 @@ def _init_default_registry():
     _REGISTRY["describe_routine"] = lambda a: routines_mod.tool_describe_routine(a.get("name", ""))
     _REGISTRY["trust_routine"] = lambda a: routines_mod.tool_trust_routine(a.get("name", ""))
     _REGISTRY["untrust_routine"] = lambda a: routines_mod.tool_untrust_routine(a.get("name", ""))
-    _REGISTRY["export_routine_pack"] = lambda a: routines_mod.tool_export_routine_pack(a.get("names_csv", ""), a.get("dest_path", ""))
+    _REGISTRY["export_routine_pack"] = lambda a: routines_mod.tool_export_routine_pack(a.get("names_csv", ""), a.get("dest_path", ""), a.get("overwrite", False))
     _REGISTRY["import_routine_pack"] = lambda a: routines_mod.tool_import_routine_pack(a.get("pack_path", ""))
 
     # ---- Phone node (Batch F): the paired Android phone ----

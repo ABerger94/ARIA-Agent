@@ -471,9 +471,66 @@ def _pack_manifest(names):
     }
 
 
-def export_pack(names, dest_path: str) -> str:
-    """Zip the named routines + manifest to dest_path. Returns dest_path."""
+def _as_bool(value, default=False) -> bool:
+    """Lenient bool for model-supplied args (True/False or 'true'/'false')."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    s = str(value).strip().lower()
+    if s in ("true", "1", "yes", "y", "on"):
+        return True
+    if s in ("false", "0", "no", "n", "off"):
+        return False
+    return default
+
+
+def default_export_path() -> str:
+    """The timestamped default pack path (install root), resolved now."""
+    return os.path.join(
+        data_dir.root(),
+        f"routines-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.zip")
+
+
+def freeze_export_args(args) -> dict:
+    """Resolve an export call's destination ONCE, for the approval gate.
+
+    The dispatcher calls this before stashing the pending approval,
+    so the description names the exact file and the approve-token
+    replay executes exactly that file: an empty dest_path is replaced
+    with the default path computed here (not re-derived at replay
+    time, when the timestamp would pick a different name), and a
+    relative path is made absolute against the process cwd. The
+    overwrite flag is normalised to a real bool at the same time.
+    No file or directory is created here — freezing only rewrites
+    the stashed args.
+    """
+    frozen = dict(args or {})
+    dest = str(frozen.get("dest_path", "") or "").strip()
+    frozen["dest_path"] = os.path.abspath(dest) if dest else default_export_path()
+    frozen["overwrite"] = _as_bool(frozen.get("overwrite"), default=False)
+    return frozen
+
+
+def _write_pack_zip(path, wanted, mode) -> None:
     import zipfile
+    with zipfile.ZipFile(path, mode, zipfile.ZIP_DEFLATED) as z:
+        z.writestr("manifest.json",
+                   json.dumps(_pack_manifest([s for s, _ in wanted]), indent=2))
+        for sname, p in wanted:
+            z.write(p, f"{sname}.json")
+
+
+def export_pack(names, dest_path: str, overwrite: bool = False) -> str:
+    """Zip the named routines + manifest to dest_path. Returns dest_path.
+
+    Default is exclusive creation: if the destination already exists
+    the export is REFUSED and the existing bytes are untouched.
+    Pass overwrite=True to replace it — the replacement is built in
+    a temp file in the same directory first and moved into place
+    with os.replace, so a failed build never leaves a truncated
+    destination behind. Nothing is created when no routine matches.
+    """
     wanted = []
     for n in names or []:
         sname = sanitize_name(n)
@@ -484,13 +541,30 @@ def export_pack(names, dest_path: str) -> str:
             wanted.append((sname, p))
     if not wanted:
         return "[No matching routines to export.]"
-    os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
-    with zipfile.ZipFile(dest_path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("manifest.json",
-                   json.dumps(_pack_manifest([s for s, _ in wanted]), indent=2))
-        for sname, p in wanted:
-            z.write(p, f"{sname}.json")
-    return f"Exported {len(wanted)} routine(s) to {dest_path}"
+    dest = os.path.abspath(dest_path)
+    parent = os.path.dirname(dest)
+    os.makedirs(parent, exist_ok=True)
+    if not overwrite:
+        try:
+            _write_pack_zip(dest, wanted, "x")
+        except FileExistsError:
+            return (f"[Export refused: destination already exists: {dest} "
+                    f"— pass overwrite=true to replace it.]")
+        return f"Exported {len(wanted)} routine(s) to {dest}"
+    import tempfile
+    fd, tmp = tempfile.mkstemp(prefix=".routines-pack-", suffix=".tmp",
+                               dir=parent)
+    try:
+        os.close(fd)
+        _write_pack_zip(tmp, wanted, "w")
+        os.replace(tmp, dest)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    return f"Exported {len(wanted)} routine(s) to {dest}"
 
 
 def _valid_routine_data(data) -> bool:
@@ -557,8 +631,16 @@ def import_pack(pack_path: str) -> str:
     return "; ".join(parts) or "[Pack contained no routines.]"
 
 
-def tool_export_routine_pack(names_csv: str = "", dest_path: str = "") -> str:
-    """Export routines to a shareable pack zip. names_csv empty = all."""
+def tool_export_routine_pack(names_csv: str = "", dest_path: str = "",
+                             overwrite=False) -> str:
+    """Export routines to a shareable pack zip. names_csv empty = all.
+
+    overwrite defaults to False: an existing destination is refused,
+    never silently truncated (pass 13 export fix). Under confirm
+    modes the dispatcher freezes the resolved destination into the
+    pending approval before this runs, so an approved replay writes
+    exactly the file the user saw named.
+    """
     if names_csv.strip():
         names = [n.strip() for n in names_csv.split(",") if n.strip()]
     else:
@@ -568,10 +650,9 @@ def tool_export_routine_pack(names_csv: str = "", dest_path: str = "") -> str:
         except Exception:
             names = []
     if not dest_path.strip():
-        dest_path = os.path.join(
-            data_dir.root(),
-            f"routines-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.zip")
-    return export_pack(names, dest_path.strip())
+        dest_path = default_export_path()
+    return export_pack(names, dest_path.strip(),
+                       overwrite=_as_bool(overwrite, default=False))
 
 
 def tool_import_routine_pack(pack_path: str) -> str:
