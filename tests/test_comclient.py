@@ -69,6 +69,9 @@ if count_path:
         mode = "good"
 if mode in ("die_always", "die_once"):
     sys.exit(3)
+if mode == "noisy":
+    sys.stderr.write("helper diagnostic\n" * 16384)
+    sys.stderr.flush()
 
 for line in sys.stdin:
     line = line.strip()
@@ -241,3 +244,12 @@ def test_spawn_failure_reports_the_original_error(tmp_path):
             client.request('ping')
     finally:
         client.close()
+
+
+def test_helper_logging_cannot_block_or_corrupt_protocol(capsys):
+    client, _path = _client(mode='noisy')
+    try:
+        assert client.request('ping', timeout=5) == {'pong': True}
+    finally:
+        client.close()
+    assert 'helper diagnostic' in capsys.readouterr().err

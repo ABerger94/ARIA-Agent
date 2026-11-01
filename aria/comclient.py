@@ -37,6 +37,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
@@ -97,9 +98,12 @@ class ComHostClient:
             try:
                 proc = subprocess.Popen(
                     self._command, stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE, text=True, bufsize=1)
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, bufsize=1)
             except Exception as exc:
-                self._spawn_error = f'{type(exc).__name__}: {exc}'
+                location = traceback.extract_tb(exc.__traceback__)[-1]
+                self._spawn_error = (f'{type(exc).__name__}: {exc}; '
+                                     f'{location.name}:{location.lineno} ({location.line})')
                 return False
             self._spawn_error = ''
             self._proc = proc
@@ -108,7 +112,25 @@ class ComHostClient:
             self._exhausted_at = None
         threading.Thread(target=self._reader_loop, args=(proc,),
                          daemon=True, name="aria-comhost-reader").start()
+        # Keep all child handles explicit: a frozen Qt host's inherited console
+        # stderr can be unusable on Windows. Drain separately so diagnostics can
+        # neither corrupt the JSON protocol nor fill a pipe and stall the helper.
+        threading.Thread(target=self._stderr_loop, args=(proc,),
+                         daemon=True, name="aria-comhost-stderr").start()
         return True
+
+    def _stderr_loop(self, proc: subprocess.Popen):
+        try:
+            with proc.stderr as stream:
+                for line in stream:
+                    try:
+                        if sys.stderr is not None:
+                            sys.stderr.write(line)
+                            sys.stderr.flush()
+                    except Exception:
+                        pass  # A windowless parent still needs to drain the pipe.
+        except Exception:
+            pass
 
     def _reader_loop(self, proc: subprocess.Popen):
         try:
