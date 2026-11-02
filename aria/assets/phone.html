@@ -732,7 +732,17 @@ async function loadApprovals(){
   try{
     var r=await api('/api/approvals'); var j=await r.json();
     renderApprovals((j&&j.pending)||[]);
-  }catch(e){}
+  }catch(e){
+    // 2026-11-02 fix (Alek: confirm doesn't always pop up): the old
+    // empty catch made a failed fetch indistinguishable from "no
+    // approvals" — the band stayed hidden with no error. On failure,
+    // keep any existing entries, show the band, and say so plainly
+    // instead of silently hiding the confirmation surface.
+    var box=document.getElementById('approvals');
+    var out=document.getElementById('approval-outcome');
+    if(box) box.hidden=false;
+    if(out) out.textContent='Could not reach ARIA for confirmations — tap Refresh.';
+  }
 }
 document.getElementById('approval-refresh').onclick=loadApprovals;
 loadApprovals(); setInterval(loadApprovals, 5000);

@@ -119,6 +119,37 @@ def test_qt_available_is_bool():
     print("ok qt_available_is_bool")
 
 
+def test_poll_approvals_if_available_minimized_branch():
+    # 2026-11-02 fix (Alek: confirm doesn't always pop up): the Qt host
+    # tick skipped render_once() while minimized, and render_once() is
+    # the only caller of Dashboard._poll_approvals(), so a pending
+    # approval never created a banner and died at the 10-min expiry.
+    # The minimized branch must still poll approvals.
+    import inspect
+    src = inspect.getsource(qthost.run_qt_host)
+    assert "poll_approvals_if_available(window)" in src
+
+    calls = []
+
+    class _Win:
+        def _poll_approvals(self):
+            calls.append(True)
+
+    assert qthost.poll_approvals_if_available(_Win()) is True
+    assert calls == [True]
+
+    # No poll method (classic host) -> False, no crash.
+    assert qthost.poll_approvals_if_available(object()) is False
+
+    # A failing poll must not raise out of the host tick.
+    class _BrokenWin:
+        def _poll_approvals(self):
+            raise RuntimeError("poll broke")
+
+    assert qthost.poll_approvals_if_available(_BrokenWin()) is True
+    print("ok poll_approvals_if_available_minimized_branch")
+
+
 # ------------------------------------------------------- Qt widgets (real)
 def _qt_ready():
     """(Qt modules) or None when PyQt6 cannot initialise here."""

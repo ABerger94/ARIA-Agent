@@ -138,6 +138,32 @@ def handle_dropped_urls(urls: Optional[Sequence[Any]],
     return paths
 
 
+def poll_approvals_if_available(window: Any) -> bool:
+    """Poll a dashboard window's approval banner, if it has one.
+
+    Root cause for "confirm doesn't always pop up" (2026-11-02, Alek's
+    report): the Qt host tick skipped render_once() entirely while the
+    window was minimized, and render_once() is the only caller of
+    Dashboard._poll_approvals(). A pending approval therefore never
+    created a banner while minimized, then died silently at the
+    10-minute expiry in aria/approval.py. Calling this from the
+    minimized branch keeps the banner created (and visible on
+    restore) without doing a full render while minimized.
+    Returns True when a poll function was found and called, False
+    when the window has no approval poll (e.g. the classic host).
+    A poll failure never raises here — a broken poll must not kill
+    the host tick; the dashboard's own poll already logs silently.
+    """
+    fn = getattr(window, "_poll_approvals", None)
+    if not callable(fn):
+        return False
+    try:
+        fn()
+    except Exception:
+        pass
+    return True
+
+
 # ---------------------------------------------------------------- Qt builders
 def _qt_symbols():
     """Import the PyQt6 symbols the host needs, or raise QtHostError."""
@@ -313,6 +339,9 @@ def run_qt_host(callbacks) -> int:
             timer.setInterval(resource_policy.interval(active=active, minimized=minimized, battery=battery))
             if minimized:
                 callbacks.housekeeping()
+                # Approval banners must not depend on a visible window:
+                # poll them even while minimized, or they expire unseen.
+                poll_approvals_if_available(window)
                 if not callbacks.is_running():
                     window.close()
             else:
