@@ -504,6 +504,14 @@ SAFE_MODE_BLOCKED_TOOLS = frozenset({
     # open_app_or_url, its gated sibling (ChatGPT x ARIA loop
     # finding, 2026-10-30, queued since pass 4).
     "launch_app",
+    # set_backup_mirror copies the memory DB, settings, and chat
+    # history to a model-chosen folder (aria/backup_mirror.py) —
+    # hard-blocked in safe mode like the other exfiltration-adjacent
+    # paths. Safe mode blocks the whole tool, status report
+    # included, because is_safe_mode_blocked() classifies by name
+    # only; that matches manage_background_job above, whose
+    # read-only actions are likewise safe-mode-blocked.
+    "set_backup_mirror",
 })
 
 # Discovered MCP tools register dynamically as mcp_<server>__<tool>

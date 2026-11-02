@@ -124,6 +124,20 @@ DESTRUCTIVE_TOOLS = frozenset({
     # Auto mode and trusted-routine replays are unchanged: they
     # skip the gate by design (preauthorized=True).
     "export_routine_pack",
+    # set_backup_mirror persists a model-chosen mirror folder and
+    # immediately copies the memory DB, settings, and chat history
+    # there by basename, overwriting existing files (aria/
+    # backup_mirror.py tool_set_backup_mirror -> mirror_backups).
+    # aria_keys.json is deliberately excluded from the copy, but
+    # the mirrored stores are personal data, and a synced folder
+    # (Drive/OneDrive/NAS) is a route off the machine — so an
+    # ungated set lets one model call exfiltrate them with no
+    # banner. Gating it (ChatGPT x ARIA loop finding, pass 14)
+    # follows the export_routine_pack precedent. The no-argument
+    # status report stays ungated under confirm-risky: see
+    # needs_approval() below (confirm-all still gates everything,
+    # as it does for every tool).
+    "set_backup_mirror",
 })
 
 # In-memory pending approvals: token -> {token, tool, args, desc, created_ts}.
@@ -273,6 +287,13 @@ def needs_approval(tool: str, args=None) -> bool:
     if tool == "manage_background_job":
         # list/logs/cancel are read-only; only start runs shell commands.
         return str((args or {}).get("action", "list")).strip().lower() == "start"
+    if tool == "set_backup_mirror":
+        # No path and no clear = a read-only status report of the
+        # current mirror folder; only set/clear change anything
+        # (persisting the folder and immediately copying the
+        # mirrored stores there), so only those gate.
+        return bool(str((args or {}).get("path") or "").strip()) or \
+            _as_bool((args or {}).get("clear"), default=False)
     return True
 
 
@@ -333,6 +354,15 @@ def _describe_tool(tool: str, args) -> str:
                         "overwrite was not approved")
             return (f"export routine pack ({names}) to '{dest}' "
                     f"({fate})")
+        if tool == "set_backup_mirror":
+            if _as_bool(a.get("clear"), default=False):
+                return ("stop backup mirroring (clear the mirror "
+                        "folder setting)")
+            dest = str(a.get("path", "") or "").strip()
+            return (f"mirror backups to '{dest}' — the memory DB, "
+                    f"settings, and chat history will be copied "
+                    f"there now (overwriting same-named files) "
+                    f"and on every later store write")
         if tool == "move_head_servos":
             return f"move head servos (pan={a.get('pan', 90)} tilt={a.get('tilt', 45)})"
     except Exception as _e_silent:
