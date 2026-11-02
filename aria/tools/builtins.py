@@ -20,6 +20,7 @@ import time
 import urllib.parse
 import urllib.request
 import urllib.error
+from aria.outcome import legacy_error_results
 from typing import Optional, Tuple, Any
 
 from aria.config import (
@@ -130,11 +131,8 @@ def tool_fetch_url(url: str) -> str:
 # ---------------- File Tools ----------------
 def tool_write_file(filename: str, content: str) -> str:
     """Save content to a file in the workspace directory (supports nested subdirectories)."""
-    os.makedirs(workspaces.path("", WORKSPACE_DIR), exist_ok=True)
-    clean = filename.strip().replace("\\", "/").lstrip("/")
-    if ".." in clean:
-        clean = os.path.basename(clean)
-    path = os.path.join(workspaces.path("", WORKSPACE_DIR), clean)
+    path = workspaces.resolve_workspace_file(filename, WORKSPACE_DIR)
+    clean = os.path.relpath(path, workspaces.path('', WORKSPACE_DIR))
     parent_dir = os.path.dirname(path)
     if parent_dir:
         os.makedirs(parent_dir, exist_ok=True)
@@ -146,23 +144,22 @@ def tool_write_file(filename: str, content: str) -> str:
 
 def tool_read_file(filename: str) -> str:
     """Read a text file from the workspace directory (supports nested subdirectories)."""
-    clean = filename.strip().replace("\\", "/").lstrip("/")
-    if ".." in clean:
-        clean = os.path.basename(clean)
-    path = os.path.join(workspaces.path("", WORKSPACE_DIR), clean)
+    path = workspaces.resolve_workspace_file(filename, WORKSPACE_DIR)
     if not os.path.exists(path):
-        # Fallback to base name in workspace root
-        path = os.path.join(workspaces.path("", WORKSPACE_DIR), os.path.basename(filename))
-    if not os.path.exists(path):
-        return f"File '{filename}' does not exist."
+        from aria.outcome import ResultText, FAILED
+        return ResultText(f"File '{filename}' does not exist.", FAILED)
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         return f.read()
 
 
 def tool_list_files() -> str:
     """List all files in the workspace directory."""
-    os.makedirs(WORKSPACE_DIR, exist_ok=True)
-    files = os.listdir(WORKSPACE_DIR)
+    root = workspaces.path('', WORKSPACE_DIR)
+    if not workspaces.file_allowed(root):
+        from aria.outcome import failed
+        return failed('list_workspace', 'File is outside this project’s configured roots')
+    os.makedirs(root, exist_ok=True)
+    files = sorted(os.listdir(root))
     return "Workspace files:\n" + "\n".join(f"- {f}" for f in files) if files else "Workspace is empty."
 
 
@@ -200,6 +197,7 @@ def tool_find_file(name: str, ext: str = "") -> str:
 
 
 # ---------------- GUI & System Actions ----------------
+@legacy_error_results('PyAutoGUI not installed.')
 def tool_gui_click(x: int, y: int) -> str:
     """Simulate a mouse click at screen coordinates."""
     if not GUI_AVAILABLE:
@@ -209,6 +207,7 @@ def tool_gui_click(x: int, y: int) -> str:
     return f"Clicked coordinates ({x}, {y})."
 
 
+@legacy_error_results('PyAutoGUI not installed.')
 def tool_gui_type(text: str) -> str:
     """Type string into the currently focused window."""
     if not GUI_AVAILABLE:
@@ -318,6 +317,7 @@ def tool_clipboard_read() -> str:
         return f"[Clipboard unavailable: {e}]"
 
 
+@legacy_error_results('[Clipboard busy or write failed]', '[Clipboard write failed:')
 def tool_clipboard_write(text: str) -> str:
     """Copy text into Windows clipboard with win32 API and tkinter fallback."""
     try:
@@ -378,6 +378,7 @@ def tool_list_windows() -> str:
     return "\n".join(titles[:40]) if titles else "[No windows found]"
 
 
+@legacy_error_results('[pygetwindow not installed]', '[No window matching', '[Focus failed:')
 def tool_focus_window(title: str) -> str:
     gw = _gw()
     if not gw:
@@ -394,6 +395,7 @@ def tool_focus_window(title: str) -> str:
         return f"[Focus failed: {e}]"
 
 
+@legacy_error_results('[pygetwindow not installed]', '[No window matching', '[Minimize failed:')
 def tool_minimize_window(title: str) -> str:
     gw = _gw()
     if not gw:
@@ -408,6 +410,7 @@ def tool_minimize_window(title: str) -> str:
         return f"[Minimize failed: {e}]"
 
 
+@legacy_error_results('[pygetwindow not installed]', '[No window matching', '[Close failed:')
 def tool_close_window(title: str) -> str:
     gw = _gw()
     if not gw:
@@ -518,11 +521,12 @@ def tool_gmail_setup(gmail_user: str, app_password: str) -> str:
 
 def tool_send_email(to: str, subject: str, body: str) -> str:
     """Send an email through user's Gmail using SMTP."""
+    from aria.outcome import ResultText, FAILED, UNVERIFIED
     user, pw = _gmail_creds()
     if not user or not pw or pw == "INSERT":
-        return ("Gmail isn't set up yet. Ask the user for their Gmail address and an "
+        return ResultText("Gmail isn't set up yet. Ask the user for their Gmail address and an "
                 "app password (myaccount.google.com/apppasswords - needs 2-Step "
-                "Verification turned on), then call gmail_setup to save them.")
+                "Verification turned on), then call gmail_setup to save them.", FAILED)
     msg = EmailMessage()
     msg["From"] = user
     msg["To"] = to
@@ -538,36 +542,46 @@ def tool_send_email(to: str, subject: str, body: str) -> str:
     # surfaced), so the outcome is reported as unknown WITHOUT
     # resending: a duplicate is worse than an honest unknown.
     for _sa in range(2):
+        attempted, submitted = False, False
+        refused = None
         try:
             with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as s:
                 s.starttls()
                 s.login(user, pw)
-                try:
-                    s.send_message(msg)
-                except smtplib.SMTPAuthenticationError:
-                    raise  # outer handler: login was rejected, nothing sent
-                except Exception as send_e:
-                    return (f"[Email send outcome unknown for {to}: the send "
-                            f"attempt raised {type(send_e).__name__} — it may "
-                            f"have been delivered. It was NOT resent; check "
-                            f"Sent Mail before retrying.]")
-        except smtplib.SMTPAuthenticationError:
-            return ("Gmail rejected the login. The app password is wrong or was revoked - "
-                    "ask the user to generate a fresh one at myaccount.google.com/apppasswords "
-                    "and call gmail_setup again.")
+                attempted = True
+                refused = s.send_message(msg)
+                submitted = True
         except Exception as e:
-            # Connect / TLS / login failure: nothing was submitted.
-            add_log(f"Email send attempt {_sa + 1}/2 failed ({type(e).__name__}) - retrying...")
-            time.sleep(3)
-            continue
+            if not submitted:
+                if isinstance(e, smtplib.SMTPAuthenticationError):
+                    return ResultText("Gmail rejected the login. The app password is wrong or was revoked - "
+                            "ask the user to generate a fresh one at myaccount.google.com/apppasswords "
+                            "and call gmail_setup again.", FAILED)
+                if attempted:
+                    return ResultText(
+                        f"[Email send outcome unknown for {to}: the send "
+                        f"attempt raised {type(e).__name__} — it may "
+                        f"have been delivered. It was NOT resent; check "
+                        f"Sent Mail before retrying.]", UNVERIFIED)
+                # Only connect / TLS / login failures can safely retry.
+                add_log(f"Email send attempt {_sa + 1}/2 failed ({type(e).__name__})")
+                if _sa == 0:
+                    time.sleep(3)
+                continue
+            # SMTP.__exit__ sends QUIT and may raise after acceptance. The
+            # server already accepted this message; never submit it again.
         # Submitted: the audit log is best-effort from here — its
         # failure must never look like a send failure.
         try:
             add_log(f"Email sent to {to}: {subject}")
         except Exception:
             pass
+        if refused:
+            return ResultText(
+                f"Email accepted for some recipients; refused recipients: "
+                f"{', '.join(refused)}. It was NOT resent; check Sent Mail.", UNVERIFIED)
         return f"Email sent to {to}: '{subject}'."
-    return f"Could not send email to {to}."
+    return ResultText(f"Could not send email to {to}.", FAILED)
 
 
 def _gmail_imap() -> Tuple[Optional[imaplib.IMAP4_SSL], Optional[str]]:
@@ -1127,7 +1141,11 @@ def tool_manage_background_job(action: str = "list", command: str = "",
         if not job_id:
             return "Provide a job_id to cancel."
         ok = agent_mod.cancel_background_job(int(job_id))
-        return f"Background job #{job_id} terminated." if ok else f"Job #{job_id} not found or already stopped."
+        if ok:
+            return f"Background job #{job_id} terminated."
+        from aria.outcome import unverified
+        return unverified('manage_background_job',
+                          f'No owned running job #{job_id} could be stopped; check the process on this computer')
 
     if act in ("log", "logs", "output"):
         if not job_id:

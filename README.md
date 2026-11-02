@@ -1,5 +1,8 @@
 ## Reliability and Work Center update
 
+See the [November 2 code review and fixes](docs/REVIEW-2026-11-02.md) for verified
+approval, project isolation, email, backup, provider, and runtime corrections.
+
 Open **Settings → User Guide** for searchable offline help, a **Tasks vs Work Center**
 explanation, and prompt examples you can copy and edit before sending in chat.
 Local model spending limits are **off by default**, including older saved budget

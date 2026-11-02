@@ -5,7 +5,7 @@ work schedule integration, and break nudges.
 """
 
 from __future__ import annotations
-from aria import workspaces
+from aria import workspaces, runtime
 
 import json
 import os
@@ -436,7 +436,9 @@ def tool_set_timer(duration_text: str, label: str = "timer") -> str:
         add_log(f"Timer fired: {label}")
         speech.speak(f"Timer done: {label}.")
 
-    threading.Timer(secs, _fire).start()
+    timer = threading.Timer(secs, runtime.copied_call(_fire))
+    timer.daemon = True
+    timer.start()
     return f"Timer set: {label}, {duration_text} from now."
 
 
@@ -584,8 +586,8 @@ def scheduler_loop(is_busy_fn: Optional[Callable[[], bool]] = None,
                             except Exception as _e_silent:
                                 _config_silent.log_silent("scheduler_loop", _e_silent)
                             if run_agent_fn:
-                                threading.Thread(target=run_agent_fn,
-                                                 args=(f"[Scheduled task] {prompt}",),
+                                threading.Thread(target=runtime.copied_call(
+                                                 run_agent_fn, f"[Scheduled task] {prompt}"),
                                                  daemon=True).start()
 
                     # ARIA ULTIMATE (Module 5): inbox poller — emits inbox_new_file
@@ -612,6 +614,13 @@ def scheduler_loop(is_busy_fn: Optional[Callable[[], bool]] = None,
                         _missions_mod.executor_tick()
                     except Exception as _e_silent:
                         _config_silent.log_silent("scheduler_loop", _e_silent)
+                    # Include scheduler/receipt writes as well as explicit
+                    # memory/settings/chat saves; work is coalesced off-thread.
+                    try:
+                        from aria.backup_mirror import queue_snapshot
+                        queue_snapshot()
+                    except Exception as _e_silent:
+                        _config_silent.log_silent('scheduler_mirror_queue', _e_silent)
         except Exception as e:
             add_log(f"Scheduler err: {e}")
         time.sleep(10)

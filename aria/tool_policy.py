@@ -7,7 +7,8 @@ READ_ONLY = frozenset({
     'get_approval_mode', 'list_pending_approvals', 'research', 'mtg_card',
 })
 DESKTOP = frozenset({
-    'open_app_or_url', 'browser_agent', 'browser_control', 'click', 'type_text',
+    'open_app_or_url', 'launch_app', 'browser_agent', 'browser_control', 'click', 'type_text',
+    'gui_click', 'gui_type', 'window_snap',
     'press_key', 'hotkey', 'mouse_click', 'mouse_move', 'scroll',
     'close_window', 'focus_window', 'minimize_window', 'maximize_window',
     'phone_tap', 'phone_swipe', 'phone_type', 'phone_key', 'desktop_control',

@@ -372,6 +372,8 @@ def oai_response_to_parts(resp_json: Dict[str, Any]) -> List[Dict[str, Any]]:
         content = msg.get("content")
         if isinstance(content, str) and content:
             parts.append({"text": content})
+        elif isinstance(msg.get('refusal'), str) and msg['refusal'].strip():
+            parts.append({'text': msg['refusal']})
         if isinstance(msg.get('extra_content'), dict):
             parts.append({'_oai_message_extra_content': copy.deepcopy(msg['extra_content'])})
         for tc in msg.get("tool_calls") or []:
@@ -424,6 +426,22 @@ def _merge_extra_content(target, incoming):
             _merge_extra_content(target[key], value)
         else:
             target[key] = copy.deepcopy(value)
+
+
+def _has_model_output(parts):
+    """Metadata and empty candidates cannot satisfy a model request."""
+    return any(isinstance(part, dict) and (
+        isinstance(part.get('text'), str) and bool(part['text'].strip()) and not part.get('thought')
+        or isinstance(part.get('functionCall'), dict)
+        and isinstance(part['functionCall'].get('name'), str)
+        and bool(part['functionCall']['name'].strip())) for part in parts or [])
+
+
+def _usable_response(data):
+    try:
+        return _has_model_output(data['candidates'][0]['content']['parts'])
+    except (KeyError, IndexError, TypeError):
+        return False
 
 
 class Provider:
@@ -490,7 +508,9 @@ class OpenAICompatProvider(Provider):
                 if not line.startswith("data: "):
                     continue
                 data_str = line[6:].strip()
-                if not data_str or data_str == "[DONE]":
+                if data_str == '[DONE]':
+                    break
+                if not data_str:
                     continue
                 try:
                     chunk = json.loads(data_str)
@@ -587,6 +607,9 @@ class OpenAICompatProvider(Provider):
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     parts = self._parse_sse_stream(resp, on_text_chunk, first_output_deadline)
                 usage_data, request_ok = getattr(self, "_stream_usage", None), True
+                if not _has_model_output(parts):
+                    self.last_error = 'No usable model response'
+                    return None
                 _record_call_stats(self.name, int((time.time() - t0) * 1000),
                                    getattr(self, "_stream_usage", None))
                 return {"candidates": [{"content": {"parts": parts}}]}
@@ -596,7 +619,11 @@ class OpenAICompatProvider(Provider):
             _record_call_stats(self.name, int((time.time() - t0) * 1000),
                                data.get("usage"))
             usage_data, request_ok = data.get("usage"), True
-            return {"candidates": [{"content": {"parts": oai_response_to_parts(data)}}]}
+            parts = oai_response_to_parts(data)
+            if not _has_model_output(parts):
+                self.last_error = 'No usable model response'
+                return None
+            return {"candidates": [{"content": {"parts": parts}}]}
         except runtime.Cancelled:
             raise
         except urllib.error.HTTPError as e:
@@ -702,10 +729,6 @@ def _build_chain() -> List[Provider]:
         elif n in registry:
             chain.append(registry[n])
     return chain
-
-
-def get_active_provider() -> str:
-    return ACTIVE_PROVIDER
 
 
 # --- Role-based model routing (Ollama Cloud) ---
@@ -925,7 +948,7 @@ def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
         except Exception as e:
             data = None
             provider.last_error = f"raised: {e}"
-        if data and data.get("candidates"):
+        if _usable_response(data):
             return data, False
         if not use_override:
             return data, False
@@ -1058,7 +1081,7 @@ def provider_call(
             add_log(f"provider {provider.name} raised: {e}")
             provider.last_error = f'raised: {type(e).__name__}'
             data = None
-        if data and data.get("candidates"):
+        if _usable_response(data):
             ctx.budget_error = ''
             with _HEALTH_LOCK:
                 _PROVIDER_HEALTH[provider.name] = {

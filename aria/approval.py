@@ -2,8 +2,7 @@
 
 Modes: auto (today's behavior) / confirm-risky / confirm-all.
 Persisted in approval.json at the install root (aria/data_dir.py,
-V20 — pre-V20 it lived in ~/ARIA). Default: auto (zero behavior change
-until the user opts in).
+V20 — pre-V20 it lived in ~/ARIA). Default: confirm-risky.
 
 Top-level imports: stdlib + aria.config only. dispatch/brain are imported
 lazily inside functions — never at module level (no import cycles).

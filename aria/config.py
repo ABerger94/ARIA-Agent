@@ -176,13 +176,27 @@ def quarantine_key(key, duration_s=KEY_QUARANTINE_DURATION_S, code=429):
 
 def _secret_values():
     vals = []
-    for name in ("GITHUB_TOKEN", "GMAIL_APP_PASSWORD",
-                 "BRIDGE_TOKEN", "bridge_token"):
-        v = os.environ.get(name) or _KEYS.get(name) or ""
-        if v:
-            vals.append(v)
+    def collect(value):
+        if isinstance(value, str):
+            vals.append(value)
+        elif isinstance(value, (list, tuple)):
+            for entry in value:
+                collect(entry)
+        elif isinstance(value, dict):
+            for name, entry in value.items():
+                if _credential_field(name):
+                    collect(entry)
+    for source in (_KEYS, os.environ):
+        for name, value in source.items():
+            if _credential_field(name):
+                collect(value)
     return sorted({v for v in vals if len(v) > 6 and v != "INSERT"},
                   key=len, reverse=True)
+
+
+def _credential_field(name):
+    return bool(re.search(r'password|passwd|secret|token|api_?keys?|authorization|cookie|private_?key',
+                          str(name), re.I)) or str(name).lower() in {'env', 'environment', 'headers'}
 
 
 def redact(text):
@@ -191,6 +205,20 @@ def redact(text):
     for v in _secret_values():
         text = text.replace(v, "[redacted]")
     return text
+
+
+def redact_data(value):
+    """Redact credential fields before serialization, including new secrets.
+
+    A setup tool's credential is not in _KEYS yet when its invocation is
+    audited. Scrubbing field names therefore precedes known-value redaction.
+    """
+    if isinstance(value, dict):
+        return {key: '[redacted]' if _credential_field(key) else redact_data(entry)
+                for key, entry in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact_data(entry) for entry in value]
+    return redact(value) if isinstance(value, str) else value
 
 
 GITHUB_TOKEN, _GITHUB_SOURCE = key_get("GITHUB_TOKEN")
@@ -460,6 +488,11 @@ def settings_save(d: dict):
             os.replace(tmp, SETTINGS_FILE)
         finally:
             if os.path.exists(tmp): os.unlink(tmp)
+        try:
+            from aria.backup_mirror import queue_snapshot
+            queue_snapshot()
+        except Exception as exc:
+            log_silent('settings_mirror_queue', exc)
         return True
     except Exception as _e_silent:
         log_silent("settings_save", _e_silent)

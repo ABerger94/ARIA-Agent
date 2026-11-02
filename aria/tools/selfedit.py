@@ -57,6 +57,7 @@ from typing import Optional, Tuple
 
 from aria import config as _config
 from aria.config import add_log
+from aria.outcome import legacy_error_results
 
 _RESTART_NOTE = (
     " The post-turn restart check will validate the change, "
@@ -156,6 +157,7 @@ def _read_current(target: str) -> Optional[str]:
         return None
 
 
+@legacy_error_results('[Self-edit refused:', '[Self-edit failed:')
 def tool_edit_own_code(path: str, content: str) -> str:
     """Rewrite one of ARIA's own source files in full."""
     target, refusal = _resolve_target(path)
@@ -192,6 +194,7 @@ def tool_edit_own_code(path: str, content: str) -> str:
             f"({len(content or '')} characters)." + _RESTART_NOTE)
 
 
+@legacy_error_results('[Self-edit refused:', '[Self-edit failed:')
 def tool_patch_own_code(path: str, old_text: str, new_text: str) -> str:
     """Replace exactly one exact-match occurrence in one of ARIA's
     own source files. Refuses when old_text is absent or matches

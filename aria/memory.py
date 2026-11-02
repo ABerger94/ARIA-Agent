@@ -37,6 +37,14 @@ def db_path():
 
 def _project_file(name, legacy):
     return workspaces.path(name, legacy)
+
+
+def _queue_backup():
+    try:
+        from aria.backup_mirror import queue_snapshot
+        queue_snapshot()
+    except Exception as exc:
+        _config_silent.log_silent('memory_mirror_queue', exc)
 DB_LOCK = threading.Lock()
 
 _SPINE_BOOT_KEYS = []
@@ -58,8 +66,7 @@ def spine_append(event_type, payload):
     try:
         evt = {"ts": datetime.now().isoformat(timespec="seconds"),
                "type": event_type}
-        for k, v in (payload or {}).items():
-            evt[k] = redact(v) if isinstance(v, str) else v
+        evt.update(_config_silent.redact_data(payload or {}))
         with open(_project_file("memory_spine.jsonl", SPINE_PATH), "a", encoding="utf-8") as f:
             with _SPINE_LOCK:
                 f.write(json.dumps(evt, ensure_ascii=False) + "\n")
@@ -351,6 +358,7 @@ def memory_save(category: str, key: str, value: str, *, source="conversation", c
         conn.commit()
         conn.close()
     add_log(f"Memory saved: [{key}]")
+    _queue_backup()
 
 
 def memory_get(category: str, key: str) -> str:
@@ -595,9 +603,9 @@ def get_display_chat_log():
     if path not in _PROJECT_DISPLAY_LOGS:
         with DB_LOCK:
             with sqlite3.connect(path) as conn:
-                rows = conn.execute('SELECT timestamp,sender,message FROM chat_history ORDER BY id DESC LIMIT 1000').fetchall()
+                rows = conn.execute('SELECT timestamp,sender,message FROM chat_history ORDER BY id DESC LIMIT 60').fetchall()
             conn.close()
-        _PROJECT_DISPLAY_LOGS[path] = [(str(t)[11:16], who, msg) for t, who, msg in reversed(rows)]
+        _PROJECT_DISPLAY_LOGS[path] = [(str(t)[11:19], who, msg) for t, who, msg in reversed(rows)]
     return _PROJECT_DISPLAY_LOGS[path]
 
 def log_conversation(sender: str, message: str):
@@ -605,9 +613,9 @@ def log_conversation(sender: str, message: str):
     spine_append("chat", {"sender": sender, "message": redacted_msg})
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     ts_short = datetime.now().strftime("%H:%M:%S")
-    get_display_chat_log().append((ts_short, sender, redacted_msg))
-    if len(DISPLAY_CHAT_LOG) > 60:
-        DISPLAY_CHAT_LOG.pop(0)
+    display = get_display_chat_log()
+    display.append((ts_short, sender, redacted_msg))
+    del display[:-60]
 
     for listener in _CHAT_LOG_LISTENERS:
         try:
@@ -633,6 +641,7 @@ def log_conversation(sender: str, message: str):
             f.write(f"\n### [{ts}] {sender.upper()}:\n{redacted_msg}\n")
     except Exception as e:
         add_log(f"File log err: {e}")
+    _queue_backup()
 
 
 _MEMORY_DB_OK = None

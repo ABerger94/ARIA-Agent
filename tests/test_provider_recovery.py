@@ -189,6 +189,37 @@ def test_missing_keys_are_not_reported_as_rate_limits(monkeypatch):
     assert 'rate limit' not in pv.provider_failure_message()
 
 
+@pytest.mark.parametrize('message', [{}, {'content': ''}, {'content': '   '},
+                                     {'extra_content': SIGNATURE}])
+def test_empty_provider_response_falls_through_to_a_working_provider(monkeypatch, message):
+    first, second = provider('gemini'), provider('groq')
+    monkeypatch.setattr(pv, '_build_chain', lambda: [first, second])
+    requests = []
+    def serve(req, **kwargs):
+        requests.append(req)
+        return Response({'choices': [{'message': message}]} if len(requests) == 1 else OK)
+    monkeypatch.setattr(pv.urllib.request, 'urlopen', serve)
+    result = pv.provider_call('', [])
+    assert result['candidates'][0]['content']['parts'] == [{'text': 'Done.'}]
+    assert len(requests) == 2
+
+
+def test_metadata_only_stream_is_not_a_successful_response(monkeypatch):
+    chunks = []
+    lines = [b'data: ' + json.dumps({'choices': [{'delta': {'extra_content': SIGNATURE}}]}).encode(),
+             b'data: [DONE]']
+    monkeypatch.setattr(pv.urllib.request, 'urlopen', lambda *a, **k: Response(lines=lines))
+    assert provider().call('', [], on_text_chunk=chunks.append) is None
+
+
+def test_done_stream_marker_stops_reading_the_connection():
+    def lines():
+        yield b'data: {"choices":[{"delta":{"content":"Done."}}]}'
+        yield b'data: [DONE]'
+        raise AssertionError('Read beyond the end-of-stream marker')
+    assert provider()._parse_sse_stream(Response(lines=lines()), None) == [{'text': 'Done.'}]
+
+
 def test_hello_reaches_the_provider_with_legacy_limits_and_no_prices(monkeypatch, tmp_path):
     from aria import memory
     monkeypatch.setattr(memory, 'db_path', lambda: str(tmp_path / 'usage.db'))

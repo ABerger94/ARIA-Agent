@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Set, Tuple, Callable, Any
 
 from aria.config import WORKSPACE_DIR, MAX_TOOL_OUTPUT, GITHUB_USERNAME
 from aria.tools.schemas import get_tool_decls_by_name
+from aria.outcome import ResultText, FAILED, UNVERIFIED
 
 RISKY_TOOLS: Set[str] = {
     "run_python_code", "gui_click", "gui_type",
@@ -39,7 +40,8 @@ def missing_required_args(fn_name: str, args: dict, decls: Optional[Dict[str, An
         return []
     required = (decl.get("parameters") or {}).get("required", [])
     args = args or {}
-    return [p for p in required if not args.get(p)]
+    return [p for p in required if p not in args or args[p] is None
+            or isinstance(args[p], str) and not args[p].strip()]
 
 
 def target_mentioned(target: str, message: str) -> bool:
@@ -135,13 +137,18 @@ def tool_run_python(code: str,
                 cwd=workspace_dir
             )
             output = result.stdout + result.stderr
+            if result.returncode:
+                return ResultText(
+                    f"[Execution Error: Script exited with code {result.returncode}]\n{output}", FAILED)
             if log_callback:
                 log_callback("Execution complete.")
             return output if output.strip() else "[Code ran with no console output]"
         except subprocess.TimeoutExpired:
-            return f"[Execution Error: Script timed out after {timeout} seconds]"
+            return ResultText(
+                f"[Execution Error: Script timed out after {timeout} seconds; "
+                "it may have made changes before stopping]", UNVERIFIED)
         except Exception as e:
-            return f"[Execution Error: {e}]"
+            return ResultText(f"[Execution Error: {e}]", FAILED)
     finally:
         if temp_script and os.path.exists(temp_script):
             try:

@@ -1561,12 +1561,6 @@ def create_dashboard(callbacks):
             self.raise_()
             self.activateWindow()
 
-        def closeEvent(self, event):
-            pet = getattr(self, '_pet', None)
-            if pet is not None:
-                pet.hide()
-            super().closeEvent(event)
-
         def open_customize(self):
             from aria import ui_prefs
             from aria.customize_panel import build_customize_dialog
@@ -2329,7 +2323,12 @@ def create_dashboard(callbacks):
             self._poll_approvals()
 
         def closeEvent(self, event):
-            callbacks.ptt_release(); callbacks.request_stop(); super().closeEvent(event)
+            pet = getattr(self, '_pet', None)
+            if pet is not None:
+                pet.hide()
+            callbacks.ptt_release()
+            callbacks.request_stop()
+            super().closeEvent(event)
 
     return Dashboard()
 

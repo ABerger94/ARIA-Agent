@@ -87,6 +87,34 @@ def test_short_copy_fails_and_latches_once(monkeypatch, tmp_path):
     assert len(logged) == 2
 
 
+def test_failed_copy_preserves_the_previous_good_snapshot(monkeypatch, tmp_path):
+    mirror = tmp_path / 'mirror'
+    mirror.mkdir()
+    (mirror / 'data.bin').write_bytes(b'previous good snapshot')
+    source = _slot(tmp_path, 'data.bin', b'new data')
+    _stub_settings(monkeypatch, {'backup_mirror_dir': str(mirror)})
+    monkeypatch.setattr(bm, 'shutil', types.SimpleNamespace(
+        copyfile=lambda src, dest: Path(dest).write_bytes(b'x')))
+    assert not bm.mirror_backups([source])
+    assert (mirror / 'data.bin').read_bytes() == b'previous good snapshot'
+
+
+def test_sqlite_snapshot_includes_committed_wal_data(monkeypatch, tmp_path):
+    import sqlite3
+    from contextlib import closing
+    source, mirror = tmp_path / 'aria_memory.db', tmp_path / 'mirror'
+    _stub_settings(monkeypatch, {'backup_mirror_dir': str(mirror)})
+    with closing(sqlite3.connect(source)) as conn:
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA wal_autocheckpoint=0')
+        conn.execute('CREATE TABLE facts(value TEXT)')
+        conn.execute("INSERT INTO facts VALUES('committed only in WAL')")
+        conn.commit()
+        assert bm.mirror_backups([source])
+        with closing(sqlite3.connect(mirror / source.name)) as copy:
+            assert copy.execute('SELECT value FROM facts').fetchall() == [('committed only in WAL',)]
+
+
 def test_mirror_failure_never_raises(monkeypatch, tmp_path):
     # Mirror dir path is an existing FILE: mkdir must fail inside,
     # and the caller hears False, not an exception.

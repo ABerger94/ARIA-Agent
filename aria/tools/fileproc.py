@@ -52,6 +52,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from aria import config as _config
 from aria.config import add_log
+from aria.outcome import ResultText, FAILED, ASK
 
 # ------------------------------------------------------------------ types
 # His extension sets (file_processor.py _detect_type), carried over.
@@ -691,7 +692,7 @@ def tool_process_file(path: str = "", question: str = "") -> str:
     """Dispatch handler body for the process_file tool ('what's in
     that file'). Defaults to the frame's staged (dropped) file."""
     if not getattr(_config, "FILEPROC_ENABLED", True):
-        return "[File processing is disabled (ARIA_FILEPROC=0).]"
+        return ResultText('[File processing is disabled (ARIA_FILEPROC=0).]', FAILED)
     p = (path or "").strip()
     if not p:
         try:
@@ -700,14 +701,18 @@ def tool_process_file(path: str = "", question: str = "") -> str:
         except Exception:
             p = ""
     if not p:
-        return ("[No file given and nothing is staged — drop a file on "
-                "the frame first, or name a path.]")
+        return ResultText('[No file given and nothing is staged — drop a file on '
+                          'the frame first, or name a path.]', ASK)
+    from aria import workspaces
+    if not workspaces.file_allowed(p):
+        from aria.outcome import failed
+        return failed('process_file', 'File is outside this project’s configured roots')
     try:
         return summarize_file(p, question)
     except FileNotFoundError:
-        return f"[File not found: {p}]"
+        return ResultText(f"[File not found: {p}]", FAILED)
     except Exception as e:
-        return f"[File processing failed: {e}]"
+        return ResultText(f"[File processing failed: {e}]", FAILED)
 
 
 def process_and_report(path, **kw) -> Optional[Dict[str, Any]]:

@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from functools import wraps
 from typing import Any, Optional
 
 # The three words a tool may answer with, plus the one that asks and
@@ -130,6 +131,23 @@ def normalize(value):
             # Existing tools return human text; preserve that public API.
             status = DONE if text.strip() else UNVERIFIED
     return ToolResult(status, text)
+
+
+def legacy_error_results(*prefixes):
+    """Type a tool's own legacy error messages at that tool's boundary.
+
+    Prefixes belong to a specific handler, never a global scan of arbitrary
+    fetched/read content. Existing typed results keep their original status.
+    """
+    def decorate(handler):
+        @wraps(handler)
+        def wrapped(*args, **kwargs):
+            value = handler(*args, **kwargs)
+            if isinstance(value, str) and not isinstance(value, ResultText) and value.startswith(prefixes):
+                return ResultText(value, FAILED)
+            return value
+        return wrapped
+    return decorate
 
 
 def _render(value: Any) -> str:

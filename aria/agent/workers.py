@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Tuple
 
 import psutil
+from aria import workspaces
 
 from aria.config import WORKSPACE_DIR, add_log
 from aria.memory import (
@@ -26,7 +27,7 @@ from aria import config as _config_silent
 _JOBS_LOG_DIR = os.path.join(WORKSPACE_DIR, "logs", "jobs")
 os.makedirs(_JOBS_LOG_DIR, exist_ok=True)
 
-_ACTIVE_JOBS: Dict[int, Tuple[subprocess.Popen, str, str, float]] = {}  # job_id -> (proc, log_file, name, start_time)
+_ACTIVE_JOBS: Dict[Tuple[str, int], Tuple[subprocess.Popen, str, str, float]] = {}
 _JOBS_LOCK = threading.Lock()
 
 _PENDING_DOWNLOADS: List[Dict[str, Any]] = []
@@ -50,21 +51,21 @@ def _fmt_size(num_bytes: int) -> str:
 def start_background_job(command: str, name: str = "") -> Dict[str, Any]:
     """Spawn an asynchronous background job and track execution in worker supervisor."""
     job_name = name or (command[:40] + ("..." if len(command) > 40 else ""))
-    log_file = os.path.join(_JOBS_LOG_DIR, f"job_{int(time.time() * 1000)}.log")
-    
+    import tempfile
+    project = workspaces.current()
+    log_dir = workspaces.path('logs/jobs', _JOBS_LOG_DIR)
+    os.makedirs(log_dir, exist_ok=True)
+    proc = None
     try:
-        log_fp = open(log_file, "w", encoding="utf-8", errors="ignore")
-        proc = subprocess.Popen(
-            command,
-            shell=True,
-            stdout=log_fp,
-            stderr=subprocess.STDOUT,
-            cwd=WORKSPACE_DIR
-        )
+        fd, log_file = tempfile.mkstemp(prefix='job_', suffix='.log', dir=log_dir)
+        with os.fdopen(fd, 'w', encoding='utf-8', errors='ignore') as log_fp:
+            proc = subprocess.Popen(
+                command, shell=True, stdout=log_fp, stderr=subprocess.STDOUT,
+                cwd=workspaces.path('', WORKSPACE_DIR))
         jid = job_db_create(job_name, command, proc.pid, log_file)
         
         with _JOBS_LOCK:
-            _ACTIVE_JOBS[jid] = (proc, log_file, job_name, time.time())
+            _ACTIVE_JOBS[(project, jid)] = (proc, log_file, job_name, time.time())
             
         spine_append("job_started", {"job_id": jid, "name": job_name, "pid": proc.pid})
         add_log(f"Worker: Started job #{jid} '{job_name}' (PID: {proc.pid})")
@@ -76,6 +77,11 @@ def start_background_job(command: str, name: str = "") -> Dict[str, Any]:
             "log_file": log_file
         }
     except Exception as e:
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception as exc:
+                _config_silent.log_silent('untracked_background_job_cleanup', exc)
         add_log(f"Worker: Failed to start background job: {e}")
         return {"error": str(e)}
 
@@ -85,9 +91,9 @@ def list_background_jobs(limit: int = 10) -> List[Dict[str, Any]]:
     jobs = job_db_list(limit)
     with _JOBS_LOCK:
         for j in jobs:
-            jid = j["id"]
-            if jid in _ACTIVE_JOBS:
-                proc, _, _, _ = _ACTIVE_JOBS[jid]
+            key = (workspaces.current(), j['id'])
+            if key in _ACTIVE_JOBS:
+                proc, _, _, _ = _ACTIVE_JOBS[key]
                 if proc.poll() is None:
                     j["status"] = "running"
     return jobs
@@ -95,9 +101,10 @@ def list_background_jobs(limit: int = 10) -> List[Dict[str, Any]]:
 
 def cancel_background_job(job_id: int) -> bool:
     """Terminate or kill a running background job."""
+    key = (workspaces.current(), job_id)
     with _JOBS_LOCK:
-        if job_id in _ACTIVE_JOBS:
-            proc, log_file, name, _ = _ACTIVE_JOBS[job_id]
+        if key in _ACTIVE_JOBS:
+            proc, log_file, name, _ = _ACTIVE_JOBS[key]
             try:
                 proc.terminate()
                 time.sleep(0.2)
@@ -105,23 +112,16 @@ def cancel_background_job(job_id: int) -> bool:
                     proc.kill()
             except Exception as _e_silent:
                 _config_silent.log_silent("cancel_background_job", _e_silent)
-            job_db_update(job_id, "killed", exit_code=-9)
-            del _ACTIVE_JOBS[job_id]
+                return False
+            if proc.poll() is None:
+                return False
+            job_db_update(job_id, "killed", exit_code=proc.poll())
+            del _ACTIVE_JOBS[key]
             add_log(f"Worker: Cancelled job #{job_id} '{name}'")
             return True
 
-    # If not in active memory, check DB
-    jobs = job_db_list(20)
-    for j in jobs:
-        if j["id"] == job_id and j["status"] == "running":
-            pid = j["pid"]
-            try:
-                p = psutil.Process(pid)
-                p.terminate()
-            except Exception as _e_silent:
-                _config_silent.log_silent("cancel_background_job", _e_silent)
-            job_db_update(job_id, "killed", exit_code=-9)
-            return True
+    # A persisted PID may now belong to an unrelated process. Only a child
+    # handle owned by this ARIA session is sufficient authority to terminate.
     return False
 
 
@@ -145,30 +145,34 @@ def get_background_job_log(job_id: int, tail_lines: int = 40) -> str:
         return f"Failed to read job log: {e}"
 
 
-def _job_supervisor_loop():
-    """Background supervisor monitoring running child processes."""
-    while True:
-        time.sleep(2)
-        finished_jids = []
-        with _JOBS_LOCK:
-            for jid, (proc, log_file, name, start_t) in list(_ACTIVE_JOBS.items()):
+def _poll_background_jobs():
+    """Reconcile each process into the database of the project that owns it."""
+    with _JOBS_LOCK:
+        for key, (proc, log_file, name, start_t) in list(_ACTIVE_JOBS.items()):
+            project, jid = key
+            try:
                 code = proc.poll()
                 if code is not None:
-                    finished_jids.append(jid)
                     dur = round(time.time() - start_t, 1)
                     status = "completed" if code == 0 else "failed"
-                    job_db_update(jid, status, exit_code=code)
-                    spine_append("job_complete", {
-                        "job_id": jid, "name": name, "exit_code": code, "duration_s": dur
-                    })
+                    with workspaces.use(project):
+                        job_db_update(jid, status, exit_code=code)
+                        spine_append("job_complete", {
+                            "job_id": jid, "name": name, "exit_code": code, "duration_s": dur})
                     msg = f"Job #{jid} '{name}' {status} with code {code} ({dur}s)."
                     add_log(f"Worker: {msg}")
                     with _QUEUES_LOCK:
                         _PENDING_JOB_NOTICES.append(msg)
+                    del _ACTIVE_JOBS[key]
+            except Exception as exc:
+                _config_silent.log_silent('background_job_poll', exc)
 
-            for jid in finished_jids:
-                if jid in _ACTIVE_JOBS:
-                    del _ACTIVE_JOBS[jid]
+
+def _job_supervisor_loop():
+    """Background supervisor monitoring running child processes."""
+    while True:
+        time.sleep(2)
+        _poll_background_jobs()
 
 
 # --- Downloads Folder Watcher ---

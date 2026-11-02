@@ -110,7 +110,11 @@ def test_dashboard_routes_controls_and_refreshes(monkeypatch, tmp_path):
     window.grab().save(str(tmp_path / 'dashboard-inbox.png'))
     window.tabs.setCurrentIndex(0)
     window.grab().save(str(tmp_path / 'dashboard.png'))
+    pet = QLabel('pet')
+    window._pet = pet
+    pet.show(); app.processEvents()
     window.close(); assert 'shutdown' in calls
+    assert not pet.isVisible()
 
 
 def test_services_status_text_counts_armed():

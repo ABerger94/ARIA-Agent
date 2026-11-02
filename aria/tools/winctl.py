@@ -13,6 +13,7 @@ import sys
 from typing import Optional
 
 from aria.config import add_log, redact
+from aria.outcome import legacy_error_results
 from aria import config as _config_silent
 
 _UNAVAILABLE = "[window control unavailable on this platform]"
@@ -57,6 +58,8 @@ def _find_hwnd(win32gui, title: str) -> Optional[int]:
     return found[0][0] if found else None
 
 
+@legacy_error_results('[Invalid position', '[window control unavailable', '[No window matching',
+                      '[Snap failed:', '[window_snap error:')
 def tool_window_snap(title: str, position: str) -> str:
     """Snap/move a window: position in {left, right, maximize, minimize, center}.
     Windows via lazy pywin32; elsewhere returns the platform-unavailable message.
@@ -138,6 +141,8 @@ def _resolve_start_menu(name: str) -> Optional[str]:
     return None
 
 
+@legacy_error_results('[launch_app:', '[launch_app is Windows-only', '[launch_app resolution failed:', '[Could not',
+                      '[Launch failed:', '[launch_app error:', '[window control unavailable')
 def tool_launch_app(name: str) -> str:
     """Friendly wrapper for launching installed Windows apps.
     Resolves Start Menu names (via os.startfile on common paths); if nothing

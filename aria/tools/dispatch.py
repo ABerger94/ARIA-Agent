@@ -309,18 +309,29 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
     op = (f'{parent}/nested:{call_signature(fn_name, args)}' if parent and depth
           else parent or uuid.uuid4().hex)
     token = runtime.DISPATCH_DEPTH.set(depth + 1)
+    _fleet_token, result = None, None
+    try:
+        from aria import fleet as _fleet_mod
+        _fleet_token = _fleet_mod.begin(fn_name, _fleet_mod.detail_for(fn_name, args or {}))
+    except Exception:
+        pass
     try:
         with runtime.operation(op):
             with ctx.lock if not retry_safe(fn_name) else contextlib.nullcontext():
-                return _execute_tool(fn_name, args, preauthorized=preauthorized)
+                result = _execute_tool(fn_name, args, preauthorized=preauthorized)
+                return result
     finally:
         runtime.DISPATCH_DEPTH.reset(token)
+        try:
+            _fleet_mod.finish(_fleet_token, _fleet_mod.result_ok(result[0]) if result else False)
+        except Exception:
+            pass
 
 
 def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple[str, bool]:
     """Dispatch one tool with full validation, sandboxing, and audit logging.
-    Returns (result_text, False) — confirmation gating was removed; the bool is
-    kept for call-site compatibility.
+    Returns (result_text, False); approval may park the request before its
+    handler runs. The bool is retained for call-site compatibility.
     """
     
     runtime.check_cancelled()
@@ -329,10 +340,10 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
         if not path:
             continue
         if fn_name in {'read_file','write_file'}:
-            import os
-            clean = str(path).strip().replace('\\','/').lstrip('/')
-            if '..' in clean: clean = os.path.basename(clean)
-            path = os.path.join(workspaces.path('', builtins.WORKSPACE_DIR), clean)
+            try:
+                path = workspaces.resolve_workspace_file(path, builtins.WORKSPACE_DIR)
+            except ValueError as exc:
+                return (f'status=failed reason="{exc}"', False)
         if not workspaces.file_allowed(path):
             return ('status=failed reason="File is outside this project’s configured roots"', False)
     # Auto-resolve parent toolkit if called directly
@@ -344,7 +355,8 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
     # 1. Log to spine
     if _SPINE_HOOK:
         try:
-            _SPINE_HOOK("tool", {"name": fn_name, "args": str(args)[:300]})
+            _SPINE_HOOK("tool", {"name": fn_name,
+                                 "args": str(_config_mod.redact_data(args))[:300]})
         except Exception as _e_silent:
             _config_mod.log_silent("execute_tool", _e_silent)
 
@@ -391,11 +403,10 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
     # for user approval unless preauthorized (approve-token replay, trusted
     # routine replay) or the mode is auto. Lazy import: no import cycle.
     # 3a. Safe mode: shell, GUI control, and email are hard-blocked.
-    if not preauthorized:
-        if _config_mod.is_safe_mode() and _config_mod.is_safe_mode_blocked(fn_name):
-            return (f"[Safe mode: '{fn_name}' is disabled. "
-                    f"Disable safe mode to use shell, GUI control, or email.]",
-                    False)
+    if _config_mod.is_safe_mode() and _config_mod.is_safe_mode_blocked(fn_name):
+        return (f"[Safe mode: '{fn_name}' is disabled. "
+                f"Disable safe mode to use shell, GUI control, or email.]",
+                False)
     if not preauthorized:
         from aria import approval as _approval_mod
         _approval_mod.purge_expired()
@@ -446,17 +457,8 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
     runtime.current().last_tool = (fn_name, time.time())
 
     # 6. Execute Handler
-    # Fleet registry (aria/fleet.py, the Mark-LVI port): the call
-    # is in flight from here to the return, so the Tasks tab's
-    # Fleet section can show what she is ACTUALLY doing — the
-    # funnel is the only place that knows.
-    _fleet_token = None
-    try:
-        from aria import fleet as _fleet_mod
-        _fleet_token = _fleet_mod.begin(
-            fn_name, _fleet_mod.detail_for(fn_name, args or {}))
-    except Exception:
-        _fleet_token = None
+    # The outer execute_tool finally owns Fleet cleanup, including cached
+    # receipts and cancellation. The durable receipt owns effect replay here.
     operation_id = runtime.operation_id() or uuid.uuid4().hex
     cached = action_journal.begin(operation_id, fn_name, args or {})
     if cached is not None:
@@ -574,11 +576,6 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
             _routines_mod.maybe_capture(fn_name, args or {})
         except Exception as _e_silent:
             _config_mod.log_silent("execute_tool", _e_silent)
-    try:
-        from aria import fleet as _fleet_mod
-        _fleet_mod.finish(_fleet_token, _fleet_mod.result_ok(r))
-    except Exception:
-        pass
     return r, False
 
 

@@ -1019,8 +1019,8 @@ def _start_live_if_configured() -> bool:
             declarations=ALL_FUNCTION_DECLARATIONS,
             tool_runner=lambda name, args: _dispatch.execute_tool(name, args),
             mic_device=_mic_device(),
-            on_user_text=lambda t: log_conversation('Alek', t),
-            on_assistant_text=lambda t: log_conversation('A.R.I.A.', t),
+            on_user_text=lambda t: memory.log_conversation('Alek', t),
+            on_assistant_text=lambda t: memory.log_conversation('A.R.I.A.', t),
             on_state=_on_state,
             log=add_log,
             presence_check=presence_allows_speech)

@@ -109,6 +109,37 @@ def test_email_cooldown_blocks_burst(tmp_path, monkeypatch):
     print("ok email_cooldown")
 
 
+def test_email_triggers_each_see_the_same_new_message(tmp_path, monkeypatch):
+    engine = _engine(tmp_path, monkeypatch,
+                     mail_fetcher=lambda: [_mail('bank@x.com', 'Your bill is ready')],
+                     fire_fn=lambda t, d: 'done')
+    triggers.create_trigger('Unrelated first', 'email', 'do it',
+                            rule={'subject_contains': 'lunch'}, mode='auto')
+    triggers.create_trigger('Bills', 'email', 'do it',
+                            rule={'subject_contains': 'bill'}, mode='auto')
+    triggers.create_trigger('Bank', 'email', 'do it',
+                            rule={'from_contains': 'bank'}, mode='auto')
+    assert [r['trigger'] for r in engine.tick()] == ['Bills', 'Bank']
+    assert engine.tick() == []
+
+
+def test_presence_triggers_each_see_the_same_return(tmp_path, monkeypatch):
+    state, clock = {'present': False}, _Clock()
+    engine = _engine(tmp_path, monkeypatch, now_fn=clock,
+                     presence_fn=lambda: state['present'], fire_fn=lambda t, d: 'done')
+    triggers.create_trigger('Long absence', 'presence_return', 'do it',
+                            rule={'min_away_s': 7200}, mode='auto')
+    triggers.create_trigger('Short absence', 'presence_return', 'do it',
+                            rule={'min_away_s': 600}, mode='auto')
+    triggers.create_trigger('Another short absence', 'presence_return', 'do it',
+                            rule={'min_away_s': 600}, mode='auto')
+    engine.tick()
+    clock.t += 1200
+    state['present'] = True
+    assert [r['trigger'] for r in engine.tick()] == ['Short absence', 'Another short absence']
+    assert engine.tick() == []
+
+
 def test_folder_baseline_then_new_file(tmp_path, monkeypatch):
     folder = {"a.txt": 1.0}
     clock = _Clock()

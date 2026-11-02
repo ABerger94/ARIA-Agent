@@ -42,9 +42,19 @@ THE RULES
 from __future__ import annotations
 
 import shutil
+import os
+import sqlite3
+import tempfile
+import threading
+import time
+from contextlib import closing
 from pathlib import Path
 
 _failed = False   # the once-per-process incident latch
+_COPY_LOCK = threading.Lock()
+_QUEUE_LOCK = threading.Lock()
+_QUEUED_PROJECTS = set()
+_WORKER = None
 
 
 # ── Settings / config seams (small helpers tests can monkeypatch) ──
@@ -170,19 +180,44 @@ def mirror_backups(slots) -> bool:
     if not dest_dir:
         return True
     try:
+        from aria import workspaces
         dest = Path(dest_dir)
-        dest.mkdir(parents=True, exist_ok=True)
-        for slot in slots or []:
-            slot = Path(slot)
-            if not slot.exists():
-                continue
-            target = dest / slot.name
-            shutil.copyfile(slot, target)
-            if target.stat().st_size != slot.stat().st_size:
-                raise OSError(
-                    f"mirror copy of {slot.name} is short "
-                    f"({target.stat().st_size} of "
-                    f"{slot.stat().st_size} bytes)")
+        if workspaces.current() != 'default':
+            dest = dest / 'projects' / workspaces.current()
+        with _COPY_LOCK:
+            dest.mkdir(parents=True, exist_ok=True)
+            for slot in slots or []:
+                slot = Path(slot)
+                if not slot.is_file():
+                    continue
+                target = dest / slot.name
+                if target.resolve() == slot.resolve():
+                    continue
+                fd, temp = tempfile.mkstemp(prefix='.aria-mirror-', dir=dest)
+                os.close(fd)
+                try:
+                    with slot.open('rb') as stream:
+                        is_sqlite = stream.read(16) == b'SQLite format 3\x00'
+                    if is_sqlite:
+                        deadline = time.monotonic() + 10
+                        def progress(*args):
+                            if time.monotonic() > deadline:
+                                raise TimeoutError('Database backup exceeded 10 seconds')
+                        # A raw copy can omit WAL contents or tear across a
+                        # transaction. SQLite supplies a consistent snapshot.
+                        with closing(sqlite3.connect(slot.resolve().as_uri() + '?mode=ro', uri=True)) as source:
+                            with closing(sqlite3.connect(temp)) as snapshot:
+                                source.backup(snapshot, pages=128, progress=progress)
+                                if snapshot.execute('PRAGMA quick_check').fetchone() != ('ok',):
+                                    raise OSError('Database snapshot did not pass quick_check')
+                    else:
+                        shutil.copyfile(slot, temp)
+                        if Path(temp).stat().st_size != slot.stat().st_size:
+                            raise OSError(f'mirror copy of {slot.name} is short')
+                    os.replace(temp, target)
+                finally:
+                    if os.path.exists(temp):
+                        os.unlink(temp)
         return True
     except Exception as e:
         if not _failed:
@@ -199,12 +234,11 @@ def backup_slots():
     the memory DB, the settings file, and the chat history —
     all under WORKSPACE_DIR. ROOT_DIR/aria_keys.json is
     deliberately NOT in this list: secrets never mirror."""
-    workspace, _root = _config_paths()
-    ws = Path(workspace)
+    from aria import config, memory, workspaces
     return [
-        ws / "aria_memory.db",
-        ws / "settings.json",
-        ws / "chat_history.md",
+        Path(memory.db_path()),
+        Path(config.SETTINGS_FILE),
+        Path(workspaces.path('chat_history.md', memory.CHAT_LOG_FILE)),
     ]
 
 
@@ -213,6 +247,44 @@ def snapshot_and_mirror() -> bool:
     write one of the mirrored stores use this after the write
     lands; the mirror itself never raises."""
     return mirror_backups(backup_slots())
+
+
+def queue_snapshot() -> None:
+    """Coalesce saves on one daemon; a slow synced drive never blocks a save."""
+    global _WORKER
+    try:
+        if not mirror_dir():
+            return
+        from aria import workspaces
+        with _QUEUE_LOCK:
+            _QUEUED_PROJECTS.add(workspaces.current())
+            if _WORKER is not None:
+                return
+            _WORKER = threading.Thread(target=_drain_snapshots, daemon=True,
+                                       name='aria-backup-mirror')
+            try:
+                _WORKER.start()
+            except Exception:
+                _WORKER = None
+                raise
+    except Exception as exc:
+        _log_failure(f'could not queue a mirror snapshot: {exc}')
+
+
+def _drain_snapshots():
+    global _WORKER
+    from aria import workspaces
+    while True:
+        with _QUEUE_LOCK:
+            if not _QUEUED_PROJECTS:
+                _WORKER = None
+                return
+            project = _QUEUED_PROJECTS.pop()
+        try:
+            with workspaces.use(project):
+                snapshot_and_mirror()
+        except Exception as exc:
+            _log_failure(f'could not snapshot project {project}: {exc}')
 
 
 def reset_latch_for_tests() -> None:

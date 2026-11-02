@@ -168,6 +168,8 @@ class _FakeSMTP:
         return self
 
     def __exit__(self, *exc):
+        if type(self).behaviour == 'quit_raises':
+            raise RuntimeError('QUIT failed after the server accepted the message')
         return False
 
     def starttls(self):
@@ -179,6 +181,8 @@ class _FakeSMTP:
     def send_message(self, msg):
         if type(self).behaviour == 'send_raises':
             raise RuntimeError('connection reset during send')
+        if type(self).behaviour == 'partial':
+            return {'refused@example.invalid': (550, b'recipient rejected')}
         return None
 
 
@@ -216,6 +220,35 @@ def test_connect_failure_retries_then_gives_up(monkeypatch):
     assert res == 'Could not send email to nobody@example.com.', res
     assert _FakeSMTP.instances == 2, \
         f'pre-send failures must retry once: {_FakeSMTP.instances}'
+
+
+def test_smtp_cleanup_failure_after_acceptance_never_resends(monkeypatch):
+    _patch_mailer(monkeypatch, 'quit_raises')
+    res = builtins.tool_send_email('nobody@example.com', 't', 'b')
+    assert _FakeSMTP.instances == 1
+    assert res == "Email sent to nobody@example.com: 't'."
+
+
+def test_ambiguous_send_remains_unverified_in_the_receipt_contract(monkeypatch):
+    from aria.outcome import normalize, UNVERIFIED
+    _patch_mailer(monkeypatch, 'send_raises')
+    result = builtins.tool_send_email('nobody@example.com', 't', 'b')
+    assert normalize(result).status == UNVERIFIED
+
+
+def test_connection_failure_remains_failed_in_the_receipt_contract(monkeypatch):
+    from aria.outcome import normalize, FAILED
+    _patch_mailer(monkeypatch, 'connect_raises')
+    assert normalize(builtins.tool_send_email('nobody@example.com', 't', 'b')).status == FAILED
+
+
+def test_partial_recipient_refusal_is_not_reported_as_full_success(monkeypatch):
+    from aria.outcome import normalize, UNVERIFIED
+    _patch_mailer(monkeypatch, 'partial')
+    result = builtins.tool_send_email('ok@example.invalid, refused@example.invalid', 't', 'b')
+    assert normalize(result).status == UNVERIFIED
+    assert 'refused@example.invalid' in result
+    assert _FakeSMTP.instances == 1
 
 
 # ------------------------------------------------------------ control: healing still heals

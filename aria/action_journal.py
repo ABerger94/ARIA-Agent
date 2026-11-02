@@ -111,11 +111,7 @@ def add_evidence(tool, args, result):
             if tool in {'write_file', 'code_helper', 'dev_agent'}:
                 from aria import workspaces
                 from aria.tools import builtins
-                from pathlib import Path
-                clean = str(path).strip().replace('\\', '/').lstrip('/')
-                if '..' in clean:
-                    clean = Path(clean).name
-                path = Path(workspaces.path('', builtins.WORKSPACE_DIR)) / clean
+                path = workspaces.resolve_workspace_file(path, builtins.WORKSPACE_DIR)
             evidence = check_artifact(path)
             return ToolResult(DONE if evidence['verified'] else UNVERIFIED,
                               result.text, result.receipt, (*result.artifacts, evidence))

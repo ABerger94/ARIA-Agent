@@ -37,6 +37,7 @@ import threading
 import time
 
 from aria.config import WORKSPACE_DIR, add_log
+from aria import workspaces, data_dir
 
 STORE_DIR = WORKSPACE_DIR
 _SOURCES = ("email", "folder", "presence_return")
@@ -47,11 +48,11 @@ _POLL_S = 45
 # ---------------- store ----------------
 
 def _triggers_path() -> str:
-    return os.path.join(STORE_DIR, "triggers.json")
+    return workspaces.path('triggers.json', os.path.join(STORE_DIR, 'triggers.json'))
 
 
 def _state_path() -> str:
-    return os.path.join(STORE_DIR, "triggers_state.json")
+    return workspaces.path('triggers_state.json', os.path.join(STORE_DIR, 'triggers_state.json'))
 
 
 def _load_json(path, default):
@@ -64,9 +65,7 @@ def _load_json(path, default):
 
 
 def _save_json(path, data) -> None:
-    os.makedirs(STORE_DIR, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=1)
+    data_dir.write_json_atomic(path, data)
 
 
 def load_triggers() -> list:
@@ -196,7 +195,9 @@ class TriggerEngine:
         self._presence = presence_fn or _default_presence
         self._fire = fire_fn or _default_fire
         self._now = now_fn or time.time
-        self._away_since = None
+        self._away_since = {}
+        self._tick_mail = None
+        self._tick_present = None
 
     # -- state helpers --
     def _state(self) -> dict:
@@ -207,14 +208,22 @@ class TriggerEngine:
     # -- source checks: each returns a detail string or None --
     def _check_email(self, trigger, state):
         rule = trigger["rule"]
-        seen = set(state.get("seen_mail", []))
+        # A rule may not consume another rule's messages. Seed old installs
+        # from their legacy shared history, then retain independent histories.
+        histories = state.setdefault('seen_mail_by_trigger', {})
+        key = str(trigger['id'])
+        ordered = list(dict.fromkeys(histories.get(key, state.get('seen_mail', []))))
+        seen = set(ordered)
         fresh_matches = []
-        for msg in self._mail():
-            key = (f"{msg.get('sender', '')}|{msg.get('subject', '')}|"
+        if self._tick_mail is None:
+            self._tick_mail = list(self._mail())
+        for msg in self._tick_mail:
+            message_key = (f"{msg.get('sender', '')}|{msg.get('subject', '')}|"
                    f"{msg.get('date', '')}")
-            if key in seen:
+            if message_key in seen:
                 continue
-            seen.add(key)
+            seen.add(message_key)
+            ordered.append(message_key)
             sender = str(msg.get("sender", "")).lower()
             subject = str(msg.get("subject", "")).lower()
             ok = True
@@ -227,7 +236,7 @@ class TriggerEngine:
                 ok = ok and (needle in sender or needle in subject)
             if ok:
                 fresh_matches.append(str(msg.get("subject", "")))
-        state["seen_mail"] = list(seen)[-300:]
+        histories[key] = ordered[-300:]
         if fresh_matches:
             first = fresh_matches[0] or "(no subject)"
             extra = (f" (+{len(fresh_matches) - 1} more)"
@@ -256,21 +265,24 @@ class TriggerEngine:
 
     def _check_presence(self, trigger, state):
         min_away = float(trigger["rule"].get("min_away_s") or 1800)
-        present = bool(self._presence())
+        if self._tick_present is None:
+            self._tick_present = bool(self._presence())
+        present = self._tick_present
         now = self._now()
+        key = (workspaces.current(), trigger['id'])
         if not present:
-            if self._away_since is None:
-                self._away_since = now
+            self._away_since.setdefault(key, now)
             return None
-        if self._away_since is not None:
-            away_for = now - self._away_since
-            self._away_since = None
+        since = self._away_since.pop(key, None)
+        if since is not None:
+            away_for = now - since
             if away_for >= min_away:
                 return f"your return after {int(away_for // 60)} min away"
         return None
 
     def tick(self) -> list:
         """One pass over all enabled triggers. Returns firing records."""
+        self._tick_mail = self._tick_present = None
         state = self._state()
         fired = []
         checks = {"email": self._check_email,
@@ -320,7 +332,9 @@ def start_triggers() -> None:
     def _loop():
         while True:
             try:
-                engine.tick()
+                for project in workspaces.list_projects():
+                    with workspaces.use(project['id']):
+                        engine.tick()
             except Exception as exc:
                 add_log(f"[trigger] engine tick failed: {exc}")
             time.sleep(_POLL_S)

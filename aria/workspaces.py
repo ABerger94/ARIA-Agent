@@ -10,7 +10,7 @@ import contextlib
 import contextvars
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import threading
 import uuid
@@ -141,3 +141,26 @@ def file_allowed(filename):
     roots = get().get('settings', {}).get('file_roots') or []
     target = Path(os.path.expandvars(os.path.expanduser(str(filename)))).resolve()
     return not roots or any(target.is_relative_to(Path(r).expanduser().resolve()) for r in roots)
+
+
+def resolve_workspace_file(filename, legacy=None):
+    """Resolve a relative file name once, enforcing storage and project roots.
+
+    Recognize Windows paths on every platform; stripping a leading slash or
+    joining a drive-qualified name does not make it a workspace-relative path.
+    Existing symlinks/junctions must also remain inside the workspace.
+    """
+    name = str(filename or '').strip().replace('\\', '/')
+    windows = PureWindowsPath(name)
+    relative = Path(name)
+    if (not name or name == '.' or '\x00' in name or ':' in name
+            or windows.drive or windows.root or relative.is_absolute()
+            or '..' in relative.parts):
+        raise ValueError('Supply a relative file name inside the project workspace')
+    root = Path(path('', legacy)).resolve()
+    destination = (root / relative).resolve()
+    if destination == root or not destination.is_relative_to(root):
+        raise ValueError('File is outside the project workspace')
+    if not file_allowed(destination):
+        raise ValueError('File is outside this project’s configured roots')
+    return str(destination)
