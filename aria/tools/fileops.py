@@ -101,9 +101,14 @@ def tool_file_organize(directory: str, dry_run: bool = True) -> str:
     dry_run=true (DEFAULT) returns the move plan and touches nothing.
     dry_run=false executes the moves. NOTE: executing is DESTRUCTIVE (files are
     moved) — the approval layer treats dry_run=false as destructive.
-    Never touches dotfiles or the routines dir (the install root's routines/).
+    A non-boolean dry_run (null, a string, a list, a number) is
+    rejected, never coerced: coercion once turned a preview-classified
+    null into a real move. Never touches dotfiles or the routines dir
+    (the install root's routines/).
     Non-recursive: only files directly inside the directory are sorted.
     """
+    if not isinstance(dry_run, bool):
+        return "[Error: file_organize dry_run must be true or false.]"
     d, err = _resolve_dir(directory)
     if err:
         return err

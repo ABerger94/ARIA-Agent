@@ -935,8 +935,12 @@ def _init_default_registry():
     _REGISTRY["phone_key"] = lambda a: phone_mod.tool_phone_key(a.get("key", ""))
 
     # ---- ARIA ULTIMATE (Module 2): file commander ----
+    # Pass dry_run through raw, never bool()-coerced: bool(None) and
+    # bool("") are False, which turned a preview-classified call into
+    # a real move. The handler validates that dry_run is a real
+    # boolean and rejects anything else before touching files.
     _REGISTRY["file_organize"] = lambda a: fileops_mod.tool_file_organize(
-        a.get("directory", ""), bool(a.get("dry_run", True)))
+        a.get("directory", ""), a.get("dry_run", True))
     _REGISTRY["file_find_advanced"] = lambda a: fileops_mod.tool_file_find_advanced(
         a.get("directory", ""), a.get("pattern", ""), float(a.get("min_size_mb", 0) or 0),
         float(a.get("max_age_days", 0) or 0), a.get("content_contains", ""))

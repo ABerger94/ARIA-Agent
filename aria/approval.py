@@ -282,7 +282,18 @@ def needs_approval(tool: str, args=None) -> bool:
     if tool not in DESTRUCTIVE_TOOLS:
         return config.is_discovered_mcp_tool(tool)
     if tool == "file_organize":
-        return not _as_bool((args or {}).get("dry_run"), default=True)
+        # Only an explicit boolean True — or an omitted dry_run, which
+        # defaults to the preview — is a preview. Any other present
+        # value (null, a string, a list, a number) must pause: _as_bool
+        # maps null and unknown strings to the preview default, while
+        # the dispatcher used to coerce those same values to False
+        # (execute), so the two seams disagreed and the move ran
+        # ungated. The handler rejects such values outright, so a
+        # paused-then-approved malformed call still moves nothing.
+        a = args or {}
+        if "dry_run" not in a:
+            return False
+        return a["dry_run"] is not True
     if tool == "manage_background_job":
         # list/logs/cancel are read-only; only start runs shell commands.
         return str((args or {}).get("action", "list")).strip().lower() == "start"
