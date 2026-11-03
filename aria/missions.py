@@ -717,6 +717,20 @@ def _verify(mid: int) -> bool:
         verdict = not bad
     else:
         bad = [s for s in steps if s["status"] != "done"]
+        failed = [s for s in steps
+                  if s["status"] == "done" and _is_failure(s["output"])]
+        if failed:
+            # An injected verifier's word does not override the
+            # recorded evidence (pass 18): a step whose own
+            # output is a failure marker cannot certify the
+            # mission done — the fallback branch above has
+            # always checked this; the verifier branch skipped
+            # it, so a confident verifier could paper over a
+            # failed step. The failed steps become the repair
+            # targets; retry-safety below routes effect tools
+            # to done_unverified instead of a blind re-run.
+            bad = bad + failed
+            verdict = False
     if verdict:
         _finish(mid, "done")
         return True

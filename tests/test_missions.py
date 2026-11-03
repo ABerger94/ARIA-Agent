@@ -327,6 +327,25 @@ def test_pause_resume_and_cancel(env):
 
 # -- verification ---------------------------------------------------
 
+def test_verifier_cannot_certify_a_failed_step_output(env):
+    # Pass 18: an injected verifier's True does not override the
+    # recorded evidence — a step whose own output is a failure
+    # marker vetoes 'done' (the fallback evidence check always
+    # did this; the verifier branch skipped it). fake_note is
+    # not retry-safe, so the mission closes done_unverified
+    # rather than re-running an effects tool blind.
+    missions.set_verifier(lambda goal, steps: True)
+    mid, _out = _create("verifier veto proof",
+                        [("fake_note", {"text": "only"})])
+    _approve_plan(mid)
+    step = missions._step_rows(mid)[0]
+    missions._set_step(step["id"], status="done",
+                       output="[Tool Error: smtp exploded]")
+    assert missions._verify(mid) is True  # reached a terminal state
+    row = _row(mid)
+    assert row["status"] == "done_unverified", row
+
+
 def test_verify_failure_closes_done_unverified(env):
     missions.set_verifier(lambda goal, steps: False)
     mid, _out = _create("verify proof",
