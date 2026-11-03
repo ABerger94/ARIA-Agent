@@ -61,6 +61,43 @@ def style_for_accent(accent):
                   lambda m: shifted[m.group(0)], STYLE)
 
 
+#: The stylesheet's dark panel backgrounds — the hexes a named
+#: palette's PRIMARY re-tints (style_for_palette below).
+_PANEL_HEXES = ('#080d14', '#0d1520', '#0a111b')
+
+
+def style_for_palette(palette_id):
+    """STYLE themed by a named palette (aria/palettes).
+
+    The colour family hue-shifts to the palette's HERO, exactly
+    like any accent pick — then the dark panel backgrounds take
+    the palette PRIMARY's hue/saturation at their designed
+    lightnesses, so the panels themselves carry the palette
+    (Ocean Breeze panels go deep navy, Earthy Minimal's deep
+    green-charcoal) instead of merely wearing the hero's hue.
+    An unknown palette returns STYLE unchanged."""
+    from aria import palettes as _palettes
+    pal = _palettes.get_palette(palette_id)
+    if pal is None:
+        return STYLE
+    sheet = style_for_accent(pal['hero'])
+    from aria.hue_wheel import shift_palette
+    shifted = shift_palette({h: h for h in _PANEL_HEXES},
+                            _STYLE_BASE, pal['hero'])
+    if shifted is None:
+        return sheet
+    import colorsys
+    for orig in _PANEL_HEXES:
+        r = int(orig[1:3], 16) / 255
+        g = int(orig[3:5], 16) / 255
+        b = int(orig[5:7], 16) / 255
+        _h, lightness, _s = colorsys.rgb_to_hls(r, g, b)
+        sheet = sheet.replace(
+            shifted[orig],
+            _palettes.panel_shade(pal['primary'], lightness))
+    return sheet
+
+
 # Conversation colours (Alek, 2026-10-27, final say): ARIA's
 # responses render in the SYSTEM colour — whatever accent is
 # currently set (Customize wheel / Settings preset), never a
@@ -105,6 +142,19 @@ def _current_accent():
         return None
 
 
+def _default_accent():
+    """The theme default when nothing is set: the stored
+    palette's hero, else the default palette's hero — Midnight
+    Neon (Alek, 2026-11-03). The legacy cyan constant survives
+    only as the last-resort fallback if prefs are unreadable."""
+    try:
+        from aria import palettes as _palettes, ui_prefs
+        return _palettes.hero_of(ui_prefs.get_palette()) \
+            or _palettes.DEFAULT_ACCENT
+    except Exception:
+        return DEFAULT_ACCENT
+
+
 def chat_colors(accent=None):
     """The Conversation tab's colours for a given accent
     (default: whatever accent is currently set). ARIA's name AND
@@ -114,7 +164,7 @@ def chat_colors(accent=None):
     name is told apart by bold alone. The user is always white;
     system muted."""
     resolved = _valid_accent(accent) or _current_accent() \
-        or DEFAULT_ACCENT
+        or _default_accent()
     return {'aria': (resolved, resolved),
             'user': CHAT_COLORS['user'],
             'sys': CHAT_COLORS['sys']}
@@ -407,9 +457,13 @@ def create_dashboard(callbacks):
             _init_accent = _accent0
             if not _init_accent:
                 try:
-                    _init_accent = config.get_setting("ui_accent", "#54d9e8")
+                    _init_accent = config.get_setting("ui_accent", None)
                 except Exception:
-                    _init_accent = "#54d9e8"
+                    _init_accent = None
+            if not _init_accent:
+                # Nothing set anywhere: the default palette —
+                # Midnight Neon (Alek, 2026-11-03).
+                _init_accent = _default_accent()
             self.apply_accent(_init_accent)
             self.setAcceptDrops(True)
             self._loading = set()
@@ -1235,8 +1289,21 @@ def create_dashboard(callbacks):
             # _apply_painted_accent. Persistence stays with the
             # caller (config 'ui_accent' / ui_prefs respectively).
             accent = QColor(str(color))
-            if not accent.isValid(): accent = QColor('#54d9e8')
-            self.setStyleSheet(style_for_accent(accent.name()))
+            if not accent.isValid():
+                accent = QColor(_default_accent())
+            sheet = style_for_accent(accent.name())
+            # A stored palette whose hero IS this accent also
+            # tints the panels from its Primary (style_for_palette)
+            # — a plain accent pick keeps the plain sheet.
+            try:
+                from aria import palettes as _palettes
+                from aria import ui_prefs as _up_apply
+                _pid = _up_apply.get_palette()
+                if _pid and _palettes.hero_of(_pid) == accent.name():
+                    sheet = style_for_palette(_pid)
+            except Exception:
+                pass
+            self.setStyleSheet(sheet)
             _apply_painted_accent(accent.name())
             for _mw in (getattr(self, 'mem_map_tab', None),
                         getattr(self, 'mem_map_center', None)):
@@ -1611,7 +1678,14 @@ def create_dashboard(callbacks):
                 ui_prefs.set_accent(hex_)
                 self.apply_accent(hex_)
 
-            build_customize_dialog(self, start, preview, commit).exec()
+            def palette_chosen(palette_id):
+                # The dialog fires this BEFORE commit on a
+                # palette Apply/Reset, so apply_accent already
+                # sees the stored palette and tints the panels.
+                ui_prefs.set_palette(palette_id)
+
+            build_customize_dialog(self, start, preview, commit,
+                                   palette_chosen).exec()
 
         def set_centerpiece(self, name):
             """Apply a centerpiece choice from Settings → Customize

@@ -404,3 +404,51 @@ def set_accent(accent) -> str:
     if accent is None:
         return "UI accent: default palette."
     return f"UI accent: {accent}."
+
+
+def get_palette():
+    """The stored palette id ('midnight_neon', ... — see
+    aria/palettes), or None when no palette is stored or the
+    stored value is not a known palette. Fail-soft like every
+    read in this module."""
+    value = _read_payload().get("palette")
+    try:
+        from aria import palettes
+        if palettes.is_valid_palette_id(value):
+            return value
+    except Exception:
+        pass
+    return None
+
+
+def set_palette(palette_id) -> str:
+    """Persist a palette choice (aria/palettes): the palette
+    id AND its hero as the accent, in one locked write — every
+    existing accent consumer (chat colours, Shell Home, the
+    painted widgets) follows the hero without knowing palettes
+    exist, and dashboard.style_for_palette reads the id for
+    the panel tint. None clears the palette and the accent
+    (the default then resolves to Midnight Neon). An unknown
+    id changes nothing and says so."""
+    if palette_id is not None:
+        try:
+            from aria import palettes
+            hero = palettes.hero_of(palette_id)
+        except Exception:
+            hero = None
+        if hero is None:
+            return f"Palette: unknown ({palette_id})."
+
+        def apply(payload):
+            payload["palette"] = palette_id
+            payload["accent"] = hero
+
+        _update_payload(apply)
+        return f"Palette: {palette_id}."
+    else:
+        def apply(payload):
+            payload.pop("palette", None)
+            payload["accent"] = None
+
+        _update_payload(apply)
+        return "Palette: default."

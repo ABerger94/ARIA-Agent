@@ -295,6 +295,7 @@ def create_settings_dialog(parent, callbacks):
     cust_lay = vpage('Customize')
     cust_note = QLabel('UI accent — one colour re-derives the whole family (hue shift). Picking previews live; Apply settings saves it. The General tab’s preset combo sets the same accent.'); cust_note.setWordWrap(True); cust_lay.addWidget(cust_note)
     dialog._customize_hex = None
+    dialog._customize_palette = None
     try:
         from aria.hue_wheel import HueWheel
         from aria.customize_panel import PRESETS
@@ -308,13 +309,40 @@ def create_settings_dialog(parent, callbacks):
                 parent.apply_accent(hex_str)
             except Exception:
                 pass
-        dialog.customize_wheel.hue_picked.connect(_cust_picked)
+        def _wheel_picked(hex_str):
+            # A hand-picked colour is a custom accent — it
+            # clears any pending palette pick.
+            dialog._customize_palette = None
+            _cust_picked(hex_str)
+        dialog.customize_wheel.hue_picked.connect(_wheel_picked)
         presets = QHBoxLayout()
         for pname, phex in PRESETS:
             btn = QPushButton(pname)
             btn.clicked.connect(lambda checked=False, h=phex: (dialog.customize_wheel.set_color(h), _cust_picked(h)))
             presets.addWidget(btn)
         cust_lay.addLayout(presets)
+        # Named palettes (2026-11-03, aria/palettes.py): picking
+        # one previews its hero and marks it pending; the save
+        # path persists it via ui_prefs.set_palette (which also
+        # stores the hero as the accent) so the panels pick up
+        # the palette's Primary tint.
+        try:
+            from aria import palettes as _palettes_mod
+            def _cust_palette(pid):
+                _hero = _palettes_mod.hero_of(pid)
+                dialog._customize_palette = pid
+                dialog.customize_wheel.set_color(_hero)
+                _cust_picked(_hero)
+            pal_row = QHBoxLayout()
+            for _pal in _palettes_mod.PALETTES:
+                _pbtn = QPushButton(_pal['name'])
+                _pbtn.clicked.connect(
+                    lambda checked=False, pid=_pal['id']:
+                        _cust_palette(pid))
+                pal_row.addWidget(_pbtn)
+            cust_lay.addLayout(pal_row)
+        except Exception:
+            pass
     except Exception:
         dialog.customize_wheel = None
         cust_lay.addWidget(QLabel('Customize wheel unavailable — use the accent presets on the General tab.'))
@@ -453,6 +481,16 @@ def create_settings_dialog(parent, callbacks):
             try:
                 from aria import ui_prefs as _up3
                 _up3.set_accent(final_accent)
+                # A pending palette pick whose hero IS the saved
+                # accent persists as a palette (id + hero in one
+                # write), then re-apply so the panels take the
+                # palette's Primary tint immediately.
+                _pid = getattr(dialog, '_customize_palette', None)
+                if _pid:
+                    from aria import palettes as _pal3
+                    if _pal3.hero_of(_pid) == final_accent:
+                        _up3.set_palette(_pid)
+                        parent.apply_accent(final_accent)
             except Exception:
                 pass
             for key, field in connection_fields.items():
