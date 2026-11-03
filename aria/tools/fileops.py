@@ -40,6 +40,33 @@ def _resolve_dir(directory: str) -> "tuple[str, Optional[str]]":
     return d, None
 
 
+def _file_allowed(path: str) -> bool:
+    """Per-file project-root check (pass 18, closing the pass-16
+    runner-up). The dispatcher validates only the top-level
+    `directory` argument (tool_policy.FILE_ARGUMENTS), so a
+    symlink inside an allowed directory would otherwise let the
+    recursive readers below read and report files outside the
+    configured roots. With no roots configured,
+    workspaces.file_allowed is always True and this is a no-op —
+    legacy behaviour is unchanged; the check bites exactly when
+    a roots policy exists. Imported lazily: this module's import
+    contract is stdlib + aria.config only."""
+    try:
+        from aria import workspaces
+        return workspaces.file_allowed(path)
+    except Exception:
+        return False
+
+
+def _inside(directory: str, path: str) -> bool:
+    """True when path's REAL location stays inside directory's
+    real location — a symlink hop out (e.g. a category folder
+    that is a symlink elsewhere) reads as outside."""
+    rd = os.path.realpath(directory)
+    rp = os.path.realpath(path)
+    return rp == rd or rp.startswith(rd + os.sep)
+
+
 def _routines_dir() -> str:
     """Canonical routines storage dir: the install root's
     routines/ (aria.data_dir, V20) — must agree with
@@ -119,6 +146,7 @@ def tool_file_organize(directory: str, dry_run: bool = True) -> str:
 
     plan = []  # (src_abs, dest_abs)
     skipped = 0
+    escaped = 0
     try:
         entries = sorted(os.listdir(d))
     except Exception as e:
@@ -142,13 +170,25 @@ def tool_file_organize(directory: str, dry_run: bool = True) -> str:
             if os.path.realpath(src).startswith(rd + os.sep):
                 skipped += 1
                 continue
+            if not _inside(d, dest_dir):
+                # The category folder itself is a symlink out of
+                # the directory the user approved organizing —
+                # moving into it would write outside that
+                # directory (pass 18). Skip and say so below.
+                skipped += 1
+                escaped += 1
+                continue
             dest = _unique_dest(dest_dir, name)
             plan.append((src, dest))
         except Exception:
             skipped += 1
 
     if not plan:
-        return f"No sortable files found in {d}. (skipped {skipped})"
+        note = f" (skipped {skipped})"
+        if escaped:
+            note += (f" — {escaped} file(s) not moved: their "
+                     f"category folder is a symlink out of {d}")
+        return f"No sortable files found in {d}.{note}"
 
     lines = [f"{'PLAN' if dry_run else 'MOVED'} — {d}:"]
     for src, dest in plan:
@@ -157,6 +197,10 @@ def tool_file_organize(directory: str, dry_run: bool = True) -> str:
         lines.append(f"  {rel_src} -> {rel_dst}")
     if skipped:
         lines.append(f"(skipped {skipped} dotfiles/dirs)")
+    if escaped:
+        lines.append(
+            f"({escaped} file(s) not moved: their category folder "
+            f"is a symlink out of this directory)")
 
     if dry_run:
         lines.append(f"\nDry run only — nothing was moved. Call with dry_run=false to execute ({len(plan)} moves).")
@@ -206,6 +250,8 @@ def tool_file_find_advanced(directory: str, pattern: str = "", min_size_mb: floa
             if _is_dotfile(name):
                 continue
             full = os.path.join(root, name)
+            if not _file_allowed(full):
+                continue
             try:
                 st = os.stat(full)
                 if not st or st.st_size < min_size:
@@ -284,6 +330,8 @@ def tool_file_duplicates(directory: str) -> str:
             if _is_dotfile(name):
                 continue
             full = os.path.join(root, name)
+            if not _file_allowed(full):
+                continue
             try:
                 size = os.path.getsize(full)
             except Exception:
@@ -362,6 +410,8 @@ def tool_disk_usage(directory: str, top_n: int = 20) -> str:
             if _is_dotfile(name):
                 continue
             full = os.path.join(root, name)
+            if not _file_allowed(full):
+                continue
             try:
                 size = os.path.getsize(full)
             except Exception:
