@@ -496,13 +496,35 @@ def _save_pending() -> None:
                 json.dumps(args)
             except (TypeError, ValueError):
                 continue  # cannot round-trip; stays memory-only
-            entries.append({
+            # The execution context is part of the approval's
+            # identity, not ambient state: a restored entry must
+            # replay under the project/budget it was parked in,
+            # never under whatever project is active when the
+            # store is first loaded after a restart (ChatGPT x
+            # ARIA loop finding, 2026-11-03 — restored approvals
+            # used to inherit runtime.current(), so confirming
+            # project A's parked call after switching to project
+            # B executed it in B, including a mission plan for
+            # B's mission #N instead of A's). Entries with no
+            # recorded context are written without a project and
+            # load_pending() expires them rather than guessing.
+            ec = e.get("execution_context") or {}
+            project = ec.get("project")
+            if project is None and e.get("origin_context") is not None:
+                project = getattr(e["origin_context"], "project", None)
+            entry = {
                 "token": e["token"], "tool": e["tool"], "args": args,
                 "desc": e["desc"],
                 "created_ts": e.get("created_ts", time.time()),
-            })
+            }
+            if project is not None:
+                entry["project"] = project
+                entry["operation_id"] = ec.get("operation_id", "")
+                entry["budget_scope"] = ec.get("budget_scope", "")
+                entry["spend_cap"] = ec.get("spend_cap")
+            entries.append(entry)
         data_dir.write_json_atomic(_pending_file(),
-                                   {"version": 1, "entries": entries})
+                                   {"version": 2, "entries": entries})
     except Exception as exc:
         config.log_silent("approval.save_pending", exc)
 
@@ -514,11 +536,18 @@ def load_pending() -> int:
     Entries that expired while ARIA was off are NOT restored —
     each is journaled as an 'expired' resolution instead, so the
     model learns the wait ended rather than narrating a banner
-    that will never come. Restored entries get a FRESH execution
-    context from the live process (the parked call replays under
-    today's project/cancel/budget, exactly like a new park);
-    token, tool, args, desc and the original created_ts (so the
-    10-minute expiry keeps its original deadline) carry over.
+    that will never come. Restored entries replay under their
+    RECORDED execution context (project, budget scope/cap,
+    operation id) — exactly like an in-memory entry, which
+    approve_token() already executes under its parked project.
+    Only the cancel event is fresh (it cannot survive a
+    process boundary). Token, tool, args, desc and the original
+    created_ts (so the 10-minute expiry keeps its original
+    deadline) carry over. Entries with no recorded project
+    (written before this format existed) and entries whose
+    project no longer exists are NOT restored — each is
+    journaled as 'expired' with the reason, so no call ever
+    executes in a project its approver did not park it in.
     Returns the number restored."""
     global _pending_loaded
     if _pending_loaded:
@@ -544,7 +573,25 @@ def load_pending() -> int:
                     "Expired while ARIA was not running; "
                     "it was not executed.")
                 continue
-            ctx = runtime.current()
+            project = e.get("project")
+            if not project:
+                _record_resolution(
+                    e.get("tool"), e.get("desc"), "expired",
+                    "Not restored: parked before the origin "
+                    "project was recorded, so it cannot be "
+                    "proven to belong to the current project; "
+                    "it was not executed.")
+                continue
+            try:
+                from aria import workspaces
+                workspaces.get(project)
+            except Exception:
+                _record_resolution(
+                    e.get("tool"), e.get("desc"), "expired",
+                    "Not restored: its origin project no "
+                    "longer exists; it was not executed.")
+                continue
+            ctx = runtime.ExecutionContext(project=project)
             _PENDING[token] = {
                 "token": token,
                 "tool": str(e["tool"]),
@@ -553,10 +600,11 @@ def load_pending() -> int:
                 "created_ts": created,
                 "origin_context": ctx,
                 "execution_context": {
-                    'project': ctx.project, 'cancel': ctx.cancel,
-                    'operation_id': runtime.operation_id(),
-                    'budget_scope': ctx.budget_scope,
-                    'spend_cap': ctx.spend_cap},
+                    'project': project,
+                    'cancel': threading.Event(),
+                    'operation_id': e.get("operation_id") or "",
+                    'budget_scope': e.get("budget_scope") or "",
+                    'spend_cap': e.get("spend_cap")},
             }
             loaded += 1
         except Exception as exc:
