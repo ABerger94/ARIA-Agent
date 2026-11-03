@@ -103,6 +103,10 @@ def _approval_with_stub_config(monkeypatch):
         parse_discovered_mcp_tool=lambda tool: None)
     monkeypatch.setattr(approval, 'config', stub)
     approval._PENDING.clear()
+    # Pristine store (pass 18): the real module persists pending
+    # approvals and rehydrates them on first access — these
+    # tests assert exact store contents, so no rehydration.
+    approval._pending_loaded = True
     return approval
 
 
@@ -153,6 +157,7 @@ def test_approve_token_logs_every_outcome(monkeypatch):
         log_silent=lambda *a: None)
     monkeypatch.setattr(approval, 'config', stub)
     approval._PENDING.clear()
+    approval._pending_loaded = True  # pristine store; see above
     tools_pkg = types.ModuleType('aria.tools'); tools_pkg.__path__ = []
     dispatch = types.ModuleType('aria.tools.dispatch')
     dispatch.execute_tool = lambda tool, args, preauthorized=False: \

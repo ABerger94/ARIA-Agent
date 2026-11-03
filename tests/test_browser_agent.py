@@ -275,6 +275,11 @@ def test_irreversible_click_replay_with_real_approval_module():
         held = real.pending_entries()
         assert held and held[0]["tool"] == "browser_agent"
         assert "Place order" in held[0]["desc"]
+        # Leave the persisted store empty: since pass 18 the
+        # held entry is saved to disk, and another suite's real
+        # approval module would rehydrate it as a foreign entry.
+        real._PENDING.clear()
+        real._save_pending()
     finally:
         if prev is not None:
             sys.modules["aria.approval"] = prev
