@@ -125,17 +125,64 @@ def _announce(what):
         pass
 
 
+_LEDGER_NAME = ".migration_ledger.json"
+
+
+def _ledger_load(root=None) -> set:
+    try:
+        with open(os.path.join(
+                root if root is not None else _ROOT, _LEDGER_NAME),
+                encoding="utf-8") as f:
+            names = json.load(f)
+        return set(names) if isinstance(names, list) else set()
+    except Exception:
+        return set()
+
+
+def _ledger_record(name, *, root=None) -> None:
+    """Mark a name's migration question SETTLED (pass 18).
+
+    Copy-if-missing alone cannot tell 'never migrated' from
+    'migrated, then deleted on purpose': the legacy file is
+    deliberately left in place, so without a memory, every
+    restart resurrected every deleted routine (and any other
+    migrated file the user removed) forever. The ledger is
+    that memory: a name is recorded the first time migration
+    resolves it — copied, or canonical already present with a
+    legacy twin — and migrate_file never copies a recorded
+    name again. Fail-soft: if the ledger cannot be written,
+    migration keeps its old copy-if-missing behaviour rather
+    than breaking."""
+    try:
+        names = _ledger_load(root)
+        if name in names:
+            return
+        names.add(name)
+        p = os.path.join(
+            root if root is not None else _ROOT, _LEDGER_NAME)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(sorted(names), f)
+        os.replace(tmp, p)
+    except Exception as exc:
+        _log_failure(f"migration ledger write for {name}", exc)
+
+
 def migrate_file(name, *, root=None, legacy=None) -> bool:
     """Copy one legacy state file to the canonical location.
 
     Carries the file over only when ALL of these hold: the
-    canonical file is missing, the legacy file exists, and it
-    has real content (size > 0 — a 0-byte husk is the scar of
-    an interrupted pre-V19 write and carries nothing). *.tmp
+    canonical file is missing, the legacy file exists, it has
+    real content (size > 0 — a 0-byte husk is the scar of an
+    interrupted pre-V19 write and carries nothing), and the
+    name is not in the migration ledger (see _ledger_record:
+    a settled name is never recopied, so a file the user
+    deleted at the canonical location stays deleted). *.tmp
     strays are never carried. The legacy file is left
     byte-untouched. Returns True when a copy landed. Fail-soft
     but logged."""
-    if name.endswith(".tmp"):
+    if name.endswith(".tmp") or name == _LEDGER_NAME:
         return False
     canonical = os.path.join(
         root if root is not None else _ROOT, name)
@@ -143,8 +190,14 @@ def migrate_file(name, *, root=None, legacy=None) -> bool:
         legacy if legacy is not None else legacy_dir(), name)
     if os.path.normpath(canonical) == os.path.normpath(source):
         return False
+    if name in _ledger_load(root):
+        return False
     try:
         if os.path.exists(canonical):
+            if os.path.isfile(source):
+                # Canonical already won — settle the name so a
+                # later deletion is not undone by the legacy twin.
+                _ledger_record(name, root=root)
             return False
         if not os.path.isfile(source):
             return False
@@ -152,6 +205,7 @@ def migrate_file(name, *, root=None, legacy=None) -> bool:
             return False
         os.makedirs(os.path.dirname(canonical), exist_ok=True)
         shutil.copyfile(source, canonical)
+        _ledger_record(name, root=root)
         _announce(f"migrated {name} from {source} to "
                   f"{canonical} (legacy left in place).")
         return True

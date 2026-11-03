@@ -218,6 +218,39 @@ def test_migration_is_idempotent(roots):
         encoding="utf-8"))["mode"] == "confirm-risky"
 
 
+def test_deleted_routine_stays_deleted_after_restart(roots):
+    # Pass 18 (the V20 'routine resurrection' carried item):
+    # migration is copy-if-missing and leaves the legacy file in
+    # place, so without a memory of what was settled, deleting a
+    # routine at the canonical location was undone by the next
+    # process start — forever. The migration ledger settles it.
+    _seed(roots.legacy, os.path.join("routines", "morning.json"),
+          b'{"name": "morning", "steps": []}')
+    d = routines._routines_dir()
+    assert os.path.exists(os.path.join(d, "morning.json"))
+    # The user deletes the routine; a new process starts.
+    os.remove(os.path.join(d, "morning.json"))
+    data_dir._ATTEMPTED.clear()
+    d = routines._routines_dir()
+    assert not os.path.exists(os.path.join(d, "morning.json"))
+    # The legacy original is still untouched (by design).
+    assert (roots.legacy / "routines" / "morning.json").exists()
+
+
+def test_deleted_file_with_legacy_twin_stays_deleted(roots):
+    # Same protection when the canonical file existed BEFORE
+    # migration ever ran (both present): the first resolve
+    # settles the name, so a later deletion is not undone.
+    _seed(roots.legacy, "approval.json", b'{"mode": "auto"}')
+    (roots.root / "approval.json").write_text(
+        '{"mode": "confirm-risky"}', encoding="utf-8")
+    data_dir.path("approval.json")  # first resolve settles it
+    os.remove(roots.root / "approval.json")
+    data_dir._ATTEMPTED.clear()     # fresh process
+    assert data_dir.migrate_file("approval.json") is False
+    assert not (roots.root / "approval.json").exists()
+
+
 def test_routines_tree_migrates(roots):
     _seed(roots.legacy, os.path.join("routines", "morning.json"),
           b'{"name": "morning", "steps": []}')
