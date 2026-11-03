@@ -262,6 +262,9 @@ def test_roster_matches_live_catalog_shape():
     assert len(orpool.VISION_MODELS) <= 10
     for dead in ("nousresearch/hermes-3-llama-3.1-405b:free",
                  "minimax/minimax-m2.5:free",
+                 "minimax/minimax-m3.1-flash:free",
+                 "nvidia/nemotron-3-super-120b-a12b:free",
+                 "poolside/laguna-s-2.1:free",
                  "meta-llama/llama-3.3-70b-instruct:free",
                  "qwen/qwen3-coder:free",
                  "google/gemma-3-27b-it:free",

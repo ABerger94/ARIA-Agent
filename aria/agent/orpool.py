@@ -72,24 +72,32 @@ RATE_LIMIT_COOLDOWN = 60    # seconds before retrying a rate-limited model
 # entry that still 404s at call time is parked for the session by
 # the pool itself (see _park_model), so a stale roster degrades to
 # the working subset instead of cycling.
+# RE-CHECKED 2026-11-03 against the live catalog (451 models):
+# minimax/minimax-m3.1-flash, nvidia/nemotron-3-super-120b-a12b and
+# poolside/laguna-s-2.1 had been retired upstream (the 2026-11-03
+# session log showed the first two answering HTTP 404) and are out;
+# every surviving entry was re-verified present with free pricing,
+# and the replacements (thinkingmachines/inkling-small,
+# recursive/flint-v1.0, nvidia/nemotron-3-nano-omni for text;
+# inkling-small for vision) were verified the same way.
 TEXT_MODELS: List[str] = [
     "nvidia/nemotron-3-ultra-550b-a55b:free",
     "thinkingmachines/inkling:free",
-    "minimax/minimax-m3.1-flash:free",
+    "thinkingmachines/inkling-small:free",
     "nvidia/nemotron-3.5-lightning:free",
-    "nvidia/nemotron-3-super-120b-a12b:free",
     "google/gemma-4-31b-it:free",
     "google/gemma-4-26b-a4b-it:free",
-    "poolside/laguna-s-2.1:free",
     "xingchen-agi/xing4.0-29b-a4b:free",
+    "recursive/flint-v1.0:free",
     "cohere/north-mini-code:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
     "openrouter/free",
     "liquid/lfm-2.5-2.6b:free",
 ]
 
 VISION_MODELS: List[str] = [
     "thinkingmachines/inkling:free",
-    "minimax/minimax-m3.1-flash:free",
+    "thinkingmachines/inkling-small:free",
     "nvidia/nemotron-3.5-super-vl:free",
     "dots-studio/dots-3-note-preview:free",
     "google/gemma-4-31b-it:free",
