@@ -159,11 +159,44 @@ class BrowserSession:
         return "\n".join(lines)
 
     def _resolve(self, target):
-        """Target: 'index:N', a CSS selector, or 'text=...' -> locator."""
+        """Target: 'index:N', a CSS selector, or 'text=...' -> locator.
+
+        For 'index:N' the label is re-read from the LIVE element
+        at the cached DOM position, never the label cached by
+        read(): a page that changed after read() — a button
+        replaced by a different control at the same position —
+        must be judged (and reported) by what is actually there,
+        not by what was there when the page was last read. A
+        position that no longer exists, or an element that is no
+        longer visible or readable, is stale: _resolve raises
+        instead of handing back a locator for a different control.
+        """
         if target.startswith("index:"):
             idx = int(target.split(":", 1)[1])
-            real, _tag, label = self.elements[idx]
-            return self.page.locator(_UNION).nth(real), label
+            real, _tag, _cached = self.elements[idx]
+            loc_all = self.page.locator(_UNION)
+            if real >= loc_all.count():
+                raise ValueError(
+                    f"browser_agent: index:{idx} is stale — the page "
+                    "changed since it was read.")
+            el = loc_all.nth(real)
+            try:
+                if not el.is_visible():
+                    raise ValueError(
+                        f"browser_agent: index:{idx} is stale — its "
+                        "element is no longer visible.")
+                label = (el.inner_text(timeout=400)
+                         or el.get_attribute("value")
+                         or el.get_attribute("aria-label")
+                         or el.get_attribute("placeholder")
+                         or "").strip()
+            except ValueError:
+                raise
+            except Exception as exc:
+                raise ValueError(
+                    f"browser_agent: index:{idx} is stale — its "
+                    f"element could not be re-read ({exc}).")
+            return el, label[:60]
         if target.startswith("text="):
             label = target[5:]
             return self.page.get_by_text(label, exact=False).first, label
@@ -391,7 +424,17 @@ def _auto_lane_open(approval_module) -> bool:
 def _guarded_click(target: str, *, approve_fn=None) -> str:
     """Resolve + label-check a click on the session thread; if the
     label is irreversible, stash an approval and DO NOT click —
-    unless this call IS the approved replay of that exact click."""
+    unless this call IS the approved replay of that exact click.
+
+    The approval is bound to the LIVE label, not just the
+    target: approve_token() replays the stashed args, so a click
+    confirmed as 'Place order' must not execute if the element
+    at that target has since become 'Delete account' — the
+    replay marker then matches nothing, the click parks again
+    under the new label, and only a fresh confirmation lets it
+    through. (The label is part of the stashed args, so the
+    dashboard replay replays the exact confirmed call, label
+    included; tool_browser_agent ignores the extra field.)"""
     def _probe(runner):
         session = runner.ensure_session()
         _loc, label = session._resolve(target)
@@ -400,20 +443,25 @@ def _guarded_click(target: str, *, approve_fn=None) -> str:
     if _is_irreversible(label):
         from aria import approval as _approval
         # Approve replay (2026-10-28): approve_token() stashes
-        # exactly {"action": "click", "target": target} for
-        # browser_agent and sets its replay marker while replaying
-        # it — the user already confirmed THIS click on screen, so
-        # it goes through. Without this check the replay re-probed
-        # the label and stashed a FRESH approval instead of
-        # clicking, so a confirmed irreversible click could never
-        # complete. Same marker run_shell_command checks
-        # (aria/tools/shelltool.py); read defensively so a partial
-        # approval module can never turn the guard off.
+        # the exact args for browser_agent and sets its replay
+        # marker while replaying it — the user already confirmed
+        # THIS click on screen, so it goes through. Without this
+        # check the replay re-probed the label and stashed a
+        # FRESH approval instead of clicking, so a confirmed
+        # irreversible click could never complete. Same marker
+        # run_shell_command checks (aria/tools/shelltool.py);
+        # read defensively so a partial approval module can
+        # never turn the guard off. The label rides in the args
+        # (2026-11-02 stale-index fix): a replay whose live
+        # label differs from the confirmed label matches no
+        # marker and parks again, instead of executing a click
+        # the user never confirmed.
+        approval_args = {"action": "click", "target": target,
+                         "label": label}
         try:
             _in_replay = getattr(_approval, "in_approve_replay", None)
             in_replay = bool(_in_replay(
-                "browser_agent",
-                {"action": "click", "target": target})) \
+                "browser_agent", approval_args)) \
                 if callable(_in_replay) else False
         except Exception:
             in_replay = False
@@ -423,7 +471,7 @@ def _guarded_click(target: str, *, approve_fn=None) -> str:
         if not in_replay and not _auto_lane_open(_approval):
             request = approve_fn or _approval.request_approval
             return request(
-                "browser_agent", {"action": "click", "target": target},
+                "browser_agent", approval_args,
                 desc=f"Browser agent is about to click '{label}' "
                      f"({target}) — this looks irreversible.")
     def _do(runner):

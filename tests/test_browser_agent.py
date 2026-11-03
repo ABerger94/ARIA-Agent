@@ -165,7 +165,8 @@ def test_irreversible_click_is_stashed_not_executed():
     assert fake.clicks == []                      # never clicked
     assert "AWAITING_APPROVAL" in out
     assert stashed and stashed[0][0] == "browser_agent"
-    assert stashed[0][1] == {"action": "click", "target": "index:0"}
+    assert stashed[0][1] == {"action": "click", "target": "index:0",
+                             "label": "Place order"}
     assert "Place order" in stashed[0][2]
     print("ok irreversible_stashed")
 
@@ -204,7 +205,8 @@ def test_irreversible_click_executes_on_approve_replay():
     fake = _install_fake()
     _mod, stashed = _fake_approval_with_replay(
         lambda tool, args: tool == "browser_agent"
-        and args == {"action": "click", "target": "index:0"})
+        and args == {"action": "click", "target": "index:0",
+                     "label": "Place order"})
     ba.tool_browser_agent({"action": "open",
                            "url": "https://shop.example/"})
     out = ba.tool_browser_agent({"action": "click",
@@ -228,7 +230,8 @@ def test_irreversible_click_replay_for_other_args_still_stashed():
     assert fake.clicks == []
     assert "AWAITING_APPROVAL" in out
     assert stashed and stashed[0][1] == {"action": "click",
-                                          "target": "index:0"}
+                                          "target": "index:0",
+                                          "label": "Place order"}
     print("ok irreversible_replay_mismatch_stashed")
 
 
@@ -249,7 +252,8 @@ def test_irreversible_click_replay_with_real_approval_module():
         ba.tool_browser_agent({"action": "open",
                                "url": "https://shop.example/"})
         real._replay_local.current = (
-            "browser_agent", {"action": "click", "target": "index:0"})
+            "browser_agent", {"action": "click", "target": "index:0",
+                              "label": "Place order"})
         try:
             out = ba.tool_browser_agent({"action": "click",
                                          "target": "index:0"})

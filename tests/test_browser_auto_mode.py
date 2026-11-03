@@ -249,13 +249,15 @@ def test_confirm_risky_click_parks_and_replay_executes_once():
         assert fake.clicks == []
         assert "AWAITING_APPROVAL" in out
         assert stashed and stashed[0][1] == {
-            "action": "click", "target": "index:0"}
+            "action": "click", "target": "index:0",
+            "label": "Place order"}
         # The user's Confirm: approve_token replays the exact
         # call with the marker set — it executes, and does NOT
         # stash a second approval (exactly once).
         mod.in_approve_replay = lambda tool, args: \
             tool == "browser_agent" and args == {
-                "action": "click", "target": "index:0"}
+                "action": "click", "target": "index:0",
+                "label": "Place order"}
         out = ba.tool_browser_agent({"action": "click",
                                      "target": "index:0"})
     assert fake.clicks == ["index:0"]
