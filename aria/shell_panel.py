@@ -1131,7 +1131,13 @@ class ShellPanel(QWidget):
         today_lay = QHBoxLayout(self.today_frame)
         today_lay.setContentsMargins(14, 8, 14, 8)
         today_lay.setSpacing(10)
-        today_head = QLabel("TODAY")
+        # The strip shows NEXT-UP items, not only today's: the
+        # event slot is the next not-yet-ended event (up to 7
+        # days out) and task rows reach 24h ahead — under a
+        # "TODAY" header a Wednesday shift read as today's
+        # schedule on a Tuesday. Alek's call, 2026-11-03: keep
+        # the next-event behaviour, label the section honestly.
+        today_head = QLabel("NEXT UP")
         today_head.setObjectName("shellCardTitle")
         today_lay.addWidget(today_head)
         # The strip's rows flow ACROSS (V13 painted them down

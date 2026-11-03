@@ -186,6 +186,18 @@ def test_v3_layout_grid_metrics():
     assert panel.app_list.gridSize() == QSize(120, 122)
 
 
+def test_today_strip_header_says_next_up_not_today():
+    # The strip's event slot is the NEXT not-yet-ended event
+    # (up to 7 days out) and its task rows reach 24h ahead —
+    # under a "TODAY" header, tomorrow's shift read as today's
+    # schedule. Alek's call, 2026-11-03: the header is honest.
+    from PyQt6.QtWidgets import QLabel
+    panel, _calls = _panel()
+    titles = [w.text() for w in panel.findChildren(QLabel)]
+    assert "NEXT UP" in titles
+    assert "TODAY" not in titles
+
+
 def test_v4_rail_is_briefing_only_and_it_fills_the_rail():
     from PyQt6.QtWidgets import QLabel, QPlainTextEdit
     panel, _calls = _panel()
