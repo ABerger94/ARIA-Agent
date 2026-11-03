@@ -2005,13 +2005,22 @@ def create_dashboard(callbacks):
             if not entries:
                 return
             entry = entries[0]
+            # Queue visibility (pass 18): with several approvals
+            # parked, the banner used to show the oldest with no
+            # hint that more were waiting behind it — the rest
+            # then expired silently. Name the queue on the banner.
+            queue_note = (
+                f"\nApproval 1 of {len(entries)} — "
+                f"{len(entries) - 1} more waiting after this one."
+                if len(entries) > 1 else "")
             try:
                 from aria.confirm_banner import ConfirmBanner
                 banner = ConfirmBanner(
                     f"Approve {entry['tool']}?",
                     f"{entry['desc']}\n\n"
                     f"token {entry['token']} · waiting {entry['age_s']}s · "
-                    f"expires 10 min after the request",
+                    f"expires 10 min after the request"
+                    f"{queue_note}",
                     self)
             except Exception as exc:
                 config.log_silent('dashboard.confirm_banner', exc)

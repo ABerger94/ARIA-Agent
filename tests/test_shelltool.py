@@ -155,6 +155,20 @@ def test_pending_confirmation_asks_instead_of_parking(monkeypatch, tmp_path):
     assert gate.parked == []
 
 
+def test_pending_confirmation_names_the_waiting_entry(monkeypatch, tmp_path):
+    # Pass 18: the refusal names WHAT is waiting, so the model can
+    # tell the user exactly which confirmation blocks the shell.
+    gate = _Gate(monkeypatch, pending=[
+        {'token': 't', 'tool': 'send_email',
+         'desc': "send email to 'bob@example.com' re: 'hi'"}])
+    out = shelltool.tool_run_shell_command(
+        {'command': 'echo hi', 'cwd': str(tmp_path)})
+    assert 'status=ask' in out
+    assert 'send_email' in out
+    assert 'bob@example.com' in out
+    assert gate.parked == []
+
+
 def test_approve_replay_executes(monkeypatch, tmp_path):
     gate = _Gate(monkeypatch, replay=True)
     out = shelltool.tool_run_shell_command(

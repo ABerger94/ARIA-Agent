@@ -301,9 +301,12 @@ def tool_run_shell_command(args=None) -> str:
     except Exception:
         pending = []
     if pending:
+        first = pending[0]
         return _ask(
             "there is already a confirmation waiting on screen — "
-            "the user has to answer that one first",
+            f"{first.get('tool', 'another tool')}: "
+            f"{str(first.get('desc', ''))[:120]} — the user has to "
+            "answer that one first",
             command=command)
 
     # (d) Auto mode: a live call executes now (Alek's ruling,

@@ -268,3 +268,44 @@ def test_dashboard_banner_approves_and_denies(monkeypatch):
     assert window._confirm_banner is None
 
     window.close(); app.processEvents()
+
+
+def test_dashboard_banner_shows_queue_count(monkeypatch):
+    """Pass 18: with several approvals parked, the banner names
+    the queue ('Approval 1 of N — M more waiting') instead of
+    showing the oldest in silence while the rest expire."""
+    app = _app()
+    callbacks = _dashboard_stubs(monkeypatch)
+    state = {'entries': [], 'approved': [], 'denied': []}
+    fake = types.ModuleType('aria.approval')
+    fake.pending_entries = lambda: list(state['entries'])
+    fake.approve_token = lambda t: state['approved'].append(t)
+    fake.deny_token = lambda t: state['denied'].append(t)
+    monkeypatch.setitem(sys.modules, 'aria.approval', fake)
+    monkeypatch.setattr(sys.modules['aria'], 'approval', fake, raising=False)
+
+    from aria.dashboard import create_dashboard
+    window = create_dashboard(callbacks)
+    window.show(); app.processEvents()
+
+    state['entries'] = [
+        {'token': 'tok1', 'tool': 'write_file',
+         'desc': 'write file a.txt', 'age_s': 3},
+        {'token': 'tok2', 'tool': 'send_email',
+         'desc': 'send email', 'age_s': 1},
+        {'token': 'tok3', 'tool': 'write_file',
+         'desc': 'write file b.txt', 'age_s': 0},
+    ]
+    window._poll_approvals()
+    text = window._confirm_banner._detail_label.text()
+    assert 'Approval 1 of 3' in text
+    assert '2 more waiting' in text
+
+    # Down to a single pending entry: no queue note.
+    state['entries'] = [state['entries'][1]]
+    window._poll_approvals()
+    text = window._confirm_banner._detail_label.text()
+    assert 'send email' in text
+    assert 'Approval 1 of' not in text
+
+    window.close(); app.processEvents()
