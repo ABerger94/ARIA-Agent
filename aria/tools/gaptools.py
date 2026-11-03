@@ -669,10 +669,18 @@ def tool_browser_control(args) -> str:
 def sanitise(text, max_len: int = 200) -> str:
     """Make reminder text safe to embed in a generated script: drop
     quotes, backslashes and control characters, flatten newlines to
-    spaces, cap the length."""
+    spaces, cap the length.
+
+    Also drops '$' and backticks (pass 18, closing the pass-14/15
+    runner-up): the Linux notify script interpolates the message
+    into shell DOUBLE quotes, where $( ) and ` ` still execute
+    at fire time — quote-stripping alone never made that safe,
+    it only made it look safe. The PowerShell fallback string
+    has the same expansion inside its double quotes. A reminder
+    message never needs either character."""
     out = []
     for ch in str(text or ""):
-        if ch in ('"', "'", "\\"):
+        if ch in ('"', "'", "\\", "$", "`"):
             continue
         if ch in ("\n", "\r", "\t"):
             out.append(" ")

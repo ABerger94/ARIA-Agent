@@ -316,6 +316,19 @@ def test_task_name_for():
     assert gap.task_name_for("!!!", when).endswith("reminder")
 
 
+def test_sanitise_strips_shell_substitution():
+    # Pass 18: the Linux notify script embeds the message in
+    # shell double quotes, where $( ) and backticks execute at
+    # fire time. A crafted reminder message must come out inert
+    # on every platform branch.
+    dirty = "run $(touch /tmp/pwned) and `id` now"
+    clean = gap.sanitise(dirty)
+    assert "$" not in clean and "`" not in clean
+    for os_name in ("linux", "win32", "darwin"):
+        script = gap.build_notify_script(clean, os_name)
+        assert "$(" not in script and "`" not in script
+
+
 def test_build_notify_script_per_os():
     win = gap.build_notify_script("Take meds", "win32")
     assert "System.Windows.Forms" in win and "MessageBox" in win
