@@ -623,10 +623,18 @@ def _guarded_press(key: str, *, approve_fn=None) -> str:
         return _RUNNER.call(_do)
 
     from aria import approval as _approval
+    # The approval is bound to the probed label, exactly like
+    # _guarded_click (pass 18, closing the pass-16 residual):
+    # the replay marker matches only if the control focused NOW
+    # carries the label the user confirmed. A press confirmed
+    # against 'Place order' whose focus has since moved to a
+    # 'Delete account' control matches nothing and parks again
+    # under the new label. tool_browser_agent ignores the extra
+    # 'label' field, as it does for clicks.
+    press_args = {"action": "press", "key": key, "label": label}
     try:
         _in_replay = getattr(_approval, "in_approve_replay", None)
-        in_replay = bool(_in_replay(
-            "browser_agent", {"action": "press", "key": key})) \
+        in_replay = bool(_in_replay("browser_agent", press_args)) \
             if callable(_in_replay) else False
     except Exception:
         in_replay = False
@@ -643,8 +651,7 @@ def _guarded_press(key: str, *, approve_fn=None) -> str:
             desc = (f"Browser agent is about to press '{key}' — "
                     f"this would trigger '{label}', which looks "
                     f"irreversible.")
-        return request(
-            "browser_agent", {"action": "press", "key": key}, desc=desc)
+        return request("browser_agent", press_args, desc=desc)
     return _RUNNER.call(_do)
 
 

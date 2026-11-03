@@ -277,10 +277,11 @@ def test_confirm_risky_press_parks_and_replay_executes_once():
         assert fake.presses == []
         assert "AWAITING_APPROVAL" in out
         assert stashed and stashed[0][1] == {
-            "action": "press", "key": "Enter"}
+            "action": "press", "key": "Enter", "label": "Place order"}
         mod.in_approve_replay = lambda tool, args: \
             tool == "browser_agent" and args == {
-                "action": "press", "key": "Enter"}
+                "action": "press", "key": "Enter",
+                "label": "Place order"}
         ba.tool_browser_agent({"action": "press", "key": "Enter"})
     assert fake.presses == ["Enter"]
     assert len(stashed) == 1

@@ -247,6 +247,12 @@ def test_irreversible_click_replay_with_real_approval_module():
     prev = sys.modules.get("aria.approval")
     sys.modules["aria.approval"] = real
     spec.loader.exec_module(real)
+    # Pristine store: since pass 18 the real module persists
+    # pending approvals and rehydrates them on first access —
+    # this test wants an empty store, not whatever a previous
+    # run left on disk.
+    real._PENDING.clear()
+    real._pending_loaded = True
     try:
         fake = _install_fake()
         ba.tool_browser_agent({"action": "open",
@@ -337,7 +343,8 @@ def test_irreversible_press_is_stashed_not_executed():
     assert fake.presses == []                     # never pressed
     assert "AWAITING_APPROVAL" in out
     assert stashed and stashed[0][0] == "browser_agent"
-    assert stashed[0][1] == {"action": "press", "key": "Enter"}
+    assert stashed[0][1] == {"action": "press", "key": "Enter",
+                             "label": "Place order"}
     assert "Enter" in stashed[0][2]
     assert "Place order" in stashed[0][2]
     print("ok irreversible_press_stashed")
@@ -348,7 +355,8 @@ def test_irreversible_press_executes_on_approve_replay():
     _set_focus(fake, **_button_focus("Place order"))
     _mod, stashed = _fake_approval_with_replay(
         lambda tool, args: tool == "browser_agent"
-        and args == {"action": "press", "key": "Enter"})
+        and args == {"action": "press", "key": "Enter",
+                     "label": "Place order"})
     ba.tool_browser_agent({"action": "open",
                            "url": "https://shop.example/"})
     out = ba.tool_browser_agent({"action": "press", "key": "Enter"})
@@ -370,7 +378,8 @@ def test_irreversible_press_replay_for_other_args_still_stashed():
     assert fake.presses == []
     assert "AWAITING_APPROVAL" in out
     assert stashed and stashed[0][1] == {"action": "press",
-                                         "key": "Enter"}
+                                         "key": "Enter",
+                                         "label": "Place order"}
     print("ok irreversible_press_replay_mismatch_stashed")
 
 
@@ -384,7 +393,8 @@ def test_enter_in_field_with_irreversible_submit_is_stashed():
     assert fake.presses == []
     assert "AWAITING_APPROVAL" in out
     assert stashed and stashed[0][1] == {"action": "press",
-                                         "key": "Enter"}
+                                         "key": "Enter",
+                                         "label": "Send message"}
     assert "Send message" in stashed[0][2]
     print("ok enter_irreversible_submit_stashed")
 
