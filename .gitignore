@@ -40,6 +40,7 @@ build/
 
 approval.json
 approval_pending.json
+.migration_ledger.json
 reminder_gate.json
 ui.json
 ui_prefs.json
