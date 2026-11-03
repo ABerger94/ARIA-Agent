@@ -84,11 +84,13 @@ def state(tmp_path, monkeypatch):
         lambda msg, *a, **k: logs.append(str(msg)))
     approval._PENDING.clear()
     approval._RESOLUTIONS.clear()
+    approval._pending_loaded = False
     dispatch.reset_turn_state()
     approval.set_mode("confirm-risky")
     yield types.SimpleNamespace(dir=h, logs=logs)
     approval._PENDING.clear()
     approval._RESOLUTIONS.clear()
+    approval._pending_loaded = False
     dispatch.reset_turn_state()
 
 
@@ -173,6 +175,49 @@ def test_awaiting_string_keeps_machine_contract_and_adds_verify_rule(state):
     assert text.startswith("[AWAITING_APPROVAL token=")
     assert "list_pending_approvals" in text
     assert str(approval.APPROVAL_EXPIRY_S) in text
+
+
+def _simulate_restart():
+    """Drop the in-memory store the way a process restart does;
+    the persisted file (under the fixture's data root) survives."""
+    approval._PENDING.clear()
+    approval._RESOLUTIONS.clear()
+    approval._pending_loaded = False
+
+
+def test_pending_survives_restart_and_still_resolves(state, monkeypatch):
+    monkeypatch.setitem(dispatch._REGISTRY, "send_email",
+                        lambda args: "stub: email sent ok")
+    token = _park()
+    _simulate_restart()
+    entries = approval.pending_entries()
+    assert [e["token"] for e in entries] == [token]
+    assert entries[0]["tool"] == "send_email"
+    out = approval.approve_token(token)
+    assert "stub: email sent ok" in out
+    (rec,) = approval.recent_resolutions()
+    assert rec["verdict"] == "executed"
+
+
+def test_expired_while_down_is_tombstoned_not_restored(state):
+    token = _park()
+    # Age the entry past expiry and persist that aged state,
+    # as if ARIA had been off while the clock ran out.
+    approval._PENDING[token]["created_ts"] = time.time() - 601
+    approval._save_pending()
+    _simulate_restart()
+    assert approval.pending_entries() == []
+    (rec,) = approval.recent_resolutions()
+    assert rec["verdict"] == "expired"
+    assert "not running" in rec["detail"]
+    assert "none" in approval.approval_state_note()
+
+
+def test_denied_pending_does_not_come_back_after_restart(state):
+    token = _park()
+    approval.deny_token(token)
+    _simulate_restart()
+    assert approval.pending_entries() == []
 
 
 def test_brain_block_renders_authoritative_state(state):

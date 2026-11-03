@@ -140,9 +140,17 @@ DESTRUCTIVE_TOOLS = frozenset({
     "set_backup_mirror",
 })
 
-# In-memory pending approvals: token -> {token, tool, args, desc, created_ts}.
-# 10-minute expiry makes disk persistence unnecessary.
+# Pending approvals: token -> {token, tool, args, desc, created_ts}.
+# The live store is in memory, but a serializable subset is
+# persisted to approval_pending.json on every mutation and
+# reloaded on first access in a new process (pass 18, 2026-11-03):
+# before this, a restart silently destroyed every pending token
+# while the conversation still promised the user a banner tap —
+# one of the ingredients in the 2026-11-03 phantom-approval
+# incident. Entries whose args cannot JSON round-trip stay
+# memory-only (they simply don't survive a restart, as before).
 _PENDING = {}
+_pending_loaded = False
 
 # Approve-replay marker (thread-local): approve_token() sets this
 # around its execute_tool replay to (tool, args-dict-copy), so a
@@ -459,8 +467,105 @@ def _describe_tool(tool: str, args) -> str:
     return f"execute tool '{tool}'"
 
 
+def _pending_file() -> str:
+    return data_dir.path("approval_pending.json")
+
+
+def _save_pending() -> None:
+    """Persist the serializable subset of _PENDING (fail-silent:
+    a failed save must never break the approval itself). Called
+    only when the set actually changed — park, resolve, expiry —
+    never on the dashboard's poll cadence."""
+    try:
+        entries = []
+        for e in _PENDING.values():
+            args = e.get("args") or {}
+            try:
+                json.dumps(args)
+            except (TypeError, ValueError):
+                continue  # cannot round-trip; stays memory-only
+            entries.append({
+                "token": e["token"], "tool": e["tool"], "args": args,
+                "desc": e["desc"],
+                "created_ts": e.get("created_ts", time.time()),
+            })
+        data_dir.write_json_atomic(_pending_file(),
+                                   {"version": 1, "entries": entries})
+    except Exception as exc:
+        config.log_silent("approval.save_pending", exc)
+
+
+def load_pending() -> int:
+    """Reload persisted pending approvals into _PENDING.
+
+    Runs once per process (lazy, on first approval access).
+    Entries that expired while ARIA was off are NOT restored —
+    each is journaled as an 'expired' resolution instead, so the
+    model learns the wait ended rather than narrating a banner
+    that will never come. Restored entries get a FRESH execution
+    context from the live process (the parked call replays under
+    today's project/cancel/budget, exactly like a new park);
+    token, tool, args, desc and the original created_ts (so the
+    10-minute expiry keeps its original deadline) carry over.
+    Returns the number restored."""
+    global _pending_loaded
+    if _pending_loaded:
+        return 0
+    _pending_loaded = True
+    try:
+        with open(_pending_file(), encoding="utf-8") as f:
+            raw = (json.load(f) or {}).get("entries") or []
+    except Exception:
+        return 0
+    from aria import runtime
+    loaded = 0
+    now = time.time()
+    for e in raw:
+        try:
+            token = str(e["token"])
+            if token in _PENDING:
+                continue
+            created = float(e.get("created_ts") or now)
+            if now - created > APPROVAL_EXPIRY_S:
+                _record_resolution(
+                    e.get("tool"), e.get("desc"), "expired",
+                    "Expired while ARIA was not running; "
+                    "it was not executed.")
+                continue
+            ctx = runtime.current()
+            _PENDING[token] = {
+                "token": token,
+                "tool": str(e["tool"]),
+                "args": dict(e.get("args") or {}),
+                "desc": str(e.get("desc") or ""),
+                "created_ts": created,
+                "origin_context": ctx,
+                "execution_context": {
+                    'project': ctx.project, 'cancel': ctx.cancel,
+                    'operation_id': runtime.operation_id(),
+                    'budget_scope': ctx.budget_scope,
+                    'spend_cap': ctx.spend_cap},
+            }
+            loaded += 1
+        except Exception as exc:
+            config.log_silent("approval.load_pending_entry", exc)
+    if raw:
+        _save_pending()  # the file now reflects only the survivors
+    if loaded:
+        config.add_log(
+            f"[approval] restored {loaded} pending approval(s) "
+            f"parked before the restart")
+    return loaded
+
+
+def _ensure_pending_loaded() -> None:
+    if not _pending_loaded:
+        load_pending()
+
+
 def request_approval(tool: str, args=None, desc=None) -> str:
     """Stash a call and return the AWAITING_APPROVAL string (does NOT execute)."""
+    _ensure_pending_loaded()
     purge_expired()
     token = secrets.token_hex(4)  # 8 hex chars
     while token in _PENDING:  # paranoia; effectively impossible
@@ -481,6 +586,7 @@ def request_approval(tool: str, args=None, desc=None) -> str:
                               'operation_id': runtime.operation_id(),
                               'budget_scope': ctx.budget_scope, 'spend_cap': ctx.spend_cap},
     }
+    _save_pending()
     # Surfaces in the OPS Log tab via add_log.
     config.add_log(f"[approval] AWAITING_APPROVAL token={token} tool={tool}: {desc}")
     return (f"[AWAITING_APPROVAL token={token}] {desc}. Tell the user what you "
@@ -509,6 +615,8 @@ def purge_expired() -> int:
             _record_resolution(
                 entry.get("tool"), entry.get("desc"), "expired",
                 "No answer within 10 minutes; it was not executed.")
+    if expired:
+        _save_pending()
     return len(expired)
 
 
@@ -524,6 +632,7 @@ def approve_token(token: str) -> str:
     carries the verdict for every token: executed (with the
     result), failed, or unknown/expired.
     """
+    _ensure_pending_loaded()
     purge_expired()
     t = str(token or "").strip()
     entry = _PENDING.pop(t, None)
@@ -532,6 +641,7 @@ def approve_token(token: str) -> str:
             f"[approval] approve FAILED token={t}: unknown or expired")
         return (f"[Approval error: unknown or expired token '{t}'. "
                 f"Call list_pending_approvals() to see open requests.]")
+    _save_pending()
     config.add_log(f"[approval] approved token={t} tool={entry['tool']} — executing")
     _replay_local.current = (entry["tool"], dict(entry.get("args") or {}))
     try:
@@ -557,8 +667,18 @@ def approve_token(token: str) -> str:
         # refused — and logging that as "executed" made a dead
         # Confirm indistinguishable from a worked one (Alek,
         # 2026-10-31). The OPS verdict names what happened.
-        if result.startswith("[AWAITING_APPROVAL") or \
-                result.startswith("[Duplicate call blocked") or \
+        if result.startswith("[AWAITING_APPROVAL"):
+            # The replay parked again behind a handler-side gate
+            # (e.g. run_shell_command's own confirm): this token is
+            # spent, but the call is not dead — a NEW token is now
+            # pending and the banner will offer it. Journaling this
+            # as a plain "did NOT execute" would tell the model the
+            # action died when it is actually waiting again.
+            config.add_log(
+                f"[approval] token={t} did NOT execute: {result[:200]}")
+            _record_resolution(entry["tool"], entry["desc"],
+                               "re-parked", result)
+        elif result.startswith("[Duplicate call blocked") or \
                 result.startswith("[Safe mode"):
             config.add_log(
                 f"[approval] token={t} did NOT execute: {result[:200]}")
@@ -596,12 +716,14 @@ def approve_token(token: str) -> str:
 
 def deny_token(token: str) -> str:
     """Drop a pending approval without executing it."""
+    _ensure_pending_loaded()
     purge_expired()
     t = str(token or "").strip()
     entry = _PENDING.pop(t, None)
     if entry is None:
         return (f"[Approval error: unknown or expired token '{t}'. "
                 f"Call list_pending_approvals() to see open requests.]")
+    _save_pending()
     config.add_log(f"[approval] denied token={t} tool={entry['tool']} — dropped")
     _record_resolution(entry["tool"], entry["desc"], "denied",
                        "The user denied it; it was not executed.")
@@ -619,6 +741,7 @@ def pending_entries() -> list:
     be resolved. Read-only: resolving still goes through approve_token /
     deny_token, so every surface shares one execution path.
     """
+    _ensure_pending_loaded()
     purge_expired()
     now = time.time()
     return [
@@ -631,6 +754,7 @@ def pending_entries() -> list:
 
 def list_pending() -> str:
     """Human-readable list of open approval requests."""
+    _ensure_pending_loaded()
     purge_expired()
     if not _PENDING:
         return "[No pending approvals.]"
