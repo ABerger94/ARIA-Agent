@@ -519,6 +519,12 @@ SAFE_MODE_BLOCKED_TOOLS = frozenset({
     "gui_type",
     "close_window",
     "open_app_or_url",
+    # game_updater's update action hands steam:// URIs to the OS
+    # handler (aria/tools/gaptools.py _launch_uri) — a launch
+    # like open_app_or_url's, blocked whole-tool in safe mode
+    # (name-only classification; list/status included, the
+    # manage_background_job precedent). Pass 18.
+    "game_updater",
     "send_email",
     "drive_wheels",
     "move_head_servos",

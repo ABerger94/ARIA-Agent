@@ -310,11 +310,21 @@ def tool_flight_finder(args) -> str:
         cabin = "economy"
     url = build_flights_url(origin, destination, date_iso, return_iso,
                             args.get("passengers", 1), cabin)
+    # The launch goes through the dispatcher (pass 18, closing
+    # the pass-11 carried item): calling builtins directly
+    # bypassed open_app_or_url's safe-mode block and approval
+    # gate — the same launch its sibling browser-control code
+    # already routes through _open_url_via_dispatch. When the
+    # gate parks the launch, the AWAITING marker IS the result:
+    # claiming "results are in the opened page" would be false,
+    # and approving the parked open_app_or_url opens the URL.
     opened = ""
     try:
-        opened = str(_builtins().tool_open_app_or_url(url) or "")
+        opened = str(_open_url_via_dispatch(url)[0] or "")
     except Exception as exc:  # the URL is still the deliverable
         opened = f"(opening the page raised: {exc})"
+    if opened.startswith("[AWAITING_APPROVAL"):
+        return opened
     facts = {"url": url, "origin": origin, "destination": destination,
              "date": date_iso, "cabin": cabin}
     if return_iso:

@@ -66,6 +66,7 @@ DESTRUCTIVE_TOOLS = frozenset({
     "drive_wheels",
     "file_organize",  # only when dry_run=false; see needs_approval()
     "manage_background_job",  # only when action=start; see needs_approval()
+    "game_updater",  # only when action=update; see needs_approval()
     "open_app_or_url",
     "move_head_servos",
     # MCP server setup/connect: a model-chosen command is spawned by
@@ -384,6 +385,12 @@ def needs_approval(tool: str, args=None) -> bool:
     if tool == "manage_background_job":
         # list/logs/cancel are read-only; only start runs shell commands.
         return str((args or {}).get("action", "list")).strip().lower() == "start"
+    if tool == "game_updater":
+        # list/status read local Steam manifests; only update
+        # launches steam://validate URIs — downloads and disk
+        # writes Steam performs on its own schedule (pass 18;
+        # the launch used to bypass every gate entirely).
+        return str((args or {}).get("action", "list")).strip().lower() == "update"
     if tool == "set_backup_mirror":
         # No path and no clear = a read-only status report of the
         # current mirror folder; only set/clear change anything
@@ -429,6 +436,11 @@ def _describe_tool(tool: str, args) -> str:
                     f"for {a.get('seconds', 0)}s)")
         if tool == "file_organize":
             return f"organize files in '{a.get('directory', '')}' (EXECUTES the move plan)"
+        if tool == "game_updater":
+            game = str(a.get("game", "") or "").strip()
+            target = f"game '{game}'" if game else "all update-flagged games"
+            return (f"queue a Steam update/validate for {target} "
+                    f"(launches steam:// URIs; downloads may follow)")
         if tool == "open_app_or_url":
             return f"open '{a.get('target', '')}'"
         if tool == "launch_app":

@@ -127,20 +127,45 @@ def fake_builtins(monkeypatch):
     return fake
 
 
-def test_flight_finder_opens_url_unverified(fake_builtins):
+def test_flight_finder_opens_url_unverified(monkeypatch):
+    # Pass 18: the launch routes through the dispatcher
+    # (_open_url_via_dispatch) so it gets open_app_or_url's
+    # gates; the seam under test is that routing.
+    opened = []
+    monkeypatch.setattr(
+        gap, "_open_url_via_dispatch",
+        lambda url: opened.append(url) or (f"Opened URL: {url}", True))
     out = gap.tool_flight_finder({
         "origin": "BWI", "destination": "LHR", "date": "2026-11-05",
         "return_date": "11/12/2026", "cabin": "business",
         "passengers": 2})
     assert out.startswith("status=unverified")
     assert "flight_finder" in out
-    assert len(fake_builtins.opened) == 1
-    url = fake_builtins.opened[0]
+    assert len(opened) == 1
+    url = opened[0]
     assert url in out and "2026-11-12" in out
     assert "NOT scraped" in out  # prices are never invented
 
 
-def test_flight_finder_missing_fields_fail(fake_builtins):
+def test_flight_finder_parked_launch_returns_the_marker(monkeypatch):
+    # When the approval gate parks the launch, flight_finder
+    # returns the AWAITING marker verbatim — it must NOT claim
+    # the results are sitting in an opened page.
+    monkeypatch.setattr(
+        gap, "_open_url_via_dispatch",
+        lambda url: ("[AWAITING_APPROVAL token=tok123: open "
+                     "app/url 'https://…' requires approval]", False))
+    out = gap.tool_flight_finder({
+        "origin": "BWI", "destination": "LHR", "date": "2026-11-05"})
+    assert out.startswith("[AWAITING_APPROVAL")
+    assert "opened page" not in out
+
+
+def test_flight_finder_missing_fields_fail(monkeypatch):
+    opened = []
+    monkeypatch.setattr(
+        gap, "_open_url_via_dispatch",
+        lambda url: opened.append(url) or ("Opened URL: x", True))
     assert gap.tool_flight_finder(
         {"destination": "LHR", "date": "2026-11-05"}
     ).startswith("status=failed")
@@ -150,14 +175,13 @@ def test_flight_finder_missing_fields_fail(fake_builtins):
     assert gap.tool_flight_finder(
         {"origin": "BWI", "destination": "LHR", "date": "whenever"}
     ).startswith("status=failed")
-    assert fake_builtins.opened == []
+    assert opened == []
 
 
 def test_flight_finder_open_failure_still_returns_url(monkeypatch):
-    class Boom:
-        def tool_open_app_or_url(self, target):
-            raise RuntimeError("no browser")
-    monkeypatch.setattr(gap, "_builtins", lambda: Boom())
+    def boom(url):
+        raise RuntimeError("no browser")
+    monkeypatch.setattr(gap, "_open_url_via_dispatch", boom)
     out = gap.tool_flight_finder({"origin": "BWI", "destination": "LHR",
                                   "date": "tomorrow"})
     assert out.startswith("status=unverified")
