@@ -198,8 +198,27 @@ class BrowserSession:
                     f"element could not be re-read ({exc}).")
             return el, label[:60]
         if target.startswith("text="):
-            label = target[5:]
-            return self.page.get_by_text(label, exact=False).first, label
+            query = target[5:]
+            loc = self.page.get_by_text(query, exact=False).first
+            # Judge the click by the MATCHED element's real text,
+            # never by the query (pass 18, closing the pass-15
+            # runner-up): matching is a substring search, so the
+            # query 'account' lands on a 'Delete account' control
+            # while reporting the label 'account' — the guarded
+            # click's irreversible check then waved through the
+            # exact click it exists to park. Same extraction
+            # chain as read()/index:, truncated the same way. An
+            # unreadable or missing element falls back to the
+            # query (a missing element fails the click itself).
+            try:
+                label = (loc.inner_text(timeout=800)
+                         or loc.get_attribute("value")
+                         or loc.get_attribute("aria-label")
+                         or loc.get_attribute("placeholder")
+                         or "").strip()
+            except Exception:
+                label = ""
+            return loc, (label or query)[:60]
         label = ""
         try:
             label = (self.page.locator(target).first
