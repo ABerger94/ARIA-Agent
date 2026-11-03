@@ -173,6 +173,26 @@ def _park_shell(tmp):
     return marker
 
 
+def test_recent_resolutions_ride_along(server):
+    """Pass 18: GET /api/approvals also returns the resolution
+    journal as `recent`, so the phone band can show what a
+    Confirm/Deny DID even when the model never narrates it."""
+    approval._RESOLUTIONS.clear()
+    _park_shell(server.tmp)
+    (entry,) = _pending(server.port)
+    status, body = _req(server.port, "POST", "/api/approvals/resolve",
+                        _auth(), {"token": entry["token"],
+                                  "action": "deny"})
+    assert status == 200, (status, body)
+    status, body = _req(server.port, "GET", "/api/approvals", _auth())
+    assert status == 200, (status, body)
+    recent = json.loads(body)["recent"]
+    assert len(recent) == 1
+    assert recent[0]["tool"] == "run_shell_command"
+    assert recent[0]["verdict"] == "denied"
+    approval._RESOLUTIONS.clear()
+
+
 def test_list_empty_and_band_hidden_state(server):
     # The list endpoint answers, empty, behind auth.
     assert _pending(server.port) == []

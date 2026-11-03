@@ -135,14 +135,45 @@ def _activity_kind(level):
     return 'info'
 
 
-def activity_html(events):
+_RESOLUTION_KIND = {'executed': 'ok', 'denied': 'warn',
+                    'expired': 'warn', 'did NOT execute': 'warn',
+                    're-parked': 'info', 'errored': 'error'}
+
+
+def activity_html(events, resolutions=None):
     """Render activity events [(ts, level, message, meta)] as
     coloured HTML, LVI-style: the level tag carries the colour
     (red error, amber warn, green ok, muted info), the message in
     a matching soft tint, timestamps dimmest. Escaped — a log
-    line is never markup."""
+    line is never markup.
+
+    `resolutions` (pass 18): recent approval resolutions from
+    aria.approval's journal, pinned above the log as a RECENT
+    APPROVALS section — a banner-resolved outcome the user can
+    SEE without the model narrating it (ChatGPT pass-17 finding
+    #2: with the model down, an executed approval was previously
+    indistinguishable from a denial or a crash)."""
     import html as _html
     parts = []
+    if resolutions:
+        parts.append(
+            '<p style="margin:0 0 8px 0">'
+            '<b style="color:#8ea3b6">RECENT APPROVALS</b></p>')
+        for r in resolutions:
+            lvl_col, msg_col = ACTIVITY_COLORS[
+                _RESOLUTION_KIND.get(r.get('verdict'), 'info')]
+            when = time.strftime('%I:%M %p',
+                                 time.localtime(r.get('ts', 0)))
+            line = (f"{r.get('tool', '')} — {r.get('verdict', '')}: "
+                    f"{r.get('desc', '')}")
+            if r.get('detail'):
+                line += f" — result: {r['detail']}"
+            body = _html.escape(line).replace('\n', '<br/>')
+            parts.append(
+                f'<p style="margin:0 0 8px 0">'
+                f'<span style="color:#5f7285">{when}</span> '
+                f'<b style="color:{lvl_col}">APPROVAL</b><br/>'
+                f'<span style="color:{msg_col}">{body}</span></p>')
     for ts, level, message, *_rest in events:
         lvl_col, msg_col = ACTIVITY_COLORS[_activity_kind(level)]
         body = _html.escape(str(message)).replace('\n', '<br/>')
@@ -2321,10 +2352,24 @@ def create_dashboard(callbacks):
             self._poll_vision_pip()
             _events = frame.activity_events(100)
             activity = '\n\n'.join(f'{ts}  {level}\n{message}' for ts, level, message, meta in _events)
-            if activity != self._last_activity:
-                self._last_activity = activity
+            # Recent approval resolutions ride the same change
+            # guard (pass 18): the comparison key includes the
+            # journal's (ts, verdict) pairs, so a resolution
+            # re-renders the Activity view even when no new log
+            # event landed with it.
+            try:
+                from aria import approval as _approval_act
+                _recent = _approval_act.recent_resolutions(
+                    limit=5, within_s=3600)
+            except Exception:
+                _recent = []
+            _act_key = activity + '\n' + repr(
+                [(r['ts'], r['verdict']) for r in _recent])
+            if _act_key != self._last_activity:
+                self._last_activity = _act_key
                 self._set_view_content(
-                    self.views['Activity'], activity_html(_events),
+                    self.views['Activity'],
+                    activity_html(_events, resolutions=_recent),
                     html=True)
             # Fleet lives INSIDE the Tasks tab (Alek, 2026-10-27:
             # no new tab) — runtime state only, above the existing

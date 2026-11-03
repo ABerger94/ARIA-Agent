@@ -1041,7 +1041,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 # through POST /api/approvals/resolve, never here.
                 from aria import approval as _approval_br
                 self._send(200, json.dumps(
-                    {'pending': _approval_br.pending_entries()}
+                    {'pending': _approval_br.pending_entries(),
+                     # Pass 18: recent resolutions ride along so
+                     # the phone band can show what a banner tap
+                     # DID — executed / denied / expired — even
+                     # when the model never narrates it.
+                     'recent': _approval_br.recent_resolutions(
+                         limit=5, within_s=3600)}
                 ).encode('utf-8'))
                 return
             if self.path.split('?', 1)[0] == '/api/missions':
