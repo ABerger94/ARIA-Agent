@@ -760,6 +760,99 @@ def resolve_role_model(role: str) -> Optional[str]:
     return tag
 
 
+# --- Turn-tier routing ("Jev", Alek 2026-11-03) ---
+# classify_task_role (brain) sorts a turn by WHAT it is; tiers sort it by
+# HOW MUCH MODEL it deserves. A 'light' turn — short, conversational, no
+# action or tool signals — starts the provider chain at a cheap leg
+# (default groq) instead of burning the head of the chain (gemini) on
+# chit-chat; the walk still wraps around to every other provider on
+# failure, so a light turn can still reach gemini, just last. Anything
+# ambiguous is 'standard' (the previous behaviour, gemini first); code
+# work, preauthorized and headless/delegated turns are 'heavy' and never
+# route light. The classifier is local heuristics only — zero API cost —
+# and conservative by design: a false 'standard' costs a little quota,
+# a false 'light' puts a weak model on a real task.
+
+_LIGHT_BLOCKERS = (
+    # action verbs / tool-domain nouns: any hit keeps the turn standard
+    "open", "play", "pause", "resume", "skip", "send", "delete", "remove",
+    "create", "write", "edit", "fix", "set ", "turn on", "turn off",
+    "search", "find", "check", "call", "text", "message", "email", "mail",
+    "remind", "schedule", "add", "download", "upload", "start", "stop",
+    "launch", "run", "install", "buy", "order", "book", "screenshot",
+    "look at", "volume", "mute", "record", "save", "move", "rename",
+    "close", "lock", "print", "show me", "restart", "shut", "browse",
+    "post", "pay", "file", "folder", "window", "song", "music", "video",
+    "photo of", "picture of", "image of", "selfie", "camera", "screen",
+    "weather", "timer",
+    "alarm", "calendar", "meeting", "appointment", "inbox", "note",
+    "list", "lights", "thermostat", "temperature", "news", "mission",
+    "delegate", "app ", "website", "link", "url", "google", "spotify",
+    "youtube", "brightness", "dim ",
+)
+
+_LIGHT_OPENERS = (
+    "what", "who", "when", "where", "why", "how", "is ", "are ", "was ",
+    "were ", "do ", "does ", "did ", "tell me", "explain", "define",
+    "meaning of", "thank", "hello", "hi ", "hey", "good morning",
+    "good afternoon", "good evening", "good night", "say ", "translate",
+    "how do you say",
+)
+
+
+def classify_turn_tier(user_prompt: str, role: str = "default", *,
+                       preauthorized: bool = False,
+                       headless: bool = False) -> str:
+    """Sort a conversational turn into 'light', 'standard' or 'heavy'.
+
+    role is brain.classify_task_role's verdict for the same prompt.
+    Never raises; anything unclear is 'standard'.
+    """
+    try:
+        if preauthorized or headless:
+            return "heavy"
+        if (role or "default").strip().lower() == "code":
+            return "heavy"
+        low = (user_prompt or "").strip().lower()
+        if not low or len(low) > 140:
+            return "standard"
+        if any(b in low for b in _LIGHT_BLOCKERS):
+            return "standard"
+        if low.endswith("?") or low.startswith(_LIGHT_OPENERS):
+            return "light"
+        return "standard"
+    except Exception:
+        return "standard"
+
+
+def resolve_tier_chain_start(tier: str) -> Optional[str]:
+    """Provider a tier's chain walk should start at, or None for the
+    configured order. Only 'light' reorders in v1. Settings override:
+    usage.settings()['turn_tiers'] = {'enabled': False} kills routing;
+    {'light_provider': 'groq'} picks the light leg."""
+    try:
+        cfg = usage.settings().get("turn_tiers") or {}
+        if cfg.get("enabled") is False:
+            return None
+        if (tier or "").strip().lower() == "light":
+            return cfg.get("light_provider") or "groq"
+    except Exception:
+        return None
+    return None
+
+
+def _rotate_chain(chain: List[Provider], start_name: Optional[str]) -> List[Provider]:
+    """Rotate chain so the first provider named start_name leads,
+    preserving relative order (the rest wrap around as fallbacks).
+    Unchanged when start_name is empty, absent, or already first."""
+    if not start_name or not chain:
+        return chain
+    for i, p in enumerate(chain):
+        if p.name == start_name:
+            return chain[i:] + chain[:i] if i else chain
+    return chain
+
+
 # --- Dynamic routing: failure-adaptive role models ---
 # When a role model fails (exception or empty result), _attempt_provider_call
 # falls back to the default model AND parks the broken tag here so later
@@ -981,6 +1074,7 @@ def provider_call(
     on_text_chunk: Optional[Callable[[Optional[str]], None]] = None,
     model_override: Optional[str] = None,
     only_provider: Optional[str] = None,
+    chain_start: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Walk the provider chain in order; first provider that returns
     candidates wins. Quarantined/unconfigured providers are skipped
@@ -992,6 +1086,9 @@ def provider_call(
     only_provider: restrict the walk to a single named provider (used for
     vision, where only ollama_cloud can serve the image payload — walking
     the other providers would 400/404/403 and quarantine THEIR keys).
+    chain_start: begin the walk at this provider instead of the head of
+    the chain (turn-tier routing, see classify_turn_tier); the remaining
+    providers wrap around as fallbacks in their configured order.
     """
     global ACTIVE_PROVIDER
     ctx = runtime.current()
@@ -1008,6 +1105,11 @@ def provider_call(
             # Keep explicit project ordering authoritative. Otherwise a working
             # fallback gets the next turn instead of paying the slow leg again.
             chain.sort(key=lambda provider: provider.name != recent[0])
+    if chain_start:
+        rotated = _rotate_chain(chain, chain_start)
+        if rotated is not chain and rotated and rotated[0].name == chain_start:
+            add_log(f"tier routing: chain starts at '{chain_start}'")
+            chain = rotated
     # A5: skip providers inside their failure-cooldown window — unless
     # EVERY candidate is cooling down, in which case walk them anyway:
     # a possibly-sick provider beats a guaranteed-dead turn.
@@ -1090,7 +1192,10 @@ def provider_call(
                     'checked_at': time.time(),
                     'latency_ms': int((time.monotonic() - attempt_started) * 1000),
                 }
-                if ctx.kind == 'foreground':
+                if ctx.kind == 'foreground' and not chain_start:
+                    # A tier-routed success says nothing about which
+                    # provider a standard turn should prefer — don't let
+                    # a light turn's cheap leg become the sticky head.
                     _RECENT_FOREGROUND_PROVIDER[ctx.project] = (provider.name, time.monotonic())
             _note_provider_ok(provider.name)
             _note_model_ok(provider.name, _eff_model(provider))

@@ -42,6 +42,7 @@ import aria.speech as speech
 from aria.agent.shortcuts import check_voice_shortcut
 from aria.agent.providers import provider_call, get_active_provider, get_last_call_stats
 from aria.agent.providers import resolve_role_model
+from aria.agent.providers import classify_turn_tier, resolve_tier_chain_start
 from aria.agent import sentinel
 import aria.hud as hud
 from aria import config as _config_silent
@@ -621,6 +622,19 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
     if _task_role != "default":
         add_log(f"task role '{_task_role}' -> model '{_turn_model_override or '(default)'}'")
 
+    # Turn-tier routing ("Jev", Alek 2026-11-03): light conversational
+    # turns start the provider chain at a cheap leg instead of gemini;
+    # heavy turns (code role, preauthorized, headless/delegated) never
+    # route light. Standard turns keep the configured chain order.
+    _turn_tier = classify_turn_tier(
+        user_prompt, _task_role, preauthorized=preauthorized,
+        headless=bool(silent and reply_sink is not None))
+    _turn_chain_start = resolve_tier_chain_start(_turn_tier)
+    if _turn_tier != "standard":
+        add_log(f"turn tier '{_turn_tier}'"
+                + (f" -> chain starts at '{_turn_chain_start}'"
+                   if _turn_chain_start else ""))
+
     hud.set_hud_state("thinking")
     hud.draw_hud()
 
@@ -718,6 +732,7 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                 tool_decls=decls,
                 on_text_chunk=_stream_chunk_cb if (not silent and reply_sink is None) else None,
                 model_override=_turn_model_override,
+                chain_start=_turn_chain_start,
             )
 
             _primary = PROVIDER_CHAIN[0] if PROVIDER_CHAIN else "ollama_cloud"
