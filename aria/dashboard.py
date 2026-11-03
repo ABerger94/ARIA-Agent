@@ -385,6 +385,7 @@ def create_dashboard(callbacks):
             self._email_request = 0
             self._last_chat = None
             self._last_activity = None
+            self._last_tasks = None
             self._last_refresh = 0.0
             self._confirm_banner = None
             self._confirm_token = None
@@ -2067,6 +2068,21 @@ def create_dashboard(callbacks):
             level = audio_levels.current() if state == 'speaking' else mic
             return state, level, not getattr(speech, 'VOICE_ENABLED', True)
 
+        def _set_view_content(self, view, text, html=False):
+            """Replace a read-only tab view's content WITHOUT yanking
+            its scrollbar back to the top. setPlainText/setHtml reset
+            the scroll position to 0; when the render loop refreshes a
+            tab the user is in the middle of reading, that reads as
+            the tab 'jumping back up'. Save the bar's value, swap the
+            content, restore the value clamped to the new maximum."""
+            bar = view.verticalScrollBar()
+            saved = bar.value()
+            if html:
+                view.setHtml(text)
+            else:
+                view.setPlainText(text)
+            bar.setValue(min(saved, bar.maximum()))
+
         def render_once(self):
             if not callbacks.is_running(): self.close(); return
             callbacks.housekeeping()
@@ -2298,7 +2314,9 @@ def create_dashboard(callbacks):
             activity = '\n\n'.join(f'{ts}  {level}\n{message}' for ts, level, message, meta in _events)
             if activity != self._last_activity:
                 self._last_activity = activity
-                self.views['Activity'].setHtml(activity_html(_events))
+                self._set_view_content(
+                    self.views['Activity'], activity_html(_events),
+                    html=True)
             # Fleet lives INSIDE the Tasks tab (Alek, 2026-10-27:
             # no new tab) — runtime state only, above the existing
             # delegated/scheduled lists.
@@ -2314,12 +2332,22 @@ def create_dashboard(callbacks):
                 text = '\n\n'.join(f"{t.get('status', '?').upper()}  {t.get('goal', '')}\n{t.get('error') or t.get('result') or ''}" for t in tasks)
                 scheduled = '\n'.join(str(row) for row in sched_list())
                 body = (text or 'No delegated tasks.') + '\n\nSCHEDULED\n' + (scheduled or 'No scheduled tasks.')
-                self.views['Tasks'].setPlainText(
+                tasks_text = (
                     (fleet_text + '\n\n———\n\n' + body) if fleet_text else body)
             except Exception as exc:
-                self.views['Tasks'].setPlainText(
+                tasks_text = (
                     (fleet_text + '\n\n' if fleet_text else '')
                     + 'Task status unavailable: ' + str(exc))
+            # Only touch the view when the text actually changed —
+            # this block used to setPlainText on EVERY render tick
+            # (~0.8s), and setPlainText resets the scrollbar to the
+            # top, so the Tasks tab could never be scrolled (Alek,
+            # 2026-11-03: 'scroll to the bottom, it jumps back up').
+            # When the text does change mid-read, preserve the
+            # scroll position via _set_view_content.
+            if tasks_text != self._last_tasks:
+                self._last_tasks = tasks_text
+                self._set_view_content(self.views['Tasks'], tasks_text)
             self._poll_approvals()
 
         def closeEvent(self, event):
