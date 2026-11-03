@@ -67,10 +67,20 @@ def _ago(secs: float) -> str:
 
 
 def _control_guard():
-    """The replay refusal, or None when the call is live."""
+    """The replay refusal, or None when the call is live.
+
+    Both non-live scopes refuse (pass 18, closing the pass-16
+    runner-up): delegated tasks run execute_tool with
+    preauthorized=False inside delegated_scope(), so checking
+    only the preauthorized flag let a delegated tap/type/swipe/
+    key reach the phone — the refusal text always claimed
+    delegated calls were covered; now the check matches it.
+    shelltool and restart_program check both scopes the same
+    way."""
     try:
         from aria.tools import dispatch
-        if dispatch.in_preauthorized_scope():
+        if dispatch.in_preauthorized_scope() or \
+                dispatch.in_delegated_scope():
             return _REPLAY_REFUSAL
     except Exception:
         pass
