@@ -40,6 +40,7 @@ import os
 import secrets
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 
 from aria import config
@@ -162,6 +163,84 @@ _RESOLUTION_LISTENERS = []
 def add_resolution_listener(fn) -> None:
     if fn not in _RESOLUTION_LISTENERS:
         _RESOLUTION_LISTENERS.append(fn)
+
+
+# Resolution journal (ChatGPT x ARIA loop pass 17, 2026-11-03):
+# every way a pending entry can END — executed, blocked, errored,
+# denied, expired — is recorded here with its outcome. Until this
+# existed, a banner-resolved approval's result went exactly two
+# places: a 200-char OPS log line, and origin.calls — a dict with
+# NO reader anywhere in the codebase. The model was never told
+# what its own parked call did, so after a Confirm it either went
+# silent (Alek's 2026-11-03 05:14 git pull: executed, exit 0,
+# never reported) or invented state from stale history (05:27:
+# a "Pending approval" table for a token that never existed).
+# brain.build_system_instruction renders recent entries from
+# this journal — plus the live pending snapshot — as an
+# authoritative system-generated state block every turn, so the
+# model's picture of approvals comes from the store, not from
+# conversation memory. In-memory by design (like _PENDING): a
+# restart clears it, and the pending snapshot then reads "none",
+# which is itself the truth after a restart.
+_RESOLUTIONS = deque(maxlen=50)
+
+
+def _record_resolution(tool, desc, verdict, detail="") -> None:
+    """Append one resolution record. Fail-silent: journaling an
+    outcome must never break resolving one."""
+    try:
+        _RESOLUTIONS.append({
+            "ts": time.time(),
+            "tool": str(tool or ""),
+            "desc": config.redact(str(desc or ""))[:160],
+            "verdict": str(verdict or ""),
+            "detail": config.redact(str(detail or ""))[:500],
+        })
+    except Exception as exc:
+        config.log_silent("approval.record_resolution", exc)
+
+
+def recent_resolutions(limit=5, within_s=1800) -> list:
+    """Resolution records from the last `within_s` seconds,
+    oldest first, capped at `limit` (the newest ones win)."""
+    now = time.time()
+    return [r for r in list(_RESOLUTIONS)
+            if now - r["ts"] <= within_s][-limit:]
+
+
+def approval_state_note() -> str:
+    """Authoritative approval state for the model's system
+    instruction: the live pending snapshot (tool + desc + age —
+    never tokens) plus the recent resolution journal. Returns ""
+    when nothing is pending and nothing recently resolved, so
+    the prompt is unchanged for users who never hit approvals."""
+    try:
+        entries = pending_entries()
+    except Exception:
+        entries = []
+    recs = recent_resolutions()
+    if not entries and not recs:
+        return ""
+    lines = []
+    if entries:
+        lines.append(
+            "Pending approvals right now (waiting for the user's "
+            "banner tap — only their tap resolves them):")
+        for e in entries:
+            lines.append(
+                f"- {e['tool']}: {e['desc']} "
+                f"(waiting {e['age_s']}s)")
+    else:
+        lines.append("Pending approvals right now: none.")
+    if recs:
+        lines.append("Recent approval resolutions (oldest first):")
+        for r in recs:
+            when = datetime.fromtimestamp(r["ts"]).strftime("%I:%M %p")
+            detail = f" — result: {r['detail']}" if r["detail"] else ""
+            lines.append(
+                f"- {when}: {r['tool']} {r['verdict']}: "
+                f"{r['desc']}{detail}")
+    return "\n".join(lines)
 
 
 def _notify_resolution(token, entry, approved, result) -> None:
@@ -407,16 +486,29 @@ def request_approval(tool: str, args=None, desc=None) -> str:
     return (f"[AWAITING_APPROVAL token={token}] {desc}. Tell the user what you "
             f"are about to do and wait for them to tap Confirm (or Deny) on "
             f"the approval banner. You cannot approve or deny it yourself — "
-            f"those are not tools you have; only the user's tap resolves it.")
+            f"those are not tools you have; only the user's tap resolves it. "
+            f"It expires in {APPROVAL_EXPIRY_S} seconds if unresolved. If the "
+            f"user later asks what is pending, call list_pending_approvals "
+            f"and answer only from its result — never from memory of this "
+            f"message.")
 
 
 def purge_expired() -> int:
-    """Drop pending approvals older than 10 minutes. Returns count purged."""
+    """Drop pending approvals older than 10 minutes. Returns count purged.
+
+    Each drop is journaled as an 'expired' resolution (pass 17):
+    before this, an expired approval vanished silently, and
+    'expired' was indistinguishable from 'denied' or 'executed'
+    to everyone — user and model alike."""
     now = time.time()
     expired = [t for t, e in _PENDING.items()
                if now - e.get("created_ts", 0) > APPROVAL_EXPIRY_S]
     for t in expired:
-        del _PENDING[t]
+        entry = _PENDING.pop(t, None)
+        if entry is not None:
+            _record_resolution(
+                entry.get("tool"), entry.get("desc"), "expired",
+                "No answer within 10 minutes; it was not executed.")
     return len(expired)
 
 
@@ -470,13 +562,30 @@ def approve_token(token: str) -> str:
                 result.startswith("[Safe mode"):
             config.add_log(
                 f"[approval] token={t} did NOT execute: {result[:200]}")
+            _record_resolution(entry["tool"], entry["desc"],
+                               "did NOT execute", result)
+        elif result.startswith("[Tool Error:") or \
+                result.startswith("[Error:"):
+            # The handler ran and reported failure (dispatch turns
+            # a handler exception into "[Tool Error: ...]"). The
+            # OPS line below still says "executed" — it has always
+            # meant only "the replay returned" — but the journal
+            # the model reads must not call a failure a success.
+            config.add_log(
+                f"[approval] token={t} executed: {result[:200]}")
+            _record_resolution(entry["tool"], entry["desc"],
+                               "errored", result)
         else:
             config.add_log(
                 f"[approval] token={t} executed: {result[:200]}")
+            _record_resolution(entry["tool"], entry["desc"],
+                               "executed", result)
         _notify_resolution(t, entry, True, result)
         return result
     except Exception as e:
         config.add_log(f"[approval] token={t} execution ERROR: {e}")
+        _record_resolution(entry["tool"], entry["desc"],
+                           "errored", f"failed to execute: {e}")
         _notify_resolution(
             t, entry, True,
             f"[Approval error: failed to execute approved call: {e}]")
@@ -494,6 +603,8 @@ def deny_token(token: str) -> str:
         return (f"[Approval error: unknown or expired token '{t}'. "
                 f"Call list_pending_approvals() to see open requests.]")
     config.add_log(f"[approval] denied token={t} tool={entry['tool']} — dropped")
+    _record_resolution(entry["tool"], entry["desc"], "denied",
+                       "The user denied it; it was not executed.")
     result = (f"Denied and dropped: {entry['desc']} (token={t}). "
               f"It was not executed.")
     _notify_resolution(t, entry, False, result)

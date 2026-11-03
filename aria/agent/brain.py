@@ -424,6 +424,40 @@ def _vision_prepass(user_prompt: str, image_bytes: bytes, is_screen: bool) -> st
         return user_prompt
 
 
+def _approval_state_block() -> str:
+    """Authoritative approval state for this turn's system
+    instruction (ChatGPT x ARIA loop pass 17, 2026-11-03).
+
+    Rendered from aria.approval's live store + resolution
+    journal — never from conversation history. Until this block
+    existed, a banner-resolved approval's outcome reached no
+    one: the click path discards approve_token's return, so the
+    model went silent on executed calls (2026-11-03 05:14: a
+    confirmed git pull ran, exit 0, never reported) and, worse,
+    invented pending state from stale history after a restart
+    (05:27: a 'Pending approval' table for a token that never
+    existed). With the store's own snapshot in every turn's
+    instruction, the model contradicts stale history with
+    ground truth instead of re-narrating it. Fail-silent: a
+    broken approval layer must never break the prompt."""
+    try:
+        from aria import approval as _approval_mod
+        note = _approval_mod.approval_state_note()
+    except Exception:
+        note = ""
+    if not note:
+        return ""
+    return (
+        "\n## Approval state (system-generated — authoritative)\n"
+        f"{note}\n"
+        "If this contradicts anything said earlier in this "
+        "conversation, trust this state and correct yourself "
+        "plainly. Never tell the user an action is pending, "
+        "approved, denied, or completed based on conversation "
+        "history alone.\n"
+    )
+
+
 def build_system_instruction(user_prompt: str) -> str:
     now_time = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
     known_memories = build_prompt_memories(user_prompt or "", local_only=True)
@@ -494,6 +528,7 @@ def build_system_instruction(user_prompt: str) -> str:
         "Personas: set_persona(concise|coach|none) switches a style overlay — the soul stays the soul, overlays only change tone. "
         f"{get_toolkits_prompt_block()}\n"
         f"{_persona_block}"
+        f"{_approval_state_block()}"
         "You can call multiple independent tools in one turn — do it. "
         "Keep vocal responses concise, refined, and intelligent (1-2 sentences). "
         "Your window is a three-column mission-control frame (aria/frame.py): "
