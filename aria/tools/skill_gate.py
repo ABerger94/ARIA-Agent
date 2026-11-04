@@ -237,6 +237,11 @@ def scan_draft(name: str) -> Optional[Dict[str, Any]]:
         "status": status,
         "scanned_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "content_hash": store.content_hash(skill),
+        # The catalog line is prompt text, so the scan binds the
+        # description it was taken against too: a post-activation
+        # description edit voids prompt eligibility (see
+        # skill_store._prompt_eligible).
+        "description": skill.get("description", ""),
         "static": {"verdict": "fail" if violations else "pass",
                    "violations": violations},
         "judge": judge,

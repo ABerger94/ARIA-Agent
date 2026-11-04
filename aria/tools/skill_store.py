@@ -386,30 +386,69 @@ def _catalog_signature() -> Tuple:
                 continue
             md = os.path.join(base, entry, "SKILL.md")
             try:
-                sig.append((base, entry, os.path.getmtime(md)))
+                md_mtime = os.path.getmtime(md)
             except OSError:
-                sig.append((base, entry, None))
+                md_mtime = None
+            try:
+                scan_mtime = os.path.getmtime(
+                    os.path.join(base, entry, "scan.json"))
+            except OSError:
+                scan_mtime = None
+            sig.append((base, entry, md_mtime, scan_mtime))
     return tuple(sig)
 
 
+def _prompt_eligible(skill: Dict[str, Any]) -> bool:
+    """Whether a skill may publish its catalog line into the prompt.
+
+    ACTIVE only, with a CURRENT passing scan: the scan on record
+    must have passed and must still match the live draft (the
+    activation invariant — instructions + resources hash — plus,
+    for scans recorded after this change, the description the scan
+    was taken against). Drafts never qualify, even scan-passed
+    ones still awaiting activation approval: a failed, unscanned,
+    or merely pending draft's description must not reach the
+    system prompt. A post-activation edit voids eligibility, so
+    the skill drops out of the prompt catalog (it stays active;
+    retire + re-propose is the recovery path). Legacy scans with
+    no recorded description are bound by instructions/resources
+    only."""
+    if skill["status"] != "active":
+        return False
+    scan = read_scan(skill["folder"])
+    if not scan or scan.get("status") != "pass":
+        return False
+    if scan.get("content_hash") != content_hash(skill):
+        return False
+    recorded = scan.get("description")
+    if recorded is not None and recorded != (skill.get("description")
+                                             or ""):
+        return False
+    return True
+
+
 def catalog_block(limit: int = CATALOG_CAP) -> str:
-    """The prompt-assembly catalog: ACTIVE and DRAFT skills as
-    name + one-liner + status, capped. Full instructions are NOT
-    here — they load via skill_show only when a skill is used.
-    Empty string when skills are disabled or none exist (legacy
-    prompts stay byte-identical). Cached on folder mtimes."""
+    """The prompt-assembly catalog: ACTIVE skills with a current
+    passing scan, as name + one-liner + status, capped. Drafts
+    (failed, unscanned, or scan-passed but unapproved) and retired
+    skills never appear here — a draft's description is not prompt
+    text. Full instructions are NOT here — they load via
+    skill_show only when a skill is used. Empty string when skills
+    are disabled or no eligible skill exists (legacy prompts stay
+    byte-identical). Cached on folder + scan mtimes."""
     if not skills_enabled():
         return ""
     sig = _catalog_signature()
     if _catalog_cache["sig"] == sig:
         return _catalog_cache["block"]
-    skills = [s for s in list_skills() if s["status"] != "retired"]
+    skills = [s for s in list_skills() if _prompt_eligible(s)]
     lines: List[str] = []
     if skills:
         lines.append(
-            "Learned skills (file-based workflows; call skill_show "
-            "with a skill's name to load its full instructions before "
-            "following it; skill_list shows scan/activation state):")
+            "Active learned skills (file-based workflows; call "
+            "skill_show with a skill's name to load its full "
+            "instructions before following it; skill_list shows "
+            "scan/activation state):")
         for s in skills[:limit]:
             lines.append(
                 f"• {s['name']} [{s['status']}]: {s['description']}")
