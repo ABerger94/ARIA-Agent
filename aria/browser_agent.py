@@ -88,6 +88,31 @@ def _is_irreversible(label: str) -> bool:
     return bool(label and _IRREVERSIBLE.search(label))
 
 
+def _element_label(el) -> str:
+    """Best-effort label for one element, same chain as read().
+
+    Visible text first, then the value attribute (submit inputs
+    carry their label there — inner_text() on an <input> is
+    empty), then aria-label, then placeholder. Each source is
+    tried separately, so a raising inner_text() cannot hide a
+    value/aria-label that is right there. Returns "" when the
+    element has no usable label at all."""
+    candidates = []
+    try:
+        candidates.append(el.inner_text(timeout=800))
+    except Exception:
+        pass
+    for attr in ("value", "aria-label", "placeholder"):
+        try:
+            candidates.append(el.get_attribute(attr))
+        except Exception:
+            pass
+    for candidate in candidates:
+        if candidate and str(candidate).strip():
+            return str(candidate).strip()[:60]
+    return ""
+
+
 # ---------------- the session (Playwright, one thread) ----------------
 
 class BrowserSession:
@@ -219,13 +244,13 @@ class BrowserSession:
             except Exception:
                 label = ""
             return loc, (label or query)[:60]
-        label = ""
-        try:
-            label = (self.page.locator(target).first
-                     .inner_text(timeout=800) or "").strip()
-        except Exception:
-            pass
-        return self.page.locator(target).first, label
+        # CSS branch (pass 20 fix): this used to read inner_text()
+        # only, so a submit input whose label lives in its value
+        # attribute — <input value="Delete account"> — produced
+        # an empty label and _guarded_click waved it through.
+        # Same extraction chain as read()/index:/text= now.
+        el = self.page.locator(target).first
+        return el, _element_label(el)
 
     def click(self, target):
         loc, label = self._resolve(target)
