@@ -601,6 +601,20 @@ def memory_map_points() -> List[Dict[str, Any]]:
     return out
 
 
+def _skills_catalog_suffix() -> str:
+    """Skills v1: the learned-skills catalog (names + one-liners +
+    status only, capped in skill_store) rides at the end of the
+    prompt memory block. Empty when skills are disabled or none
+    exist, so legacy prompts stay byte-identical; fail-silent — a
+    broken skill store must never break prompt assembly."""
+    try:
+        from aria.tools.skill_store import catalog_block
+        block = catalog_block()
+        return f"\n{block}" if block else ""
+    except Exception:
+        return ""
+
+
 def build_prompt_memories(query: str = "", top_k: int = 6, *, local_only=False) -> str:
     """Build a compact, highly relevant memory block for LLM system prompt.
     Always includes core identity facts, dynamic semantic search matches,
@@ -613,7 +627,7 @@ def build_prompt_memories(query: str = "", top_k: int = 6, *, local_only=False) 
         conn.close()
 
     if not all_rows:
-        return "Memory bank is currently empty."
+        return "Memory bank is currently empty." + _skills_catalog_suffix()
 
     selected = {}
     # 1. Always prioritize core identity & preference memories
@@ -680,7 +694,7 @@ def build_prompt_memories(query: str = "", top_k: int = 6, *, local_only=False) 
             if len(selected) >= top_k + len(core_keys):
                 break
 
-    return "\n".join(f"• [{cat}] {k}: {v}" for k, (cat, v) in selected.items())
+    return "\n".join(f"• [{cat}] {k}: {v}" for k, (cat, v) in selected.items()) + _skills_catalog_suffix()
 
 
 

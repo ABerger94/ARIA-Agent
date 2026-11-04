@@ -489,5 +489,22 @@ def idle_consolidation_loop(is_busy_fn: Callable[[], bool],
                 add_log(f"Idle consolidation: {counts['saved']} new, "
                         f"{counts['dupes']} dupes skipped, "
                         f"{counts['contradictions']} contradiction(s) queued.")
+            # Skills v1 — autonomous authoring (Alek's call,
+            # 2026-11-04): consolidation passes ONLY, never
+            # mid-conversation. Repeated patterns in the rows and
+            # spine events just consumed may become skill DRAFTS —
+            # evidence-required, deduped, capped at 2/day, each
+            # announced in the Activity log by skill_tools itself.
+            # Drafts only: activation still runs the scan gate and
+            # the normal approval routing. Failures here must never
+            # break consolidation.
+            try:
+                from aria.tools import skill_tools as _skill_tools
+                for _outcome in _skill_tools.maybe_autonomous_drafts(
+                        rows, spine_tail(100)):
+                    add_log(f"Autonomous authoring: {_outcome}")
+            except Exception as _sk_err:
+                _config_silent.log_silent("autonomous_skill_drafting",
+                                          _sk_err)
         except Exception as e:
             add_log(f"Consolidation err: {e}")

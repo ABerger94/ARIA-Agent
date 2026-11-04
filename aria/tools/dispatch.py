@@ -200,6 +200,12 @@ def reset_turn_state(user_message: str = "") -> None:
     _TURN_FAILURES.clear()
     runtime.current().nudged = False
     runtime.current().user_message = user_message
+    # Skills v1: a file skill's armed run budget is per-turn too.
+    try:
+        from aria.tools.skill_store import clear_skill_run
+        clear_skill_run()
+    except Exception:
+        pass
 
 
 def set_turn_context(user_message: str = "", last_open_target: str = "", turn_nudged: bool = False) -> None:
@@ -455,6 +461,19 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
         except Exception as _e_silent:
             _config_mod.log_silent("execute_tool", _e_silent)
     runtime.current().last_tool = (fn_name, time.time())
+
+    # 5b. Skills v1 budget: while a file skill's instructions are
+    # loaded for this turn (skill_show armed the run in skill_store),
+    # tool calls count against that skill's budget; exhaustion blocks
+    # further calls with a plain notice. Fail-open: a broken counter
+    # must never wedge ordinary tool use.
+    try:
+        from aria.tools import skill_store as _skill_store_mod
+        _budget_block = _skill_store_mod.note_skill_tool_call(fn_name)
+    except Exception:
+        _budget_block = None
+    if _budget_block:
+        return _budget_block, False
 
     # 6. Execute Handler
     # The outer execute_tool finally owns Fleet cleanup, including cached
@@ -840,6 +859,21 @@ def _init_default_registry():
         state_callback=_HUD_HOOK,
         log_callback=_LOG_HOOK
     )
+    # Skills v1 — file-based, data-only skills (aria/tools/
+    # skill_store.py + skill_gate.py + skill_tools.py). The four
+    # hardcoded run_skill workflows above are untouched.
+    from aria.tools.skill_tools import (
+        tool_skill_activate,
+        tool_skill_list,
+        tool_skill_propose,
+        tool_skill_retire,
+        tool_skill_show,
+    )
+    _REGISTRY["skill_propose"] = lambda a: tool_skill_propose(a)
+    _REGISTRY["skill_list"] = lambda a: tool_skill_list(a)
+    _REGISTRY["skill_show"] = lambda a: tool_skill_show(a)
+    _REGISTRY["skill_activate"] = lambda a: tool_skill_activate(a)
+    _REGISTRY["skill_retire"] = lambda a: tool_skill_retire(a)
     _REGISTRY["gmail_setup"] = lambda a: builtins.tool_gmail_setup(a.get("gmail_user", ""), a.get("app_password", ""))
     _REGISTRY["send_email"] = lambda a: builtins.tool_send_email(a.get("to", ""), a.get("subject", ""), a.get("body", ""))
     _REGISTRY["read_email"] = lambda a: builtins.tool_read_email(a.get("query", ""), a.get("limit", 10), bool(a.get("unread_only", False)), a.get("uid", ""))

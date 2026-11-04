@@ -1,0 +1,15 @@
+{
+ "name": "grocery-list-builder",
+ "status": "fail",
+ "scanned_at": "2026-11-04T07:19:34",
+ "content_hash": "4e527667786fc9b951062d071cdb51fb371ca08f399b7536fd8356394a82d1a0",
+ "static": {
+  "verdict": "pass",
+  "violations": []
+ },
+ "judge": {
+  "verdict": "fail",
+  "reason": "judge unavailable (no provider answered)"
+ },
+ "activation": "pending"
+}

@@ -139,6 +139,18 @@ DESTRUCTIVE_TOOLS = frozenset({
     # needs_approval() below (confirm-all still gates everything,
     # as it does for every tool).
     "set_backup_mirror",
+    # skill_activate (Skills v1) promotes a scanned skill draft to
+    # active: from then on its instructions ride the prompt catalog
+    # and ARIA follows them on request. That is an authorization
+    # grant in the trust_routine shape, so it gates the same way:
+    # under confirm-risky / confirm-all a direct model call parks
+    # for the user's approval and the approve-token replay performs
+    # the activation; the gate flow in aria/tools/skill_gate.py
+    # parks the same call itself after a passing scan. Auto mode is
+    # unchanged (needs_approval returns False there). The handler
+    # additionally enforces the passing-scan invariant, so even a
+    # replayed activation cannot land an unscanned draft.
+    "skill_activate",
 })
 
 # Pending approvals: token -> {token, tool, args, desc, created_ts}.

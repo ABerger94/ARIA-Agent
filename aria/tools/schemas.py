@@ -282,6 +282,45 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
         'parameters': {   'properties': {'objective': {'type': 'STRING'}, 'skill_name': {'type': 'STRING'}},
                           'required': ['skill_name', 'objective'],
                           'type': 'OBJECT'}},
+    {   'description': 'Propose a new file-based skill: a reusable workflow stored as plain-text instructions '
+                       '(data only, never code). The draft is safety-scanned (static rules + a safety judge); '
+                       'on a pass it activates immediately in auto approval mode, or parks for the user\'s '
+                       'approval in confirm modes. Use when the user asks you to learn a workflow, or agrees '
+                       'you should. budget: optional tool-call budget for the skill (default 12, max 20). '
+                       'resources_json: optional JSON object mapping resource filename (.md/.txt/.json/.csv) '
+                       'to its text content.',
+        'name': 'skill_propose',
+        'parameters': {   'properties': {   'budget': {'type': 'INTEGER'},
+                                            'description': {'type': 'STRING'},
+                                            'instructions': {'type': 'STRING'},
+                                            'name': {'type': 'STRING'},
+                                            'resources_json': {'type': 'STRING'}},
+                          'required': ['name', 'description', 'instructions'],
+                          'type': 'OBJECT'}},
+    {   'description': 'List file-based skills with their status (active/draft/retired) and scan state.',
+        'name': 'skill_list',
+        'parameters': {'properties': {}, 'type': 'OBJECT'}},
+    {   'description': 'Show a file-based skill in full: purpose, scan state, instructions, and resources. '
+                       'For an ACTIVE skill this also loads it for this turn — follow its instructions with '
+                       'your normal tools, within the tool-call budget it reports.',
+        'name': 'skill_show',
+        'parameters': {   'properties': {'name': {'type': 'STRING'}},
+                          'required': ['name'],
+                          'type': 'OBJECT'}},
+    {   'description': 'Activate a skill draft that has passed its safety scan. Internal to the skill gate '
+                       'flow: in confirm approval modes this call parks for the user\'s approval, and the '
+                       'approval replay performs the activation. Refuses drafts without a current passing '
+                       'scan.',
+        'name': 'skill_activate',
+        'parameters': {   'properties': {'name': {'type': 'STRING'}},
+                          'required': ['name'],
+                          'type': 'OBJECT'}},
+    {   'description': 'Retire a file-based skill (active or draft): it leaves the catalog immediately and is '
+                       'never offered again. Reversible only by proposing a fresh draft.',
+        'name': 'skill_retire',
+        'parameters': {   'properties': {'name': {'type': 'STRING'}},
+                          'required': ['name'],
+                          'type': 'OBJECT'}},
     {   'description': 'Fetch a web page and return its readable text (scripts/styles stripped). Use when search '
                        "snippets aren't enough — articles, docs, product pages.",
         'name': 'fetch_url',
@@ -712,7 +751,8 @@ TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persiste
     'user': {'summary': 'user-installed custom tools (see docs/USER_TOOL_SDK.md); populated at boot and via reload_user_tools',
              'tools': []},
     'core': {   'summary': 'everyday tools: web search, open apps/URLs, run Python code, click/type, screenshots, '
-                           'screen reading, clipboard, files, memory save/search, bounded workflow skills',
+                           'screen reading, clipboard, files, memory save/search, bounded workflow skills, '
+                           'and learned file-based skills (skill_propose/skill_list/skill_show/skill_retire)',
                 'tools': [   'web_search',
                              'research',
                              'open_app_or_url',
@@ -737,7 +777,8 @@ TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persiste
                              'inbox_list',
                              'inbox_describe',
                              'inbox_read',
-                             'run_skill', 'flight_finder', 'browser_control', 'browser_agent']},
+                             'run_skill', 'skill_propose', 'skill_list', 'skill_show', 'skill_activate',
+                             'skill_retire', 'flight_finder', 'browser_control', 'browser_agent']},
     'github': {'summary': 'push files and create GitHub repos', 'tools': ['github_push_file', 'github_create_repo']},
     'memory_plus': {   'summary': 'notes, journal, forgetting memories, morning briefing',
                        'tools': ['forget_memory', 'journal_write', 'take_note', 'read_notes', 'morning_briefing']},
