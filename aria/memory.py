@@ -375,6 +375,105 @@ def memory_get(category: str, key: str) -> str:
         return ""
 
 
+# --- Relevance grading for semantic recall (Self-RAG "IsRel") ---
+# The 0.35 cosine cutoff in memory_search_semantic is a weak relevance
+# proxy: a vaguely-related memory over the line enters the agent's
+# context unexamined, and a useful one under it silently vanishes.
+# After the hit list is formed, ONE light-tier model call (the Jev
+# chain, started at its light leg via resolve_tier_chain_start) judges
+# which hits are actually relevant to the query. The grader can only
+# REMOVE hits — never add, never reorder — and every failure mode
+# (grader raising, no provider answering, unparseable reply, kill
+# switch) returns the ungraded list untouched, so a broken grader is
+# indistinguishable from no grader. Kill switch:
+# usage.settings()['memory_grading'] = {'enabled': False}.
+# Deviation from the ideal shape: the provider chain exposes no
+# per-call max_tokens knob (payloads take usage.max_output_tokens()),
+# so the reply size is bounded by instruction instead — the grader is
+# told to answer with bare numbers only. Per-attempt timeouts are the
+# chain's own (8s foreground / 30s otherwise).
+
+_GRADER_SYSTEM = (
+    "You filter recalled memories for a personal assistant. Given a "
+    "query and a numbered list of candidate memories, reply with ONLY "
+    "the numbers of the memories that are genuinely relevant to "
+    "answering the query, comma-separated (example: 1, 3). If none are "
+    "relevant, reply with exactly: NONE. No explanation, no other text."
+)
+
+
+def _memory_grade_call(query: str, hits) -> Optional[str]:
+    """One light-tier call asking which numbered hits are relevant to
+    the query. Returns the raw reply text, or None when no provider
+    answered (the caller treats that as fail-open)."""
+    from aria.agent.providers import provider_call, resolve_tier_chain_start
+    listing = "\n".join(
+        f"{i}. [{c}] {k}: {v}" for i, (c, k, v) in enumerate(hits, 1))
+    user = (f"Query: {query}\n\nCandidate memories:\n{listing}\n\n"
+            "Relevant numbers:")
+    data = provider_call(_GRADER_SYSTEM,
+                         [{"role": "user", "parts": [{"text": user}]}],
+                         chain_start=resolve_tier_chain_start("light"))
+    if not data or not data.get("candidates"):
+        return None
+    try:
+        parts = data["candidates"][0]["content"]["parts"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    text = "".join(p.get("text", "") for p in parts
+                   if isinstance(p, dict)).strip()
+    return text or None
+
+
+def _parse_grade_reply(raw: Optional[str], count: int):
+    """Map a grader reply to the set of 0-based hit indices to KEEP.
+    Returns None when the reply is unusable (the fail-open signal);
+    an empty set is a real verdict: nothing was relevant."""
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    nums = [int(n) for n in re.findall(r"\d+", text)]
+    keep = {n - 1 for n in nums if 1 <= n <= count}
+    if keep:
+        return keep
+    if nums:
+        return None  # numbers, but none pointed at a real hit
+    if text.upper().startswith("NONE"):
+        return set()
+    return None
+
+
+def _grade_memory_hits(query: str, hits):
+    """Grade semantic hits for relevance; fail-open on any problem.
+    Returns a subsequence of hits (order preserved) — or hits itself
+    whenever grading is disabled or anything goes wrong."""
+    try:
+        if not hits:
+            return hits
+        from aria import usage
+        cfg = usage.settings().get("memory_grading") or {}
+        if cfg.get("enabled") is False:
+            return hits
+        keep = _parse_grade_reply(_memory_grade_call(query, hits),
+                                  len(hits))
+        if keep is None:
+            return hits
+        kept = [h for i, h in enumerate(hits) if i in keep]
+        for i, (c, k, v) in enumerate(hits):
+            if i not in keep:
+                add_log(f"Memory grading dropped: [{k}] "
+                        f"(not relevant to '{str(query)[:60]}')")
+        return kept
+    except Exception as e:
+        from aria import runtime as _runtime
+        if isinstance(e, _runtime.Cancelled):
+            raise
+        _config_silent.log_silent("memory_grading", e)
+        return hits
+
+
 def memory_search_semantic(query: str, top_k: int = 5) -> str:
     """Search memories by meaning. Falls back to keyword search."""
     qvec = _embed(query)
@@ -403,6 +502,14 @@ def memory_search_semantic(query: str, top_k: int = 5) -> str:
         scored.sort(reverse=True)
         hits = [(c, k, v) for s, c, k, v in scored[:top_k] if s > 0.35]
         if hits:
+            # IsRel grading (see _grade_memory_hits): the light-tier
+            # grader may drop hits it judges irrelevant, and its
+            # verdict stands — an all-irrelevant verdict does NOT fall
+            # through to the keyword fallback below. Any grader
+            # failure returns the ungraded list unchanged.
+            hits = _grade_memory_hits(query, hits)
+            if not hits:
+                return "No relevant memories found."
             return "\n".join(f"• [{c}] {k}: {v}" for c, k, v in hits)
     # fallback: keyword
     ql = query.lower()
