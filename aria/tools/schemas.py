@@ -321,6 +321,15 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
         'parameters': {   'properties': {'name': {'type': 'STRING'}},
                           'required': ['name'],
                           'type': 'OBJECT'}},
+    {   'description': 'Set the dashboard colour theme (palette) by name and re-style the live window. '
+                       'Palettes: Apple Modern, Vibrant Sunset, Ocean Breeze, Earthy Minimal, Midnight Neon. '
+                       'The name is matched tolerantly (a near-miss like "earthy mineral" still resolves), '
+                       'but an unknown or ambiguous name changes nothing and reports the choices. Use when '
+                       'the user asks to change the theme or colours.',
+        'name': 'set_theme',
+        'parameters': {   'properties': {'name': {'type': 'STRING'}},
+                          'required': ['name'],
+                          'type': 'OBJECT'}},
     {   'description': 'Fetch a web page and return its readable text (scripts/styles stripped). Use when search '
                        "snippets aren't enough — articles, docs, product pages.",
         'name': 'fetch_url',
@@ -752,7 +761,8 @@ TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persiste
              'tools': []},
     'core': {   'summary': 'everyday tools: web search, open apps/URLs, run Python code, click/type, screenshots, '
                            'screen reading, clipboard, files, memory save/search, bounded workflow skills, '
-                           'and learned file-based skills (skill_propose/skill_list/skill_show/skill_retire)',
+                           'and learned file-based skills (skill_propose/skill_list/skill_show/skill_retire), '
+                           'dashboard theme (set_theme)',
                 'tools': [   'web_search',
                              'research',
                              'open_app_or_url',
@@ -778,7 +788,7 @@ TOOLKITS = {   'autonomy': {   'summary': 'autonomous background goals, persiste
                              'inbox_describe',
                              'inbox_read',
                              'run_skill', 'skill_propose', 'skill_list', 'skill_show', 'skill_activate',
-                             'skill_retire', 'flight_finder', 'browser_control', 'browser_agent']},
+                             'skill_retire', 'set_theme', 'flight_finder', 'browser_control', 'browser_agent']},
     'github': {'summary': 'push files and create GitHub repos', 'tools': ['github_push_file', 'github_create_repo']},
     'memory_plus': {   'summary': 'notes, journal, forgetting memories, morning briefing',
                        'tools': ['forget_memory', 'journal_write', 'take_note', 'read_notes', 'morning_briefing']},

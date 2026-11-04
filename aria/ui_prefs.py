@@ -56,6 +56,46 @@ _LOCK = threading.RLock()
 #: for in this process; migration is once per pair.
 _MIGRATED_PAIR = None
 
+#: Palette-change listeners: callbacks invoked with the new
+#: palette id (or None for the default) AFTER a set_palette
+#: write lands. The dashboard subscribes so a palette written
+#: by anything else — the set_theme voice tool above all —
+#: re-styles the live window. Before this registry existed
+#: the palettes were mouse-only (Customize dialog buttons),
+#: so a spoken "change the theme" changed nothing while ARIA
+#: confirmed that it had (Alek's report, 2026-11-04).
+_PALETTE_LISTENERS = []
+
+
+def on_palette_change(callback):
+    """Register *callback(palette_id_or_None)* to fire after
+    every successful set_palette write. Returns the callback,
+    so callers can keep it for remove_palette_change."""
+    if callback is not None and callback not in _PALETTE_LISTENERS:
+        _PALETTE_LISTENERS.append(callback)
+    return callback
+
+
+def remove_palette_change(callback):
+    """Unregister a palette-change listener (no-op when the
+    callback is not registered)."""
+    try:
+        _PALETTE_LISTENERS.remove(callback)
+    except ValueError:
+        pass
+
+
+def _notify_palette_change(palette_id):
+    """Fire the palette-change listeners for a write that
+    landed. Each listener runs in its own try: a failing
+    listener is logged via the module's failure path, never
+    allowed to break the write that already succeeded."""
+    for cb in list(_PALETTE_LISTENERS):
+        try:
+            cb(palette_id)
+        except Exception as exc:
+            _log_failure("palette listener", exc)
+
 
 def _ui_file() -> str:
     return os.path.join(_INSTALL_ROOT, "ui.json")
@@ -429,7 +469,9 @@ def set_palette(palette_id) -> str:
     exist, and dashboard.style_for_palette reads the id for
     the panel tint. None clears the palette and the accent
     (the default then resolves to Midnight Neon). An unknown
-    id changes nothing and says so."""
+    id changes nothing and says so. A write that lands fires
+    the on_palette_change listeners (see _PALETTE_LISTENERS)
+    so live windows can re-style."""
     if palette_id is not None:
         try:
             from aria import palettes
@@ -443,12 +485,14 @@ def set_palette(palette_id) -> str:
             payload["palette"] = palette_id
             payload["accent"] = hero
 
-        _update_payload(apply)
+        if _update_payload(apply):
+            _notify_palette_change(palette_id)
         return f"Palette: {palette_id}."
     else:
         def apply(payload):
             payload.pop("palette", None)
             payload["accent"] = None
 
-        _update_payload(apply)
+        if _update_payload(apply):
+            _notify_palette_change(None)
         return "Palette: default."

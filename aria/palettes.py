@@ -101,6 +101,62 @@ def swatch_hexes(palette):
             if palette.get(role)]
 
 
+def _name_tokens(text):
+    """The normalized token set of a palette id / display name
+    (or of a free-form query): lowercase, underscores become
+    spaces, split on whitespace."""
+    return set(str(text or "").lower().replace("_", " ").split())
+
+
+def resolve_palette_name(query):
+    """Resolve a free-form theme request ('earthy mineral',
+    'Ocean', 'MIDNIGHT_NEON') to a palette.
+
+    Returns a (status, match) pair:
+      ("hit", palette_id)      — one palette, confidently;
+      ("ambiguous", [ids...])  — several fit equally; the
+                                 caller must ask, not guess;
+      ("unknown", [])          — nothing shares a single token.
+
+    Most specific match first: (1) exact match on the
+    normalized id or display name; (2) token-subset — every
+    query token appears in the palette's id+name tokens;
+    (3) score fallback — count the query tokens present in
+    each palette's token set; a UNIQUE palette with the
+    highest score >= 1 wins, a tie is ambiguous. The score
+    step is what rescues near-miss names: 'earthy mineral'
+    shares 'earthy' with Earthy Minimal alone (score 1 vs 0
+    everywhere else), so the wrong second word cannot sink
+    the match — while pure gibberish overlaps nothing and
+    stays unknown."""
+    q = " ".join(str(query or "").lower().replace("_", " ").split())
+    if not q:
+        return ("unknown", [])
+    qtokens = set(q.split())
+    token_sets = {}
+    for pal in PALETTES:
+        token_sets[pal["id"]] = _name_tokens(pal["id"]) \
+            | _name_tokens(pal["name"])
+        if q == pal["id"].replace("_", " ") \
+                or q == pal["name"].lower():
+            return ("hit", pal["id"])
+    subset = [pid for pid, toks in token_sets.items()
+              if qtokens <= toks]
+    if len(subset) == 1:
+        return ("hit", subset[0])
+    if len(subset) > 1:
+        return ("ambiguous", subset)
+    scores = {pid: len(qtokens & toks)
+              for pid, toks in token_sets.items()}
+    best = max(scores.values())
+    if best < 1:
+        return ("unknown", [])
+    winners = [pid for pid, s in scores.items() if s == best]
+    if len(winners) == 1:
+        return ("hit", winners[0])
+    return ("ambiguous", winners)
+
+
 def panel_shade(primary_hex, lightness):
     """A panel background derived from a palette PRIMARY: the
     primary's hue and saturation at the given HLS lightness

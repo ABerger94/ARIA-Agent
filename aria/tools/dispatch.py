@@ -132,6 +132,46 @@ def tool_load_toolkit(name: str) -> str:
             f"{', '.join(sorted(TOOLKITS))}.")
 
 
+def tool_set_theme(args) -> str:
+    """set_theme: switch the dashboard palette by name.
+
+    The voice path to the palettes (2026-11-04, Alek's bug
+    report): before this tool existed the five palettes were
+    mouse-only (Customize dialog / Settings buttons), so a
+    spoken "change the theme" had no action to perform and
+    ARIA confirmed a change that never happened — narration
+    with no tool result underneath. Resolution is tolerant
+    (aria.palettes.resolve_palette_name: "earthy mineral"
+    still lands on Earthy Minimal), but an unknown or
+    ambiguous name returns an error listing all five palettes
+    and changes NOTHING — never a success-shaped string. On
+    a hit the write is read back before the result names the
+    palette, so a confirmation quotes a verified fact; the
+    ui_prefs palette-change listeners re-style the live
+    window. Not destructive, no approval: a theme change is
+    harmless and reversible."""
+    from aria import palettes as _palettes
+    from aria import ui_prefs as _ui_prefs
+    query = str((args or {}).get("name", "") or "")
+    status, match = _palettes.resolve_palette_name(query)
+    names = ", ".join(p["name"] for p in _palettes.PALETTES)
+    if status == "hit":
+        _ui_prefs.set_palette(match)
+        if _ui_prefs.get_palette() != match:
+            return (f"Theme NOT changed: the palette write did "
+                    f"not land. Available palettes: {names}.")
+        pal = _palettes.get_palette(match)
+        return f"Theme set to {pal['name']}."
+    if status == "ambiguous":
+        cands = ", ".join(
+            _palettes.get_palette(pid)["name"] for pid in match)
+        return (f"Theme NOT changed: '{query}' could match more "
+                f"than one palette ({cands}). Available palettes: "
+                f"{names}. Ask which one is wanted.")
+    return (f"Theme NOT changed: no palette matches '{query}'. "
+            f"Available palettes: {names}.")
+
+
 def reset_toolkits() -> None:
     """Reset progressive toolkits back to default {'core'}."""
     runtime.current().toolkits = {"core"}
@@ -874,6 +914,9 @@ def _init_default_registry():
     _REGISTRY["skill_show"] = lambda a: tool_skill_show(a)
     _REGISTRY["skill_activate"] = lambda a: tool_skill_activate(a)
     _REGISTRY["skill_retire"] = lambda a: tool_skill_retire(a)
+    # set_theme (2026-11-04): the voice path to the dashboard
+    # palettes — see tool_set_theme above.
+    _REGISTRY["set_theme"] = lambda a: tool_set_theme(a)
     _REGISTRY["gmail_setup"] = lambda a: builtins.tool_gmail_setup(a.get("gmail_user", ""), a.get("app_password", ""))
     _REGISTRY["send_email"] = lambda a: builtins.tool_send_email(a.get("to", ""), a.get("subject", ""), a.get("body", ""))
     _REGISTRY["read_email"] = lambda a: builtins.tool_read_email(a.get("query", ""), a.get("limit", 10), bool(a.get("unread_only", False)), a.get("uid", ""))

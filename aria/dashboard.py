@@ -448,6 +448,11 @@ def create_dashboard(callbacks):
         panel_result = pyqtSignal(str, object)
         email_result = pyqtSignal(int, object)
         news_result = pyqtSignal(str)
+        # A ui_prefs palette write (the set_theme voice tool)
+        # lands here via the prefs listener below: emitting
+        # from any thread queues delivery to this window's
+        # thread, where theme_finished re-applies the theme.
+        theme_changed = pyqtSignal(object)
 
         def __init__(self):
             super().__init__()
@@ -958,6 +963,31 @@ def create_dashboard(callbacks):
             layout.addLayout(command)
             self.panel_result.connect(self.panel_finished)
             self.email_result.connect(self.mail_finished)
+            # Live theme bridge (2026-11-04): ui_prefs palette
+            # writes — the set_theme voice tool above all —
+            # re-style this open window. The prefs listener only
+            # emits theme_changed (safe from any thread; Qt
+            # queues it to this window's thread), and
+            # theme_finished runs the dialog's own apply path.
+            # The weakref keeps the prefs registry from holding
+            # a closed window alive or calling into one.
+            self.theme_changed.connect(self.theme_finished)
+            import weakref as _weakref
+            _win_ref = _weakref.ref(self)
+
+            def _palette_push(pid, _ref=_win_ref):
+                win = _ref()
+                if win is not None:
+                    try:
+                        win.theme_changed.emit(pid)
+                    except Exception:
+                        pass
+
+            try:
+                from aria import ui_prefs as _up_sub
+                _up_sub.on_palette_change(_palette_push)
+            except Exception:
+                pass
             self.entry.setFocus()
             self._show_centerpiece()
             self._settings_shortcut = QShortcut(QKeySequence('Ctrl+,'), self)
@@ -1280,6 +1310,24 @@ def create_dashboard(callbacks):
                     f"{self.mail_date(row['date'])}\n\n{row['body']}")
             if row.get('truncated'): text += '\n\n[Large message: preview truncated]'
             self.views['Inbox'].setPlainText(text)
+
+        def theme_finished(self, palette_id):
+            # A ui_prefs palette write landed (the set_theme
+            # voice tool, or any other writer): re-apply through
+            # the SAME path the Customize dialog's commit uses —
+            # apply_accent with the palette's hero, which
+            # upgrades to style_for_palette (the Primary panel
+            # tints) when the stored palette's hero is the
+            # accent. palette_id None = the default resolution
+            # (Midnight Neon). Fail-soft like every theme path:
+            # a broken re-style must never cost the window.
+            try:
+                from aria import palettes as _palettes
+                hero = _palettes.hero_of(palette_id) \
+                    if palette_id else None
+                self.apply_accent(hero or _default_accent())
+            except Exception:
+                pass
 
         def apply_accent(self, color):
             # One accent path for both the Settings dialog (main) and
