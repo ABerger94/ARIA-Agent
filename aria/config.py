@@ -95,6 +95,12 @@ OLLAMA_CLOUD_API_KEY, _OLLAMA_CLOUD_SOURCE = key_get("OLLAMA_API_KEY")
 # Gemini rides the chain via Google's OpenAI-compatible endpoint
 # (v1's original provider — kept so existing GEMINI_API_KEY setups work).
 GEMINI_API_KEY, _GEMINI_SOURCE = key_get("GEMINI_API_KEY")
+# FreeLLMAPI (opt-in leg, Alek 2026-11-04): the unified key for a
+# locally-running FreeLLMAPI router (desktop app or Docker). The leg
+# is NOT in the default chain — it only serves when PROVIDER_CHAIN
+# (or a tier's light_provider) names "freellmapi"; see
+# _build_chain() in aria/agent/providers.py.
+FREELLMAPI_API_KEY, _FREELLMAPI_SOURCE = key_get("FREELLMAPI_API_KEY")
 
 
 def _load_gemini_keys():
@@ -139,6 +145,10 @@ OPENROUTER_MODEL, _ = key_get("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning
 MISTRAL_MODEL, _ = key_get("MISTRAL_MODEL", "mistral-small-latest")
 OLLAMA_CLOUD_MODEL, _ = key_get("OLLAMA_CLOUD_MODEL", "gpt-oss:120b")
 GEMINI_MODEL, _ = key_get("GEMINI_MODEL", "gemini-3.8-flash")
+FREELLMAPI_MODEL, _ = key_get("FREELLMAPI_MODEL", "auto")
+# Desktop app default port is 31415; the Docker/source shape serves
+# on 3001 — override FREELLMAPI_BASE_URL in aria_keys.json for that.
+FREELLMAPI_BASE_URL, _ = key_get("FREELLMAPI_BASE_URL", "http://127.0.0.1:31415/v1")
 # Role-based model routing (Ollama Cloud tags). Empty string disables the
 # role (falls back to OLLAMA_CLOUD_MODEL) — retirement-proof overrides.
 OLLAMA_VISION_MODEL, _ = key_get("OLLAMA_VISION_MODEL", "gemma4:31b-cloud")

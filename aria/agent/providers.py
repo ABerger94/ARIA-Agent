@@ -33,6 +33,7 @@ from aria.config import (
     OPENROUTER_API_KEY, OPENROUTER_MODEL, MISTRAL_API_KEY, MISTRAL_MODEL,
     OLLAMA_CLOUD_API_KEY, OLLAMA_CLOUD_MODEL,
     GEMINI_API_KEY, GEMINI_API_KEYS, GEMINI_MODEL,
+    FREELLMAPI_API_KEY, FREELLMAPI_MODEL, FREELLMAPI_BASE_URL,
     OLLAMA_VISION_MODEL, OLLAMA_CODE_MODEL,
     PROVIDER_CHAIN, KEY_QUARANTINE_DURATION_S,
     quarantine_key, key_is_quarantined, key_mask, add_log,
@@ -721,6 +722,16 @@ def _build_chain() -> List[Provider]:
         "ollama_cloud": OpenAICompatProvider(
             "ollama_cloud", "https://ollama.com/v1",
             OLLAMA_CLOUD_API_KEY, OLLAMA_CLOUD_MODEL),
+        # FreeLLMAPI (opt-in, Alek 2026-11-04): a local router fronting
+        # many free tiers behind one OpenAI-compatible endpoint. It is
+        # NOT in the default PROVIDER_CHAIN — naming "freellmapi" in
+        # PROVIDER_CHAIN (or as a tier's light_provider) is the only
+        # way it serves. With no FREELLMAPI_API_KEY configured the leg
+        # reports unavailable and the walk moves on, exactly like any
+        # other unconfigured provider.
+        "freellmapi": OpenAICompatProvider(
+            "freellmapi", FREELLMAPI_BASE_URL,
+            FREELLMAPI_API_KEY, FREELLMAPI_MODEL),
     }
     chain: List[Provider] = []
     for n in PROVIDER_CHAIN:
