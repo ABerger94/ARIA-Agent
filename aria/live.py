@@ -45,6 +45,7 @@ vision injection, phone-mic relay.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 from typing import Any, Callable, Dict, List, Optional
 
@@ -119,6 +120,19 @@ def _app_locked() -> bool:
         return False
 
 
+def _runtime():
+    """The execution-context module (aria/runtime.py), lazy-imported
+    like _app_locked: the standalone test harness loads this file
+    without the package, and Live must keep working there. Returns
+    None when unavailable; callers fall back to today's behaviour
+    (no per-turn context) instead of failing."""
+    try:
+        from aria import runtime as _runtime_mod
+        return _runtime_mod
+    except Exception:
+        return None
+
+
 async def _execute_tool_call(tool_runner, fc) -> Dict[str, Any]:
     """Run one Live function call through the shared dispatcher
     (in an executor — dispatch is synchronous and may wait on a
@@ -127,7 +141,15 @@ async def _execute_tool_call(tool_runner, fc) -> Dict[str, Any]:
 
     App lock: while locked the call is refused HERE, before the
     dispatcher — Live never passes through handle_action's locked
-    guard, so this is the gate that covers it."""
+    guard, so this is the gate that covers it.
+
+    Execution context: the call runs in the executor through
+    runtime.copied_call, so it inherits the per-turn context
+    run_session bound for this turn (its duplicate-call cache,
+    project, and cancellation) instead of the executor worker's
+    own thread-local context, which used to survive across turns
+    and swallow repeated identical calls as duplicates (ChatGPT
+    improvement pass 23, verified + fixed 2026-11-05)."""
     name = getattr(fc, "name", "") or ""
     if _app_locked():
         return {"id": getattr(fc, "id", None), "name": name,
@@ -135,8 +157,11 @@ async def _execute_tool_call(tool_runner, fc) -> Dict[str, Any]:
     args = dict(getattr(fc, "args", None) or {})
     loop = asyncio.get_running_loop()
     try:
-        result, _ok = await loop.run_in_executor(
-            None, lambda: tool_runner(name, args))
+        _rt = _runtime()
+        _call = (_rt.copied_call(tool_runner, name, args)
+                 if _rt is not None
+                 else lambda: tool_runner(name, args))
+        result, _ok = await loop.run_in_executor(None, _call)
         text = result if isinstance(result, str) else str(result)
     except Exception as e:  # a tool failure is an answer, not a crash
         text = f"[Tool Error: {e}]"
@@ -177,6 +202,16 @@ async def run_session(session, *, tool_runner,
     on turn_complete; function calls are answered in-line through
     tool_runner and replied with send_tool_response.
 
+    One fresh execution context per model turn (one receive()
+    pass): the dispatcher's duplicate-call cache lives on the
+    execution context, and Live bypasses brain.run_agent, so
+    without this the executor worker's thread-local context
+    survived across turns and a repeated identical call in a
+    later turn was swallowed as a duplicate (ChatGPT improvement
+    pass 23, verified + fixed 2026-11-05). Within one turn the
+    cache still works, so a genuine duplicate inside a single
+    turn is still blocked.
+
     Session resumption: every response may carry a
     ``session_resumption_update``. Only a resumable update with a
     ``new_handle`` is kept (a handle replayed mid-turn is what the
@@ -187,52 +222,62 @@ async def run_session(session, *, tool_runner,
     out_buf: List[str] = []
     while True:
         got_any = False
-        async for response in session.receive():
-            got_any = True
-            if on_resumption is not None:
-                try:
-                    _sru = getattr(response, "session_resumption_update", None)
-                    if _sru is not None:
-                        _new_handle = getattr(_sru, "new_handle", None)
-                        if getattr(_sru, "resumable", False) and _new_handle:
-                            try:
-                                on_resumption(_new_handle)
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
-            content = getattr(response, "server_content", None)
-            if content is not None:
-                model_turn = getattr(content, "model_turn", None)
-                if model_turn is not None:
-                    for part in getattr(model_turn, "parts", None) or []:
-                        inline = getattr(part, "inline_data", None)
-                        data = getattr(inline, "data", None) if inline else None
-                        if data and on_audio is not None:
-                            on_audio(data)
-                it = getattr(content, "input_transcription", None)
-                if it is not None and getattr(it, "text", None):
-                    in_buf.append(it.text)
-                ot = getattr(content, "output_transcription", None)
-                if ot is not None and getattr(ot, "text", None):
-                    out_buf.append(ot.text)
-                if getattr(content, "turn_complete", False):
-                    if in_buf and on_user_text is not None:
-                        on_user_text("".join(in_buf).strip())
-                    if out_buf and on_assistant_text is not None:
-                        on_assistant_text("".join(out_buf).strip())
-                    in_buf, out_buf = [], []
-                    if on_turn is not None:
-                        on_turn()
-            tool_call = getattr(response, "tool_call", None)
-            if tool_call is not None:
-                responses = []
-                for fc in getattr(tool_call, "function_calls", None) or []:
-                    responses.append(
-                        await _execute_tool_call(tool_runner, fc))
-                if responses:
-                    await session.send_tool_response(
-                        function_responses=responses)
+        # One execution context per turn, bound on this task for
+        # the whole pass and propagated into the executor by
+        # _execute_tool_call (runtime.copied_call). It retires
+        # when the pass ends — on a clean end and on cancellation
+        # alike — so no turn's duplicate-call cache, project, or
+        # cancellation can leak into the next one.
+        _rt = _runtime()
+        _turn = (_rt.execution('live-turn')
+                 if _rt is not None else contextlib.nullcontext())
+        with _turn:
+            async for response in session.receive():
+                got_any = True
+                if on_resumption is not None:
+                    try:
+                        _sru = getattr(response, "session_resumption_update", None)
+                        if _sru is not None:
+                            _new_handle = getattr(_sru, "new_handle", None)
+                            if getattr(_sru, "resumable", False) and _new_handle:
+                                try:
+                                    on_resumption(_new_handle)
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                content = getattr(response, "server_content", None)
+                if content is not None:
+                    model_turn = getattr(content, "model_turn", None)
+                    if model_turn is not None:
+                        for part in getattr(model_turn, "parts", None) or []:
+                            inline = getattr(part, "inline_data", None)
+                            data = getattr(inline, "data", None) if inline else None
+                            if data and on_audio is not None:
+                                on_audio(data)
+                    it = getattr(content, "input_transcription", None)
+                    if it is not None and getattr(it, "text", None):
+                        in_buf.append(it.text)
+                    ot = getattr(content, "output_transcription", None)
+                    if ot is not None and getattr(ot, "text", None):
+                        out_buf.append(ot.text)
+                    if getattr(content, "turn_complete", False):
+                        if in_buf and on_user_text is not None:
+                            on_user_text("".join(in_buf).strip())
+                        if out_buf and on_assistant_text is not None:
+                            on_assistant_text("".join(out_buf).strip())
+                        in_buf, out_buf = [], []
+                        if on_turn is not None:
+                            on_turn()
+                tool_call = getattr(response, "tool_call", None)
+                if tool_call is not None:
+                    responses = []
+                    for fc in getattr(tool_call, "function_calls", None) or []:
+                        responses.append(
+                            await _execute_tool_call(tool_runner, fc))
+                    if responses:
+                        await session.send_tool_response(
+                            function_responses=responses)
         if not got_any:
             # An empty pass = the stream is over. Never re-enter
             # receive() in a hot loop waiting for a turn that is
