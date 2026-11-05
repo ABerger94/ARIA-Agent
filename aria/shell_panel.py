@@ -443,6 +443,59 @@ def _orb_colors(accent=None):
     return tuple(shifted[h] for h in _ORB_STOCK)
 
 
+def _mix_hex(c1, c2, t):
+    """Blend two '#rrggbb' hexes, t of the way from c1 to c2."""
+    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(
+        f"{round(x + (y - x) * t):02x}" for x, y in zip(a, b))
+
+
+#: Full-token palette mode (2026-11-04, Alek's witness: Earthy /
+#: Apple applied, the dashboard went light but Shell Home kept
+#: its dark slabs — NEXT UP bar, search, app shelves, briefing
+#: card, command dock). The hue wheel preserves value, so the
+#: accent path can NEVER lighten these surfaces; with a stored
+#: full-token palette the shell takes the palette's own tokens,
+#: role for role, exactly like the dashboard's token sheet.
+#: Every hex in _STYLE has a role here — none survives.
+def _token_map(tokens):
+    return {
+        "#0b1622": tokens["bg"],        # shell home background
+        "#0e1c2c": tokens["surface"],   # cards, shelves, briefing
+        "#101f30": tokens["elevated"],  # search, dock, menus
+        "#1b3042": tokens["border"],
+        "#2b5873": tokens["dim"],       # dock border, scroll handle
+        "#eaf6ff": tokens["text"],
+        "#dceef7": _mix_hex(tokens["text"], tokens["bg"], 0.18),
+        "#8fb8c9": tokens["dim"],
+        "#57c7d4": tokens["accent"],
+        "#17435a": _mix_hex(tokens["accent"], tokens["surface"],
+                            0.30),      # selection / hover
+    }
+
+
+def shell_style_for_tokens(tokens):
+    """The panel stylesheet under a full-token palette: the
+    stock sheet with every hex replaced by its palette-token
+    role. Returns None for a malformed token set — callers fall
+    back to the accent sheet, never to a half-mapped sheet."""
+    try:
+        mapping = _token_map(tokens)
+        if any(h not in mapping for h in _STYLE_HEXES):
+            return None
+        return re.sub("|".join(re.escape(h) for h in _STYLE_HEXES),
+                      lambda m: mapping[m.group(0)], _STYLE)
+    except Exception:
+        return None
+
+
+def _orb_colors_for_tokens(tokens):
+    """(ring, core, heart) for the dock orb under a palette."""
+    return (tokens["dim"], tokens["accent"],
+            _mix_hex(tokens["accent"], tokens["bg"], 0.5))
+
+
 def _resolve_accent():
     """The accent currently SET, in the dashboard's own order
     (ui_prefs Customize first, then settings 'ui_accent').
@@ -963,6 +1016,9 @@ class ShellPanel(QWidget):
         # means the stock cyan family, unchanged.
         self._accent = (_valid_accent(accent) if accent is not None
                         else _resolve_accent())
+        # Full-token palette mode (dashboard-driven; see
+        # set_palette_tokens). None = accent family only.
+        self._palette_tokens = None
         self.setStyleSheet(shell_style(self._accent))
         self._apps_provider = apps_provider
         self._apps = list(apps) if apps is not None else []
@@ -1440,6 +1496,9 @@ class ShellPanel(QWidget):
                     return icon
             except Exception:
                 pass
+        if self._palette_tokens:
+            return _letter_icon(
+                tile, ink=self._palette_tokens["bg"])
         return _letter_icon(tile, ink=_tile_ink(self._accent))
 
     # -- accent -------------------------------------------------
@@ -1457,6 +1516,19 @@ class ShellPanel(QWidget):
         if not accent:
             return
         self._accent = accent
+        if self._palette_tokens:
+            # A full-token palette owns the sheet (its surfaces
+            # must NOT fall back to the hue-shifted dark family
+            # just because the accent moved) — re-apply it.
+            self.setStyleSheet(
+                shell_style_for_tokens(self._palette_tokens))
+            self.dock_orb.set_colors(
+                *_orb_colors_for_tokens(self._palette_tokens))
+            try:
+                self._refilter()
+            except Exception:
+                pass
+            return
         self.setStyleSheet(shell_style(accent))
         # V9: only the dock dot (still an OrbDisc) takes the
         # shell family's colours here. The header orb is the
@@ -1468,6 +1540,31 @@ class ShellPanel(QWidget):
         # V10: repaint the grid too — the letter tiles' glyph
         # ink comes from the shifted map, so a live accent
         # change re-inks them with everything else.
+        try:
+            self._refilter()
+        except Exception:
+            pass
+
+    def set_palette_tokens(self, tokens):
+        """Follow the dashboard's full-token palette (2026-11-04):
+        with a palette, the shell's surfaces take the palette's
+        tokens (light palettes go genuinely light — the hue
+        wheel alone can never lighten them); with None, the
+        shell returns to its accent family. Called by the
+        dashboard's theme sync on every apply. Fail-soft: a
+        malformed token set clears palette mode rather than
+        leaving a half-themed shell."""
+        sheet = shell_style_for_tokens(tokens) if tokens else None
+        if tokens and sheet is None:
+            tokens = None
+        self._palette_tokens = tokens
+        if tokens:
+            self.setStyleSheet(sheet)
+            self.dock_orb.set_colors(
+                *_orb_colors_for_tokens(tokens))
+        else:
+            self.setStyleSheet(shell_style(self._accent))
+            self.dock_orb.set_colors(*_orb_colors(self._accent))
         try:
             self._refilter()
         except Exception:

@@ -1514,6 +1514,13 @@ def create_dashboard(callbacks):
             except Exception:
                 pass
             try:
+                _shell = getattr(self, 'shell', None)
+                if _shell is not None and hasattr(
+                        _shell, 'set_palette_tokens'):
+                    _shell.set_palette_tokens(toks)
+            except Exception:
+                pass
+            try:
                 _face = getattr(self, 'face', None)
                 if _face is not None and hasattr(_face,
                                                  'set_dark_name'):

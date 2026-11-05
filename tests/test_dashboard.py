@@ -662,6 +662,11 @@ def test_light_palette_themes_the_painted_surfaces(monkeypatch, tmp_path):
         assert '#2e3a2f' in window.plaque_engine._label.styleSheet()
         assert '#f1ebdb' in window.art.styleSheet()
         assert window.face._dark_name is True
+        # Shell Home follows too (Alek's 23:01 witness: its
+        # panels stayed dark slabs on the light palettes).
+        if getattr(window, 'shell', None) is not None:
+            assert '#f8f6ee' in window.shell.styleSheet()
+            assert '#0b1622' not in window.shell.styleSheet()
         # Live switch to a dark palette: every surface follows.
         ui_prefs.set_palette('midnight_neon')
         app.processEvents()
@@ -669,6 +674,8 @@ def test_light_palette_themes_the_painted_surfaces(monkeypatch, tmp_path):
         assert neural_field.BG == '#0f172a'
         assert metric_bar.C.PANEL2 == '#182642'
         assert window.face._dark_name is False
+        if getattr(window, 'shell', None) is not None:
+            assert '#0f172a' in window.shell.styleSheet()
     finally:
         window.close()
         # The painted modules keep theme state in globals —

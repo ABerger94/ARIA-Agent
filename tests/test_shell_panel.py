@@ -686,3 +686,38 @@ def test_tile_ink_comes_from_the_shifted_map():
     assert shell_panel._tile_ink("#e83a9a") == expected["#0b1622"]
     assert shell_panel._tile_ink(None) == "#0b1622"
     assert shell_panel._tile_ink("junk") == "#0b1622"
+
+
+def test_shell_style_for_tokens_maps_every_stock_hex():
+    palettes = importlib.import_module("aria.palettes")
+    toks = palettes.tokens_of("earthy_minimal")
+    sheet = shell_panel.shell_style_for_tokens(toks)
+    assert sheet is not None
+    # No stock hex survives: the dark slabs and the pale inks
+    # are all replaced by palette roles.
+    for stock in shell_panel._STYLE_HEXES:
+        assert stock not in sheet
+    assert "#f8f6ee" in sheet   # Earthy bg
+    assert "#ffffff" in sheet   # Earthy surface
+    assert "#2e3a2f" in sheet   # Earthy text
+    assert "#c96f4f" in sheet   # Earthy accent
+    # Malformed token sets never produce a half-mapped sheet.
+    assert shell_panel.shell_style_for_tokens(None) is None
+    assert shell_panel.shell_style_for_tokens({"bg": "#fff"}) is None
+
+
+def test_panel_palette_tokens_light_survive_accent_and_restore():
+    palettes = importlib.import_module("aria.palettes")
+    panel, _calls = _panel()
+    toks = palettes.tokens_of("earthy_minimal")
+    panel.set_palette_tokens(toks)
+    assert "#f8f6ee" in panel.styleSheet()
+    assert "#0b1622" not in panel.styleSheet()
+    # The dashboard calls set_accent right after the theme
+    # sync; the palette sheet must survive it.
+    panel.set_accent("#c96f4f")
+    assert "#f8f6ee" in panel.styleSheet()
+    # Clearing palette mode restores the accent family.
+    panel.set_palette_tokens(None)
+    assert "#f8f6ee" not in panel.styleSheet()
+    assert panel._palette_tokens is None
