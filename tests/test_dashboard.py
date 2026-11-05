@@ -314,9 +314,15 @@ def test_chat_html_colours_speakers_and_escapes():
     # dots) — plain 'ARIA' here let the dotted name slip past
     # the matcher and her text rendered white for a full day.
     from aria.dashboard import chat_html, activity_html
+    # Pin the accent: the unpinned default resolves from stored
+    # prefs (the palette hero, #22d3ee for Midnight Neon), so the
+    # old bare call passed on a machine with the legacy teal set
+    # and failed in a fresh CI env. The contract under test is
+    # "ARIA takes the accent", not which accent is the default.
     out = chat_html([('10:00:01', 'A.R.I.A.', 'Hello <b>there</b>'),
                      ('10:00:05', 'Alek', 'Hi ARIA'),
-                     ('10:00:09', 'System', 'Voice ready')])
+                     ('10:00:09', 'System', 'Voice ready')],
+                    accent='#54d9e8')
     assert out.count('#54d9e8') >= 2                 # ARIA: name AND text, full accent
     assert '#dff9ff' not in out                      # no near-white tint
     assert '#ffffff' in out and '#f4f7fa' in out      # Alek: white, not yellow

@@ -545,7 +545,7 @@ def _load_brain_stubbed():
     _mod('aria.tools.dispatch', execute_tool=lambda *a, **k: ('', None), reset_turn_state=lambda: None, set_turn_context=lambda *a: None, get_last_tool_executed=lambda: None, get_loaded_toolkits=lambda: [], set_hud_hook=lambda *a: None, auto_resolve_toolkits=lambda *a: None)
     _mod('aria.speech', speak=lambda *a, **k: None)
     _mod('aria.agent.shortcuts', check_voice_shortcut=lambda *a, **k: None)
-    _mod('aria.agent.providers', provider_call=lambda *a, **k: None, get_active_provider=lambda: 'none', get_last_call_stats=lambda: {}, resolve_role_model=lambda role: None, chain_all_quarantined=lambda: False)
+    _mod('aria.agent.providers', provider_call=lambda *a, **k: None, get_active_provider=lambda: 'none', get_last_call_stats=lambda: {}, resolve_role_model=lambda role: None, chain_all_quarantined=lambda: False, classify_turn_tier=lambda *a, **k: 'standard', resolve_tier_chain_start=lambda *a, **k: None)
     _mod('aria.hud', set_hud_state=lambda *a: None, draw_hud=lambda: None, set_hud_subtitle=lambda *a: None)
     import importlib
     return importlib.import_module('aria.agent.brain')

@@ -240,13 +240,24 @@ def _rendered(label):
 def _banner(title, detail):
     from aria.confirm_banner import ConfirmBanner
     parent = None
+    app = None
     if _HAS_QT:
         from PyQt6.QtWidgets import QApplication, QWidget
         app = QApplication.instance() or QApplication([])
         parent = QWidget()
         parent.resize(1440, 900)
         parent.show()
-    return ConfirmBanner(title, detail, parent)
+    banner = ConfirmBanner(title, detail, parent)
+    if parent is not None:
+        # Keep the app and parent alive for the banner's lifetime:
+        # with real Qt, dropping the only Python reference to the
+        # QApplication destroys it (instance() goes back to None),
+        # which deletes every widget — the banner's labels die with
+        # "wrapped C/C++ object of type QLabel has been deleted".
+        # The stub path never exposed this; CI's real Qt does.
+        banner._test_app = app
+        banner._test_parent = parent
+    return banner
 
 
 HIDDEN_DETAIL = (

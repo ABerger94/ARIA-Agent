@@ -31,6 +31,18 @@ import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+try:
+    import speech_recognition  # noqa: F401
+except ImportError:
+    # The CI test venv (requirements-test.txt) carries no
+    # SpeechRecognition, and the real dispatch chain imports
+    # aria.scheduler -> aria.speech at module level. aria.speech
+    # tolerates a bare stand-in module (same pattern as
+    # tests/test_headless.py); without it this suite errors at
+    # collection in CI while passing on a full local install.
+    sys.modules.setdefault(
+        'speech_recognition', types.ModuleType('speech_recognition'))
+
 from aria import live as live_mod
 from aria import runtime as runtime_mod
 from aria.tools import dispatch as dispatch_mod
