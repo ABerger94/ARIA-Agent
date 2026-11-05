@@ -59,6 +59,12 @@ class ConfirmBanner(_OverlayBase):
     they are the whole text of what is being approved, and a confirmation
     the user cannot fully read is not a confirmation — so the text scrolls,
     the header and buttons stay put, and every line stays reachable.
+    Title and detail are PLAIN TEXT, never rich text: a command under
+    review may itself contain HTML-like markup (tags, comments), and
+    Qt's default AutoText would interpret that markup and hide the
+    parts inside it — so the user could approve code they cannot
+    see. The stored approval arguments are untouched; only the
+    presentation boundary changes.
     Nothing blocks while the banner is up: the assistant keeps talking,
     and the pending approval simply waits (aria/approval.py expires it
     after 10 minutes).
@@ -107,7 +113,11 @@ class ConfirmBanner(_OverlayBase):
         body_lay.setContentsMargins(0, 0, 8, 0)
         body_lay.setSpacing(8)
 
-        ttl = QLabel(title)
+        ttl = QLabel()
+        # Plain text BEFORE the text is set: a title carrying
+        # markup must render literally, never as rich text.
+        ttl.setTextFormat(Qt.TextFormat.PlainText)
+        ttl.setText(title)
         ttl.setWordWrap(True)
         ttl.setFont(QFont(C.FONT, 12, QFont.Weight.Bold))
         ttl.setStyleSheet(f'color: {C.TEXT}; background: transparent;')
@@ -116,7 +126,13 @@ class ConfirmBanner(_OverlayBase):
 
         self._detail_label = None
         if detail:
-            dtl = QLabel(detail)
+            dtl = QLabel()
+            # Plain text BEFORE the text is set: the detail is
+            # often the command itself, and markup inside it
+            # (e.g. an HTML comment) must render literally,
+            # never hide the code it surrounds.
+            dtl.setTextFormat(Qt.TextFormat.PlainText)
+            dtl.setText(detail)
             dtl.setWordWrap(True)
             dtl.setFont(QFont(C.FONT, 11))
             # The detail IS the thing being approved (often a
