@@ -1,10 +1,12 @@
 """Named palettes (2026-11-03, Alek's picks from the palette
 cards he sent): the registry must carry the cards' hexes
 EXACTLY; Midnight Neon is the default; ui_prefs persists
-palette id + hero together; the dashboard stylesheet tints
-its panels from the palette's Primary; the Customize dialog
-fires on_palette before on_commit on a palette Apply, and
-Reset restores the default palette."""
+palette id + hero together; each palette ALSO carries the
+full token set from the dashboard mockups Alek approved
+2026-11-04, and the dashboard stylesheet consumes those
+tokens directly (light palettes flip light, text included);
+the Customize dialog fires on_palette before on_commit on a
+palette Apply, and Reset restores the default palette."""
 import colorsys
 import os
 import sys
@@ -118,24 +120,100 @@ def test_ui_prefs_palette_roundtrip(monkeypatch, tmp_path):
     assert prefs.get_palette() is None
 
 
-def test_style_for_palette_tints_panels_from_primary():
+# The full token sets, exactly as designed in the dashboard
+# mockups Alek approved 2026-11-04 ("I like them as is").
+EXPECTED_TOKENS = {
+    'apple_modern': {
+        'bg': '#f5f5f7', 'surface': '#ffffff',
+        'elevated': '#ececf0', 'border': '#d9d9e0',
+        'text': '#1d1d1f', 'dim': '#7a7a80',
+        'accent': '#007aff', 'accent2': '#1d1d1f',
+        'on_accent': '#ffffff'},
+    'vibrant_sunset': {
+        'bg': '#382a38', 'surface': '#4d3a4d',
+        'elevated': '#5e485e', 'border': '#715671',
+        'text': '#eadada', 'dim': '#d59cc5',
+        'accent': '#be5ca9', 'accent2': '#d59cc5',
+        'on_accent': '#ffffff'},
+    'ocean_breeze': {
+        'bg': '#07295f', 'surface': '#0b3d91',
+        'elevated': '#114fa8', 'border': '#1d63b8',
+        'text': '#e8f6ff', 'dim': '#9ccbf5',
+        'accent': '#3ba7f2', 'accent2': '#7fe7d6',
+        'on_accent': '#06263f'},
+    'earthy_minimal': {
+        'bg': '#f8f6ee', 'surface': '#ffffff',
+        'elevated': '#f1ebdb', 'border': '#d9c9b2',
+        'text': '#2e3a2f', 'dim': '#6b7f5b',
+        'accent': '#c96f4f', 'accent2': '#6b7f5b',
+        'on_accent': '#ffffff'},
+    'midnight_neon': {
+        'bg': '#0f172a', 'surface': '#182642',
+        'elevated': '#20304f', 'border': '#2e4470',
+        'text': '#ede9fe', 'dim': '#a78bfa',
+        'accent': '#22d3ee', 'accent2': '#7c3aed',
+        'on_accent': '#06202b'},
+}
+
+
+def test_tokens_match_the_approved_mockups():
+    from aria import palettes
+    assert list(EXPECTED_TOKENS) == palettes.palette_ids()
+    for pid, want in EXPECTED_TOKENS.items():
+        assert palettes.tokens_of(pid) == want, pid
+        # The token accent IS the palette's hero — one accent
+        # story across the registry, prefs, and stylesheet.
+        assert want['accent'] == palettes.hero_of(pid)
+    assert palettes.tokens_of('nope') is None
+    # tokens_of hands out a copy, never the registry's dict.
+    toks = palettes.tokens_of('midnight_neon')
+    toks['bg'] = '#000000'
+    assert palettes.tokens_of('midnight_neon')['bg'] == '#0f172a'
+
+
+def test_style_for_palette_uses_the_full_token_set():
     from aria.dashboard import STYLE, style_for_palette
     assert style_for_palette('bogus') == STYLE
-    sheet = style_for_palette('ocean_breeze')
+    sheet = style_for_palette('midnight_neon')
     assert sheet != STYLE
-    assert '#dce6ef' in sheet            # body text never linked
-    # The page background #080d14 (lightness ~0.055) re-derived
-    # from Ocean Breeze's Primary #0b3d91 at that lightness.
-    from aria import palettes
-    from aria.dashboard import _PANEL_HEXES
-    import colorsys as _cs
-    r = int('#080d14'[1:3], 16) / 255
-    g = int('#080d14'[3:5], 16) / 255
-    b = int('#080d14'[5:7], 16) / 255
-    _h, lightness, _s = _cs.rgb_to_hls(r, g, b)
-    derived = palettes.panel_shade('#0b3d91', lightness)
-    assert derived in sheet
-    assert '#080d14' in _PANEL_HEXES
+    # Background, surfaces, border, text, dim, accent — the
+    # palette's own tokens, not a hue-derived family.
+    for hexval in ('#0f172a', '#182642', '#20304f', '#2e4470',
+                   '#ede9fe', '#a78bfa', '#22d3ee'):
+        assert hexval in sheet, hexval
+    # None of the old dark family's structural hexes survive —
+    # body text included (the palette's text token replaces it).
+    for old in ('#080d14', '#0d1520', '#0a111b', '#dce6ef'):
+        assert old not in sheet, old
+
+
+def test_style_for_palette_light_palettes_flip_light():
+    from aria.dashboard import style_for_palette
+    earthy = style_for_palette('earthy_minimal')
+    assert '#f8f6ee' in earthy           # its cream background
+    assert '#2e3a2f' in earthy           # its dark green text
+    assert '#c96f4f' in earthy           # its terracotta accent
+    apple = style_for_palette('apple_modern')
+    assert '#f5f5f7' in apple
+    assert '#1d1d1f' in apple
+    assert '#007aff' in apple
+
+
+def test_chat_colors_follow_stored_palette_tokens(monkeypatch):
+    import aria.dashboard as dash
+    import aria.ui_prefs as up
+    monkeypatch.setattr(up, 'get_palette',
+                        lambda: 'earthy_minimal')
+    colors = dash.chat_colors('#c96f4f')
+    assert colors['aria'] == ('#c96f4f', '#c96f4f')
+    # White user text would vanish on Earthy's light sheet —
+    # the palette's text/dim tokens take over.
+    assert colors['user'] == ('#2e3a2f', '#2e3a2f')
+    assert colors['sys'] == ('#6b7f5b', '#6b7f5b')
+    # A free accent that is NOT the stored hero keeps the
+    # classic white user pair.
+    colors = dash.chat_colors('#00ff88')
+    assert colors['user'] == ('#ffffff', '#f4f7fa')
 
 
 def test_chat_default_is_midnight_neon_when_nothing_set(monkeypatch):

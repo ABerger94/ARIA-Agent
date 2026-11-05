@@ -61,41 +61,65 @@ def style_for_accent(accent):
                   lambda m: shifted[m.group(0)], STYLE)
 
 
-#: The stylesheet's dark panel backgrounds — the hexes a named
-#: palette's PRIMARY re-tints (style_for_palette below).
+#: The stylesheet's dark panel backgrounds. Legacy: before the
+#: full-token palettes (2026-11-04) style_for_palette re-tinted
+#: these from the palette's PRIMARY; the token path above no
+#: longer uses them. Kept for the tests that pin the old set.
 _PANEL_HEXES = ('#080d14', '#0d1520', '#0a111b')
 
 
-def style_for_palette(palette_id):
-    """STYLE themed by a named palette (aria/palettes).
+def _mix_hex(c1, c2, t):
+    """RGB lerp between two '#rrggbb' colours (t=0 -> c1)."""
+    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return '#%02x%02x%02x' % tuple(
+        round(a[i] + (b[i] - a[i]) * t) for i in range(3))
 
-    The colour family hue-shifts to the palette's HERO, exactly
-    like any accent pick — then the dark panel backgrounds take
-    the palette PRIMARY's hue/saturation at their designed
-    lightnesses, so the panels themselves carry the palette
-    (Ocean Breeze panels go deep navy, Earthy Minimal's deep
-    green-charcoal) instead of merely wearing the hero's hue.
-    An unknown palette returns STYLE unchanged."""
+
+def style_for_palette(palette_id):
+    """STYLE themed by a named palette's FULL token set
+    (aria/palettes, Alek 2026-11-04).
+
+    Every stylesheet colour comes from the palette's tokens —
+    background, surfaces, borders, text, dim, accents — with
+    hover/pressed/primary shades mixed BETWEEN tokens of the
+    same palette. Nothing is hue-derived from a single hero
+    any more: that derivation is what read as "one blanket
+    colour". The light palettes (Earthy Minimal, Apple
+    Modern) genuinely flip the window light, text included.
+    An unknown palette returns STYLE unchanged; a palette
+    without tokens falls back to the hero accent sheet."""
     from aria import palettes as _palettes
     pal = _palettes.get_palette(palette_id)
     if pal is None:
         return STYLE
-    sheet = style_for_accent(pal['hero'])
-    from aria.hue_wheel import shift_palette
-    shifted = shift_palette({h: h for h in _PANEL_HEXES},
-                            _STYLE_BASE, pal['hero'])
-    if shifted is None:
-        return sheet
-    import colorsys
-    for orig in _PANEL_HEXES:
-        r = int(orig[1:3], 16) / 255
-        g = int(orig[3:5], 16) / 255
-        b = int(orig[5:7], 16) / 255
-        _h, lightness, _s = colorsys.rgb_to_hls(r, g, b)
-        sheet = sheet.replace(
-            shifted[orig],
-            _palettes.panel_shade(pal['primary'], lightness))
-    return sheet
+    toks = pal.get('tokens')
+    if not toks:
+        return style_for_accent(pal['hero'])
+    mapping = {
+        '#080d14': toks['bg'],          # window background
+        '#0d1520': toks['surface'],     # cards / panes / tabs
+        '#0a111b': toks['bg'],          # text areas / inputs (inset)
+        '#1b3042': toks['border'],
+        '#274257': toks['border'],
+        '#111e2c': toks['elevated'],    # button background
+        '#193044': _mix_hex(toks['elevated'], toks['accent'], 0.18),
+        '#24516a': _mix_hex(toks['elevated'], toks['accent'], 0.38),
+        '#174452': _mix_hex(toks['accent2'], toks['bg'], 0.30),
+        '#319aab': toks['accent'],      # primary button border
+        '#a5f5fa': '#ffffff',           # primary button text
+        '#54d9e8': toks['accent'],
+        '#77e7ef': toks['accent'],
+        '#42c9da': toks['accent'],      # progress chunk
+        '#172434': toks['elevated'],    # progress track
+        '#21374b': toks['border'],      # slider groove
+        '#66dbe7': toks['accent'],      # slider handle
+        '#829aaf': toks['dim'],         # unselected tab text
+        '#dce6ef': toks['text'],        # body text — the palette's own
+    }
+    import re
+    return re.sub('|'.join(re.escape(h) for h in mapping),
+                  lambda m: mapping[m.group(0)], STYLE)
 
 
 # Conversation colours (Alek, 2026-10-27, final say): ARIA's
@@ -162,12 +186,30 @@ def chat_colors(accent=None):
     mixed her text 82% of the way toward white, which read as
     white text whatever colour was set (Alek, 2026-10-27); the
     name is told apart by bold alone. The user is always white;
-    system muted."""
+    system muted.
+
+    Full-token palettes (2026-11-04): when the resolved accent
+    is the STORED palette's hero, the user/system pairs come
+    from that palette's tokens instead — white user text is
+    unreadable on the light palettes (Earthy Minimal, Apple
+    Modern), whose user side is their dark text colour."""
     resolved = _valid_accent(accent) or _current_accent() \
         or _default_accent()
-    return {'aria': (resolved, resolved),
-            'user': CHAT_COLORS['user'],
-            'sys': CHAT_COLORS['sys']}
+    colors = {'aria': (resolved, resolved),
+              'user': CHAT_COLORS['user'],
+              'sys': CHAT_COLORS['sys']}
+    try:
+        from aria import palettes as _palettes
+        from aria import ui_prefs as _up
+        _pid = _up.get_palette()
+        if _pid and _palettes.hero_of(_pid) == resolved:
+            _toks = _palettes.tokens_of(_pid)
+            if _toks:
+                colors['user'] = (_toks['text'], _toks['text'])
+                colors['sys'] = (_toks['dim'], _toks['dim'])
+    except Exception:
+        pass
+    return colors
 ACTIVITY_COLORS = {'error': ('#ff6b6b', '#ffd9d9'),
                    'warn': ('#ffb84d', '#ffedc9'),
                    'ok': ('#2ee6a8', '#d3ffec'),
@@ -1340,8 +1382,8 @@ def create_dashboard(callbacks):
             if not accent.isValid():
                 accent = QColor(_default_accent())
             sheet = style_for_accent(accent.name())
-            # A stored palette whose hero IS this accent also
-            # tints the panels from its Primary (style_for_palette)
+            # A stored palette whose hero IS this accent gets the
+            # palette's full-token sheet (style_for_palette)
             # — a plain accent pick keeps the plain sheet.
             try:
                 from aria import palettes as _palettes

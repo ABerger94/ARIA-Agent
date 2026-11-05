@@ -13,6 +13,20 @@ tints the window's dark panel backgrounds
 single accent pick: Ocean Breeze's panels go deep navy,
 Earthy Minimal's deep green-charcoal.
 
+FULL TOKENS (Alek, 2026-11-04): the hero-derived family read
+as "one blanket colour" to Alek — a palette is not a full
+palette if only the accent changes. Each palette now ALSO
+carries a complete token set (bg / surface / elevated /
+border / text / dim / accent / accent2 / on_accent), designed
+as dashboard mockups and approved by Alek as-is before the
+build. dashboard.style_for_palette consumes the tokens
+DIRECTLY — no hue derivation — so every surface carries the
+palette, and the light palettes (Earthy Minimal, Apple
+Modern) genuinely flip the window light. Token values are
+anchored on the cards: accent == hero everywhere; accent2 ==
+tone2 except Apple Modern, whose mockup gradient runs to
+its near-black Primary instead of the grey tone2.
+
 Persistence lives in aria/ui_prefs (the palette id and its
 hero written together, so every existing accent consumer —
 chat colours, Shell Home, the painted widgets — follows a
@@ -36,27 +50,52 @@ PALETTES = [
      "primary": "#1d1d1f", "secondary": None,
      "tertiary": "#aaaaaa", "accent": "#007aff",
      "background": "#f5f5f7",
-     "hero": "#007aff", "tone2": "#aaaaaa"},
+     "hero": "#007aff", "tone2": "#aaaaaa",
+     "tokens": {"bg": "#f5f5f7", "surface": "#ffffff",
+                "elevated": "#ececf0", "border": "#d9d9e0",
+                "text": "#1d1d1f", "dim": "#7a7a80",
+                "accent": "#007aff", "accent2": "#1d1d1f",
+                "on_accent": "#ffffff"}},
     {"id": "vibrant_sunset", "name": "Vibrant Sunset",
      "primary": "#4d3a4d", "secondary": "#be5ca9",
      "tertiary": "#d59cc5", "accent": None,
      "background": "#eadada",
-     "hero": "#be5ca9", "tone2": "#d59cc5"},
+     "hero": "#be5ca9", "tone2": "#d59cc5",
+     "tokens": {"bg": "#382a38", "surface": "#4d3a4d",
+                "elevated": "#5e485e", "border": "#715671",
+                "text": "#eadada", "dim": "#d59cc5",
+                "accent": "#be5ca9", "accent2": "#d59cc5",
+                "on_accent": "#ffffff"}},
     {"id": "ocean_breeze", "name": "Ocean Breeze",
      "primary": "#0b3d91", "secondary": "#3ba7f2",
      "tertiary": "#7fe7d6", "accent": None,
      "background": "#e8f6ff",
-     "hero": "#3ba7f2", "tone2": "#7fe7d6"},
+     "hero": "#3ba7f2", "tone2": "#7fe7d6",
+     "tokens": {"bg": "#07295f", "surface": "#0b3d91",
+                "elevated": "#114fa8", "border": "#1d63b8",
+                "text": "#e8f6ff", "dim": "#9ccbf5",
+                "accent": "#3ba7f2", "accent2": "#7fe7d6",
+                "on_accent": "#06263f"}},
     {"id": "earthy_minimal", "name": "Earthy Minimal",
      "primary": "#2e3a2f", "secondary": "#6b7f5b",
      "tertiary": "#d9c9b2", "accent": "#c96f4f",
      "background": "#f8f6ee",
-     "hero": "#c96f4f", "tone2": "#6b7f5b"},
+     "hero": "#c96f4f", "tone2": "#6b7f5b",
+     "tokens": {"bg": "#f8f6ee", "surface": "#ffffff",
+                "elevated": "#f1ebdb", "border": "#d9c9b2",
+                "text": "#2e3a2f", "dim": "#6b7f5b",
+                "accent": "#c96f4f", "accent2": "#6b7f5b",
+                "on_accent": "#ffffff"}},
     {"id": "midnight_neon", "name": "Midnight Neon",
      "primary": "#0f172a", "secondary": "#7c3aed",
      "tertiary": "#a78bfa", "accent": "#22d3ee",
      "background": "#ede9fe",
-     "hero": "#22d3ee", "tone2": "#7c3aed"},
+     "hero": "#22d3ee", "tone2": "#7c3aed",
+     "tokens": {"bg": "#0f172a", "surface": "#182642",
+                "elevated": "#20304f", "border": "#2e4470",
+                "text": "#ede9fe", "dim": "#a78bfa",
+                "accent": "#22d3ee", "accent2": "#7c3aed",
+                "on_accent": "#06202b"}},
 ]
 
 #: Alek's pick (2026-11-03): Midnight Neon is the default.
@@ -92,6 +131,16 @@ def hero_of(palette_id):
     """The palette's hero (family-driving) hex, or None."""
     pal = _BY_ID.get(palette_id)
     return pal["hero"] if pal is not None else None
+
+
+def tokens_of(palette_id):
+    """The palette's full UI token set (2026-11-04), or None.
+
+    Returns a copy — callers may not mutate the registry."""
+    pal = _BY_ID.get(palette_id)
+    if pal is None or not pal.get("tokens"):
+        return None
+    return dict(pal["tokens"])
 
 
 def swatch_hexes(palette):
