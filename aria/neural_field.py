@@ -66,6 +66,28 @@ def apply_accent(accent_hex) -> bool:
     return True
 
 
+def apply_backdrop(hex_value) -> bool:
+    """Set the surface the field's colours blend onto — the centre
+    card's ACTUAL backdrop. The dashboard's theme path calls this
+    on every apply (2026-11-04): BG used to stay at the dark card
+    colour forever, so on a light palette the wiring pre-mixed
+    onto near-black and the centre stage read dark even after
+    the backdrop itself flipped. Bumps the palette version so
+    the cached grid layer rebuilds against the new surface.
+    Returns False for an invalid hex, backdrop untouched."""
+    global BG, _PALETTE_VER
+    try:
+        s = str(hex_value or '').strip().lower()
+        if len(s) != 7 or not s.startswith('#'):
+            return False
+        int(s[1:], 16)
+    except Exception:
+        return False
+    BG = s
+    _PALETTE_VER += 1
+    return True
+
+
 def _blend(col: QColor, a: float) -> QColor:
     """Pre-mix a colour onto the card background at strength a —
     LVI mixes onto its canvas BG the same way, which is what makes

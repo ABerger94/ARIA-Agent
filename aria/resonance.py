@@ -60,6 +60,19 @@ class ResonanceOrb(QWidget):
         self._core_phase = 0.0
         self._last_tick = time.monotonic()
 
+    def set_dark_name(self, dark):
+        """Flip the name's ink between white and near-black
+        (2026-11-04): the choice is per-THEME as well as
+        per-surface — on a light palette the dashboard orb's
+        white name washes out on its own pale core glow, so
+        the dashboard's theme sync calls this with the
+        palette's background lightness. The pet's constructor
+        choice is just the initial value."""
+        dark = bool(dark)
+        if dark != self._dark_name:
+            self._dark_name = dark
+            self.update()
+
     def advance(self, state='idle', level=0.0, muted=False, viseme=None):
         # `viseme` accepted for the shared face contract; the orb
         # is a waveform and level is its native input.

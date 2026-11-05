@@ -596,6 +596,90 @@ def test_center_composite_is_opaque_and_layered(monkeypatch, tmp_path):
     window.close()
 
 
+def test_light_palette_themes_the_painted_surfaces(monkeypatch, tmp_path):
+    # Alek's live witness, 2026-11-04: Earthy Minimal applied —
+    # the window went light EXCEPT the centre stage, which stayed
+    # black. The centre backdrop, neural field, metric bars,
+    # plaques and art tile carry their own paint/stylesheets and
+    # never saw the window sheet. This pins the theme sync that
+    # apply_accent now runs: with a light palette stored, every
+    # one of those surfaces takes the palette's tokens, at boot
+    # and on a live switch back to a dark palette.
+    app = QApplication.instance() or QApplication([])
+    calls = []
+    data = dict(cpu=25, mem=40, battery='80%', uptime_s=600,
+                active_provider='gemini', subsystems=[],
+                task_active=0, scheduled=0, voice_enabled=True, volume=.5)
+    frame = types.ModuleType('aria.frame')
+    frame.strip_data = lambda: data
+    frame._fmt_uptime = lambda seconds: '10m'
+    frame.spotify_data = lambda: {'title': ''}
+    frame.media_data = lambda: {'title': ''}
+    frame.chat_entries = lambda n: []
+    frame.activity_events = lambda n: []
+    frame.toggle_voice = lambda: None
+    frame.receive_file = lambda p: None
+    hud = types.ModuleType('aria.hud')
+    hud.CURRENT_STATE = 'idle'; hud.SUBTITLE_TEXT = ''; hud.WHISPER_MODE = False
+    hud._dispatch_spotify_action = lambda a: None
+    hud._dispatch_media_action = lambda a: None
+    hud.set_hud_volume = lambda v: None
+    hud.get_volume_for = lambda t: .5
+    hud.set_volume_for = lambda t, v: None
+    config = types.ModuleType('aria.config'); config.redact = str
+    config.log_silent = lambda *args: None
+    config.get_setting = lambda key, default=None: default
+    for name, mod in [('aria.frame', frame), ('aria.hud', hud), ('aria.config', config)]:
+        monkeypatch.setitem(sys.modules, name, mod)
+        monkeypatch.setattr(sys.modules['aria'], name.rsplit('.', 1)[1], mod, raising=False)
+    queue = types.ModuleType('aria.agent.taskqueue')
+    queue.get_queue = lambda: types.SimpleNamespace(get_all_statuses=lambda: [])
+    scheduler = types.ModuleType('aria.scheduler'); scheduler.sched_list = lambda: []
+    monkeypatch.setitem(sys.modules, 'aria.agent.taskqueue', queue)
+    monkeypatch.setitem(sys.modules, 'aria.scheduler', scheduler)
+    speech = types.ModuleType('aria.speech'); speech.VOICE_ENABLED = True
+    monkeypatch.setitem(sys.modules, 'aria.speech', speech)
+    monkeypatch.setattr(sys.modules['aria'], 'speech', speech, raising=False)
+    from aria import ui_prefs, metric_bar, neural_field
+    monkeypatch.setattr(ui_prefs, '_ui_file',
+                        lambda: str(tmp_path / 'ui.json'))
+    ui_prefs.set_palette('earthy_minimal')
+    callbacks = types.SimpleNamespace(
+        ptt_press=lambda: None, ptt_release=lambda: None,
+        interrupt=lambda: None, toggle_whisper=lambda: None,
+        submit=calls.append, request_stop=lambda: None,
+        is_running=lambda: True, housekeeping=lambda: None,
+        render_frame=lambda: np.zeros((800, 1280, 3), dtype=np.uint8))
+    window = create_dashboard(callbacks)
+    try:
+        window.show(); app.processEvents()
+        # Boot with Earthy stored: the centre stage is the
+        # palette's cream, not the old pinned #080d14.
+        assert '#f8f6ee' in window.center_bg.styleSheet()
+        assert neural_field.BG == '#f8f6ee'
+        assert metric_bar.C.PANEL2 == '#ffffff'
+        assert metric_bar.C.BAR_BG == '#f8f6ee'
+        assert '#2e3a2f' in window.plaque_engine._label.styleSheet()
+        assert '#f1ebdb' in window.art.styleSheet()
+        assert window.face._dark_name is True
+        # Live switch to a dark palette: every surface follows.
+        ui_prefs.set_palette('midnight_neon')
+        app.processEvents()
+        assert '#0f172a' in window.center_bg.styleSheet()
+        assert neural_field.BG == '#0f172a'
+        assert metric_bar.C.PANEL2 == '#182642'
+        assert window.face._dark_name is False
+    finally:
+        window.close()
+        # The painted modules keep theme state in globals —
+        # restore the pre-palette defaults for the next test.
+        metric_bar.apply_theme(panel='#0d1520', bar_bg='#011520',
+                               text='#dce6ef')
+        metric_bar.apply_accent(None)
+        neural_field.apply_backdrop('#0d1520')
+        app.processEvents()
+
+
 def test_no_customize_or_extensions_buttons_on_dashboard(monkeypatch, tmp_path):
     # Alek, 2026-10-27 (later): the header Customize / Extensions
     # overlay buttons are REMOVED — Extensions lives as a tab in

@@ -118,10 +118,14 @@ class StatusPlaque(QWidget):
 
     MAX_VALUE = 16
 
-    def __init__(self, title: str, color: str = C.TEXT, parent=None):
+    def __init__(self, title: str, color: str = None, parent=None):
         super().__init__(parent)
         self._title = title
         self._value = '—'
+        # None = the theme's text colour (_THEME_TEXT, set by
+        # apply_theme): the old default bound C.TEXT at class
+        # definition time — pale #dce6ef forever — which is
+        # unreadable on a light palette's surface (2026-11-04).
         self._color = color
         lay = QVBoxLayout(self)
         lay.setContentsMargins(5, 2, 5, 2)
@@ -146,7 +150,57 @@ class StatusPlaque(QWidget):
             f'background: {C.PANEL2}; border: 1px solid {C.BORDER_A}; '
             f'border-radius: 3px;')
         self._label.setStyleSheet(
-            f'color: {self._color}; background: transparent; border: none;')
+            f'color: {self._color or _THEME_TEXT}; '
+            f'background: transparent; border: none;')
+
+    def refresh_theme(self):
+        """Re-run _apply after a theme change (apply_theme): the
+        set_value early-return would otherwise keep the previous
+        theme's stylesheet and ink indefinitely."""
+        self._apply()
+
+
+#: The plaque label ink when no explicit colour was given. A
+#: module global (not the C.TEXT class attribute) so apply_theme
+#: can move it — class-attribute reads in _apply would work too,
+#: but the constructor's old C.TEXT default arg froze the value
+#: at import time.
+_THEME_TEXT = '#dce6ef'
+
+#: Full-theme surfaces (2026-11-04, the full-token palettes):
+#: the bars and plaques paint / style themselves from these
+#: class colours, which the accent path never touched — so on
+#: a light palette the CPU/MEM/NET bars stayed dark navy panels
+#: with pale ink. apply_theme is how the dashboard's palette
+#: path hands them the palette's own surface family. The
+#: defaults are the pre-palette dark values, restored whenever
+#: no palette drives the theme.
+_THEME_DEFAULTS = {'PANEL2': '#0d1520', 'BAR_BG': '#011520',
+                   'TEXT': '#dce6ef'}
+
+
+def apply_theme(panel=None, bar_bg=None, text=None, dim=None,
+                border=None) -> bool:
+    """Set the bars'/plaques' surface family from a palette's
+    tokens. Each non-None argument sets one colour; None leaves
+    that colour as the accent path (apply_accent) left it — the
+    dashboard calls this AFTER _apply_painted_accent, so in
+    palette mode every argument is passed, and in plain-accent
+    mode only the three _THEME_DEFAULTS colours are restored
+    (dim/border stay accent-shifted). Always returns True."""
+    global _THEME_TEXT
+    if panel is not None:
+        C.PANEL2 = panel
+    if bar_bg is not None:
+        C.BAR_BG = bar_bg
+    if text is not None:
+        C.TEXT = text
+        _THEME_TEXT = text
+    if dim is not None:
+        C.TEXT_DIM = dim
+    if border is not None:
+        C.BORDER_A = border
+    return True
 
 
 # Accent-linked palette (Port 5, Customize): the cyan family only —

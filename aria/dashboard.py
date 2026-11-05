@@ -122,6 +122,33 @@ def style_for_palette(palette_id):
                   lambda m: mapping[m.group(0)], STYLE)
 
 
+def _sheet_bg(sheet):
+    """The window background hex a stylesheet paints — the
+    `QWidget { background: ... }` rule every sheet in this
+    module carries. The centre backdrop and the neural field
+    blend onto THIS colour, never a frozen constant: the
+    centre stage's backdrop widget carries its own stylesheet,
+    which used to pin it to #080d14 through every theme, so a
+    light palette flipped the whole window except the middle
+    of it (Alek's live screenshot, 2026-11-04)."""
+    import re
+    m = re.search(r'QWidget\s*\{\s*background:\s*(#[0-9a-fA-F]{6})',
+                  sheet or '')
+    return m.group(1).lower() if m else '#080d14'
+
+
+def _hex_is_light(hex_value):
+    """Perceived lightness of a '#rrggbb' colour, > 0.6 = light.
+    Decides the orb name's ink on a palette: white on dark
+    palettes, near-black on the light ones."""
+    try:
+        s = str(hex_value).lstrip('#')
+        r, g, b = (int(s[i:i + 2], 16) for i in (0, 2, 4))
+        return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6
+    except Exception:
+        return False
+
+
 # Conversation colours (Alek, 2026-10-27, final say): ARIA's
 # responses render in the SYSTEM colour — whatever accent is
 # currently set (Customize wheel / Settings preset), never a
@@ -1030,6 +1057,17 @@ def create_dashboard(callbacks):
                 _up_sub.on_palette_change(_palette_push)
             except Exception:
                 pass
+            # Re-apply the boot accent now that every widget
+            # exists: the first apply_accent (in __init__) ran
+            # before the centre backdrop, bars, plaques and art
+            # tile were built, and those surfaces only theme via
+            # apply_accent's sync — without this, a stored light
+            # palette boots with a black centre stage until the
+            # next theme change (2026-11-04).
+            try:
+                self.apply_accent(_init_accent)
+            except Exception:
+                pass
             self.entry.setFocus()
             self._show_centerpiece()
             self._settings_shortcut = QShortcut(QKeySequence('Ctrl+,'), self)
@@ -1385,16 +1423,19 @@ def create_dashboard(callbacks):
             # A stored palette whose hero IS this accent gets the
             # palette's full-token sheet (style_for_palette)
             # — a plain accent pick keeps the plain sheet.
+            _toks = None
             try:
                 from aria import palettes as _palettes
                 from aria import ui_prefs as _up_apply
                 _pid = _up_apply.get_palette()
                 if _pid and _palettes.hero_of(_pid) == accent.name():
                     sheet = style_for_palette(_pid)
+                    _toks = _palettes.tokens_of(_pid)
             except Exception:
                 pass
             self.setStyleSheet(sheet)
             _apply_painted_accent(accent.name())
+            self._sync_theme_surfaces(sheet, _toks)
             for _mw in (getattr(self, 'mem_map_tab', None),
                         getattr(self, 'mem_map_center', None)):
                 if _mw is not None:
@@ -1412,6 +1453,88 @@ def create_dashboard(callbacks):
             self._chat_accent = accent.name()
             if hasattr(self, '_last_chat'):
                 self._last_chat = None
+
+        def _sync_theme_surfaces(self, sheet, toks):
+            # The surfaces that carry their OWN paint or stylesheet
+            # and so never see the window sheet (2026-11-04, Alek's
+            # witness: Earthy Minimal applied, everything light
+            # except the centre stage, which stayed black):
+            #   * center_bg — its private stylesheet pinned it to
+            #     #080d14 through every theme;
+            #   * the neural field — its wiring pre-mixes onto a
+            #     frozen dark BG constant;
+            #   * the metric bars / status plaques — painted from
+            #     metric_bar's dark class colours, plaque ink a
+            #     frozen pale hex;
+            #   * the album-art tile — a private dark stylesheet.
+            # With a palette (toks) they take the palette's own
+            # tokens; without one, the centre/neural follow the
+            # sheet's actual background and the rest restore their
+            # pre-palette defaults (the accent path already
+            # re-shifted their accent-linked colours above).
+            # Fail-soft throughout: a broken surface sync must
+            # never cost the window its theme.
+            bg = _sheet_bg(sheet)
+            try:
+                _cb = getattr(self, 'center_bg', None)
+                if _cb is not None:
+                    _cb.setStyleSheet(f'background: {bg};')
+            except Exception:
+                pass
+            try:
+                from aria import neural_field as _nf
+                _nf.apply_backdrop(bg)
+                _neural = getattr(self, 'neural', None)
+                if _neural is not None:
+                    _neural.update()
+            except Exception:
+                pass
+            try:
+                from aria import metric_bar as _mb
+                if toks:
+                    _mb.apply_theme(panel=toks['surface'],
+                                    bar_bg=toks['bg'],
+                                    text=toks['text'],
+                                    dim=toks['dim'],
+                                    border=toks['border'])
+                else:
+                    _mb.apply_theme(
+                        panel=_mb._THEME_DEFAULTS['PANEL2'],
+                        bar_bg=_mb._THEME_DEFAULTS['BAR_BG'],
+                        text=_mb._THEME_DEFAULTS['TEXT'])
+                for _name in ('plaque_engine', 'plaque_state',
+                              'plaque_tasks'):
+                    _p = getattr(self, _name, None)
+                    if _p is not None:
+                        _p.refresh_theme()
+                for _name in ('cpu', 'mem', 'net'):
+                    _b = getattr(self, _name, None)
+                    if _b is not None:
+                        _b.update()
+            except Exception:
+                pass
+            try:
+                _face = getattr(self, 'face', None)
+                if _face is not None and hasattr(_face,
+                                                 'set_dark_name'):
+                    _face.set_dark_name(
+                        bool(toks) and _hex_is_light(toks['bg']))
+            except Exception:
+                pass
+            try:
+                _art = getattr(self, 'art', None)
+                if _art is not None:
+                    if toks:
+                        _art.setStyleSheet(
+                            f"background: {toks['elevated']}; "
+                            f"color: {toks['dim']}; "
+                            f"font-size: 72px; border-radius: 10px;")
+                    else:
+                        _art.setStyleSheet(
+                            'background: #14171d; color: #39415a;'
+                            ' font-size: 72px; border-radius: 10px;')
+            except Exception:
+                pass
 
         def draft_command(self, text):
             self.entry.setText(text); self.entry.setFocus()
