@@ -984,6 +984,23 @@ def purge_expired() -> int:
     return len(expired)
 
 
+def _is_typed_failure(result) -> bool:
+    """True when the replay result is a typed `status=failed`
+    outcome (aria.outcome.is_failure), as opposed to a
+    bracket-marked error string. outcome is imported lazily:
+    approval never imports it at module level (import-cycle
+    convention). The re-parked / duplicate / safe-mode results
+    can never be typed failures (their bracket text carries no
+    status= prefix), so this check only refines the errored
+    branch — a typed failure must never reach the "executed"
+    branch and resume a routine (pass 26 B2#4)."""
+    try:
+        from aria import outcome as _outcome_mod
+        return _outcome_mod.is_failure(result)
+    except Exception:
+        return False
+
+
 def approve_token(token: str) -> str:
     """Execute the stashed call with preauthorized=True. Returns its result.
 
@@ -1116,12 +1133,16 @@ def approve_token(token: str) -> str:
                                "did NOT execute", result,
                                project=_entry_project(entry))
         elif result.startswith("[Tool Error:") or \
-                result.startswith("[Error:"):
+                result.startswith("[Error:") or _is_typed_failure(result):
             # The handler ran and reported failure (dispatch turns
-            # a handler exception into "[Tool Error: ...]"). The
-            # OPS line below still says "executed" — it has always
-            # meant only "the replay returned" — but the journal
-            # the model reads must not call a failure a success.
+            # a handler exception into "[Tool Error: ...]", and a
+            # typed `status=failed` outcome reports it the same
+            # way — pass 26 B2#4: the typed shape used to fall
+            # through to the "executed" branch below and resume
+            # the routine that paused on it). The OPS line below
+            # still says "executed" — it has always meant only
+            # "the replay returned" — but the journal the model
+            # reads must not call a failure a success.
             config.add_log(
                 f"[approval] token={t} executed: {result[:200]}")
             _record_resolution(entry["tool"], entry["desc"],
