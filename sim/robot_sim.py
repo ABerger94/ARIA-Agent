@@ -31,12 +31,34 @@ from datetime import datetime
 
 
 class VirtualBody:
-    def __init__(self) -> None:
+    # Mirrors the firmware watchdog (arduino/aria_body/aria_body.ino):
+    # the desktop process normally stops the wheels (threading.Timer,
+    # max 30 s in hardware.py tool_drive), but if it dies mid-drive no
+    # stop is ever sent — so the body stops itself 35 s after the last
+    # W command, even with the desktop gone.
+    WATCHDOG_S = 35.0
+
+    def __init__(self, clock=None) -> None:
         self.pan = 90
         self.tilt = 45
         self.left = 0
         self.right = 0
         self.lock = threading.Lock()
+        self._clock = clock or time.monotonic
+        self.last_wheel_cmd = None
+
+    def watchdog_check(self, now=None) -> None:
+        """Stop the wheels if no W command arrived within WATCHDOG_S."""
+        with self.lock:
+            if self.left == 0 and self.right == 0:
+                return
+            if self.last_wheel_cmd is None:
+                return
+            t = self._clock() if now is None else now
+            if t - self.last_wheel_cmd <= self.WATCHDOG_S:
+                return
+            self.left = self.right = 0
+        print(f"[{self._stamp()}] WATCHDOG stop {self._wheels_ascii()}", flush=True)
 
     def _stamp(self) -> str:
         return datetime.now().strftime("%H:%M:%S")
@@ -74,6 +96,7 @@ class VirtualBody:
                 right = max(-100, min(100, int(right_s)))
                 with self.lock:
                     self.left, self.right = left, right
+                    self.last_wheel_cmd = self._clock()
                 print(f"[{self._stamp()}] DRIVE {self._wheels_ascii()}", flush=True)
             except ValueError:
                 print(f"[{self._stamp()}] BAD drive cmd: {line!r}", flush=True)
@@ -114,6 +137,13 @@ def main() -> None:
     srv.listen(5)
     print(f"Virtual ARIA body listening on {args.host}:{args.port}")
     print("Protocol: P<pan>T<tilt> | W<left>,<right> | S   (Ctrl+C to quit)", flush=True)
+    # Firmware watchdog mirror: poll even when no commands arrive, so a
+    # dead desktop process still results in stopped wheels.
+    def _watchdog():
+        while True:
+            time.sleep(1)
+            body.watchdog_check()
+    threading.Thread(target=_watchdog, daemon=True).start()
     try:
         while True:
             conn, addr = srv.accept()

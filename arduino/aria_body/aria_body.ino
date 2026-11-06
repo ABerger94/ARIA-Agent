@@ -20,6 +20,9 @@
  *                      0 = stopped).                        e.g. "W-60,60"
  *   S\n               stop wheels + center head
  *
+ * Wheels also stop themselves 35 s after the last W command if the
+ * desktop process dies (firmware watchdog — see lastWheelCmd below).
+ *
  * Matches aria/hardware.py (send_servo_command / send_drive_command).
  */
 
@@ -101,6 +104,17 @@ const unsigned long STEP_MS = 15;   // ~4 deg per 15ms => smooth, not sluggish
 char lineBuf[32];
 uint8_t lineLen = 0;
 
+// Wheel watchdog (safety net): the desktop process normally stops the
+// wheels with a threading.Timer (aria/hardware.py tool_drive, max 30 s
+// drive), but if that process dies mid-drive no stop is ever sent and
+// the wheels would run forever. Invariant: the wheels stop by
+// themselves 35 s after the last W command, even with the desktop
+// gone. (Unsigned subtraction stays correct across the millis()
+// 49-day rollover.)
+unsigned long lastWheelCmd = 0;  // millis() of the last W command
+int wheelLSpd = 0, wheelRSpd = 0;  // last commanded speeds; 0 = stopped
+const unsigned long WHEEL_WATCHDOG_MS = 35000UL;  // > 30 s max drive
+
 int clampInt(int v, int lo, int hi) {
   if (v < lo) return lo;
   if (v > hi) return hi;
@@ -133,6 +147,9 @@ void handleLine(char *line) {
       *c = '\0';
       int l = clampInt(atoi(line + 1), -100, 100);
       int r = clampInt(atoi(c + 1), -100, 100);
+      wheelLSpd = l;
+      wheelRSpd = r;
+      lastWheelCmd = millis();
       wheelL.write(wheelToAngle(l));
       wheelR.write(wheelToAngle(r));
       Serial.print(F("ok wheels "));
@@ -143,6 +160,8 @@ void handleLine(char *line) {
   } else if (line[0] == 'S') {
     wheelL.write(90);
     wheelR.write(90);
+    wheelLSpd = 0;
+    wheelRSpd = 0;
     panTgt = 90;
     tiltTgt = 45;
     Serial.println(F("ok stop"));
@@ -201,6 +220,17 @@ void loop() {
   // --- animated face: eyes track the head, blink on their own ---
   faceTick(now);
 #endif
+
+  // --- wheel watchdog: stop the wheels if the desktop went silent ---
+  // (See the invariant at lastWheelCmd: no W command for 35 s means
+  // the process that drives them is gone, so stop without it.)
+  if ((wheelLSpd != 0 || wheelRSpd != 0) &&
+      (now - lastWheelCmd > WHEEL_WATCHDOG_MS)) {
+    wheelL.write(90);
+    wheelR.write(90);
+    wheelLSpd = 0;
+    wheelRSpd = 0;
+  }
 
   // --- heartbeat LED (1 Hz) so you can see it's alive ---
   digitalWrite(PIN_LED, (millis() / 500) % 2 == 0 ? HIGH : LOW);
