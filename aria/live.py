@@ -545,8 +545,52 @@ class LiveManager:
                             done, _pending = await asyncio.wait(
                                 {session_task, mic_task},
                                 return_when=asyncio.FIRST_COMPLETED)
-                            if (mic_task in done
-                                    and not session_task.done()):
+                            if session_task in done:
+                                # B5#6: the receive loop died. The
+                                # old code only looked at the mic
+                                # task here, so a session exception
+                                # was never retrieved (it surfaced
+                                # only as "Task exception was never
+                                # retrieved" at GC) while _run
+                                # returned as a clean end and the
+                                # failover loop never tried the next
+                                # model. Retrieve it, and route it
+                                # through the same two outcomes the
+                                # connect-failure path uses: a
+                                # rejected resumption handle drops
+                                # the handle and retries the SAME
+                                # model fresh once; anything else
+                                # logs, marks the failure, and breaks
+                                # out of the retry loop (not return)
+                                # so the outer for-model loop fails
+                                # over. A cancelled session task
+                                # (lock watcher / stop) is a clean
+                                # end, not a failure.
+                                try:
+                                    sess_err = session_task.exception()
+                                except asyncio.CancelledError:
+                                    sess_err = None
+                                if sess_err is not None:
+                                    last_err = sess_err
+                                    err_text = str(sess_err).lower()
+                                    if (handle_in_use is not None
+                                            and not retried_fresh
+                                            and ("handle" in err_text
+                                                 or "resumption"
+                                                 in err_text)):
+                                        self._resume_handle = None
+                                        self._log(
+                                            "Resumption handle "
+                                            "rejected — starting "
+                                            "a fresh session")
+                                        retried_fresh = True
+                                        continue
+                                    had_failure = True
+                                    self._log(
+                                        "Gemini Live session failed "
+                                        f"({sess_err}) — failing over")
+                                    break
+                            elif mic_task in done:
                                 err = mic_task.exception()
                                 if err is None:
                                     self._log("Gemini Live mic pump "
