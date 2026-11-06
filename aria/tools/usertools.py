@@ -135,13 +135,24 @@ def _register_into_dispatch(loaded):
     except Exception as _e:
         _config.add_log(f"[user-tools] dispatch unavailable: {_config.redact(str(_e))}")
         return []
+    try:
+        from aria.tools.schemas import register_dynamic_tool_declaration
+    except Exception as _e:
+        _config.add_log(f"[user-tools] schemas unavailable: {_config.redact(str(_e))}")
+        register_dynamic_tool_declaration = None
     added = []
-    for name, handler, _decl in loaded:
+    for name, handler, decl in loaded:
         if name in dispatch.get_registered_tools():
             _config.add_log(f"[user-tools] skipped '{name}': collides with existing registry tool")
             _USER_TOOLS.pop(name, None)
             continue
         dispatch.register_tool(name, handler)
+        # Pass 25: the declaration is the model-facing schema —
+        # without it the tool stays dispatch-callable but invisible
+        # to the model until restart. Boot wiring did this step in
+        # dispatch.py; reload went through here and skipped it.
+        if register_dynamic_tool_declaration is not None:
+            register_dynamic_tool_declaration(name, decl, toolkit="user")
         added.append(name)
     return added
 
