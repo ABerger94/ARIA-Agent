@@ -28,6 +28,7 @@ there is.
 """
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import os
@@ -471,41 +472,58 @@ def catalog_block(limit: int = CATALOG_CAP) -> str:
 # subsequent tool call; exhaustion blocks further calls with a plain
 # notice. Management tools (skill_*) never consume budget.
 
-_RUN = threading.local()
+# The budget is one shared state object held in a contextvar (pass
+# 25). It used to live in a threading.local: Live runs tool calls
+# in executor workers (loop.run_in_executor via runtime.copied_call,
+# which copies only contextvars), so a worker thread saw its own
+# empty budget — Live calls were never counted, and the budget was
+# never cleared there either. A context copy carries the REFERENCE
+# to the shared object, so a worker's decrement is the brain
+# thread's decrement too; a fresh thread with no copied context
+# sees no budget at all (and cannot burn it). The lock guards the
+# read-modify-write across the threads sharing one run.
+
+class _SkillRunState:
+    __slots__ = ("name", "remaining", "lock")
+
+    def __init__(self, name: str, remaining: int):
+        self.name = name
+        self.remaining = remaining
+        self.lock = threading.Lock()
+
+
+_RUN_STATE: contextvars.ContextVar = contextvars.ContextVar(
+    "aria_skill_run_state", default=None)
 _MANAGEMENT_TOOLS = {"skill_propose", "skill_list", "skill_show",
                      "skill_activate", "skill_retire"}
 
 
 def arm_skill_run(name: str, budget: Any) -> int:
     n = clamp_budget(budget)
-    _RUN.name = name
-    _RUN.remaining = n
+    _RUN_STATE.set(_SkillRunState(name, n))
     add_log(f"Skill '{name}' loaded for this turn "
             f"(tool-call budget {n}).")
     return n
 
 
 def clear_skill_run() -> None:
-    _RUN.name = None
-    _RUN.remaining = None
+    _RUN_STATE.set(None)
 
 
 def note_skill_tool_call(fn_name: str) -> Optional[str]:
     """Count one tool call against the armed skill's budget.
     Returns a block message when the budget is exhausted, else None.
     Fail-open by design at the dispatch call site."""
-    name = getattr(_RUN, "name", None)
-    if not name or fn_name in _MANAGEMENT_TOOLS:
+    state = _RUN_STATE.get()
+    if state is None or fn_name in _MANAGEMENT_TOOLS:
         return None
-    remaining = getattr(_RUN, "remaining", None)
-    if remaining is None:
+    with state.lock:
+        if state.remaining <= 0:
+            return (f"[Skill budget exhausted: '{state.name}' has used its "
+                    f"tool-call budget for this turn. Stop here and report "
+                    f"what was accomplished.]")
+        state.remaining -= 1
         return None
-    if remaining <= 0:
-        return (f"[Skill budget exhausted: '{name}' has used its "
-                "tool-call budget for this turn. Stop here and report "
-                "what was accomplished.]")
-    _RUN.remaining = remaining - 1
-    return None
 
 
 # --- autonomous-authoring daily counter -------------------------------------

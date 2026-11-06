@@ -207,6 +207,50 @@ def test_catalog_and_tools_empty_when_disabled(env):
 
 # --- budget -------------------------------------------------------------
 
+def test_budget_shared_across_copied_context(env):
+    # Pass 25 (P2#14): the budget used to live in a threading.local,
+    # so a Live tool call running in an executor worker (which gets
+    # only a copied context, via runtime.copied_call) never counted.
+    # A context copy carries the shared state object, so a worker's
+    # decrement is visible back on the arming thread.
+    import contextvars
+    import threading
+    store.arm_skill_run("list-sorter", 1)
+    ctx = contextvars.copy_context()
+    results = []
+
+    def worker():
+        results.append(ctx.run(store.note_skill_tool_call, "web_search"))
+        results.append(ctx.run(store.note_skill_tool_call, "web_search"))
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join()
+    assert results[0] is None
+    assert results[1] is not None and "budget exhausted" in results[1].lower()
+    # The worker's decrement is visible on the arming thread too.
+    assert store.note_skill_tool_call("web_search") is not None
+    store.clear_skill_run()
+
+
+def test_budget_not_visible_without_copied_context(env):
+    # A fresh thread with no copied context sees no budget — and
+    # cannot burn the arming thread's.
+    import threading
+    store.arm_skill_run("list-sorter", 1)
+    seen = []
+
+    def worker():
+        seen.append(store.note_skill_tool_call("web_search"))
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join()
+    assert seen[0] is None
+    assert store.note_skill_tool_call("web_search") is None
+    store.clear_skill_run()
+
+
 def test_budget_clamp_and_enforcement(env):
     assert store.clamp_budget(999) == 20
     assert store.clamp_budget(None) == 12
