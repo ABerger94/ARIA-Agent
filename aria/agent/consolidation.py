@@ -174,20 +174,56 @@ def retire(key: str, value: str, category: str, reason: str, *,
 
 def resolve_contradiction(cid: str, keep: str, *,
                           save: Callable = _save,
-                          delete: Callable = _delete) -> Optional[dict]:
+                          delete: Callable = _delete,
+                          existing: Callable = _existing) -> Optional[dict]:
     """Settle a queued contradiction. keep='new': archive the
     stored value and save the distilled claim. keep='old':
     archive the rejected claim, stored fact untouched. Returns
-    the settled entry, or None when the id is unknown."""
+    the settled entry, or None when the id is unknown.
+
+    keep='new' is compare-and-swap (pass 26 B3#6): the live
+    value is read first and the resolution REFUSES (raising
+    ValueError, entry stays queued) when a live value exists
+    that no longer matches the queued old_value — resolving
+    against a stale old_value would delete the CURRENT value
+    without archiving it. The replacement is saved FIRST and
+    verified to read back before the old value is retired, so a
+    failing save leaves the live key intact. The live row is
+    deleted only if it still holds the old value after the save
+    (the upsert save already replaced it, so deleting
+    unconditionally would destroy the replacement just saved).
+    A missing live row means there is nothing to protect: the
+    resolution proceeds and saves the claim."""
     rows = _read_json_list(_queue_path())
     entry = next((r for r in rows if r.get("id") == cid), None)
     if entry is None:
         return None
     if keep == "new":
+        cur = existing(entry["key"])
+        if cur is not None and _norm(cur[1]) != _norm(entry["old_value"]):
+            raise ValueError(
+                f"live value of '{entry['key']}' changed since this "
+                f"contradiction was queued — re-review it instead; "
+                f"nothing was changed and the entry stays queued")
+        save("consolidated", entry["key"], entry["new_value"])
+        after = existing(entry["key"])
+        if after is not None and _norm(after[1]) != _norm(entry["new_value"]):
+            # The save reported success but did not land: try to
+            # put the old value back, then refuse.
+            try:
+                save(cur[0] if cur else entry.get("old_category", ""),
+                     entry["key"], entry["old_value"])
+            except Exception:
+                pass
+            raise ValueError(
+                f"replacement for '{entry['key']}' did not read back "
+                f"after saving — nothing was retired and the entry "
+                f"stays queued")
         retire(entry["key"], entry["old_value"],
                entry.get("old_category", ""), "contradiction: replaced")
-        delete(entry["key"])
-        save("consolidated", entry["key"], entry["new_value"])
+        live = existing(entry["key"])
+        if live is not None and _norm(live[1]) == _norm(entry["old_value"]):
+            delete(entry["key"])
     else:
         retire(entry["key"], entry["new_value"], "consolidated",
                "contradiction: claim rejected")
