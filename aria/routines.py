@@ -475,6 +475,34 @@ def _record_pause(sname, paused_at, result, params, data) -> None:
         project = workspaces.current()
     except Exception:
         project = None
+    # The policy the pausing run had (pass 26 B1#2): a resume
+    # that reopens a bare execution drops the mission's cap and
+    # envelope, so the remaining steps run unenveloped/uncapped.
+    # Capture it here, from the pausing execution itself, and
+    # JSON-round-trip it — the record is persisted to disk, so
+    # anything unserializable is stringified, never allowed to
+    # break the save.
+    resume_context = None
+    try:
+        from aria import runtime as _runtime_mod
+        import copy as _copy_mod
+        _ctx = _runtime_mod.current()
+        _env = _ctx.envelope
+        try:
+            _env_copy = _copy_mod.deepcopy(_env) \
+                if _env is not None else None
+        except Exception:
+            _env_copy = dict(_env) if isinstance(_env, dict) else None
+        resume_context = {
+            "project": _ctx.project,
+            "budget_scope": _ctx.budget_scope,
+            "spend_cap": _ctx.spend_cap,
+            "envelope": _env_copy,
+        }
+        resume_context = json.loads(
+            json.dumps(resume_context, default=str))
+    except Exception:
+        resume_context = None
     _PAUSED[m.group(1)] = {
         "token": m.group(1),
         "name": sname,
@@ -483,6 +511,7 @@ def _record_pause(sname, paused_at, result, params, data) -> None:
         "params": saved_params,
         "revision": _routine_revision(data),
         "project": project,
+        "resume_context": resume_context,
         "paused_ts": time.time(),
     }
     _save_paused()
@@ -531,6 +560,31 @@ def _check_resume(record) -> str:
     return ""
 
 
+def _resume_execution(record):
+    """Open the execution a resumed routine runs under.
+
+    Records written since pass 26 carry resume_context — the
+    pausing execution's project, budget_scope, spend_cap, and
+    envelope — and the resume reopens under exactly those values,
+    so the remaining steps observe the same cap and envelope the
+    routine paused under (pass 26 B1#2). Records that predate the
+    field resume exactly as before (project only): explicit
+    values always win over the runtime.execution() inheritance
+    from the approving execution, and a missing field falls back
+    to that inheritance rather than failing the resume."""
+    from aria import runtime
+    ctx = record.get("resume_context") or {}
+    if not ctx:
+        return runtime.execution("routine-resume",
+                                 project=record.get("project"))
+    return runtime.execution(
+        "routine-resume",
+        project=ctx.get("project") or record.get("project"),
+        budget_scope=ctx.get("budget_scope") or None,
+        spend_cap=ctx.get("spend_cap"),
+        envelope=ctx.get("envelope"))
+
+
 def maybe_resume_for_token(token: str) -> str:
     """Resume the routine paused on this token, from the step AFTER
     the one that just executed. Called by approve_token's executed
@@ -547,9 +601,7 @@ def maybe_resume_for_token(token: str) -> str:
         config.add_log(f"[routines] resume refused: {problem}")
         return problem
     try:
-        from aria import runtime
-        with runtime.execution("routine-resume",
-                               project=record.get("project")):
+        with _resume_execution(record):
             return run_routine_impl(
                 record["name"], record.get("params") or {},
                 start_at=record.get("next_step", 1))
@@ -597,9 +649,7 @@ def resume_routine(name=None) -> str:
     if problem:
         return problem
     try:
-        from aria import runtime
-        with runtime.execution("routine-resume",
-                               project=record.get("project")):
+        with _resume_execution(record):
             return run_routine_impl(
                 record["name"], record.get("params") or {},
                 start_at=record.get("paused_at", 1))
