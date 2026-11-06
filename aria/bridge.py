@@ -1119,7 +1119,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 if not isinstance(msg, dict):
                     continue
                 if msg.get("type") == "result":
-                    hub.handle_result(msg)
+                    hub.handle_result(msg, node_name=name)
                 elif msg.get("type") == "ping":
                     _send({"type": "pong"})
         except Exception:

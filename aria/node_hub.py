@@ -163,18 +163,32 @@ class NodeHub:
 
     # ── result routing (endpoint side) ────────────────────────────────
 
-    def handle_result(self, msg: dict) -> bool:
+    def handle_result(self, msg: dict, node_name: str = None) -> bool:
         """Route one result frame to its waiting command.
 
         Returns True when the id was pending. An ok=false result
         completes the future with NodeHubError carrying the node's
         own error text, so the tool thread sees one failure shape
-        for every way a command can fail."""
+        for every way a command can fail.
+
+        Binding (B5#11): when `node_name` is given — the bridge
+        passes the registered name of the socket the frame
+        arrived on — the result is accepted only when it matches
+        the node the command was sent to; a mismatch is dropped
+        (False) and the pending entry is KEPT, so the intended
+        node can still answer. Binding is by node NAME, not
+        socket identity: a restarted phone re-registering under
+        the same name can still answer. With node_name=None the
+        old by-id routing applies (callers with no connection
+        identity)."""
         cid = str((msg or {}).get("id") or "")
         with self._lock:
-            pend = self._pending.pop(cid, None)
-        if pend is None:
-            return False
+            pend = self._pending.get(cid)
+            if pend is None:
+                return False
+            if node_name is not None and pend.node != node_name:
+                return False
+            del self._pending[cid]
         if pend.future.done():
             return True   # timed out / stranded first; answer is moot
         if msg.get("ok"):
@@ -234,8 +248,10 @@ class NodeHub:
         fut: concurrent.futures.Future = concurrent.futures.Future()
         with self._lock:
             # A same-named node may have been replaced between the
-            # pick and here; pending is keyed by node NAME, and the
-            # result routing does not care which socket answers.
+            # pick and here; pending is keyed by node NAME, and
+            # handle_result only accepts a result delivered by
+            # that name (B5#11) — a same-name replacement can
+            # still answer, another node cannot.
             self._pending[cid] = _Pending(node=target.name, future=fut)
 
         frame = {"type": "command", "id": cid, "action": action,
