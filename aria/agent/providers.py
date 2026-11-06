@@ -715,9 +715,12 @@ def _gemini_providers() -> List[Provider]:
     return out
 
 
-def _build_chain() -> List[Provider]:
-    """Providers in configured order. Phase 2/3 entries plug in here."""
-    registry: Dict[str, Provider] = {
+def _provider_registry() -> Dict[str, Provider]:
+    """Every named OpenAI-compatible leg, including opt-in ones
+    not in the default PROVIDER_CHAIN. _build_chain picks from
+    this by configured order; the tier opt-in path builds a named
+    leg from it on demand (pass 25)."""
+    return {
         "groq": OpenAICompatProvider(
             "groq", "https://api.groq.com/openai/v1", GROQ_API_KEY, GROQ_MODEL),
         "openrouter": OpenAICompatProvider(
@@ -741,6 +744,24 @@ def _build_chain() -> List[Provider]:
             "freellmapi", FREELLMAPI_BASE_URL,
             FREELLMAPI_API_KEY, FREELLMAPI_MODEL),
     }
+
+
+def _providers_by_name(name: Optional[str]) -> List[Provider]:
+    """Leg(s) for a provider name the configured chain may not
+    contain — the tier opt-in path (freellmapi, or any registry
+    leg dropped from PROVIDER_CHAIN). Empty for unknown names:
+    the caller logs and keeps the configured order."""
+    if not name:
+        return []
+    if name == "gemini":
+        return _gemini_providers()
+    provider = _provider_registry().get(name)
+    return [provider] if provider is not None else []
+
+
+def _build_chain() -> List[Provider]:
+    """Providers in configured order. Phase 2/3 entries plug in here."""
+    registry = _provider_registry()
     chain: List[Provider] = []
     for n in PROVIDER_CHAIN:
         if n == "gemini":
@@ -1129,6 +1150,23 @@ def provider_call(
         if rotated is not chain and rotated and rotated[0].name == chain_start:
             add_log(f"tier routing: chain starts at '{chain_start}'")
             chain = rotated
+        elif not chain or chain[0].name != chain_start:
+            # Named start is not in the configured chain: an opt-in
+            # leg (freellmapi) or a provider dropped from
+            # PROVIDER_CHAIN. Lead with it — the configured chain
+            # stays as fallback — instead of silently yielding
+            # the default order (pass 25). Unknown names log and
+            # keep the configured order.
+            extra = _providers_by_name(chain_start)
+            if extra:
+                add_log(f"tier routing: '{chain_start}' is not in "
+                        f"the configured chain; leading with the "
+                        f"opt-in leg")
+                chain = extra + chain
+            else:
+                add_log(f"tier routing: unknown chain start "
+                        f"'{chain_start}'; using the configured "
+                        f"chain order")
     # A5: skip providers inside their failure-cooldown window — unless
     # EVERY candidate is cooling down, in which case walk them anyway:
     # a possibly-sick provider beats a guaranteed-dead turn.

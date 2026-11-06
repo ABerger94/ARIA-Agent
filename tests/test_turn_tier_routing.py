@@ -156,6 +156,91 @@ def test_provider_call_chain_start_order():
     print("ok provider_call_chain_start_order")
 
 
+def test_provider_call_chain_start_opt_in_leg():
+    # Pass 25 (pass 21 runner-up): light_provider="freellmapi"
+    # with the default chain silently yielded the default order
+    # — _rotate_chain cannot add an absent provider. Now the
+    # tier path builds the opt-in leg from the registry and leads
+    # with it; the configured chain stays as fallback.
+    attempts = []
+    real_build = providers._build_chain
+    real_attempt = providers._attempt_provider_call
+    real_by_name = providers._providers_by_name
+    ok = {"candidates": [{"content": {"parts": [{"text": "hi"}]}}]}
+
+    def fake_attempt(provider, system_instruction, contents, tool_decls,
+                     on_text_chunk, model_override):
+        attempts.append(provider.name)
+        return (ok, False) if len(attempts) >= 2 else (None, False)
+
+    try:
+        providers._build_chain = lambda: [
+            _Stub(n) for n in ("gemini", "ollama_cloud", "groq")]
+        providers._attempt_provider_call = fake_attempt
+        providers._providers_by_name = lambda name: (
+            [_Stub("freellmapi")] if name == "freellmapi" else [])
+        # The earlier walk-order test parks gemini in failure
+        # cooldown; clear it so the fallback order is observable.
+        providers.clear_provider_cooldown()
+        providers.clear_model_cooldown()
+
+        attempts.clear()
+        data = providers.provider_call("sys", [{"role": "user", "parts": [{"text": "hi"}]}],
+                                       chain_start="freellmapi")
+        assert data is ok
+        assert attempts == ["freellmapi", "gemini"], attempts
+    finally:
+        providers._build_chain = real_build
+        providers._attempt_provider_call = real_attempt
+        providers._providers_by_name = real_by_name
+    print("ok provider_call_chain_start_opt_in_leg")
+
+
+def test_provider_call_chain_start_unknown_name_keeps_order():
+    # An unknown chain start must not invent a leg — and must not
+    # silently pretend the requested leg led, either: the
+    # configured order serves, and the miss is logged.
+    attempts = []
+    real_build = providers._build_chain
+    real_attempt = providers._attempt_provider_call
+    real_by_name = providers._providers_by_name
+    ok = {"candidates": [{"content": {"parts": [{"text": "hi"}]}}]}
+
+    def fake_attempt(provider, system_instruction, contents, tool_decls,
+                     on_text_chunk, model_override):
+        attempts.append(provider.name)
+        return (ok, False) if len(attempts) >= 2 else (None, False)
+
+    try:
+        providers._build_chain = lambda: [
+            _Stub(n) for n in ("gemini", "ollama_cloud", "groq")]
+        providers._attempt_provider_call = fake_attempt
+        providers._providers_by_name = lambda name: []
+        # Same cooldown clearing as the opt-in test above.
+        providers.clear_provider_cooldown()
+        providers.clear_model_cooldown()
+
+        attempts.clear()
+        data = providers.provider_call("sys", [{"role": "user", "parts": [{"text": "hi"}]}],
+                                       chain_start="nope")
+        assert data is ok
+        assert attempts == ["gemini", "ollama_cloud"], attempts
+    finally:
+        providers._build_chain = real_build
+        providers._attempt_provider_call = real_attempt
+        providers._providers_by_name = real_by_name
+    print("ok provider_call_chain_start_unknown_name_keeps_order")
+
+
+def test_providers_by_name_known_and_unknown():
+    assert [p.name for p in providers._providers_by_name("freellmapi")] == ["freellmapi"]
+    assert [p.name for p in providers._providers_by_name("groq")] == ["groq"]
+    assert providers._providers_by_name("nope") == []
+    assert providers._providers_by_name(None) == []
+    assert providers._providers_by_name("") == []
+    print("ok providers_by_name_known_and_unknown")
+
+
 if __name__ == "__main__":
     test_light_questions_and_chat()
     test_light_blockers_stay_standard()
@@ -164,3 +249,6 @@ if __name__ == "__main__":
     test_rotate_chain()
     test_resolve_tier_chain_start()
     test_provider_call_chain_start_order()
+    test_provider_call_chain_start_opt_in_leg()
+    test_provider_call_chain_start_unknown_name_keeps_order()
+    test_providers_by_name_known_and_unknown()
