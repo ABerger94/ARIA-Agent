@@ -106,6 +106,11 @@ def test_email_cooldown_blocks_burst(tmp_path, monkeypatch):
     assert len(engine.tick()) == 1
     mail.append(_mail("bank@x.com", "bill two", date="d2"))
     assert engine.tick() == []           # inside the 300s cooldown
+    # B5#4: the mail suppressed by the cooldown must NOT be
+    # consumed — once the cooldown expires it still fires.
+    clock.t += 301
+    out = engine.tick()
+    assert len(out) == 1 and "bill two" in out[0]["detail"]
     print("ok email_cooldown")
 
 

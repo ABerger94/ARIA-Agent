@@ -205,7 +205,14 @@ class TriggerEngine:
                           {"seen_mail": [], "folder_snaps": {},
                            "last_fired": {}})
 
-    # -- source checks: each returns a detail string or None --
+    # -- source checks: each returns (detail, commit) --
+    # detail is a string or None; commit is None or a callable
+    # taking the state dict. B5#4: a check must NOT advance the
+    # seen-cursor / folder snapshot itself — tick() applies the
+    # commit only after the cooldown passed AND _fire returned,
+    # so a match suppressed by the cooldown (or whose firing
+    # raises) stays unseen / still-new and fires on a later tick
+    # instead of being silently consumed.
     def _check_email(self, trigger, state):
         rule = trigger["rule"]
         # A rule may not consume another rule's messages. Seed old installs
@@ -236,13 +243,17 @@ class TriggerEngine:
                 ok = ok and (needle in sender or needle in subject)
             if ok:
                 fresh_matches.append(str(msg.get("subject", "")))
-        histories[key] = ordered[-300:]
         if fresh_matches:
             first = fresh_matches[0] or "(no subject)"
             extra = (f" (+{len(fresh_matches) - 1} more)"
                      if len(fresh_matches) > 1 else "")
-            return f"email: {first}{extra}"
-        return None
+
+            def _commit(st, _key=key, _ordered=ordered):
+                st.setdefault('seen_mail_by_trigger', {})[_key] = \
+                    _ordered[-300:]
+
+            return f"email: {first}{extra}", _commit
+        return None, None
 
     def _check_folder(self, trigger, state):
         from aria.inbox import INBOX_DIR
@@ -253,15 +264,23 @@ class TriggerEngine:
         snaps = state.setdefault("folder_snaps", {})
         key = str(trigger["id"])
         previous = snaps.get(key)
-        snaps[key] = current
         if previous is None:
-            return None  # first sight: baseline, never fire
+            # First sight: baseline, never fire. Recording the
+            # baseline itself is safe — those files never fire by
+            # design — so it commits here, not on a firing.
+            snaps[key] = current
+            return None, None
         new_names = [n for n in current
                      if n not in previous
                      and fnmatch.fnmatch(n, pattern)]
         if new_names:
-            return f"new file in {path}: {', '.join(sorted(new_names)[:3])}"
-        return None
+
+            def _commit(st, _key=key, _current=current):
+                st.setdefault("folder_snaps", {})[_key] = _current
+
+            return (f"new file in {path}: "
+                    f"{', '.join(sorted(new_names)[:3])}", _commit)
+        return None, None
 
     def _check_presence(self, trigger, state):
         min_away = float(trigger["rule"].get("min_away_s") or 1800)
@@ -272,13 +291,14 @@ class TriggerEngine:
         key = (workspaces.current(), trigger['id'])
         if not present:
             self._away_since.setdefault(key, now)
-            return None
+            return None, None
         since = self._away_since.pop(key, None)
         if since is not None:
             away_for = now - since
             if away_for >= min_away:
-                return f"your return after {int(away_for // 60)} min away"
-        return None
+                return (f"your return after {int(away_for // 60)} min away",
+                        None)
+        return None, None
 
     def tick(self) -> list:
         """One pass over all enabled triggers. Returns firing records."""
@@ -292,7 +312,7 @@ class TriggerEngine:
             if not trigger.get("enabled", True):
                 continue
             try:
-                detail = checks[trigger["source"]](trigger, state)
+                detail, commit = checks[trigger["source"]](trigger, state)
             except Exception as exc:  # a broken source fails quiet
                 add_log(f"[trigger] '{trigger['name']}' check failed: {exc}")
                 continue
@@ -307,6 +327,10 @@ class TriggerEngine:
             except Exception as exc:
                 add_log(f"[trigger] '{trigger['name']}' firing failed: {exc}")
                 continue
+            # B5#4: only now — cooldown passed and _fire returned —
+            # does the match get consumed (seen-cursor / snapshot).
+            if commit is not None:
+                commit(state)
             state.setdefault("last_fired", {})[str(trigger["id"])] = \
                 self._now()
             add_log(f"[trigger] '{trigger['name']}' fired ({detail}) "
