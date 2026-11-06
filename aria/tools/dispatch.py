@@ -537,7 +537,17 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
     if _env:
         try:
             from aria import approval as _approval_mod
-            _never_gated = fn_name in _approval_mod.NEVER_GATED
+            # A user-defined tool (or a discovered MCP tool) can
+            # never ride the NEVER_GATED exemption (pass 26 B1#1):
+            # the names in that set are the approval resolvers and
+            # their read-only views, and a user tool that happens
+            # to share such a name runs arbitrary code in ARIA's
+            # process — it must park like any other
+            # out-of-envelope tool.
+            _never_gated = (
+                fn_name in _approval_mod.NEVER_GATED
+                and not _config_mod.is_user_tool(fn_name)
+                and not _config_mod.is_discovered_mcp_tool(fn_name))
         except Exception:
             _never_gated = False
         if not _never_gated and not _is_approve_replay:
