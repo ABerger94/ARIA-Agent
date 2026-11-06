@@ -279,6 +279,7 @@ def run_routine_impl(name: str, params=None) -> str:
 
     lines = []
     paused_at = None
+    failed_at = None
     for i, step in enumerate(steps, 1):
         tool = step.get("tool", "?")
         args = _substitute(step.get("args", {}), params)
@@ -333,10 +334,25 @@ def run_routine_impl(name: str, params=None) -> str:
             lines.append(f"Routine paused at step {i}: awaiting user "
                          f"approval — later steps not run.")
             break
+        # Pass 25: an explicitly failed step stops the routine too.
+        # The old loop only stopped for approval, so a failure was
+        # logged and the next step ran on top of it — a routine
+        # whose first step failed still executed every later step.
+        # (Steps are never marked optional, so every failure stops.)
+        from aria.outcome import FAILED, normalize
+        if normalize(result).status == FAILED:
+            lines.append(f"Routine stopped at step {i}: '{tool}' "
+                         f"failed — later steps not run.")
+            failed_at = i
+            break
     config.add_log(f"[routines] ran '{sname}' ({len(steps)} steps, trusted={trusted})")
     if paused_at is not None:
         return (f"Routine '{sname}' PAUSED at step {paused_at} awaiting "
                 f"approval (trusted={'yes' if trusted else 'no'}):\n"
+                + "\n".join(lines))
+    if failed_at is not None:
+        return (f"Routine '{sname}' STOPPED at step {failed_at} "
+                f"(step failed, trusted={'yes' if trusted else 'no'}):\n"
                 + "\n".join(lines))
     return (f"Routine '{sname}' replayed ({len(steps)} steps, "
             f"trusted={'yes' if trusted else 'no'}):\n" + "\n".join(lines))
