@@ -34,7 +34,11 @@ FILE_ARGUMENTS = {
     'file_organize': ('directory',), 'file_find_advanced': ('directory',),
     'file_duplicates': ('directory',), 'disk_usage': ('directory',),
     'process_file': ('path',), 'vision_look': ('image_path',),
-    'github_push_file': ('filepath',),
+    # NOTE (pass 26 B5#8): github_push_file is deliberately absent —
+    # its `filepath` is a REMOTE repo path (URL-quoted into
+    # /repos/{repo}/contents/{path} by tool_github_push), never a
+    # local file, so the dispatch file_roots gate must not apply to
+    # it. GitHub token + repo scoping is the authorization boundary.
     # Pass 25: code_helper's file_path used to bypass the root
     # check entirely (it was absent here), so the helper could
     # read any file on disk when file_roots were configured.
