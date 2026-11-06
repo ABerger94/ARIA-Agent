@@ -1069,6 +1069,17 @@ def tool_watch_price(url: str, target_price: str, label: str = "item") -> str:
         )
         wid = cur.lastrowid
     add_log(f"Price watch #{wid}: {label} <= ${target:.2f}")
+    # Pass 26 B5#2: boot-time wiring is the only other caller of
+    # ensure_pricecheck_task, and it runs once with whatever
+    # watches exist then — a boot with zero watches scheduled
+    # nothing, so a watch added later never got hourly checks
+    # until restart. Best-effort and fail-soft: a scheduling
+    # failure must never break adding the watch.
+    try:
+        from aria import pricecheck as _pricecheck_mod
+        _pricecheck_mod.ensure_pricecheck_task()
+    except Exception:
+        pass
     return f"Watching '{label}' (#{wid}): I'll alert you when it's at or below ${target:.2f}. Checks run hourly."
 
 
