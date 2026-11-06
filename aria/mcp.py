@@ -551,6 +551,25 @@ def get_bridge() -> MCPBridge:
 # Tool registration into ARIA's dispatch + schemas
 # ---------------------------------------------------------------------------
 
+def _unique_tool_name(base: str, seen: set) -> str:
+    """De-dupe a sanitized tool name without hanging (pass 25).
+
+    The old loop appended "_2", "_3", ... AFTER truncating to 64
+    chars, so for a base already >= 64 chars the suffix was
+    truncated away, every candidate equalled the first name, and
+    registration spun forever. Reserve suffix space before
+    truncating, and bound the attempts."""
+    name = sanitize_tool_name(base)
+    if name not in seen:
+        return name
+    for i in range(2, 10002):
+        suffix = f"_{i}"
+        name = sanitize_tool_name(base[:64 - len(suffix)] + suffix)
+        if name not in seen:
+            return name
+    raise RuntimeError(f"could not de-dupe MCP tool name for {base!r}")
+
+
 def _register_server_tools(server: str, tools: List[Any]) -> List[str]:
     """Register each MCP tool as an ARIA tool. Returns the ARIA tool names."""
     from aria.tools import schemas as _schemas
@@ -560,11 +579,7 @@ def _register_server_tools(server: str, tools: List[Any]) -> List[str]:
     seen = set()
     for t in tools:
         base = f"mcp_{server}__{getattr(t, 'name', 'tool')}"
-        aria_name = sanitize_tool_name(base)
-        i = 2
-        while aria_name in seen:  # de-dupe after sanitization
-            aria_name = sanitize_tool_name(f"{base}_{i}")
-            i += 1
+        aria_name = _unique_tool_name(base, seen)
         seen.add(aria_name)
         schema = getattr(t, "inputSchema", None) or {}
         desc = getattr(t, "description", "") or getattr(t, "name", "")
