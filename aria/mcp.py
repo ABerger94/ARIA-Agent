@@ -326,7 +326,15 @@ class MCPBridge:
     def _run(self, coro, timeout: float = 60.0):
         loop = self._ensure_loop()
         fut = asyncio.run_coroutine_threadsafe(coro, loop)
-        return fut.result(timeout=timeout)
+        try:
+            return fut.result(timeout=timeout)
+        except Exception:
+            # Pass 26 B4#1: a timeout here used to leave the
+            # coroutine running in the loop with no handle to
+            # stop it. run_coroutine_threadsafe's future cancels
+            # the underlying task.
+            fut.cancel()
+            raise
 
     # -- connection ----------------------------------------------------------
     # Sessions are owned by a per-server "actor" coroutine that lives in the
@@ -443,13 +451,28 @@ class MCPBridge:
             # If we failed after ready, the serve loop is dead; pending
             # callers get here only via new calls, which check liveness.
 
-    async def _spawn_actor(self, name: str, cfg: Dict[str, Any]):
+    async def _spawn_actor(self, name: str, cfg: Dict[str, Any],
+                           ready_timeout: float = 25.0):
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
         ready: asyncio.Future = loop.create_future()
         task = asyncio.create_task(
             self._server_actor(name, cfg, queue, ready), name=f"aria-mcp-{name}")
-        tools = await asyncio.wait_for(asyncio.shield(ready), timeout=25.0)
+        try:
+            tools = await asyncio.wait_for(asyncio.shield(ready),
+                                           timeout=ready_timeout)
+        except asyncio.TimeoutError:
+            # Pass 26 B4#1: the old code let the timeout
+            # propagate with the actor task still alive — it sat
+            # in queue.get() holding the subprocess/session with
+            # no session entry able to stop it. Cancel the actor
+            # and wait briefly for it to exit, then re-raise.
+            task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+            raise
         return task, queue, tools
 
     async def _actor_call(self, name: str, tool: str, arguments: Dict[str, Any],
