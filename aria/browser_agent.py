@@ -15,10 +15,16 @@ Safety shape (the design Alek approved):
     the exact browser_agent call, and runs only if he approves it
     (the approved replay is recognized through
     approval.in_approve_replay, so the confirmed click completes
-    instead of re-stashing itself). Keyboard activation gets the
-    same treatment: Enter/Space on a focused control is checked
-    against the focused control (and, for Enter in a form field,
-    the form's submit controls) before the key is sent. The one
+    instead of re-stashing itself). Each stashed approval is
+    bound to the page URL and the browser session as well as
+    the label and target, and the approved replay re-checks
+    all three in the same session-thread call as the click —
+    a confirmation for one page can never execute on another
+    page's same-labelled control, or in a recreated session.
+    Keyboard activation gets the same treatment: Enter/Space on
+    a focused control is checked against the focused control
+    (and, for Enter in a form field, the form's submit controls)
+    before the key is sent. The one
     exception is approval mode 'auto': a guarded activation
     then runs without the approval step — Alek's ruling,
     2026-10-31: "make auto mean auto", extended to these gates
@@ -41,6 +47,7 @@ import queue
 import re
 import threading
 import urllib.parse
+import uuid
 
 from aria.config import WORKSPACE_DIR, add_log, get_setting
 
@@ -124,6 +131,28 @@ class BrowserSession:
         self.page = None
         self.elements = []      # display idx -> (real idx, tag, text)
         self.log = []           # step log lines
+        # Per-instance identity (pass 24): a dropped/recreated
+        # session gets a fresh nonce, so an approval confirmed
+        # in one browser session can never replay in another.
+        self.nonce = uuid.uuid4().hex
+
+    def context(self):
+        """Page + session identity for approval binding.
+
+        An approval confirmed for one page must not execute on
+        another: the guards bind each irreversible activation to
+        the page URL and this session instance, and the approved
+        replay re-checks both before it clicks/presses. A
+        persisted approval from an earlier session (new nonce
+        after any restart or close/reopen) matches nothing and
+        parks again for a fresh review instead of executing.
+        """
+        url = ""
+        try:
+            url = self.page.url if self.page is not None else ""
+        except Exception:
+            url = ""
+        return {"url": url or "", "session": self.nonce}
 
     def start(self):
         from playwright.sync_api import sync_playwright
@@ -470,59 +499,108 @@ def _guarded_click(target: str, *, approve_fn=None) -> str:
     label is irreversible, stash an approval and DO NOT click —
     unless this call IS the approved replay of that exact click.
 
-    The approval is bound to the LIVE label, not just the
-    target: approve_token() replays the stashed args, so a click
-    confirmed as 'Place order' must not execute if the element
-    at that target has since become 'Delete account' — the
-    replay marker then matches nothing, the click parks again
-    under the new label, and only a fresh confirmation lets it
-    through. (The label is part of the stashed args, so the
-    dashboard replay replays the exact confirmed call, label
-    included; tool_browser_agent ignores the extra field.)"""
+    The approval is bound to the LIVE label, the PAGE URL, and
+    the browser SESSION, not just the target: approve_token()
+    replays the stashed args, so a click confirmed as 'Place
+    order' on shop A must not execute if the element at that
+    target has since become 'Delete account', if the page has
+    navigated to shop B with the same label at the same target,
+    or if the browser session was closed and reopened — in all
+    three cases the replay marker matches nothing (or the
+    replay-time check below refuses) and the click parks again
+    under the new context, and only a fresh confirmation lets
+    it through. (The label, URL, and session ride in the stashed
+    args, so the dashboard replay replays the exact confirmed
+    call; tool_browser_agent ignores the extra fields.) The
+    approved replay re-resolves, re-checks label + page +
+    session, and clicks inside ONE session-thread call, so a
+    navigation between the probe and the click cannot
+    substitute a different page's same-labelled control. A live
+    label that is no longer irreversible still clicks — the
+    benign-click path would have clicked it with no approval
+    at all — but an irreversible live label in a moved context
+    always parks again."""
     def _probe(runner):
         session = runner.ensure_session()
         _loc, label = session._resolve(target)
-        return label
-    label = _RUNNER.call(_probe)
-    if _is_irreversible(label):
-        from aria import approval as _approval
-        # Approve replay (2026-10-28): approve_token() stashes
-        # the exact args for browser_agent and sets its replay
-        # marker while replaying it — the user already confirmed
-        # THIS click on screen, so it goes through. Without this
-        # check the replay re-probed the label and stashed a
-        # FRESH approval instead of clicking, so a confirmed
-        # irreversible click could never complete. Same marker
-        # run_shell_command checks (aria/tools/shelltool.py);
-        # read defensively so a partial approval module can
-        # never turn the guard off. The label rides in the args
-        # (2026-11-02 stale-index fix): a replay whose live
-        # label differs from the confirmed label matches no
-        # marker and parks again, instead of executing a click
-        # the user never confirmed.
-        approval_args = {"action": "click", "target": target,
-                         "label": label}
-        try:
-            _in_replay = getattr(_approval, "in_approve_replay", None)
-            in_replay = bool(_in_replay(
-                "browser_agent", approval_args)) \
-                if callable(_in_replay) else False
-        except Exception:
-            in_replay = False
-        # Auto lane (see _auto_lane_open): an approved replay, or
-        # a live call in auto mode with safe mode off, falls
-        # through and clicks; anything else parks below.
-        if not in_replay and not _auto_lane_open(_approval):
-            request = approve_fn or _approval.request_approval
-            return request(
-                "browser_agent", approval_args,
-                desc=f"Browser agent is about to click '{label}' "
-                     f"({target}) — this looks irreversible.")
-    def _do(runner):
+        return label, session.context()
+    label, ctx = _RUNNER.call(_probe)
+    if not _is_irreversible(label):
+        def _do(runner):
+            session = runner.ensure_session()
+            clicked = session.click(target)
+            return f"Clicked '{clicked or target}'. " + session.read()
+        return _RUNNER.call(_do)
+    from aria import approval as _approval
+    # Approve replay (2026-10-28): approve_token() stashes
+    # the exact args for browser_agent and sets its replay
+    # marker while replaying it — the user already confirmed
+    # THIS click on screen, so it goes through. Without this
+    # check the replay re-probed the label and stashed a
+    # FRESH approval instead of clicking, so a confirmed
+    # irreversible click could never complete. Same marker
+    # run_shell_command checks (aria/tools/shelltool.py);
+    # read defensively so a partial approval module can
+    # never turn the guard off. The label rides in the args
+    # (2026-11-02 stale-index fix): a replay whose live
+    # label differs from the confirmed label matches no
+    # marker and parks again, instead of executing a click
+    # the user never confirmed. The URL and session ride
+    # alongside it (pass 24): a replay on a different page,
+    # or in a recreated session, matches no marker either.
+    approval_args = {"action": "click", "target": target,
+                     "label": label, "url": ctx["url"],
+                     "session": ctx["session"]}
+    try:
+        _in_replay = getattr(_approval, "in_approve_replay", None)
+        in_replay = bool(_in_replay(
+            "browser_agent", approval_args)) \
+            if callable(_in_replay) else False
+    except Exception:
+        in_replay = False
+    # Auto lane (see _auto_lane_open): a live call in auto mode
+    # with safe mode off clicks with no approval at all — that
+    # lane carries no confirmation to protect, so it takes the
+    # plain click below; the binding protects confirmed
+    # approvals, which only the replay path has.
+    if not in_replay and not _auto_lane_open(_approval):
+        request = approve_fn or _approval.request_approval
+        return request(
+            "browser_agent", approval_args,
+            desc=f"Browser agent is about to click '{label}' "
+                 f"({target}) on {ctx['url'] or 'the current page'} — "
+                 "this looks irreversible.")
+    if not in_replay:
+        def _do(runner):
+            session = runner.ensure_session()
+            clicked = session.click(target)
+            return f"Clicked '{clicked or target}'. " + session.read()
+        return _RUNNER.call(_do)
+    # Approved replay: validate the live context and click in
+    # one session-thread call (see the docstring).
+    def _do_checked(runner):
         session = runner.ensure_session()
+        _loc, live_label = session._resolve(target)
+        live_ctx = session.context()
+        if _is_irreversible(live_label) and (
+                live_label != label or live_ctx != ctx):
+            return ("stale", live_label, live_ctx)
         clicked = session.click(target)
-        return f"Clicked '{clicked or target}'. " + session.read()
-    return _RUNNER.call(_do)
+        return ("clicked", clicked, session.read())
+    kind, a, b = _RUNNER.call(_do_checked)
+    if kind == "clicked":
+        return f"Clicked '{a or target}'. " + b
+    # The confirmed page moved: park again under the live page
+    # for a fresh review — never execute the old confirmation
+    # against the new page.
+    fresh_args = {"action": "click", "target": target, "label": a,
+                  "url": b["url"], "session": b["session"]}
+    request = approve_fn or _approval.request_approval
+    return request(
+        "browser_agent", fresh_args,
+        desc=f"Browser agent is about to click '{a}' ({target}) on "
+             f"{b['url'] or 'the current page'} — this looks "
+             "irreversible.")
 
 
 _UNLABELLED_CONTROL = "unlabelled focused control"
@@ -623,8 +701,15 @@ def _guarded_press(key: str, *, approve_fn=None) -> str:
     focused, so probe the focused control on the session thread;
     if the press would trigger an irreversible action, stash an
     approval for the exact press call and DO NOT press — unless
-    this call IS the approved replay of that exact press. A failed
-    probe on an activation key never results in a press.
+    this call IS the approved replay of that exact press. The
+    approval is bound to the probed label, the PAGE URL, and
+    the browser SESSION (pass 24, same as clicks): a press
+    confirmed against 'Place order' on shop A must not execute
+    if focus is now on the same-labelled control of shop B, or
+    the session was recreated — the replay re-probes focus and
+    re-checks label + page + session inside one session-thread
+    call, and a moved context parks again for a fresh review.
+    A failed probe on an activation key never results in a press.
     Non-activation keys pass through with no probe at all.
     """
     def _do(runner):
@@ -636,10 +721,10 @@ def _guarded_press(key: str, *, approve_fn=None) -> str:
 
     def _probe(runner):
         session = runner.ensure_session()
-        return session.focused_info()
+        return session.focused_info(), session.context()
 
     try:
-        info = _RUNNER.call(_probe)
+        info, ctx = _RUNNER.call(_probe)
     except Exception:
         return (f"browser_agent: press refused — I could not verify "
                 f"the focused control, so '{key}' was not pressed.")
@@ -654,30 +739,73 @@ def _guarded_press(key: str, *, approve_fn=None) -> str:
     # carries the label the user confirmed. A press confirmed
     # against 'Place order' whose focus has since moved to a
     # 'Delete account' control matches nothing and parks again
-    # under the new label. tool_browser_agent ignores the extra
-    # 'label' field, as it does for clicks.
-    press_args = {"action": "press", "key": key, "label": label}
+    # under the new label. The URL and session ride alongside
+    # the label (pass 24): the same-labelled control on a
+    # different page, or in a recreated session, matches
+    # nothing either. tool_browser_agent ignores the extra
+    # fields, as it does for clicks.
+    press_args = {"action": "press", "key": key, "label": label,
+                  "url": ctx["url"], "session": ctx["session"]}
     try:
         _in_replay = getattr(_approval, "in_approve_replay", None)
         in_replay = bool(_in_replay("browser_agent", press_args)) \
             if callable(_in_replay) else False
     except Exception:
         in_replay = False
-    # Auto lane (see _auto_lane_open): an approved replay, or a
-    # live press in auto mode with safe mode off, falls through
-    # and presses; anything else parks below.
+    # Auto lane (see _auto_lane_open): a live press in auto mode
+    # with safe mode off presses with no approval at all — that
+    # lane carries no confirmation to protect, so it takes the
+    # plain press below; the binding protects confirmed
+    # approvals, which only the replay path has.
     if not in_replay and not _auto_lane_open(_approval):
         request = approve_fn or _approval.request_approval
         if label == _UNLABELLED_CONTROL:
             desc = (f"Browser agent is about to press '{key}' with "
-                    f"an unlabelled control focused — this cannot "
-                    f"be proven safe.")
+                    f"an unlabelled control focused on "
+                    f"{ctx['url'] or 'the current page'} — this "
+                    "cannot be proven safe.")
         else:
             desc = (f"Browser agent is about to press '{key}' — "
-                    f"this would trigger '{label}', which looks "
-                    f"irreversible.")
+                    f"this would trigger '{label}' on "
+                    f"{ctx['url'] or 'the current page'}, which looks "
+                    "irreversible.")
         return request("browser_agent", press_args, desc=desc)
-    return _RUNNER.call(_do)
+    if not in_replay:
+        return _RUNNER.call(_do)
+    # Approved replay: re-probe focus, re-check label + page +
+    # session, and press inside ONE session-thread call, so a
+    # navigation or focus move between the probe and the press
+    # cannot substitute a different page's same-labelled
+    # control. A focus that no longer needs a guard presses
+    # (the benign-press path would have pressed it with no
+    # approval at all); a moved irreversible context parks
+    # again under the live page.
+    def _do_checked(runner):
+        session = runner.ensure_session()
+        live_info = session.focused_info()
+        live_label = _press_guard_label(live_info, key)
+        live_ctx = session.context()
+        if live_label is not None and (
+                live_label != label or live_ctx != ctx):
+            return ("stale", live_label, live_ctx)
+        return ("pressed", session.press(key), None)
+    kind, a, b = _RUNNER.call(_do_checked)
+    if kind == "pressed":
+        return a
+    fresh_args = {"action": "press", "key": key, "label": a,
+                  "url": b["url"], "session": b["session"]}
+    request = approve_fn or _approval.request_approval
+    if a == _UNLABELLED_CONTROL:
+        desc = (f"Browser agent is about to press '{key}' with an "
+                f"unlabelled control focused on "
+                f"{b['url'] or 'the current page'} — this cannot "
+                "be proven safe.")
+    else:
+        desc = (f"Browser agent is about to press '{key}' — this "
+                f"would trigger '{a}' on "
+                f"{b['url'] or 'the current page'}, which looks "
+                "irreversible.")
+    return request("browser_agent", fresh_args, desc=desc)
 
 
 # ---------------- the tool ----------------

@@ -130,8 +130,9 @@ def test_stale_index_click_parks_under_live_label():
     assert page.clicks == []                      # never clicked
     assert "AWAITING_APPROVAL" in out
     assert len(stashed) == 1
-    assert stashed[0][1] == {"action": "click", "target": "index:0",
-                             "label": "Delete account"}
+    assert stashed[0][1]["label"] == "Delete account"
+    assert stashed[0][1]["url"] == "https://shop.example/"
+    assert "session" in stashed[0][1]
     assert "Delete account" in stashed[0][2]
     print("ok stale_index_parks_live_label")
 
@@ -159,9 +160,7 @@ def test_approved_click_does_not_execute_after_label_change():
     page.elements[0] = ("button", "Delete account")
     mod = sys.modules["aria.approval"]
     mod.in_approve_replay = lambda tool, args: \
-        tool == "browser_agent" and args == {
-            "action": "click", "target": "index:0",
-            "label": "Place order"}
+        tool == "browser_agent" and args == stashed[0][1]
     out = ba.tool_browser_agent({"action": "click", "target": "index:0"})
     assert page.clicks == []          # confirmed label no longer there
     assert "AWAITING_APPROVAL" in out
@@ -178,9 +177,7 @@ def test_approved_click_executes_when_label_unchanged():
     ba.tool_browser_agent({"action": "click", "target": "index:0"})
     mod = sys.modules["aria.approval"]
     mod.in_approve_replay = lambda tool, args: \
-        tool == "browser_agent" and args == {
-            "action": "click", "target": "index:0",
-            "label": "Place order"}
+        tool == "browser_agent" and args == stashed[0][1]
     out = ba.tool_browser_agent({"action": "click", "target": "index:0"})
     assert page.clicks == [0]
     assert "Clicked 'Place order'" in out

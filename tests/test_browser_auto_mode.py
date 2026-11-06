@@ -75,6 +75,11 @@ class FakeSession:
                         "activatable": False, "is_form_field": False,
                         "form_submit_labels": []}
         self.started = False
+        self.url = "https://shop.example/"
+        self.nonce = "fake-session-1"
+
+    def context(self):
+        return {"url": self.url, "session": self.nonce}
 
     def start(self):
         self.started = True
@@ -250,14 +255,14 @@ def test_confirm_risky_click_parks_and_replay_executes_once():
         assert "AWAITING_APPROVAL" in out
         assert stashed and stashed[0][1] == {
             "action": "click", "target": "index:0",
-            "label": "Place order"}
+            "label": "Place order",
+            "url": "https://shop.example/",
+            "session": "fake-session-1"}
         # The user's Confirm: approve_token replays the exact
         # call with the marker set — it executes, and does NOT
         # stash a second approval (exactly once).
         mod.in_approve_replay = lambda tool, args: \
-            tool == "browser_agent" and args == {
-                "action": "click", "target": "index:0",
-                "label": "Place order"}
+            tool == "browser_agent" and args == stashed[0][1]
         out = ba.tool_browser_agent({"action": "click",
                                      "target": "index:0"})
     assert fake.clicks == ["index:0"]
@@ -277,11 +282,11 @@ def test_confirm_risky_press_parks_and_replay_executes_once():
         assert fake.presses == []
         assert "AWAITING_APPROVAL" in out
         assert stashed and stashed[0][1] == {
-            "action": "press", "key": "Enter", "label": "Place order"}
+            "action": "press", "key": "Enter", "label": "Place order",
+            "url": "https://shop.example/",
+            "session": "fake-session-1"}
         mod.in_approve_replay = lambda tool, args: \
-            tool == "browser_agent" and args == {
-                "action": "press", "key": "Enter",
-                "label": "Place order"}
+            tool == "browser_agent" and args == stashed[0][1]
         ba.tool_browser_agent({"action": "press", "key": "Enter"})
     assert fake.presses == ["Enter"]
     assert len(stashed) == 1

@@ -51,6 +51,11 @@ class FakeSession:
                         "form_submit_labels": []}
         self.started = False
         self.closed = False
+        self.url = "https://shop.example/"
+        self.nonce = "fake-session-1"
+
+    def context(self):
+        return {"url": self.url, "session": self.nonce}
 
     def start(self):
         self.started = True
@@ -166,7 +171,9 @@ def test_irreversible_click_is_stashed_not_executed():
     assert "AWAITING_APPROVAL" in out
     assert stashed and stashed[0][0] == "browser_agent"
     assert stashed[0][1] == {"action": "click", "target": "index:0",
-                             "label": "Place order"}
+                             "label": "Place order",
+                             "url": "https://shop.example/",
+                             "session": "fake-session-1"}
     assert "Place order" in stashed[0][2]
     print("ok irreversible_stashed")
 
@@ -206,7 +213,9 @@ def test_irreversible_click_executes_on_approve_replay():
     _mod, stashed = _fake_approval_with_replay(
         lambda tool, args: tool == "browser_agent"
         and args == {"action": "click", "target": "index:0",
-                     "label": "Place order"})
+                     "label": "Place order",
+                     "url": "https://shop.example/",
+                     "session": "fake-session-1"})
     ba.tool_browser_agent({"action": "open",
                            "url": "https://shop.example/"})
     out = ba.tool_browser_agent({"action": "click",
@@ -231,7 +240,9 @@ def test_irreversible_click_replay_for_other_args_still_stashed():
     assert "AWAITING_APPROVAL" in out
     assert stashed and stashed[0][1] == {"action": "click",
                                           "target": "index:0",
-                                          "label": "Place order"}
+                                          "label": "Place order",
+                                          "url": "https://shop.example/",
+                                          "session": "fake-session-1"}
     print("ok irreversible_replay_mismatch_stashed")
 
 
@@ -259,7 +270,9 @@ def test_irreversible_click_replay_with_real_approval_module():
                                "url": "https://shop.example/"})
         real._replay_local.current = (
             "browser_agent", {"action": "click", "target": "index:0",
-                              "label": "Place order"})
+                              "label": "Place order",
+                              "url": "https://shop.example/",
+                              "session": "fake-session-1"})
         try:
             out = ba.tool_browser_agent({"action": "click",
                                          "target": "index:0"})
@@ -349,7 +362,9 @@ def test_irreversible_press_is_stashed_not_executed():
     assert "AWAITING_APPROVAL" in out
     assert stashed and stashed[0][0] == "browser_agent"
     assert stashed[0][1] == {"action": "press", "key": "Enter",
-                             "label": "Place order"}
+                             "label": "Place order",
+                             "url": "https://shop.example/",
+                             "session": "fake-session-1"}
     assert "Enter" in stashed[0][2]
     assert "Place order" in stashed[0][2]
     print("ok irreversible_press_stashed")
@@ -361,7 +376,9 @@ def test_irreversible_press_executes_on_approve_replay():
     _mod, stashed = _fake_approval_with_replay(
         lambda tool, args: tool == "browser_agent"
         and args == {"action": "press", "key": "Enter",
-                     "label": "Place order"})
+                     "label": "Place order",
+                     "url": "https://shop.example/",
+                     "session": "fake-session-1"})
     ba.tool_browser_agent({"action": "open",
                            "url": "https://shop.example/"})
     out = ba.tool_browser_agent({"action": "press", "key": "Enter"})
@@ -384,7 +401,9 @@ def test_irreversible_press_replay_for_other_args_still_stashed():
     assert "AWAITING_APPROVAL" in out
     assert stashed and stashed[0][1] == {"action": "press",
                                          "key": "Enter",
-                                         "label": "Place order"}
+                                         "label": "Place order",
+                                         "url": "https://shop.example/",
+                                         "session": "fake-session-1"}
     print("ok irreversible_press_replay_mismatch_stashed")
 
 
@@ -399,7 +418,9 @@ def test_enter_in_field_with_irreversible_submit_is_stashed():
     assert "AWAITING_APPROVAL" in out
     assert stashed and stashed[0][1] == {"action": "press",
                                          "key": "Enter",
-                                         "label": "Send message"}
+                                         "label": "Send message",
+                                         "url": "https://shop.example/",
+                                         "session": "fake-session-1"}
     assert "Send message" in stashed[0][2]
     print("ok enter_irreversible_submit_stashed")
 

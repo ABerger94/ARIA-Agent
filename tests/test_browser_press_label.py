@@ -57,6 +57,11 @@ class FakeSession:
     def __init__(self, label):
         self.focus_label = label
         self.presses = []
+        self.url = "https://shop.example/"
+        self.nonce = "fake-session-1"
+
+    def context(self):
+        return {"url": self.url, "session": self.nonce}
 
     def focused_info(self):
         return _button_focus(self.focus_label)

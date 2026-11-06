@@ -204,9 +204,7 @@ def test_css_confirmed_replay_executes_once():
     assert page.clicks == [] and len(stashed) == 1
     mod = sys.modules["aria.approval"]
     mod.in_approve_replay = lambda tool, args: \
-        tool == "browser_agent" and args == {
-            "action": "click", "target": "#delete",
-            "label": "Delete account"}
+        tool == "browser_agent" and args == stashed[0][1]
     out = ba.tool_browser_agent({"action": "click", "target": "#delete"})
     assert page.clicks == [0]
     assert len(stashed) == 1  # no re-stash
