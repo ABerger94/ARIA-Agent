@@ -935,17 +935,28 @@ def _tool_restart_program(args: dict) -> str:
     ("restart your program" / "restart yourself" / "restart the
     app"). Direct commands only: a routine replay rides
     preauthorized scope, a delegated worker rides delegated scope,
-    and neither may relaunch the host process. The brain owns the
-    relaunch itself (availability check, arbiter, speech drain) —
-    lazy import: brain imports dispatch, never the reverse at
-    module load."""
-    if in_preauthorized_scope():
-        return ("[restart_program refused: a restart is a direct command "
-                "only — never inside a routine or an approved replay. "
-                "Ask me directly and I will restart.]")
+    and neither may relaunch the host process — with ONE
+    exception (pass 26 B5#5): the approved replay of a
+    restart_program call the user parked under confirm-all IS a
+    direct command, confirmed by their own tap. approval.
+    in_approve_replay() marks exactly that call, so the handler
+    lets it through and keeps refusing routine replays (which
+    carry no marker). The brain owns the relaunch itself
+    (availability check, arbiter, speech drain) — lazy import:
+    brain imports dispatch, never the reverse at module load."""
+    try:
+        from aria import approval as _approval_mod
+        _is_approve_replay = _approval_mod.in_approve_replay(
+            "restart_program", args or {})
+    except Exception:
+        _is_approve_replay = False
     if in_delegated_scope():
         return ("[restart_program refused: a delegated task cannot "
                 "restart the program it is running inside.]")
+    if not _is_approve_replay and in_preauthorized_scope():
+        return ("[restart_program refused: a restart is a direct command "
+                "only — never inside a routine replay. "
+                "Ask me directly and I will restart.]")
     from aria.agent import brain as _brain_mod
     return _brain_mod.request_program_restart()
 
