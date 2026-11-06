@@ -1590,7 +1590,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
         ).encode("utf-8"))
 
 
-def start_bridge_server(port: int = PHONE_BRIDGE_PORT) -> ThreadingHTTPServer:
+def start_bridge_server(port: int = PHONE_BRIDGE_PORT) -> Optional[ThreadingHTTPServer]:
+    """Start the phone bridge. Returns the server, or None when
+    the HTTPS wrap fails — the bridge stays down rather than
+    serving plaintext on a port configured for TLS."""
     global _BRIDGE_SERVER, _BRIDGE_ACTUAL_SCHEME
     ensure_bridge_cert()
     # Bind host: 0.0.0.0 by default (the phone must be able to reach
@@ -1605,9 +1608,19 @@ def start_bridge_server(port: int = PHONE_BRIDGE_PORT) -> ThreadingHTTPServer:
             ctx.load_cert_chain(certfile=BRIDGE_CERT, keyfile=BRIDGE_KEY)
             srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
         except Exception as e:
-            add_log(f"Bridge TLS wrap failed: {e}")
-            print(f"[ARIA] Bridge TLS wrap failed: {e}", flush=True)
-            online_scheme = "http"  # the socket stayed plain
+            # Fail CLOSED, not open: the operator configured HTTPS
+            # (a cert exists and the scheme says so), so serving
+            # plaintext on the same port would put the bridge token
+            # on the wire unencrypted while the phone still
+            # believed it was talking TLS. Do not serve at all.
+            add_log(f"Bridge TLS wrap failed — bridge NOT started: {e}")
+            print(f"[ARIA] Bridge TLS wrap failed — bridge NOT "
+                  f"started: {e}", flush=True)
+            try:
+                srv.server_close()
+            except Exception:
+                pass
+            return None
     _BRIDGE_ACTUAL_SCHEME = online_scheme
     _BRIDGE_SERVER = srv
     # Advertise the address ACTUALLY bound, in its phone-ready

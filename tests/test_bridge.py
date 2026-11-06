@@ -635,3 +635,33 @@ def test_cert_download_route(tmp_path):
             bridge._BRIDGE_SERVER.server_close()
             bridge._BRIDGE_SERVER = None
     print("ok cert_download_route")
+
+
+def test_tls_wrap_failure_does_not_serve_plaintext():
+    # Pass 25 (P1#13): a failed TLS wrap used to fall back to
+    # plaintext HTTP on the same port — the bridge token on the
+    # wire while the phone believed it was TLS. Now the bridge
+    # stays down: no server is recorded and the thread ends.
+    _setup_bridge()
+    _SETTINGS["phone_bridge_host"] = "127.0.0.1"
+
+    def fake_ensure():
+        bridge.BRIDGE_SCHEME = "https"
+        bridge.BRIDGE_CERT = "/nonexistent/cert.pem"
+        bridge.BRIDGE_KEY = "/nonexistent/key.pem"
+
+    real_ensure = bridge.ensure_bridge_cert
+    bridge.ensure_bridge_cert = fake_ensure
+    bridge._BRIDGE_SERVER = None
+    try:
+        t = threading.Thread(target=bridge.start_bridge_server,
+                             kwargs={"port": 0}, daemon=True)
+        t.start()
+        t.join(timeout=10)
+        assert not t.is_alive(), (
+            "bridge thread still serving after TLS wrap failure")
+        assert bridge._BRIDGE_SERVER is None, (
+            "bridge started despite TLS wrap failure")
+    finally:
+        bridge.ensure_bridge_cert = real_ensure
+    print("ok tls_wrap_failure_does_not_serve_plaintext")
