@@ -79,13 +79,32 @@ def test_oai_id_preserved():
 
 
 def test_bad_tool_args():
+    # Pass 25: invalid JSON (or a non-object) must NOT silently
+    # become {} — {} reached handlers with their defaults
+    # (media_key toggling playback). The parse failure is
+    # preserved as a marker the dispatcher rejects.
     parts = oai_response_to_parts({
         "choices": [{"message": {
             "tool_calls": [{"id": "c1", "type": "function",
                             "function": {"name": "x", "arguments": "{not json"}}],
         }}]
     })
-    assert parts[0]["functionCall"]["args"] == {}
+    assert parts[0]["functionCall"]["args"] == {"_args_parse_error": True}
+    parts = oai_response_to_parts({
+        "choices": [{"message": {
+            "tool_calls": [{"id": "c2", "type": "function",
+                            "function": {"name": "x", "arguments": "[1, 2]"}}],
+        }}]
+    })
+    assert parts[0]["functionCall"]["args"] == {"_args_parse_error": True}
+    # Valid JSON is untouched.
+    parts = oai_response_to_parts({
+        "choices": [{"message": {
+            "tool_calls": [{"id": "c3", "type": "function",
+                            "function": {"name": "x", "arguments": '{"a": 1}'}}],
+        }}]
+    })
+    assert parts[0]["functionCall"]["args"] == {"a": 1}
     print("ok bad_tool_args")
 
 

@@ -363,7 +363,7 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
                           'type': 'OBJECT'}},
     {   'description': 'Press a media key: mute, volume_up, volume_down, play_pause, next, prev.',
         'name': 'media_key',
-        'parameters': {'properties': {'action': {'type': 'STRING'}, 'key': {'type': 'STRING'}}, 'required': [], 'type': 'OBJECT'}},
+        'parameters': {'properties': {'action': {'type': 'STRING'}, 'key': {'type': 'STRING'}}, 'required': ['action'], 'type': 'OBJECT'}},
     {   'description': 'Look up a Magic: The Gathering card on Scryfall — rules text, type, mana cost, market price. '
                        'Free, no key. Great for deck talk.',
         'name': 'mtg_card',

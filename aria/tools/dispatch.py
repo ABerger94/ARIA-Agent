@@ -381,6 +381,17 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
     """
     
     runtime.check_cancelled()
+    # Malformed-arguments marker (pass 25): the provider parsers
+    # preserve a JSON parse failure as _args_parse_error instead
+    # of substituting {} — a substituted {} used to reach handlers
+    # with their defaults (media_key toggling playback). Reject
+    # before validation, gating, or any handler runs, and before
+    # the call is recorded anywhere.
+    if isinstance(args, dict) and args.get("_args_parse_error"):
+        return (f"[Argument error: {fn_name} was called with "
+                f"arguments that could not be parsed — nothing was "
+                f"executed. Call it again with valid arguments.]",
+                False)
     for key in FILE_ARGUMENTS.get(fn_name, ()):
         path = (args or {}).get(key)
         if not path:

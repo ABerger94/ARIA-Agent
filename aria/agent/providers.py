@@ -383,9 +383,14 @@ def oai_response_to_parts(resp_json: Dict[str, Any]) -> List[Dict[str, Any]]:
             try:
                 args = json.loads(raw_args) if isinstance(raw_args, str) else {}
             except Exception:
-                args = {}
+                # Pass 25: a parse failure used to be silently
+                # replaced with {} — and {} then reached handlers
+                # with their defaults (media_key toggling
+                # playback). Preserve the failure as a marker the
+                # dispatcher rejects before anything executes.
+                args = {"_args_parse_error": True}
             if not isinstance(args, dict):
-                args = {}
+                args = {"_args_parse_error": True}
             call = {
                 "name": fn.get("name", ""),
                 "args": args,
@@ -559,9 +564,12 @@ class OpenAICompatProvider(Provider):
             try:
                 args = json.loads(acc["args"]) if acc["args"] else {}
             except Exception:
-                args = {}
+                # Same marker as oai_response_to_parts above: a
+                # truncated/streamed args fragment must never
+                # become an executable {}.
+                args = {"_args_parse_error": True}
             if not isinstance(args, dict):
-                args = {}
+                args = {"_args_parse_error": True}
             call = {
                 "name": acc["name"] or "",
                 "args": args,

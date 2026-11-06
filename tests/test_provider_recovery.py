@@ -220,6 +220,21 @@ def test_done_stream_marker_stops_reading_the_connection():
     assert provider()._parse_sse_stream(Response(lines=lines()), None) == [{'text': 'Done.'}]
 
 
+def test_truncated_sse_tool_args_are_marked_not_defaulted():
+    # Pass 25: a streamed args fragment that never completes
+    # valid JSON must NOT become {} (which would execute with
+    # handler defaults). It carries the parse-error marker the
+    # dispatcher rejects.
+    def lines():
+        yield b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c9","function":{"name":"media_key","arguments":"{\\"action\\": "}}]}}]}'
+        yield b'data: [DONE]'
+    parts = provider()._parse_sse_stream(Response(lines=lines()), None)
+    assert len(parts) == 1, parts
+    fc = parts[0]["functionCall"]
+    assert fc["name"] == "media_key"
+    assert fc["args"] == {"_args_parse_error": True}, fc["args"]
+
+
 def test_hello_reaches_the_provider_with_legacy_limits_and_no_prices(monkeypatch, tmp_path):
     from aria import memory
     monkeypatch.setattr(memory, 'db_path', lambda: str(tmp_path / 'usage.db'))
