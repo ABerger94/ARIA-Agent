@@ -34,6 +34,7 @@ jobs:
         with:
           name: linux-test-results
           path: test-results/
+          retention-days: 2
 
   browser:
     runs-on: ubuntu-latest
@@ -89,3 +90,4 @@ jobs:
           path: |
             dist/ARIA/
             installer/Output/*.exe
+          retention-days: 2
