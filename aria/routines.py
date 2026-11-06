@@ -33,6 +33,7 @@ lazily inside functions — never at module level (no import cycles).
 # --- END SNIPPET ---
 # ============================================================================
 
+import hashlib
 import json
 import os
 import re
@@ -358,10 +359,45 @@ def run_routine_impl(name: str, params=None) -> str:
             f"trusted={'yes' if trusted else 'no'}):\n" + "\n".join(lines))
 
 
-def _save_trusted(sname: str, trusted: bool) -> str:
+def _routine_revision(data) -> str:
+    """Content hash of what the routine DOES (name + steps).
+
+    The trust decision is about these steps; a re-recorded or
+    edited routine with the same name is a different routine.
+    """
+    payload = json.dumps({"name": data.get("name"),
+                          "steps": data.get("steps", [])},
+                         sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def freeze_trust_args(args) -> dict:
+    """Bind a trust_routine approval to the routine revision as it
+    stands NOW (pass 25, the skill-activation freeze precedent):
+    the dispatcher calls this before stashing the pending approval,
+    so an approve-token replay can only trust that exact revision.
+    A routine edited (or re-recorded) between park and tap cannot
+    ride the original token. Freezing only rewrites the stashed
+    args; no file is created or changed."""
+    frozen = dict(args or {})
+    sname = sanitize_name(frozen.get("name", ""))
+    if not sname:
+        return frozen
+    data, err = _load_routine(sname)
+    if err or not data:
+        return frozen
+    frozen["revision"] = _routine_revision(data)
+    return frozen
+
+
+def _save_trusted(sname: str, trusted: bool, revision=None) -> str:
     data, err = _load_routine(sname)
     if err:
         return err
+    if revision is not None and _routine_revision(data) != revision:
+        return (f"[Routine '{sname}' changed since the trust approval "
+                f"was requested — re-review it before trusting. "
+                f"Trust was NOT granted.]")
     data["trusted"] = bool(trusted)
     try:
         with open(_routine_path(sname), "w", encoding="utf-8") as f:
@@ -457,11 +493,11 @@ def tool_describe_routine(name: str) -> str:
     return "\n".join(lines)
 
 
-def tool_trust_routine(name: str) -> str:
+def tool_trust_routine(name: str, revision=None) -> str:
     sname = sanitize_name(name)
     if not sname:
         return "[Routine name has no valid characters.]"
-    return _save_trusted(sname, True)
+    return _save_trusted(sname, True, revision=revision)
 
 
 def tool_untrust_routine(name: str) -> str:

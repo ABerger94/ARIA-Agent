@@ -134,7 +134,10 @@ def test_trust_grant_held_until_user_confirms():
     assert len(approval._PENDING) == 1
     token, entry = next(iter(approval._PENDING.items()))
     assert entry['tool'] == 'trust_routine'
-    assert entry['args'] == {'name': 'auth_gate'}
+    # Pass 25: the parked entry freezes the routine revision, so
+    # the approval binds the routine as it stands now.
+    assert entry['args']['name'] == 'auth_gate'
+    assert entry['args'].get('revision'), entry['args']
     out = approval.approve_token(token)
     assert 'now trusted' in out, out
     assert 'trusted: yes' in routines.tool_describe_routine('auth_gate')

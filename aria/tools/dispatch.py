@@ -500,6 +500,16 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
                     _gate_args = _gate_mod.freeze_activation_args(_gate_args)
                 except Exception:
                     pass
+            if fn_name == "trust_routine":
+                # Freeze the routine revision into the pending entry
+                # (pass 25): a routine edited between park and tap
+                # must not ride this token. Same shape as the
+                # skill-activation freeze above.
+                try:
+                    from aria import routines as _routines_mod
+                    _gate_args = _routines_mod.freeze_trust_args(_gate_args)
+                except Exception:
+                    pass
             return _approval_mod.request_approval(fn_name, _gate_args), False
 
     # 4. Risky tools safety & audit
@@ -1025,7 +1035,7 @@ def _init_default_registry():
     _REGISTRY["list_routines"] = lambda a: routines_mod.tool_list_routines()
     _REGISTRY["delete_routine"] = lambda a: routines_mod.tool_delete_routine(a.get("name", ""))
     _REGISTRY["describe_routine"] = lambda a: routines_mod.tool_describe_routine(a.get("name", ""))
-    _REGISTRY["trust_routine"] = lambda a: routines_mod.tool_trust_routine(a.get("name", ""))
+    _REGISTRY["trust_routine"] = lambda a: routines_mod.tool_trust_routine(a.get("name", ""), a.get("revision"))
     _REGISTRY["untrust_routine"] = lambda a: routines_mod.tool_untrust_routine(a.get("name", ""))
     _REGISTRY["export_routine_pack"] = lambda a: routines_mod.tool_export_routine_pack(a.get("names_csv", ""), a.get("dest_path", ""), a.get("overwrite", False))
     _REGISTRY["import_routine_pack"] = lambda a: routines_mod.tool_import_routine_pack(a.get("pack_path", ""))
