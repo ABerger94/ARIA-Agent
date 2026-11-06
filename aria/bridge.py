@@ -127,6 +127,19 @@ def _ws_frame(opcode: int, payload: bytes) -> bytes:
     return head + payload
 
 
+# Receive bounds for node WebSocket messages (B4#5). The hello /
+# handshake stays at 1 MiB: an unauthenticated peer must not be
+# able to declare a multi-megabyte frame before auth ever runs.
+# Once authenticated, the cap is 4 MiB — mirroring the
+# companion's own max_msg_size (aria/desktop_node.py:132) — so a
+# permitted 2 MiB read_file result, or a screenshot, whose JSON
+# envelope runs past 1 MiB is accepted instead of dropping the
+# node. A cap is a receive bound, not its removal: frames over
+# 4 MiB are still refused.
+_WS_HELLO_MAX_PAYLOAD = 1024 * 1024
+_WS_NODE_MAX_PAYLOAD = 4 * 1024 * 1024
+
+
 def _ws_read_frame(rfile, max_payload=1024 * 1024):
     """One whole frame: (opcode, payload). Raises on EOF. The
     total reassembled payload is capped (1 MiB default — node
@@ -961,7 +974,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         session_based = False
         try:
             conn.settimeout(30)
-            opcode, payload = _ws_read_frame(self.rfile)
+            opcode, payload = _ws_read_frame(
+                self.rfile, max_payload=_WS_HELLO_MAX_PAYLOAD)
             hello = None
             if opcode in (0x1, 0x2):
                 try:
@@ -1018,7 +1032,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             last_frame_at = time.monotonic()
             while True:
                 try:
-                    opcode, payload = _ws_read_frame(self.rfile)
+                    opcode, payload = _ws_read_frame(
+                        self.rfile, max_payload=_WS_NODE_MAX_PAYLOAD)
                 except TimeoutError:
                     # Idle tick: revalidate, and drop a socket
                     # silent for the old 120 s idle limit.
