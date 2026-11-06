@@ -25,7 +25,11 @@ THE STORES THAT MIRROR (backup_slots())
     workspace/chat_history.md. ROOT_DIR/aria_keys.json is
     EXCLUDED — secrets never mirror: a synced folder is exactly
     the wrong place for the key file, and no convenience here is
-    worth copying credentials off the machine implicitly.
+    worth copying credentials off the machine implicitly. The
+    same rule applies INSIDE settings.json: MCP server env and
+    headers (API keys, auth headers) live there verbatim, so the
+    mirrored copy is redacted — the local file is untouched, the
+    mirror gets markers where values were.
 
 THE RULES
     * NEVER BREAK THE PRIMARY PATH. Mirroring runs after the
@@ -169,6 +173,58 @@ def mirror_dir() -> str:
         return ""
 
 
+_REDACTED = "[redacted — re-enter after restore]"
+_SECRET_KEYS = {"api_key", "api-key", "token", "secret",
+                "password", "passwd"}
+
+
+def _is_secret_key(low: str) -> bool:
+    """A key that names a credential: exactly a secret name, or
+    ending in one after a separator (some_api_key, my-token)."""
+    return any(low == name or low.endswith("_" + name)
+               or low.endswith("-" + name)
+               for name in _SECRET_KEYS)
+
+
+def _redact_settings(obj) -> None:
+    """Strip secrets from a parsed settings object, in place.
+    MCP server env/headers are redacted per value (key names
+    stay, so a restore shows what to re-enter); any key named
+    like a credential is redacted wholesale. Non-secret settings
+    pass through untouched."""
+    if isinstance(obj, dict):
+        for key, value in list(obj.items()):
+            low = str(key).lower()
+            if low in ("env", "headers") and isinstance(value, dict):
+                for sub in value:
+                    value[sub] = _REDACTED
+            elif _is_secret_key(low):
+                obj[key] = _REDACTED
+            else:
+                _redact_settings(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            _redact_settings(item)
+
+
+def _mirror_redacted_settings(slot: Path, temp: str) -> None:
+    """Write a secret-free copy of settings.json to `temp`.
+    Raises OSError when the file is not a JSON object — an
+    unreadable settings file is not mirrored at all rather than
+    copied verbatim with unknown contents."""
+    import json
+    try:
+        data = json.loads(slot.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise OSError(f"settings.json is not valid JSON — not mirrored: {e}")
+    if not isinstance(data, dict):
+        raise OSError("settings.json is not an object — not mirrored")
+    _redact_settings(data)
+    Path(temp).write_text(
+        json.dumps(data, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8")
+
+
 def mirror_backups(slots) -> bool:
     """Copy every existing file in `slots` into the mirror
     directory, by basename, verifying sizes after the copy.
@@ -211,9 +267,17 @@ def mirror_backups(slots) -> bool:
                                 if snapshot.execute('PRAGMA quick_check').fetchone() != ('ok',):
                                     raise OSError('Database snapshot did not pass quick_check')
                     else:
-                        shutil.copyfile(slot, temp)
-                        if Path(temp).stat().st_size != slot.stat().st_size:
-                            raise OSError(f'mirror copy of {slot.name} is short')
+                        if slot.name == "settings.json":
+                            # Redacted, not raw: settings.json
+                            # carries MCP credentials verbatim.
+                            # (Size verification does not apply —
+                            # the redacted copy is shorter by
+                            # design; the write itself is the check.)
+                            _mirror_redacted_settings(slot, temp)
+                        else:
+                            shutil.copyfile(slot, temp)
+                            if Path(temp).stat().st_size != slot.stat().st_size:
+                                raise OSError(f'mirror copy of {slot.name} is short')
                     os.replace(temp, target)
                 finally:
                     if os.path.exists(temp):
@@ -233,7 +297,9 @@ def backup_slots():
     """The files whose loss hurts, as Paths (existing or not):
     the memory DB, the settings file, and the chat history —
     all under WORKSPACE_DIR. ROOT_DIR/aria_keys.json is
-    deliberately NOT in this list: secrets never mirror."""
+    deliberately NOT in this list: secrets never mirror. The
+    settings file mirrors with its secrets redacted (see
+    _mirror_redacted_settings), never verbatim."""
     from aria import config, memory, workspaces
     return [
         Path(memory.db_path()),

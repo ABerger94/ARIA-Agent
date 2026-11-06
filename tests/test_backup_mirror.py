@@ -5,6 +5,7 @@ when its size verifies, a broken mirror reports once per
 process and then degrades silently, and secrets never mirror.
 The setting helpers are monkeypatched at the module seam so no
 test touches the real settings file."""
+import json
 import sys
 import types
 from pathlib import Path
@@ -133,6 +134,50 @@ def test_backup_slots_are_the_stores_that_hurt_and_never_secrets():
     assert not any('aria_keys' in str(p) for p in slots)
 
 
+def test_settings_json_mirrors_with_mcp_secrets_redacted(monkeypatch, tmp_path):
+    # Pass 25 (P1#14): settings.json carries MCP server env and
+    # headers verbatim — the old mirror copied it raw into a
+    # synced folder. The mirror copy must redact the secrets
+    # while keeping every non-secret setting, and the local file
+    # must be untouched.
+    mirror = tmp_path / 'mirror'
+    _stub_settings(monkeypatch, {'backup_mirror_dir': str(mirror)})
+    settings = tmp_path / 'settings.json'
+    settings.write_text(json.dumps({
+        "voice_enabled": True,
+        "mcp_servers": {
+            "github": {"transport": "stdio", "command": "npx",
+                       "env": {"GITHUB_TOKEN": "ghp_real"},
+                       "headers": {"Authorization": "Bearer real"}},
+        },
+        "some_api_key": "sk-real",
+    }))
+    assert bm.mirror_backups([settings]) is True
+    mirrored_text = (mirror / 'settings.json').read_text()
+    mirrored = json.loads(mirrored_text)
+    assert mirrored["voice_enabled"] is True
+    assert mirrored["mcp_servers"]["github"]["command"] == "npx"
+    assert mirrored["mcp_servers"]["github"]["env"] == {
+        "GITHUB_TOKEN": bm._REDACTED}
+    assert mirrored["mcp_servers"]["github"]["headers"] == {
+        "Authorization": bm._REDACTED}
+    assert mirrored["some_api_key"] == bm._REDACTED
+    assert "ghp_real" not in mirrored_text
+    assert "Bearer real" not in mirrored_text
+    assert "sk-real" not in mirrored_text
+    assert "ghp_real" in settings.read_text()  # local file untouched
+
+
+def test_unparseable_settings_json_is_not_mirrored(monkeypatch, tmp_path):
+    mirror = tmp_path / 'mirror'
+    _stub_settings(monkeypatch, {'backup_mirror_dir': str(mirror)})
+    settings = tmp_path / 'settings.json'
+    settings.write_text('{not json')
+    monkeypatch.setattr(bm, '_log_failure', lambda msg: None)
+    assert bm.mirror_backups([settings]) is False
+    assert not (mirror / 'settings.json').exists()
+
+
 def test_snapshot_and_mirror_uses_backup_slots(monkeypatch, tmp_path):
     mirror = tmp_path / 'mirror'
     _stub_settings(monkeypatch, {'backup_mirror_dir': str(mirror)})
@@ -182,7 +227,9 @@ def test_tool_set_mirrors_current_slots_verified(monkeypatch, tmp_path):
     out = bm.tool_set_backup_mirror({'path': str(mirror)})
     assert store['backup_mirror_dir'] == str(mirror)
     assert 'status=done' in out and 'copied there and verified' in out
-    assert (mirror / 'settings.json').read_bytes() == b'{"a": 1}'
+    # settings.json mirrors redacted (pass 25): the copy is
+    # re-serialized, so compare content, not bytes.
+    assert json.loads((mirror / 'settings.json').read_text()) == {"a": 1}
 
 
 def test_tool_set_with_no_backups_yet(monkeypatch, tmp_path):
