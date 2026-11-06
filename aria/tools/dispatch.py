@@ -1032,6 +1032,7 @@ def _init_default_registry():
     _REGISTRY["routine_record_start"] = lambda a: routines_mod.tool_routine_record_start(a.get("name", ""))
     _REGISTRY["routine_record_stop"] = lambda a: routines_mod.tool_routine_record_stop()
     _REGISTRY["run_routine"] = lambda a: routines_mod.tool_run_routine(a.get("name", ""), a.get("params_json", "{}"))
+    _REGISTRY["resume_routine"] = lambda a: routines_mod.tool_resume_routine(a.get("name", ""))
     _REGISTRY["list_routines"] = lambda a: routines_mod.tool_list_routines()
     _REGISTRY["delete_routine"] = lambda a: routines_mod.tool_delete_routine(a.get("name", ""))
     _REGISTRY["describe_routine"] = lambda a: routines_mod.tool_describe_routine(a.get("name", ""))

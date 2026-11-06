@@ -858,6 +858,17 @@ def approve_token(token: str) -> str:
             _record_resolution(entry["tool"], entry["desc"],
                                "re-parked", result,
                                project=_entry_project(entry))
+            # Pass 25 (P2#7): a routine paused on this token is
+            # still paused — the pause follows the new token so
+            # approving THAT one resumes the routine.
+            try:
+                import re as _re
+                _m = _re.search(r"token=([0-9a-f]{8})", result)
+                if _m:
+                    from aria import routines as _routines_mod
+                    _routines_mod.repark_pause(t, _m.group(1))
+            except Exception:
+                pass
         elif result.startswith("[Duplicate call blocked") or \
                 result.startswith("[Safe mode"):
             config.add_log(
@@ -883,6 +894,20 @@ def approve_token(token: str) -> str:
             _record_resolution(entry["tool"], entry["desc"],
                                "executed", result,
                                project=_entry_project(entry))
+            # Pass 25 (P2#7): the step just executed may be one a
+            # routine was paused on — resume the routine from the
+            # next step now, instead of leaving its remaining steps
+            # stranded until someone re-runs the whole routine.
+            try:
+                from aria import routines as _routines_mod
+                resume_text = _routines_mod.maybe_resume_for_token(t)
+                if resume_text:
+                    config.add_log(
+                        f"[approval] token={t} resumed routine: "
+                        f"{resume_text[:200]}")
+                    result = result + "\n" + resume_text
+            except Exception:
+                pass
         _notify_resolution(t, entry, True, result)
         return result
     except Exception as e:

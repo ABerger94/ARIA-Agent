@@ -44,6 +44,7 @@ import os
 import re
 import time
 from datetime import datetime, timezone
+from typing import Any, Dict
 
 from aria import config
 from aria import data_dir
@@ -253,8 +254,14 @@ def _wrapper_nested_tool(tool, args):
     return None
 
 
-def run_routine_impl(name: str, params=None) -> str:
+def run_routine_impl(name: str, params=None, start_at: int = 1) -> str:
     """Replay a routine's steps via dispatch.execute_tool.
+
+    `start_at` (1-based) resumes a paused routine from a step:
+    the approval auto-resume restarts at the step AFTER the one
+    that just executed, while resume_routine() restarts AT the
+    paused step (it never ran — denied, expired, or re-parked —
+    so skipping it would silently drop it).
 
     {{param}} placeholders in string arg values are substituted from `params`.
     Every step replays with preauthorized=True EXCEPT destructive steps in an
@@ -285,6 +292,20 @@ def run_routine_impl(name: str, params=None) -> str:
     steps = data.get("steps", [])
     if not steps:
         return f"[Routine '{sname}' has no steps.]"
+    try:
+        start_at = int(start_at or 1)
+    except (TypeError, ValueError):
+        start_at = 1
+    if start_at < 1:
+        start_at = 1
+    if start_at > len(steps):
+        return (f"[Routine '{sname}' has {len(steps)} step(s) — "
+                f"cannot resume at step {start_at}.]")
+    # A fresh run supersedes any stale pause for this routine; a
+    # resume keeps its own (it is cleared when the resume pauses
+    # again or finishes — see the pause handling below).
+    if start_at == 1:
+        _clear_paused_for_name(sname)
     trusted = bool(data.get("trusted", False))
 
     from aria import approval as _approval_mod  # lazy: no import cycle
@@ -310,6 +331,8 @@ def run_routine_impl(name: str, params=None) -> str:
     paused_at = None
     failed_at = None
     for i, step in enumerate(steps, 1):
+        if i < start_at:
+            continue
         tool = step.get("tool", "?")
         args = _substitute(step.get("args", {}), params)
         # Safe mode is a hard block, not an approval: it applies to
@@ -362,6 +385,7 @@ def run_routine_impl(name: str, params=None) -> str:
             paused_at = i
             lines.append(f"Routine paused at step {i}: awaiting user "
                          f"approval — later steps not run.")
+            _record_pause(sname, i, result, params, data)
             break
         # Pass 25: an explicitly failed step stops the routine too.
         # The old loop only stopped for approval, so a failure was
@@ -377,14 +401,210 @@ def run_routine_impl(name: str, params=None) -> str:
     config.add_log(f"[routines] ran '{sname}' ({len(steps)} steps, trusted={trusted})")
     if paused_at is not None:
         return (f"Routine '{sname}' PAUSED at step {paused_at} awaiting "
-                f"approval (trusted={'yes' if trusted else 'no'}):\n"
+                f"approval (trusted={'yes' if trusted else 'no'}): "
+                f"approving the pending step resumes the routine "
+                f"automatically; resume_routine('{sname}') retries the "
+                f"paused step later.\n"
                 + "\n".join(lines))
+    _clear_paused_for_name(sname)
     if failed_at is not None:
         return (f"Routine '{sname}' STOPPED at step {failed_at} "
                 f"(step failed, trusted={'yes' if trusted else 'no'}):\n"
                 + "\n".join(lines))
-    return (f"Routine '{sname}' replayed ({len(steps)} steps, "
+    resumed = f"resumed from step {start_at}, " if start_at > 1 else ""
+    return (f"Routine '{sname}' replayed ({resumed}{len(steps)} steps, "
             f"trusted={'yes' if trusted else 'no'}):\n" + "\n".join(lines))
+
+
+# ── Paused routines (pass 25, P2#7) ─────────────────────────────
+# A routine that pauses for approval used to leave nothing behind
+# but a string: the remaining steps never ran unless the user
+# re-ran the whole routine (re-executing the steps that already
+# ran). The pause is now a persisted record keyed by the approval
+# token the step is waiting on, so approving the step resumes the
+# routine from the next step, and resume_routine() retries the
+# paused step later.
+
+_PAUSED: Dict[str, Dict[str, Any]] = {}
+_paused_loaded = False
+
+
+def _paused_file() -> str:
+    return data_dir.path("routine_paused.json")
+
+
+def _load_paused() -> None:
+    global _paused_loaded
+    if _paused_loaded:
+        return
+    _paused_loaded = True
+    try:
+        with open(_paused_file(), encoding="utf-8") as f:
+            raw = json.load(f) or {}
+        entries = raw.get("paused") or {}
+        if isinstance(entries, dict):
+            _PAUSED.update({str(k): v for k, v in entries.items()
+                            if isinstance(v, dict)})
+    except Exception:
+        pass
+
+
+def _save_paused() -> None:
+    try:
+        data_dir.write_json_atomic(
+            _paused_file(), {"version": 1, "paused": _PAUSED})
+    except Exception:
+        pass
+
+
+def _record_pause(sname, paused_at, result, params, data) -> None:
+    """Persist the pause for the token the step is waiting on.
+    No token in the string (a handler-side re-park already
+    returned a plain message) means no record — there is nothing
+    to resume from."""
+    m = re.search(r"token=([0-9a-f]{8})", str(result))
+    if not m:
+        return
+    _load_paused()
+    try:
+        saved_params = json.loads(json.dumps(params or {}, default=str))
+    except Exception:
+        saved_params = {}
+    try:
+        from aria import workspaces
+        project = workspaces.current()
+    except Exception:
+        project = None
+    _PAUSED[m.group(1)] = {
+        "token": m.group(1),
+        "name": sname,
+        "paused_at": paused_at,
+        "next_step": paused_at + 1,
+        "params": saved_params,
+        "revision": _routine_revision(data),
+        "project": project,
+        "paused_ts": time.time(),
+    }
+    _save_paused()
+
+
+def _clear_paused_for_name(sname) -> None:
+    _load_paused()
+    doomed = [t for t, r in _PAUSED.items() if r.get("name") == sname]
+    if doomed:
+        for t in doomed:
+            _PAUSED.pop(t, None)
+        _save_paused()
+
+
+def clear_paused_for_token(token: str) -> None:
+    _load_paused()
+    if _PAUSED.pop(str(token or ""), None) is not None:
+        _save_paused()
+
+
+def repark_pause(old_token: str, new_token: str) -> None:
+    """The approved step parked AGAIN behind a fresh approval
+    (e.g. a handler-side gate): the pause follows the new token,
+    still waiting on the same step."""
+    _load_paused()
+    record = _PAUSED.pop(str(old_token or ""), None)
+    if record is None:
+        return
+    record["token"] = str(new_token or "")
+    _PAUSED[str(new_token or "")] = record
+    _save_paused()
+
+
+def _check_resume(record) -> str:
+    """The routine must still exist and be the revision that
+    paused — a re-recorded or edited routine is a different
+    routine, and resuming it would run steps nobody paused on.
+    Returns an error string, or '' when the resume may proceed."""
+    data, err = _load_routine(record.get("name", ""))
+    if err or not data:
+        return (f"[Routine '{record.get('name', '')}' no longer exists — "
+                f"the paused run cannot resume.]")
+    if _routine_revision(data) != record.get("revision"):
+        return (f"[Routine '{record.get('name', '')}' changed since it "
+                f"paused — re-run it from the start instead of resuming.]")
+    return ""
+
+
+def maybe_resume_for_token(token: str) -> str:
+    """Resume the routine paused on this token, from the step AFTER
+    the one that just executed. Called by approve_token's executed
+    branch — the call site is the proof the step ran. Returns ''
+    when no routine is paused on the token."""
+    _load_paused()
+    record = _PAUSED.get(str(token or ""))
+    if record is None:
+        return ""
+    problem = _check_resume(record)
+    _PAUSED.pop(str(token or ""), None)
+    _save_paused()
+    if problem:
+        config.add_log(f"[routines] resume refused: {problem}")
+        return problem
+    try:
+        from aria import runtime
+        with runtime.execution("routine-resume",
+                               project=record.get("project")):
+            return run_routine_impl(
+                record["name"], record.get("params") or {},
+                start_at=record.get("next_step", 1))
+    except Exception as e:
+        return f"[Routine resume failed: {e}]"
+
+
+def resume_routine(name=None) -> str:
+    """Resume a paused routine from its paused step (the step never
+    ran — denied, expired, or re-parked — so skipping it would
+    silently drop it). Refuses while the step's approval is still
+    pending: approve or deny that first."""
+    _load_paused()
+    record = None
+    if name:
+        sname = sanitize_name(name)
+        for r in _PAUSED.values():
+            if r.get("name") == sname:
+                record = r
+                break
+        if record is None:
+            return f"[No paused run of routine '{sname}'.]"
+    else:
+        if len(_PAUSED) == 1:
+            record = next(iter(_PAUSED.values()))
+        elif not _PAUSED:
+            return "[No routine is paused.]"
+        else:
+            names = sorted({r.get("name", "?") for r in _PAUSED.values()})
+            return (f"[Several routines are paused ({', '.join(names)}) — "
+                    f"pass the routine name to resume_routine().]")
+    try:
+        from aria import approval as _approval_mod
+        pending = {e.get("token") for e in
+                   _approval_mod.pending_entries()}
+    except Exception:
+        pending = set()
+    if record.get("token") in pending:
+        return (f"[Routine '{record.get('name')}' is paused at step "
+                f"{record.get('paused_at')} awaiting approval — approve "
+                f"or deny that step first; approving resumes it.]")
+    problem = _check_resume(record)
+    _PAUSED.pop(record.get("token", ""), None)
+    _save_paused()
+    if problem:
+        return problem
+    try:
+        from aria import runtime
+        with runtime.execution("routine-resume",
+                               project=record.get("project")):
+            return run_routine_impl(
+                record["name"], record.get("params") or {},
+                start_at=record.get("paused_at", 1))
+    except Exception as e:
+        return f"[Routine resume failed: {e}]"
 
 
 def _routine_revision(data) -> str:
@@ -442,8 +662,8 @@ def _save_trusted(sname: str, trusted: bool, revision=None) -> str:
 
 # ---------------- Tool wrappers (builtins-style) ----------------
 # Registry names (wired by coordinator): routine_record_start,
-# routine_record_stop, run_routine, list_routines, delete_routine,
-# describe_routine, trust_routine, untrust_routine.
+# routine_record_stop, run_routine, resume_routine, list_routines,
+# delete_routine, describe_routine, trust_routine, untrust_routine.
 
 
 def tool_routine_record_start(name: str) -> str:
@@ -462,6 +682,10 @@ def tool_run_routine(name: str, params_json: str = "{}") -> str:
     if not isinstance(params, dict):
         return "[params_json must be a JSON object, e.g. '{\"who\": \"alek\"}'.]"
     return run_routine_impl(name, params)
+
+
+def tool_resume_routine(name: str = "") -> str:
+    return resume_routine(name or None)
 
 
 def tool_list_routines() -> str:
@@ -500,6 +724,7 @@ def tool_delete_routine(name: str) -> str:
         os.remove(path)
     except Exception as e:
         return f"[Failed to delete routine '{sname}': {e}]"
+    _clear_paused_for_name(sname)
     config.add_log(f"[routines] deleted '{sname}'")
     return f"Deleted routine '{sname}'."
 
