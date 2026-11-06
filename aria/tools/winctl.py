@@ -34,6 +34,40 @@ def _win32():
         return None
 
 
+def foreground_window():
+    """The currently focused top-level window, or None.
+
+    Windows only (win32gui); None on other platforms or when the
+    title cannot be read. Returns {"hwnd", "title", "process"}.
+    Pass 25: gui_click / gui_type approvals bind to this window at
+    park time and re-check it at replay, so a Confirm cannot land
+    a click or typed text in a window the user has since switched
+    away from. Never raises.
+    """
+    if not _is_windows():
+        return None
+    w = _win32()
+    if w is None:
+        return None
+    win32gui, _win32con = w
+    try:
+        hwnd = win32gui.GetForegroundWindow()
+        if not hwnd:
+            return None
+        title = win32gui.GetWindowText(hwnd) or ""
+        process = ""
+        try:
+            _tid, pid = win32gui.GetWindowThreadProcessId(hwnd)
+            import psutil
+            process = psutil.Process(pid).name()
+        except Exception:
+            process = ""
+        return {"hwnd": int(hwnd), "title": title, "process": process}
+    except Exception as _e_silent:
+        _config_silent.log_silent("foreground_window", _e_silent)
+        return None
+
+
 def _find_hwnd(win32gui, title: str) -> Optional[int]:
     """Find the first visible top-level window whose title contains `title`
     (case-insensitive)."""

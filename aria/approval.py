@@ -350,6 +350,44 @@ def in_approve_replay_tool(tool) -> bool:
         return False
 
 
+# Desktop GUI approvals bind to the foreground window (pass 25):
+# a gui_click is coordinates and a gui_type is a char count, so
+# without a binding the approval is for "whatever is on screen
+# whenever the user gets around to tapping Confirm". The binding
+# is captured at park time and re-checked at replay; a changed
+# window refuses the replay instead of clicking into it.
+_GUI_BINDING_TOOLS = frozenset({"gui_click", "gui_type"})
+
+
+def _gui_binding():
+    """The current foreground window (winctl.foreground_window),
+    or None when it cannot be read. Fail-open: a platform with no
+    window concept simply has no binding to check."""
+    try:
+        from aria.tools import winctl as _winctl
+        return _winctl.foreground_window()
+    except Exception:
+        return None
+
+
+def _gui_binding_matches(bound, current) -> bool:
+    """True when the replay-time window is the parked one.
+
+    Title + process is the identity (an hwnd can be reused after
+    the window closes); a title-less window falls back to hwnd.
+    Either side unreadable never matches — a known binding that
+    cannot be re-read refuses rather than guessing.
+    """
+    if not bound or not current:
+        return False
+    if bound.get("title") or bound.get("process"):
+        return ((bound.get("title") or "") == (current.get("title") or "")
+                and (bound.get("process") or "")
+                == (current.get("process") or ""))
+    return (bound.get("hwnd") is not None
+            and bound.get("hwnd") == current.get("hwnd"))
+
+
 # Approval-control names must never gate. Since 2026-10-28 the
 # resolvers (approve / deny / set_approval_mode) are not model
 # tools at all — see aria/tools/dispatch.py — so this set now
@@ -678,6 +716,11 @@ def _save_pending() -> None:
                 "desc": e["desc"],
                 "created_ts": e.get("created_ts", time.time()),
             }
+            if e.get("gui_binding"):
+                # The window binding is part of the approval's
+                # identity (see approve_token): a restored entry
+                # must still refuse when the window has changed.
+                entry["gui_binding"] = dict(e["gui_binding"])
             if project is not None:
                 entry["project"] = project
                 entry["operation_id"] = ec.get("operation_id", "")
@@ -762,6 +805,9 @@ def load_pending() -> int:
                 "args": dict(e.get("args") or {}),
                 "desc": str(e.get("desc") or ""),
                 "created_ts": created,
+                "gui_binding": (dict(e["gui_binding"])
+                               if isinstance(e.get("gui_binding"), dict)
+                               else None),
                 "origin_context": ctx,
                 "execution_context": {
                     'project': project,
@@ -797,6 +843,14 @@ def request_approval(tool: str, args=None, desc=None) -> str:
     if desc is None:
         desc = _describe_tool(tool, args)
     desc = config.redact(str(desc))
+    # Bind a GUI approval to the foreground window it was parked
+    # against: the banner names the window, and the replay refuses
+    # when the user has switched away (see approve_token).
+    gui_binding = None
+    if tool in _GUI_BINDING_TOOLS:
+        gui_binding = _gui_binding()
+        if gui_binding and gui_binding.get("title"):
+            desc += f" in window '{gui_binding['title']}'"
     from aria import runtime
     ctx = runtime.current()
     _PENDING[token] = {
@@ -805,6 +859,7 @@ def request_approval(tool: str, args=None, desc=None) -> str:
         "args": dict(args or {}),
         "desc": desc,
         "created_ts": time.time(),
+        "gui_binding": gui_binding,
         "origin_context": ctx,
         "execution_context": {'project': ctx.project, 'cancel': ctx.cancel,
                               'operation_id': runtime.operation_id(),
@@ -868,6 +923,34 @@ def approve_token(token: str) -> str:
                 f"Call list_pending_approvals() to see open requests.]")
     _save_pending()
     config.add_log(f"[approval] approved token={t} tool={entry['tool']} — executing")
+    # A GUI approval is bound to the foreground window it was
+    # parked against: if the user has switched windows since, the
+    # click / typed text would land somewhere the approval never
+    # covered. Refuse instead of executing — the model re-proposes
+    # against the current screen. A binding that was unknown at
+    # park time (no window concept on the platform) has nothing
+    # to check and proceeds as before.
+    bound = entry.get("gui_binding")
+    if entry["tool"] in _GUI_BINDING_TOOLS and bound:
+        current = _gui_binding()
+        if not _gui_binding_matches(bound, current):
+            if current is None:
+                why = ("the foreground window could not be read at "
+                       "replay time")
+            else:
+                why = (f"the foreground window changed since this was "
+                       f"approved — it was "
+                       f"'{bound.get('title') or bound.get('process') or 'untitled'}' "
+                       f"and is now "
+                       f"'{current.get('title') or current.get('process') or 'untitled'}'")
+            reason = (f"[Approval refused: {why}, so the "
+                      f"{entry['tool']} was NOT executed. Ask again "
+                      f"with the current screen.]")
+            config.add_log(
+                f"[approval] token={t} refused: {why}")
+            _record_resolution(entry["tool"], entry["desc"], "refused",
+                               reason, project=_entry_project(entry))
+            return reason
     _replay_local.current = (entry["tool"], dict(entry.get("args") or {}))
     try:
         from aria.tools import dispatch as _dispatch  # lazy: no import cycle
@@ -1012,8 +1095,11 @@ def deny_token(token: str) -> str:
 def pending_entries() -> list:
     """Snapshot of open approvals for UI surfaces, oldest first.
 
-    Each entry: {token, tool, desc, age_s, project}. Expired entries are purged
-    first, so a UI polling this never shows a request that can no longer
+    Each entry: {token, tool, desc, age_s, gui_binding, project}.
+    gui_binding is the foreground window the approval was parked
+    against (gui_click / gui_type only; None when the platform
+    has no window concept). Expired entries are purged first, so a
+    UI polling this never shows a request that can no longer
     be resolved. Read-only: resolving still goes through approve_token /
     deny_token, so every surface shares one execution path.
     """
@@ -1023,6 +1109,7 @@ def pending_entries() -> list:
     return [
         {"token": e["token"], "tool": e["tool"], "desc": e["desc"],
          "age_s": int(now - e.get("created_ts", now)),
+         "gui_binding": e.get("gui_binding"),
          "project": _entry_project(e)}
         for _t, e in sorted(_PENDING.items(),
                             key=lambda kv: kv[1].get("created_ts", 0))
