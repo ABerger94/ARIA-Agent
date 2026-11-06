@@ -328,7 +328,21 @@ class AgentExecutor:
                     attempt += 1
                     try:
                         from aria.action_journal import signature
-                        op = f"{runtime.current().budget_scope or runtime.current().id}:step:{step.get('step')}:{signature(tool, params)}"
+                        # The receipt id is built from the STABLE
+                        # execution scope (pass 26 B1#5), never the
+                        # volatile budget scope: a resume from
+                        # ordinary conversation carries a different
+                        # budget scope, and the same step under a
+                        # different id would re-execute an effect
+                        # that already landed instead of hitting
+                        # the journal's cached/UNVERIFIED path.
+                        # First run: the current execution id IS
+                        # the task's scope (task:{id}); a resume
+                        # carries the original scope in resume[].
+                        _scope = (resume or {}).get("execution_scope") \
+                            or runtime.current().id
+                        op = (f"{_scope}:step:{step.get('step')}:"
+                              f"{signature(tool, params)}")
                         with runtime.operation(op):
                             out = self._tool_runner(tool, params)
                     except runtime.Cancelled:
