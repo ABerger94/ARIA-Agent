@@ -98,6 +98,13 @@ def _http_only_opener() -> urllib.request.OpenerDirector:
 _HTTP_ONLY_OPENER = _http_only_opener()
 
 
+# Pass 26 B4#8: bounds for unbounded collection. A fetch body or a
+# file is never buffered whole — the cap is applied at the read,
+# not after the bytes are already in memory.
+_MAX_FETCH_BYTES = 2 * 1024 * 1024
+_MAX_READ_FILE_BYTES = 2 * 1024 * 1024
+
+
 def _fetch_html(url: str) -> Optional[str]:
     if not _is_http_url(url):
         return None
@@ -106,7 +113,18 @@ def _fetch_html(url: str) -> Optional[str]:
             url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         )
         with _HTTP_ONLY_OPENER.open(req, timeout=10) as resp:
-            return resp.read().decode("utf-8", errors="replace")
+            # Read at most cap+1 bytes: a huge or chunked body is
+            # bounded here, never buffered whole (the +1 lets the
+            # caller tell "exactly at the cap" from "over it").
+            # A Content-Length over the cap is honoured the same
+            # way — the read stops at the cap regardless.
+            try:
+                raw = resp.read(_MAX_FETCH_BYTES + 1)
+            except TypeError:
+                raw = resp.read()
+            if isinstance(raw, str):
+                return raw[:_MAX_FETCH_BYTES + 1]
+            return raw.decode("utf-8", errors="replace")
     except Exception:
         return None
 
@@ -181,13 +199,28 @@ def tool_write_file(filename: str, content: str) -> str:
 
 
 def tool_read_file(filename: str) -> str:
-    """Read a text file from the workspace directory (supports nested subdirectories)."""
+    """Read a text file from the workspace directory (supports nested subdirectories).
+
+    Pass 26 B4#8: the file is stat'ed first and stream-capped at
+    _MAX_READ_FILE_BYTES — a multi-MB file is never read whole.
+    Oversized reads return the head plus a truncation marker
+    naming the total size.
+    """
     path = workspaces.resolve_workspace_file(filename, WORKSPACE_DIR)
     if not os.path.exists(path):
         from aria.outcome import ResultText, FAILED
         return ResultText(f"File '{filename}' does not exist.", FAILED)
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        return f.read()
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = None
+    with open(path, "rb") as f:
+        raw = f.read(_MAX_READ_FILE_BYTES + 1)
+    text = raw.decode("utf-8", errors="ignore")
+    if size is not None and size > _MAX_READ_FILE_BYTES:
+        text = text[:_MAX_READ_FILE_BYTES] + (
+            f"\n...[truncated, {size} bytes total]")
+    return text
 
 
 def tool_list_files() -> str:
