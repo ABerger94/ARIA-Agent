@@ -77,7 +77,11 @@ def test_resolve_new_archives_old_resolve_old_archives_claim():
         entry["id"], "new", save=mem.save, delete=mem.delete)
     assert settled["key"] == "work"
     assert mem.rows["work"] == ("consolidated", "Little Caesars")
-    assert mem.deleted == ["work"]
+    # Pass 26 B3#6 (save-before-delete): the replacement is an upsert,
+    # so the live row already holds the new value after the save — there
+    # is nothing left to delete, and deleting here would destroy the
+    # replacement just saved. The old value survives only in the archive.
+    assert mem.deleted == []
     assert cons.pending_contradictions() == []
     retired = cons._read_json_list(cons._retired_path())
     assert retired[-1]["value"] == "Dock of the Bay"
