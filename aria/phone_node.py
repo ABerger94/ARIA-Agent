@@ -37,12 +37,23 @@ _REPLAY_REFUSAL = ("[Phone control never runs inside a routine "
                    "the phone.]")
 
 
-def _send(tool: str, action: str, args: dict):
-    """One command to the node: (data, None) or (None, rendered)."""
+def _send(tool: str, action: str, args: dict, node: str = None):
+    """One command to the node: (data, None) or (None, rendered).
+
+    `node` names the phone node to command. When a node is named
+    explicitly, send_command targets exactly that node: a named
+    node that is not connected raises no_node and the failure is
+    returned as-is — there is no silent fallback to another phone.
+    When no node is named, the hub's _pick(None) behaviour applies
+    (the most recently connected node).
+    """
     try:
-        return node_hub.HUB.send_command(None, action, args), None
+        return node_hub.HUB.send_command(node, action, args), None
     except node_hub.NodeHubError as e:
         if e.code == "no_node":
+            if node:
+                return None, (f"[No phone node named '{node}' is "
+                              "connected. Nothing was sent to any phone.]")
             return None, NO_NODE
         return None, f"[{tool} failed: {e}]"
     except Exception as e:
@@ -115,9 +126,14 @@ def _int_param(value):
 
 # ── Read side ─────────────────────────────────────────────────────
 
-def tool_phone_status() -> str:
+def tool_phone_status(node: str = None) -> str:
     nodes = node_hub.HUB.nodes()
-    if not nodes:
+    if node:
+        nodes = [n for n in nodes if n["name"] == node]
+        if not nodes:
+            return (f"[No phone node named '{node}' is connected. "
+                    "Nothing was sent to any phone.]")
+    elif not nodes:
         return NO_NODE
     now = time.time()
     lines = []
@@ -130,8 +146,8 @@ def tool_phone_status() -> str:
     return "\n".join(lines)
 
 
-def tool_phone_list_apps() -> str:
-    data, err = _send("phone_list_apps", "list_apps", {})
+def tool_phone_list_apps(node: str = None) -> str:
+    data, err = _send("phone_list_apps", "list_apps", {}, node=node)
     if err:
         return err
     apps = data.get("apps") or []
@@ -147,7 +163,8 @@ def tool_phone_list_apps() -> str:
     return _cap("\n".join(lines), limit=APPS_LIST_LIMIT)
 
 
-def tool_phone_open_app(label: str = "", package: str = "") -> str:
+def tool_phone_open_app(label: str = "", package: str = "",
+                        node: str = None) -> str:
     label = str(label or "").strip()
     package = str(package or "").strip()
     if not label and not package:
@@ -158,7 +175,7 @@ def tool_phone_open_app(label: str = "", package: str = "") -> str:
         args["package"] = package
     if label:
         args["label"] = label
-    data, err = _send("phone_open_app", "open_app", args)
+    data, err = _send("phone_open_app", "open_app", args, node=node)
     if err:
         return err
     opened = str(data.get("label") or label or package)
@@ -187,8 +204,8 @@ def _fmt_screen_node(n: dict) -> str:
     return out + loc
 
 
-def tool_phone_read_screen() -> str:
-    data, err = _send("phone_read_screen", "read_screen", {})
+def tool_phone_read_screen(node: str = None) -> str:
+    data, err = _send("phone_read_screen", "read_screen", {}, node=node)
     if err:
         return err
     nodes = [n for n in (data.get("nodes") or []) if isinstance(n, dict)]
@@ -220,14 +237,14 @@ def _fmt_ts(ts) -> str:
         return ""
 
 
-def tool_phone_notifications(limit=10) -> str:
+def tool_phone_notifications(limit=10, node: str = None) -> str:
     try:
         limit = int(float(limit))
     except (TypeError, ValueError):
         limit = 10
     limit = max(1, min(50, limit))
     data, err = _send("phone_notifications", "notifications",
-                      {"limit": limit})
+                      {"limit": limit}, node=node)
     if err:
         return err
     items = [i for i in (data.get("items") or []) if isinstance(i, dict)]
@@ -250,7 +267,8 @@ def tool_phone_notifications(limit=10) -> str:
 
 # ── Control side ──────────────────────────────────────────────────
 
-def tool_phone_tap(ref: str = "", x=None, y=None, _raw_args=None) -> str:
+def tool_phone_tap(ref: str = "", x=None, y=None, node: str = None,
+                   _raw_args=None) -> str:
     if (refusal := _control_guard("phone_tap", _raw_args)) is not None:
         return refusal
     ref = str(ref or "").strip()
@@ -266,12 +284,12 @@ def tool_phone_tap(ref: str = "", x=None, y=None, _raw_args=None) -> str:
                     "and 'y'.]")
         args = {"x": xi, "y": yi}
         target = f"coordinates ({xi}, {yi})"
-    data, err = _send("phone_tap", "tap", args)
+    data, err = _send("phone_tap", "tap", args, node=node)
     return err if err else f"Tapped {target} on the phone."
 
 
 def tool_phone_swipe(x1=None, y1=None, x2=None, y2=None,
-                     duration_ms="", _raw_args=None) -> str:
+                     duration_ms="", node: str = None, _raw_args=None) -> str:
     if (refusal := _control_guard("phone_swipe", _raw_args)) is not None:
         return refusal
     coords = {"x1": _int_param(x1), "y1": _int_param(y1),
@@ -284,11 +302,12 @@ def tool_phone_swipe(x1=None, y1=None, x2=None, y2=None,
     args = dict(coords, duration_ms=duration)
     path = (f"({coords['x1']}, {coords['y1']}) → "
             f"({coords['x2']}, {coords['y2']})")
-    data, err = _send("phone_swipe", "swipe", args)
+    data, err = _send("phone_swipe", "swipe", args, node=node)
     return err if err else f"Swiped {path} on the phone."
 
 
-def tool_phone_type(text: str = "", ref: str = "", _raw_args=None) -> str:
+def tool_phone_type(text: str = "", ref: str = "", node: str = None,
+                    _raw_args=None) -> str:
     if (refusal := _control_guard("phone_type", _raw_args)) is not None:
         return refusal
     text = str(text or "")
@@ -299,11 +318,11 @@ def tool_phone_type(text: str = "", ref: str = "", _raw_args=None) -> str:
     if ref:
         args["ref"] = ref
     where = f"into element ref '{ref}'" if ref else "into the focused field"
-    data, err = _send("phone_type", "type", args)
+    data, err = _send("phone_type", "type", args, node=node)
     return err if err else f"Typed {where} on the phone."
 
 
-def tool_phone_key(key: str = "", _raw_args=None) -> str:
+def tool_phone_key(key: str = "", node: str = None, _raw_args=None) -> str:
     if (refusal := _control_guard("phone_key", _raw_args)) is not None:
         return refusal
     key = str(key or "").strip().lower()
@@ -311,5 +330,5 @@ def tool_phone_key(key: str = "", _raw_args=None) -> str:
         return (f"[phone_key failed: '{key or '(none)'}' is not a "
                 f"key this tool can send — use one of: "
                 f"{', '.join(_KEY_NAMES)}.]")
-    data, err = _send("phone_key", "key", {"key": key})
+    data, err = _send("phone_key", "key", {"key": key}, node=node)
     return err if err else f"Pressed {key} on the phone."
