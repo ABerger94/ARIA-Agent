@@ -215,12 +215,39 @@ class HTTPMCPClient:
 
         text = r.text.strip()
         data = None
-        if text.startswith("event:") or "data:" in text:
+        # Pass 26 B4#3: SSE vs JSON used to be decided on
+        # `"data:" in text` — a substring search over the whole
+        # body, so a plain-JSON result containing e.g. "Useful
+        # data: alpha" took the SSE branch, found no `data:`
+        # line, and returned {} — silently discarding the real
+        # result. Decide on Content-Type or a leading event: /
+        # data: line, never a substring search; fall back to
+        # r.json() when no data: line parses instead of {}.
+        content_type = ""
+        try:
+            content_type = str(r.headers.get("Content-Type", "") or "").lower()
+        except Exception:
+            content_type = ""
+        is_sse = ("text/event-stream" in content_type
+                  or text.startswith("event:")
+                  or text.startswith("data:"))
+        if is_sse:
             for line in text.split("\n"):
                 line = line.strip()
                 if line.startswith("data:"):
-                    data = json.loads(line[5:].strip())
+                    try:
+                        data = json.loads(line[5:].strip())
+                    except Exception:
+                        # Malformed data: line — fall through to
+                        # the JSON fallback below instead of
+                        # raising out of _post unhandled.
+                        data = None
                     break
+            if data is None:
+                try:
+                    data = r.json()
+                except Exception:
+                    data = {}
         else:
             data = r.json()
         return data or {}
