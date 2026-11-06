@@ -599,11 +599,24 @@ def _guarded_click(target: str, *, approve_fn=None) -> str:
         return label, session.context()
     label, ctx = _RUNNER.call(_probe)
     if not _is_irreversible(label):
+        # Benign probe: re-resolve + re-check INSIDE the same
+        # session-thread call as the click (pass 25 — the narrow
+        # probe→click gap: the control could swap to an
+        # irreversible one between the probe and a plain click).
+        # A control that turned irreversible parks for a fresh
+        # confirmation under the LIVE label/context instead of
+        # executing.
         def _do(runner):
             session = runner.ensure_session()
+            _loc, live_label = session._resolve(target)
+            if _is_irreversible(live_label):
+                return ("stale", live_label, session.context())
             clicked = session.click(target)
-            return f"Clicked '{clicked or target}'. " + session.read()
-        return _RUNNER.call(_do)
+            return ("clicked", clicked, session.read())
+        kind, a, b = _RUNNER.call(_do)
+        if kind == "clicked":
+            return f"Clicked '{a or target}'. " + b
+        label, ctx = a, b
     from aria import approval as _approval
     # Approve replay (2026-10-28): approve_token() stashes
     # the exact args for browser_agent and sets its replay
@@ -803,7 +816,23 @@ def _guarded_press(key: str, *, approve_fn=None) -> str:
                 f"the focused control, so '{key}' was not pressed.")
     label = _press_guard_label(info, key)
     if label is None:
-        return _RUNNER.call(_do)
+        # Benign probe: re-probe focus INSIDE the same
+        # session-thread call as the press (pass 25 — the same
+        # probe→act gap as clicks: focus could move to an
+        # irreversible submit between the probe and the press).
+        # Focus that turned guardable parks for a fresh
+        # confirmation under the LIVE label/context.
+        def _do_checked(runner):
+            session = runner.ensure_session()
+            live_info = session.focused_info()
+            live_label = _press_guard_label(live_info, key)
+            if live_label is not None:
+                return ("stale", live_label, session.context())
+            return ("pressed", session.press(key), None)
+        kind, a, b = _RUNNER.call(_do_checked)
+        if kind == "pressed":
+            return a
+        label, ctx = a, b
 
     from aria import approval as _approval
     # The approval is bound to the probed label, exactly like

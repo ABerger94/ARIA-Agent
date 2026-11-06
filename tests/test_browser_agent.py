@@ -147,6 +147,58 @@ def test_private_host_canonicalisation():
     print("ok private_host_canonicalisation")
 
 
+def test_benign_click_that_turns_irreversible_parks():
+    # Pass 25 (narrow probe->click gap): the benign probe and the
+    # plain click were two runner calls, so a DOM swap between
+    # them executed an irreversible control with no approval. The
+    # click now re-checks inside the same call and parks instead.
+    class Swapping(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.resolves = 0
+
+        def _resolve(self, target):
+            self.resolves += 1
+            if self.resolves == 1:
+                return object(), "Continue shopping"
+            return object(), "Place order"
+
+    fake = Swapping()
+    ba.set_runner_for_tests(ba._Runner(session_factory=lambda: fake))
+    _mod, stashed = _fake_approval_with_replay(lambda *a, **k: False)
+    out = ba.tool_browser_agent({"action": "click", "target": "index:1"})
+    assert "AWAITING_APPROVAL" in out, out
+    assert fake.clicks == [], "swapped irreversible control was clicked"
+    assert len(stashed) == 1
+    assert stashed[0][1]["label"] == "Place order"
+    print("ok benign_click_swap_parks")
+
+
+def test_benign_press_that_turns_irreversible_parks():
+    # Same gap for Enter: focus moves to an irreversible submit
+    # between the probe and the press.
+    fake = _install_fake()
+    calls = {"n": 0}
+    benign = dict(fake.focused, form_submit_labels=[])
+    armed = dict(fake.focused, tag="button", label="Place order",
+                 activatable=True, form_submit_labels=[])
+
+    def focused_info():
+        calls["n"] += 1
+        info = benign if calls["n"] == 1 else armed
+        return dict(info, form_submit_labels=list(
+            info.get("form_submit_labels") or []))
+
+    fake.focused_info = focused_info
+    _mod, stashed = _fake_approval_with_replay(lambda *a, **k: False)
+    out = ba.tool_browser_agent({"action": "press", "key": "Enter"})
+    assert "AWAITING_APPROVAL" in out, out
+    assert fake.presses == [], "swapped irreversible press fired"
+    assert len(stashed) == 1
+    assert stashed[0][1]["label"] == "Place order"
+    print("ok benign_press_swap_parks")
+
+
 def test_irreversible_labels():
     for label in ("Place order", "Pay now", "Send message",
                   "Delete item", "Book now", "Complete order"):
