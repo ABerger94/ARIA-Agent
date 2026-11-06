@@ -77,6 +77,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 # The result keeps the tail of the combined output: when a
@@ -84,6 +85,12 @@ from pathlib import Path
 # the verdict — the head is the part that scrolled away in a
 # real terminal too.
 OUTPUT_LIMIT = 6000
+
+# Per-stream store budget for _execute (pass 26 B4#8): readers
+# keep at most this many characters per stream. The slack over
+# OUTPUT_LIMIT exists so a single flooding stream still renders
+# its full tail after the OUTPUT_LIMIT cut below.
+_STORE_LIMIT = OUTPUT_LIMIT + 4096
 
 TIMEOUT_DEFAULT = 60
 TIMEOUT_MIN = 5
@@ -217,6 +224,39 @@ def _kill_tree(proc) -> None:
         pass
 
 
+def _drain(stream, store: list, cap: int, state: dict) -> None:
+    """Read one text stream to EOF, storing at most `cap` chars.
+
+    Pass 26 B4#8: the old _execute collected the whole stream
+    via communicate() and truncated afterwards, so a flooding
+    command grew memory unboundedly. This keeps draining past
+    the budget — stopping would fill the pipe and deadlock the
+    child — but stops storing, and records that output was cut.
+    Never raises; a dead stream just ends the drain.
+    """
+    stored = 0
+    try:
+        while True:
+            chunk = stream.read(4096)
+            if not chunk:
+                break
+            if stored < cap:
+                take = chunk[:cap - stored]
+                store.append(take)
+                stored += len(take)
+                if len(chunk) > len(take):
+                    state["truncated"] = True
+            else:
+                state["truncated"] = True
+    except Exception:
+        pass
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+
 def _execute(command: str, cwd: str, timeout: int) -> str:
     """Run the command and render the result. Separate from the
     handler so tests can exercise execution (timeout, exit code,
@@ -231,14 +271,29 @@ def _execute(command: str, cwd: str, timeout: int) -> str:
         return _failed(
             f"the command could not be started: {e}",
             command=command)
+    out_parts: list = []
+    err_parts: list = []
+    out_state = {"truncated": False}
+    err_state = {"truncated": False}
+    readers = []
+    for stream, parts, state in (
+            (proc.stdout, out_parts, out_state),
+            (proc.stderr, err_parts, err_state)):
+        t = threading.Thread(target=_drain,
+                             args=(stream, parts, _STORE_LIMIT, state),
+                             daemon=True)
+        t.start()
+        readers.append(t)
     try:
-        out, err = proc.communicate(timeout=timeout)
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         # The direct child (the shell) is not the whole tree:
         # kill the process group so descendants die with it.
         _kill_tree(proc)
+        for t in readers:
+            t.join(timeout=5)
         try:
-            proc.communicate(timeout=5)
+            proc.wait(timeout=5)
         except Exception:
             pass
         return _failed(
@@ -248,6 +303,14 @@ def _execute(command: str, cwd: str, timeout: int) -> str:
         return _failed(
             f"the command could not be started: {e}",
             command=command)
+    for t in readers:
+        # The pipes hit EOF once the process (and any children
+        # holding its stdout open) exit; do not hang the tool on
+        # a descendant that inherited the pipe — render what was
+        # stored instead.
+        t.join(timeout=5)
+    out = "".join(out_parts)
+    err = "".join(err_parts)
 
     sections = []
     if out:
@@ -255,7 +318,8 @@ def _execute(command: str, cwd: str, timeout: int) -> str:
     if err:
         sections.append(f"--- stderr ---\n{err.rstrip()}")
     body = "\n".join(sections) if sections else "(no output)"
-    if len(body) > OUTPUT_LIMIT:
+    if out_state["truncated"] or err_state["truncated"] \
+            or len(body) > OUTPUT_LIMIT:
         body = "[output truncated]\n" + body[-OUTPUT_LIMIT:]
     if proc.returncode != 0:
         # A nonzero exit is a failure, not a result: the old shape
