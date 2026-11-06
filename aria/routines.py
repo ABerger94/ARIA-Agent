@@ -633,7 +633,14 @@ def freeze_trust_args(args) -> dict:
         return frozen
     data, err = _load_routine(sname)
     if err or not data:
-        return frozen
+        # Fail closed (pass 26 B1#3): a trust request for a routine
+        # that does not exist must be refused, not parked
+        # revisionless — otherwise "request trust, create the
+        # routine later, confirm" trusts whatever exists at tap
+        # time. Callers that park catch this and refuse to park.
+        raise ValueError(
+            f"Routine '{sname}' does not exist — trust was not "
+            f"requested. Create the routine first, then ask again.")
     frozen["revision"] = _routine_revision(data)
     return frozen
 

@@ -276,7 +276,15 @@ def freeze_activation_args(args) -> dict:
         return frozen
     skill = store.find_skill(name)
     if skill is None or skill["status"] != "draft":
-        return frozen
+        # Fail closed (pass 26 B1#3): an activation request for a
+        # skill that is missing — or not a draft — must be refused,
+        # not parked revisionless, or a later same-name draft could
+        # ride the original token. Callers that park catch this
+        # and refuse to park.
+        raise ValueError(
+            f"Skill '{name}' does not exist as a draft — activation "
+            f"was not requested. Propose the skill first, then ask "
+            f"again.")
     frozen["revision"] = store.content_hash(skill)
     frozen["description"] = skill.get("description", "")
     return frozen

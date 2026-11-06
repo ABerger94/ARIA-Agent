@@ -114,7 +114,12 @@ def check_price_watches() -> str:
 def ensure_pricecheck_task() -> bool:
     """Create the hourly `pricecheck` scheduler task if watches exist and no
     such task is scheduled. Returns True if a task was created."""
-    from aria import scheduler as _scheduler
+    # importlib.import_module, not `from aria import scheduler`: the
+    # from-form prefers the parent package's cached attribute, so a
+    # scheduler stub placed in sys.modules (the test seam) would be
+    # ignored once the real scheduler had ever been imported.
+    import importlib
+    _scheduler = importlib.import_module("aria.scheduler")
 
     try:
         with sqlite3.connect(_db_path()) as db:

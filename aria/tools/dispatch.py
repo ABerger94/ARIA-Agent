@@ -396,6 +396,32 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
             pass
 
 
+def _freeze_park_args(fn_name: str, args: dict) -> dict:
+    """Rewrite a to-be-parked call's args so the approve-token
+    replay executes exactly what was approved (pass 26 B1#3):
+    the export freeze resolves the destination once (pass 13),
+    the skill-activation freeze binds the draft revision
+    (pass 25), the trust freeze binds the routine revision
+    (pass 25). One helper serves BOTH park paths in this module
+    — the mission-envelope branch and the normal approval gate —
+    so no path can park trust_routine / skill_activate unfrozen.
+    Raises ValueError when the thing being approved does not
+    exist (missing routine / missing-or-not-draft skill): the
+    caller must refuse to park, never stash a revisionless
+    approval. Other tools pass through unchanged."""
+    gate_args = dict(args or {})
+    if fn_name == "export_routine_pack":
+        from aria import routines as _routines_mod
+        gate_args = _routines_mod.freeze_export_args(gate_args)
+    elif fn_name == "skill_activate":
+        from aria.tools import skill_gate as _gate_mod
+        gate_args = _gate_mod.freeze_activation_args(gate_args)
+    elif fn_name == "trust_routine":
+        from aria import routines as _routines_mod
+        gate_args = _routines_mod.freeze_trust_args(gate_args)
+    return gate_args
+
+
 def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple[str, bool]:
     """Dispatch one tool with full validation, sandboxing, and audit logging.
     Returns (result_text, False); approval may park the request before its
@@ -529,6 +555,19 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
                     _irrev = False
             if fn_name not in allowed or (_irrev and fn_name not in pre_ok):
                 try:
+                    _env_args = _freeze_park_args(fn_name, args or {})
+                except ValueError as e:
+                    # Fail closed (pass 26 B1#3): the thing being
+                    # approved does not exist — refuse, do not park
+                    # a revisionless approval.
+                    return (f"[Approval refused: {e} — nothing was "
+                            f"parked.]", False)
+                except Exception as e:
+                    _config_mod.log_silent("execute_tool.envelope.freeze", e)
+                    return (f"[Approval refused: could not verify "
+                            f"'{fn_name}' for approval — nothing was "
+                            f"parked.]", False)
+                try:
                     from aria import approval as _approval_mod
                     _approval_mod.purge_expired()
                     mid = _env.get("mission_id", "?")
@@ -539,46 +578,27 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
                             + (f" — goal: {goal}" if goal else "")
                             + ")")
                     return _approval_mod.request_approval(
-                        fn_name, dict(args or {}), desc=desc), False
+                        fn_name, _env_args, desc=desc), False
                 except Exception as _e_silent:
                     _config_mod.log_silent("execute_tool.envelope", _e_silent)
     if not preauthorized:
         from aria import approval as _approval_mod
         _approval_mod.purge_expired()
         if _approval_mod.needs_approval(fn_name, args or {}):
-            _gate_args = dict(args or {})
-            if fn_name == "export_routine_pack":
-                # Freeze the resolved destination into the pending
-                # entry (pass 13 export fix): an empty dest_path
-                # would otherwise be re-derived at replay time with
-                # a fresh timestamp, writing a different file than
-                # the one the user approved. Freezing creates
-                # nothing — it only rewrites the stashed args.
-                try:
-                    from aria import routines as _routines_mod
-                    _gate_args = _routines_mod.freeze_export_args(_gate_args)
-                except Exception:
-                    pass
-            if fn_name == "skill_activate":
-                # Freeze the draft revision into the pending entry
-                # (pass 25): a retired-and-reproposed same-name
-                # draft must not ride this token. Same shape as
-                # the export freeze above.
-                try:
-                    from aria.tools import skill_gate as _gate_mod
-                    _gate_args = _gate_mod.freeze_activation_args(_gate_args)
-                except Exception:
-                    pass
-            if fn_name == "trust_routine":
-                # Freeze the routine revision into the pending entry
-                # (pass 25): a routine edited between park and tap
-                # must not ride this token. Same shape as the
-                # skill-activation freeze above.
-                try:
-                    from aria import routines as _routines_mod
-                    _gate_args = _routines_mod.freeze_trust_args(_gate_args)
-                except Exception:
-                    pass
+            # Freeze the stashed args (pass 13 export, pass 25
+            # trust/skill) — see _freeze_park_args. A ValueError
+            # means the thing being approved does not exist:
+            # refuse, do not park a revisionless approval.
+            try:
+                _gate_args = _freeze_park_args(fn_name, args or {})
+            except ValueError as e:
+                return (f"[Approval refused: {e} — nothing was "
+                        f"parked.]", False)
+            except Exception as e:
+                _config_mod.log_silent("execute_tool.gate.freeze", e)
+                return (f"[Approval refused: could not verify "
+                        f"'{fn_name}' for approval — nothing was "
+                        f"parked.]", False)
             return _approval_mod.request_approval(fn_name, _gate_args), False
 
     # 4. Risky tools safety & audit
