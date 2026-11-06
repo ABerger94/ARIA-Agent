@@ -79,6 +79,7 @@ def skill_system_check(objective: str, call: Callable) -> str:
 
 def skill_file_sweep(objective: str, call: Callable) -> str:
     """Scan the workspace: list files, read up to 3 matching the objective."""
+    from aria.outcome import FAILED, normalize
     words = [w.lower() for w in re.findall(r"[a-zA-Z]{3,}", objective)]
     try:
         listing = call("list_workspace", {})
@@ -86,14 +87,25 @@ def skill_file_sweep(objective: str, call: Callable) -> str:
         return "File sweep: budget exhausted before listing."
     read, notes = [], []
     for line in listing.splitlines():
-        name = line.strip().lower()
-        if name and any(w in name for w in words):
+        # Pass 25: the listing is "- report.txt" bullet lines under
+        # a "Workspace files:" header. The old code passed the raw
+        # line (bullet included) to read_file and counted the
+        # "does not exist" failure as a read. Strip the bullet,
+        # skip the header, and only count successful reads.
+        name = line.strip()
+        if name.startswith(("- ", "* ")):
+            name = name[2:].strip()
+        if not name or name.lower().startswith("workspace files:"):
+            continue
+        if any(w in name.lower() for w in words):
             try:
-                content = call("read_file", {"filename": line.strip()})
+                content = call("read_file", {"filename": name})
             except SkillBudgetExceeded:
                 break
-            read.append(line.strip())
-            notes.append(f"--- {line.strip()} ---\n{content[:1500]}")
+            if normalize(content).status == FAILED:
+                continue
+            read.append(name)
+            notes.append(f"--- {name} ---\n{content[:1500]}")
         if len(read) >= 3:
             break
     if not read:
