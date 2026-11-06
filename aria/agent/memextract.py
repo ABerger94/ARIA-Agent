@@ -122,7 +122,15 @@ def extract_now(user_text: str, assistant_text: str, *,
         return {}
 
     from aria import memory as _memory
-    saved: Dict[str, Dict[str, str]] = {}
+    from aria.agent import consolidation
+    # Pass 25: extracted facts used to land via a direct
+    # memory_save per fact, upserting blindly — a claim that
+    # contradicted a stored fact silently overwrote it. Route
+    # every group through consolidation.reconcile (the same
+    # semantics the idle loop uses): dupes skip, contradictions
+    # queue for the user, only genuinely new facts save — under
+    # their own category, not 'consolidated'.
+    grouped = {}
     for category, entries in data.items():
         aria_category = _CATEGORY_MAP.get(str(category).strip().lower())
         if aria_category is None or not isinstance(entries, dict):
@@ -131,12 +139,17 @@ def extract_now(user_text: str, assistant_text: str, *,
             value = entry.get("value") if isinstance(entry, dict) else entry
             if value is None or str(value).strip() == "":
                 continue
-            value = str(value)
-            try:
-                _memory.memory_save(aria_category, str(key), value)
-                saved.setdefault(aria_category, {})[str(key)] = value
-            except Exception as e:
-                add_log(f"memextract: save failed for {key}: {e}")
+            grouped.setdefault(aria_category, []).append(
+                (str(key), str(value)))
+    saved: Dict[str, Dict[str, str]] = {}
+    for aria_category, pairs in grouped.items():
+        def _save(_c, key, value, _cat=aria_category):
+            _memory.memory_save(_cat, key, value)
+            saved.setdefault(_cat, {})[key] = value
+        try:
+            consolidation.reconcile(pairs, save=_save)
+        except Exception as e:
+            add_log(f"memextract: reconcile failed for {aria_category}: {e}")
     if saved:
         n_facts = sum(len(v) for v in saved.values())
         add_log(f"memextract: saved {n_facts} fact(s) async: "

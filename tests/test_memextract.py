@@ -92,6 +92,36 @@ def test_gate_yes_lands_in_her_store():
     print("ok gate_yes_lands_in_her_store")
 
 
+def test_contradiction_queues_instead_of_overwriting(tmp_path, monkeypatch):
+    # Pass 25: an extracted claim that contradicted a stored fact
+    # used to upsert over it silently. It now queues for the user
+    # and the stored fact survives.
+    import json
+    monkeypatch.setattr(config, "WORKSPACE_DIR", str(tmp_path))
+    memory.memory_save("preference", "favorite_color", "red")
+    pool = _FakePool(gate="YES", facts={
+        "preferences": {"favorite_color": {"value": "blue"}}})
+    saved = memextract.extract_now(
+        "my favorite color is blue", "Noted.", pool=pool)
+    assert saved == {}, saved
+    assert memory.memory_get("preference", "favorite_color") == "red"
+    queue = json.loads((tmp_path / "memory_contradictions.json").read_text())
+    assert len(queue) == 1 and queue[0]["key"] == "favorite_color"
+    assert queue[0]["old_value"] == "red"
+    assert queue[0]["new_value"] == "blue"
+
+
+def test_dupe_is_not_resaved(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "WORKSPACE_DIR", str(tmp_path))
+    memory.memory_save("preference", "favorite_color", "blue")
+    pool = _FakePool(gate="YES", facts={
+        "preferences": {"favorite_color": {"value": "blue"}}})
+    saved = memextract.extract_now(
+        "my favorite color is blue", "Noted.", pool=pool)
+    assert saved == {}, saved
+    assert memory.memory_get("preference", "favorite_color") == "blue"
+
+
 def test_pool_down_is_soft():
     pool = _FakePool(fail=True)
     saved = memextract.extract_now("remember this thing", "ok", pool=pool)
