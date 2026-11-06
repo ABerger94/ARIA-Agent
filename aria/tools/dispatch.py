@@ -495,6 +495,53 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
         return (f"[Safe mode: '{fn_name}' is disabled. "
                 f"Disable safe mode to use shell, GUI control, or email.]",
                 False)
+    # 3c. Mission envelope: when the current execution runs under
+    # one, only its allowed tools may run — nested calls included.
+    # The step-level check in missions.py only ever saw the
+    # top-level step tool, so a step using an allowed tool could
+    # nest ANY tool (a routine replay, a delegated call, a wrapper)
+    # past it, preauthorized. An out-of-envelope call parks for
+    # approval here — the mission's own fork — unless this IS the
+    # approved replay of that parked call. Approval resolvers
+    # never gate: parking one would deadlock resolution.
+    try:
+        _env = runtime.current().envelope
+    except Exception:
+        _env = None
+    if _env:
+        try:
+            from aria import approval as _approval_mod
+            _never_gated = fn_name in _approval_mod.NEVER_GATED
+        except Exception:
+            _never_gated = False
+        if not _never_gated and not _is_approve_replay:
+            allowed = _env.get("allowed_tools") or []
+            pre_ok = _env.get("pre_approved_irreversible") or []
+            try:
+                from aria import missions as _missions_mod
+                _irrev = _missions_mod._is_irreversible(fn_name)
+            except Exception:
+                try:
+                    _irrev = (fn_name in _approval_mod.DESTRUCTIVE_TOOLS
+                              or fn_name == "run_shell_command"
+                              or _config_mod.is_discovered_mcp_tool(fn_name))
+                except Exception:
+                    _irrev = False
+            if fn_name not in allowed or (_irrev and fn_name not in pre_ok):
+                try:
+                    from aria import approval as _approval_mod
+                    _approval_mod.purge_expired()
+                    mid = _env.get("mission_id", "?")
+                    goal = _env.get("goal", "")
+                    desc = (f"Mission #{mid}: "
+                            f"{_approval_mod._describe_tool(fn_name, args or {})} "
+                            f"(outside the mission's envelope"
+                            + (f" — goal: {goal}" if goal else "")
+                            + ")")
+                    return _approval_mod.request_approval(
+                        fn_name, dict(args or {}), desc=desc), False
+                except Exception as _e_silent:
+                    _config_mod.log_silent("execute_tool.envelope", _e_silent)
     if not preauthorized:
         from aria import approval as _approval_mod
         _approval_mod.purge_expired()

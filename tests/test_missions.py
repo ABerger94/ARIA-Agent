@@ -89,8 +89,20 @@ def _fake_email(a):
     return f"email sent to {a.get('to', '')}"
 
 
+def _fake_nested(a):
+    # An allowed step that nests an out-of-envelope call: the
+    # envelope used to bind only the top-level step tool, so this
+    # send_email sailed through preauthorized (pass 25).
+    CALLS.append(("fake_nested", dict(a)))
+    res, _ok = dispatch.execute_tool(
+        "send_email", {"to": "x@y.z", "subject": "s", "body": "b"},
+        preauthorized=True)
+    return res
+
+
 dispatch.register_tool("fake_note", _fake_note)
 dispatch.register_tool("send_email", _fake_email)
+dispatch.register_tool("fake_nested", _fake_nested)
 dispatch.set_spine_hook(lambda *a, **k: None)
 dispatch.set_log_hook(lambda *a, **k: None)
 
@@ -260,6 +272,31 @@ def test_out_of_envelope_parks_in_auto_and_deny_fails(env):
     assert row["status"] == "failed"
     assert "denied" in (row["summary"] or "")
     assert _calls("send_email") == []
+
+
+def test_nested_call_outside_envelope_parks(env):
+    # Pass 25: the envelope used to bind only the top-level step
+    # tool, so an allowed step could nest ANY tool past it. The
+    # nested send_email must park like a top-level one, and
+    # approving it executes it exactly once and completes the
+    # mission.
+    mid, _out = _create("nested envelope proof",
+                        [("fake_nested", {})],
+                        allowed_tools="fake_nested")
+    _approve_plan(mid)
+    row = _pump(mid, {"waiting_approval"})
+    assert row["status"] == "waiting_approval", row
+    assert len(_calls("fake_nested")) == 1
+    assert _calls("send_email") == []
+    pending = approval.pending_entries()
+    assert len(pending) == 1 and pending[0]["tool"] == "send_email", pending
+    assert "outside the mission's envelope" in pending[0]["desc"], pending
+    assert f"Mission #{mid}" in pending[0]["desc"], pending
+    approval.approve_token(pending[0]["token"])
+    row = _pump(mid, {"done"})
+    assert row["status"] == "done", row
+    assert len(_calls("send_email")) == 1
+    assert approval.pending_entries() == []
 
 
 def test_preapproved_irreversible_runs_unasked_in_auto(env):

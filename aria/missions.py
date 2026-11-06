@@ -502,9 +502,18 @@ def _executor_tick() -> bool:
 
 def _mission_entry(mid):
     mission = _mission_row(mid)
+    # The envelope rides the execution context (pass 25): dispatch
+    # enforces it on every tool call the mission makes, nested
+    # calls included — the step-level check in _run_mission only
+    # ever saw the top-level step tool. The mission id + goal ride
+    # along so a nested park can name what it belongs to.
+    env = dict(mission['envelope'] or {})
+    env['mission_id'] = mid
+    env['goal'] = mission['goal']
     with runtime.execution('mission', execution_id=f'mission:{workspaces.current()}:{mid}',
                            budget_scope=f'mission:{mid}',
-                           spend_cap=mission['envelope'].get('spend_cap')):
+                           spend_cap=mission['envelope'].get('spend_cap'),
+                           envelope=env):
         _run_mission_guarded(mid)
 
 

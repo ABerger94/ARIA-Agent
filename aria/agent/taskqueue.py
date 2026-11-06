@@ -66,6 +66,14 @@ class Task:
     resume: Any = field(compare=False, default=None)
     resumed_from: str = field(compare=False, default="")
     execution_scope: str = field(compare=False, default="")
+    # Captured at submit time from the submitting thread's execution
+    # (pass 25): a delegated task minted a fresh context with cap
+    # None, so work delegated out of a mission spent outside its
+    # spend cap and outside its tool envelope. Uncapped submissions
+    # capture None/"" and behave exactly as before.
+    spend_cap: Any = field(compare=False, default=None)
+    budget_scope: str = field(compare=False, default="")
+    envelope: Any = field(compare=False, default=None)
     project: str = field(compare=False, default="default")
     started_at: float = field(compare=False, default=0.0)
     cancel_flag: threading.Event = field(
@@ -137,6 +145,18 @@ class TaskQueue:
             if not goal:
                 goal = rec.get("goal", "")
         task_id = str(uuid.uuid4())[:8]
+        # Capture the submitting execution's budget + envelope now:
+        # the worker runs on another thread, where the submitter's
+        # context is not visible — capturing later would read a
+        # fresh default (cap None, no envelope) and the delegation
+        # would escape both (pass 25).
+        try:
+            _parent_ctx = runtime.current()
+            parent_cap = _parent_ctx.spend_cap
+            parent_scope = _parent_ctx.budget_scope
+            parent_env = _parent_ctx.envelope
+        except Exception:
+            parent_cap, parent_scope, parent_env = None, "", None
         task = Task(
             priority=priority.value,
             created_at=time.time(),
@@ -148,6 +168,9 @@ class TaskQueue:
             resumed_from=resume_from,
             project=workspaces.current(),
             execution_scope=execution_scope or f"task:{task_id}",
+            spend_cap=parent_cap,
+            budget_scope=parent_scope,
+            envelope=parent_env,
         )
         with self._condition:
             self._queue.append(task)
@@ -230,7 +253,8 @@ class TaskQueue:
     def _run_task(self, task: Task) -> None:
         with runtime.execution('task', project=task.project,
                                execution_id=f'task:{task.task_id}', cancel=task.cancel_flag,
-                               budget_scope=task.execution_scope or f'task:{task.task_id}'):
+                               budget_scope=task.budget_scope or task.execution_scope or f'task:{task.task_id}',
+                               spend_cap=task.spend_cap, envelope=task.envelope):
             self._run_task_bound(task)
 
     def _run_task_bound(self, task: Task) -> None:

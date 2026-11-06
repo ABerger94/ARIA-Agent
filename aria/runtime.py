@@ -33,6 +33,11 @@ class ExecutionContext:
     budget_scope: str = ''
     spend_cap: float | None = None
     budget_error: str = ''
+    # A mission envelope ({allowed_tools, pre_approved_irreversible,
+    # spend_cap, ...}) bound to this execution: dispatch enforces
+    # it on every tool call, nested calls included (pass 25).
+    # None outside a mission.
+    envelope: dict | None = None
     provider_failures: list = field(default_factory=list)
     started: float = field(default_factory=time.time)
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
@@ -66,7 +71,28 @@ def check_cancelled():
 
 @contextlib.contextmanager
 def execution(kind='tool', *, project=None, execution_id=None, cancel=None,
-              budget_scope='', spend_cap=None):
+              budget_scope='', spend_cap=None, envelope=None):
+    parent = _CURRENT.get()
+    # A nested execution never drops the cap or the envelope it was
+    # entered under (pass 25): without this, a mission's spend cap
+    # and tool envelope vanished the moment a step opened a
+    # sub-execution, and a delegated task minted a fresh context
+    # with cap None. Explicit arguments always win; only the
+    # unspecified ones inherit. A spend cap inherited this way
+    # brings its budget scope with it — otherwise the inherited
+    # cap would apply to a fresh scope with $0 spent, and the
+    # nested work would get a second full cap on top of the
+    # mission's. An explicit spend_cap keeps a fresh scope (it is
+    # a different budget, not the parent's).
+    inherited_cap = (spend_cap is None and parent is not None
+                     and parent.spend_cap is not None)
+    if inherited_cap:
+        spend_cap = parent.spend_cap
+    if envelope is None and parent is not None:
+        envelope = parent.envelope
+    if not budget_scope and inherited_cap and parent is not None \
+            and parent.budget_scope:
+        budget_scope = parent.budget_scope
     ctx = ExecutionContext(kind=kind, project=project or workspaces.current())
     if execution_id:
         ctx.id = execution_id
@@ -74,6 +100,7 @@ def execution(kind='tool', *, project=None, execution_id=None, cancel=None,
         ctx.cancel = cancel
     ctx.budget_scope = budget_scope or ctx.id
     ctx.spend_cap = spend_cap
+    ctx.envelope = envelope
     token = _CURRENT.set(ctx)
     with workspaces.use(ctx.project):
         with _LOCK:
