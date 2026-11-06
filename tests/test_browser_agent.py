@@ -119,6 +119,34 @@ def test_url_blocking():
     print("ok url_blocking")
 
 
+def test_private_host_canonicalisation():
+    # Pass 25 (pass 11 remainder): an expanded loopback host used
+    # to pass _url_blocked with LAN access disabled — _is_private_host
+    # matched only the exact "::1" and dotted-decimal IPv4 ranges.
+    loopbacks = ("0:0:0:0:0:0:0:1", "::ffff:127.0.0.1", "::ffff:7f00:1",
+                 "0:0:0:0:0:ffff:127.0.0.1", "0177.0.0.1", "0x7f.0.0.1",
+                 "0x7f000001", "2130706433", "127.1", "127.0.1",
+                 "0.0.0.0", "::", "fe80::1", "fc00::1", "10.1.2.3",
+                 "172.16.0.9", "172.31.255.255", "192.168.0.1")
+    for host in loopbacks:
+        assert ba._is_private_host(host), host
+    # The same spellings are refused at the URL boundary, before
+    # any session starts.
+    for url in ("http://[0:0:0:0:0:0:0:1]/admin",
+                "http://[::ffff:127.0.0.1]/admin",
+                "http://0177.0.0.1/admin",
+                "http://0x7f000001/admin",
+                "http://2130706433/admin",
+                "http://127.1/admin"):
+        assert "private" in ba._url_blocked(url), url
+    # Public hosts are untouched.
+    for host in ("8.8.8.8", "93.184.216.34", "example.com",
+                 "2001:4860:4860::8888", "2606:4700:4700::1111"):
+        assert not ba._is_private_host(host), host
+    assert ba._url_blocked("https://8.8.8.8/") == ""
+    print("ok private_host_canonicalisation")
+
+
 def test_irreversible_labels():
     for label in ("Place order", "Pay now", "Send message",
                   "Delete item", "Book now", "Complete order"):

@@ -42,6 +42,7 @@ If Playwright is not installed the tool says so honestly, with the
 install commands, instead of failing obscurely.
 """
 
+import ipaddress
 import os
 import queue
 import re
@@ -65,16 +66,86 @@ _IRREVERSIBLE = re.compile(
     r"book now|complete order|submit order|subscribe now)",
     re.I)
 
+def _ipv4_aton_value(host: str):
+    """inet_aton semantics for the IPv4 spellings ipaddress will
+    not parse: 1-4 dot-separated parts, each decimal, octal
+    (leading 0), or hex (0x); 127.1, 0177.0.0.1, 0x7f.0.0.1 and
+    2130706433 are all 127.0.0.1. Returns the 32-bit value, or
+    None when the host is not such a spelling."""
+    parts = host.split(".")
+    if not 1 <= len(parts) <= 4:
+        return None
+    nums = []
+    for part in parts:
+        if not part:
+            return None
+        try:
+            if part.lower().startswith("0x"):
+                nums.append(int(part, 16))
+            elif len(part) > 1 and part[0] == "0" and part.isdigit():
+                nums.append(int(part, 8))
+            elif part.isdigit():
+                nums.append(int(part, 10))
+            else:
+                return None
+        except ValueError:
+            return None
+    widths = (8, 8, 8, 8)
+    if len(nums) == 1:
+        top = nums[0]
+        if top > 0xFFFFFFFF:
+            return None
+        return top
+    value = 0
+    for i, n in enumerate(nums[:-1]):
+        if n > 0xFF:
+            return None
+        value |= n << (8 * (3 - i))
+    tail_bits = 8 * (4 - len(nums) + 1)
+    if nums[-1] >= (1 << tail_bits):
+        return None
+    return value | nums[-1]
+
+
+def _ipv4_is_private(value: int) -> bool:
+    first = (value >> 24) & 0xFF
+    second = (value >> 16) & 0xFF
+    # 0.0.0.0/8 ("this network") is non-routable; browsers treat
+    # 0.0.0.0 as localhost.
+    return (first in (0, 10, 127) or (first == 192 and second == 168)
+            or (first == 172 and 16 <= second <= 31))
+
+
 def _is_private_host(host: str) -> bool:
-    host = (host or "").lower()
+    host = (host or "").lower().strip().strip("[]").rstrip(".")
     if host in ("localhost", "::1") or host.endswith(".local"):
         return True
-    parts = host.split(".")
-    if len(parts) == 4 and all(p.isdigit() for p in parts):
-        a, b = int(parts[0]), int(parts[1])
-        return (a in (10, 127) or (a == 192 and b == 168)
-                or (a == 172 and 16 <= b <= 31))
-    return False
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        addr = None
+    if addr is not None:
+        if addr.version == 4:
+            # ipaddress rejects leading-zero quads, so the
+            # dotted-decimal path here is the canonical one;
+            # alternative spellings fall through to _ipv4_aton_value.
+            return (addr.is_loopback or addr.is_unspecified
+                    or _ipv4_is_private(int(addr)))
+        mapped = addr.ipv4_mapped
+        if mapped is not None:
+            return mapped.is_loopback or _ipv4_is_private(int(mapped))
+        # Expanded loopback (0:0:0:0:0:0:0:1), ULA, link-local,
+        # unspecified and reserved IPv6 are all non-routable.
+        return (addr.is_loopback or addr.is_private
+                or addr.is_link_local or addr.is_reserved
+                or addr.is_unspecified)
+    # Not a standard literal: try the alternative IPv4 spellings
+    # (pass 25 — an expanded loopback host used to pass with LAN
+    # access disabled).
+    value = _ipv4_aton_value(host)
+    if value is None:
+        return False
+    return _ipv4_is_private(value)
 
 
 def _url_blocked(url: str) -> str:
