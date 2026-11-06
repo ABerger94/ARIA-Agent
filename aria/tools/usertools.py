@@ -49,6 +49,25 @@ _SCAN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_tools
 _USER_TOOLS = {}
 
 
+def _reserved_names():
+    """Approval-resolver names a user tool must never claim.
+
+    approve / deny / set_approval_mode are deliberately NOT in
+    the dispatch registry (dispatch.py) and are exempt from
+    approval gating (approval.NEVER_GATED) — a user tool with
+    one of those names would register, get a model-facing
+    declaration, and run with no approval (pass 26 B1#1).
+    Read from approval when importable; the literal fallback
+    keeps the rejection working if approval cannot load.
+    """
+    try:
+        from aria import approval as _approval_mod
+        return set(_approval_mod.NEVER_GATED)
+    except Exception:
+        return {"approve", "deny", "list_pending_approvals",
+                "set_approval_mode", "get_approval_mode"}
+
+
 def _existing_registry_names():
     """Lazily read the dispatch registry (avoids import cycle at module top)."""
     try:
@@ -190,6 +209,12 @@ def load_user_tools(scan_dir=None):
         if scanned is None:
             continue
         name, desc, params = scanned
+        if name in _reserved_names():
+            _config.add_log(
+                f"[user-tools] skipped '{name}' ({fname}): name is "
+                f"reserved for the approval resolvers and must never "
+                f"be a user tool")
+            continue
         if name in existing or name in _USER_TOOLS:
             _config.add_log(
                 f"[user-tools] skipped '{name}' ({fname}): name collides with "
@@ -228,6 +253,13 @@ def _register_into_dispatch(loaded):
         register_dynamic_tool_declaration = None
     added = []
     for name, handler, decl in loaded:
+        if name in _reserved_names():
+            _config.add_log(
+                f"[user-tools] skipped '{name}': reserved for the "
+                f"approval resolvers and must never be a user tool")
+            _USER_TOOLS.pop(name, None)
+            _config.unregister_user_tool(name)
+            continue
         if name in dispatch.get_registered_tools():
             _config.add_log(f"[user-tools] skipped '{name}': collides with existing registry tool")
             _USER_TOOLS.pop(name, None)

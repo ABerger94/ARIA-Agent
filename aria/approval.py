@@ -80,6 +80,12 @@ DESTRUCTIVE_TOOLS = frozenset({
     "game_updater",  # only when action=update; see needs_approval()
     "open_app_or_url",
     "move_head_servos",
+    # Face tracking drives the head servos (vision.py
+    # face_track_loop calls send_servo_command directly), so it
+    # is a physical actuation like move_head_servos — gated under
+    # confirm-risky / confirm-all, and safe-mode-blocked in
+    # config.SAFE_MODE_BLOCKED_TOOLS (pass 26 B2#1).
+    "face_tracking",
     # MCP server setup/connect: a model-chosen command is spawned by
     # stdio_client before any MCP handshake (aria/mcp.py), and setup
     # persists the server enabled, so startup autoconnect re-runs it.
@@ -463,9 +469,16 @@ def needs_approval(tool: str, args=None) -> bool:
 
     The dispatch hook checks `preauthorized` first; this function only answers
     the mode/set question. Approval-control tools (approve/deny/...) never
-    gate, or a pending request could never be resolved.
+    gate, or a pending request could never be resolved — unless the
+    name belongs to a user-defined (or discovered MCP) tool, which
+    runs arbitrary code: a user tool named "approve" is a user tool
+    first and a resolver name second, so it gates like any other
+    user tool (pass 26 B1#1). The genuine resolvers are not user
+    tools, so they stay exempt.
     """
-    if tool in NEVER_GATED:
+    if tool in NEVER_GATED and not (
+            config.is_user_tool(tool)
+            or config.is_discovered_mcp_tool(tool)):
         return False
     mode = get_mode()
     if mode == "auto":
