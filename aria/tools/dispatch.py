@@ -401,6 +401,15 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
                 path = workspaces.resolve_workspace_file(path, builtins.WORKSPACE_DIR)
             except ValueError as exc:
                 return (f'status=failed reason="{exc}"', False)
+        elif fn_name == 'code_helper':
+            # Resolve exactly as _read_code_arg does (relative
+            # paths are workspace-relative) before the root check,
+            # or the check would test the process cwd instead.
+            from pathlib import Path as _Path
+            _p = _Path(str(path))
+            if not _p.is_absolute():
+                _p = _Path(workspaces.path('', builtins.WORKSPACE_DIR)) / _p
+            path = str(_p.resolve())
         if not workspaces.file_allowed(path):
             return ('status=failed reason="File is outside this project’s configured roots"', False)
     # Auto-resolve parent toolkit if called directly

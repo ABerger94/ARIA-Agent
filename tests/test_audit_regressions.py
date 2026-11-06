@@ -101,6 +101,35 @@ def test_workspace_listing_uses_the_bound_project(files):
     assert 'project.txt' in listing and 'personal.txt' not in listing
 
 
+def test_code_helper_cannot_read_outside_project_file_roots(files, monkeypatch):
+    # Pass 25: code_helper's file_path was absent from
+    # FILE_ARGUMENTS, so dispatch never root-checked it and the
+    # helper read any file on disk.
+    from aria.tools import gaptools
+    seen_prompts = []
+    monkeypatch.setattr(
+        gaptools, "_provider_text",
+        lambda system, prompt, role="code": seen_prompts.append(prompt) or "EXPLAINED")
+    allowed = files / 'allowed'
+    allowed.mkdir()
+    (allowed / 'ok.py').write_text('x = 1\n')
+    (files / 'secret.py').write_text('SECRET_MARKER = True\n')
+    workspaces.update_settings({'file_roots': [str(allowed)]})
+    result, _ = dispatch.execute_tool(
+        'code_helper', {'action': 'explain',
+                        'file_path': str(files / 'secret.py')})
+    assert 'SECRET_MARKER' not in result
+    assert normalize(result).status == FAILED
+    # The file must never reach the provider at all.
+    assert not any('SECRET_MARKER' in p for p in seen_prompts), seen_prompts
+    # An allowed file passes the gate and reaches the provider.
+    result, _ = dispatch.execute_tool(
+        'code_helper', {'action': 'explain',
+                        'file_path': str(allowed / 'ok.py')})
+    assert 'configured roots' not in result
+    assert 'EXPLAINED' in result, result
+
+
 def test_read_fallback_cannot_bypass_project_file_roots(files):
     allowed = files / 'allowed'
     allowed.mkdir()

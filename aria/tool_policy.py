@@ -35,4 +35,8 @@ FILE_ARGUMENTS = {
     'file_duplicates': ('directory',), 'disk_usage': ('directory',),
     'process_file': ('path',), 'vision_look': ('image_path',),
     'github_push_file': ('filepath',),
+    # Pass 25: code_helper's file_path used to bypass the root
+    # check entirely (it was absent here), so the helper could
+    # read any file on disk when file_roots were configured.
+    'code_helper': ('file_path',),
 }

@@ -951,6 +951,14 @@ def _read_code_arg(args):
             path = alt
     if not path.exists():
         return None, f"file not found: {file_path}"
+    # Pass 25: the dispatcher root-checks file_path, but the
+    # handler must enforce it too for direct calls.
+    try:
+        from aria import workspaces
+        if not workspaces.file_allowed(path.resolve()):
+            return None, "file is outside this project’s configured roots"
+    except Exception:
+        pass
     try:
         return path.read_text(encoding="utf-8", errors="replace")[:20000], None
     except OSError as exc:
