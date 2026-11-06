@@ -420,6 +420,16 @@ def _consolidation_watermark() -> int:
         return 0
 
 
+def _provider_failure(text: str) -> bool:
+    """True when provider_text returned a bracketed error sentinel
+    instead of a distillation ("[No provider responded.]",
+    "[provider_text error: ...]", "[Unparseable provider
+    response.]", "[No text in provider response.]"). A real
+    distillation is 'key: value' lines or NONE — it never starts
+    with "["."""
+    return str(text or "").strip().startswith("[")
+
+
 def _set_consolidation_watermark(chat_id: int):
     with DB_LOCK:
         conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
@@ -462,6 +472,18 @@ def idle_consolidation_loop(is_busy_fn: Callable[[], bool],
             )
             contents = [{"role": "user", "parts": [{"text": convo}]}]
             text = provider_text(system_instruction, _parts_text(contents))
+
+            if _provider_failure(text):
+                # Pass 25: a provider outage returns a bracketed
+                # sentinel, not a distillation. Advancing the
+                # watermark past it would permanently consume chat
+                # that was never distilled (and "[provider_text
+                # error: ...]" even parses as a bogus fact, since
+                # it contains a colon). Hold the watermark so the
+                # next pass retries these rows.
+                add_log(f"Idle consolidation: provider unavailable "
+                        f"({text.strip()[:60]}), watermark held.")
+                continue
 
             last_id = rows[-1][0]
 
