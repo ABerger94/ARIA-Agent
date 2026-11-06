@@ -105,6 +105,17 @@ def truncate_output(text: str, max_len: int = MAX_TOOL_OUTPUT) -> str:
     return text
 
 
+def _python_command(temp_script: str):
+    """The command that runs a script. Normally [sys.executable,
+    script] — but a frozen build's sys.executable is ARIA.exe,
+    which ignores a .py argument and boots a second ARIA instead
+    of running the script; there the bundled interpreter runs it
+    via aria.py's --run-script flag."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--run-script", temp_script]
+    return [sys.executable, temp_script]
+
+
 def tool_run_python(code: str,
                     workspace_dir: str = WORKSPACE_DIR,
                     timeout: int = 15,
@@ -130,7 +141,7 @@ def tool_run_python(code: str,
             f.write(code)
         try:
             result = subprocess.run(
-                [sys.executable, temp_script],
+                _python_command(temp_script),
                 capture_output=True,
                 text=True,
                 timeout=timeout,

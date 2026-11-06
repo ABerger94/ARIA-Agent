@@ -64,6 +64,29 @@ if '--life-process' in sys.argv:
 if '--desktop-node' in sys.argv:
     from aria.desktop_node import main as _node_main
     sys.exit(_node_main(sys.argv[sys.argv.index('--desktop-node') + 1:]))
+if '--run-script' in sys.argv:
+    # Frozen-build script runner (pass 25): tool_run_python used
+    # to pass a .py file to ARIA.exe, which ignored the argument
+    # and booted a second ARIA instead of running the script. This
+    # flag runs the file with the bundled interpreter and exits
+    # with its code, before any of the app imports below — so the
+    # frozen build can run code without a system Python.
+    import runpy
+    import traceback as _traceback
+    _index = sys.argv.index('--run-script')
+    _script = sys.argv[_index + 1] if len(sys.argv) > _index + 1 else None
+    if not _script:
+        print("aria.py: --run-script needs a script path",
+              file=sys.stderr)
+        sys.exit(2)
+    try:
+        runpy.run_path(_script, run_name="__main__")
+    except SystemExit as _e:
+        sys.exit(_e.code if isinstance(_e.code, int) else 0)
+    except BaseException:
+        _traceback.print_exc()
+        sys.exit(1)
+    sys.exit(0)
 
 from aria import *
 from aria.main import main, start_all, handle_action
