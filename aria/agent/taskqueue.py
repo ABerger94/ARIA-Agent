@@ -74,6 +74,13 @@ class Task:
     spend_cap: Any = field(compare=False, default=None)
     budget_scope: str = field(compare=False, default="")
     envelope: Any = field(compare=False, default=None)
+    # Identity of the submitting execution (pass 26 B2#5): a
+    # mission cancel stops its delegated children by mission_id.
+    # Never the parent's cancel event itself — sharing it would
+    # cancel the child when the mission's step context ends
+    # normally. Uncapped / non-mission submissions carry ""/None.
+    parent_execution_id: str = field(compare=False, default="")
+    mission_id: Any = field(compare=False, default=None)
     project: str = field(compare=False, default="default")
     started_at: float = field(compare=False, default=0.0)
     cancel_flag: threading.Event = field(
@@ -131,6 +138,7 @@ class TaskQueue:
                resume_from: str = "") -> str:
         resume_state = None
         execution_scope = ""
+        resume_rec = None
         if resume_from:
             rec = taskstore.get(resume_from)
             if rec is None:
@@ -138,10 +146,12 @@ class TaskQueue:
             if rec.get("status") not in taskstore.RESUMABLE_STATUSES:
                 raise ValueError(
                     f"task {resume_from} is {rec.get('status')}, not resumable")
+            resume_rec = rec
             execution_scope = rec.get("execution_scope") or f"task:{resume_from}"
             resume_state = {"plan": rec.get("plan"),
                             "completed": rec.get("completed") or [],
-                            "results": rec.get("results") or {}}
+                            "results": rec.get("results") or {},
+                            "execution_scope": execution_scope}
             if not goal:
                 goal = rec.get("goal", "")
         task_id = str(uuid.uuid4())[:8]
@@ -155,8 +165,31 @@ class TaskQueue:
             parent_cap = _parent_ctx.spend_cap
             parent_scope = _parent_ctx.budget_scope
             parent_env = _parent_ctx.envelope
+            parent_exec_id = _parent_ctx.id
+            parent_mid = None
+            if isinstance(parent_env, dict):
+                parent_mid = parent_env.get("mission_id")
         except Exception:
             parent_cap, parent_scope, parent_env = None, "", None
+            parent_exec_id, parent_mid = "", None
+        if resume_rec is not None:
+            # A resume restores the ORIGINAL mission policy from
+            # the journal (pass 26 B1#4): a mission-origin task
+            # resumed from ordinary conversation keeps its cap,
+            # scope, envelope, and mission parent instead of
+            # running uncapped on the resumer's context. A record
+            # written before these fields existed has none of the
+            # keys — only then does the resumer's context win.
+            if "spend_cap" in resume_rec:
+                parent_cap = resume_rec.get("spend_cap")
+            if "budget_scope" in resume_rec:
+                parent_scope = resume_rec.get("budget_scope") or ""
+            if "envelope" in resume_rec:
+                parent_env = resume_rec.get("envelope")
+            if "mission_id" in resume_rec:
+                parent_mid = resume_rec.get("mission_id")
+            if "parent_execution_id" in resume_rec:
+                parent_exec_id = resume_rec.get("parent_execution_id") or ""
         task = Task(
             priority=priority.value,
             created_at=time.time(),
@@ -171,6 +204,8 @@ class TaskQueue:
             spend_cap=parent_cap,
             budget_scope=parent_scope,
             envelope=parent_env,
+            parent_execution_id=parent_exec_id,
+            mission_id=parent_mid,
         )
         with self._condition:
             self._queue.append(task)
@@ -192,6 +227,33 @@ class TaskQueue:
             task.status = TaskStatus.CANCELLED
             add_log(f"Task cancelled: [{task_id}]")
             return True
+
+    def cancel_children_of_mission(self, mission_id) -> int:
+        """Cancel every queued/running task submitted under
+        *mission_id* (pass 26 B2#5). Returns how many were
+        stopped. Only the flag + status are touched — the child
+        keeps its own cancel event, so ending a mission's step
+        context normally never cancels it; only an explicit
+        mission cancel reaches it."""
+        if mission_id is None:
+            return 0
+        stopped = 0
+        with self._lock:
+            for task in self._tasks.values():
+                if task.mission_id != mission_id:
+                    continue
+                if task.project != workspaces.current():
+                    continue
+                if task.status in (TaskStatus.COMPLETED,
+                                   TaskStatus.FAILED,
+                                   TaskStatus.CANCELLED):
+                    continue
+                task.cancel_flag.set()
+                task.status = TaskStatus.CANCELLED
+                stopped += 1
+                add_log(f"Task cancelled with mission {mission_id}: "
+                        f"[{task.task_id}]")
+        return stopped
 
     def get_status(self, task_id: str) -> Optional[dict]:
         with self._lock:
@@ -262,7 +324,10 @@ class TaskQueue:
         # Journal first (Gap fill 3): the record exists before any
         # step runs, so a crash mid-task leaves a resumable trace.
         taskstore.create(task.task_id, task.goal,
-                         resumed_from=task.resumed_from, execution_scope=task.execution_scope)
+                         resumed_from=task.resumed_from, execution_scope=task.execution_scope,
+                         spend_cap=task.spend_cap, budget_scope=task.budget_scope,
+                         envelope=task.envelope, mission_id=task.mission_id,
+                         parent_execution_id=task.parent_execution_id)
 
         def _ckpt(state: dict) -> None:
             taskstore.checkpoint(task.task_id, state)

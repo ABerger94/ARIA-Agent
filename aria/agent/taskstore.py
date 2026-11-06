@@ -73,13 +73,35 @@ def _save(data: Dict[str, Any]) -> None:
         _config.log_silent("taskstore_save", e)
 
 
-def create(task_id: str, goal: str, resumed_from: str = "", execution_scope: str = "") -> Dict[str, Any]:
-    """Open a journal record for a task about to run."""
+def _jsonable(value):
+    """JSON-safe copy for journal storage: an envelope captured
+    from a submitting context may carry non-JSON values, and an
+    unserializable record would make _save swallow the whole
+    write (pass 26 B1#4)."""
+    if value is None:
+        return None
+    try:
+        return json.loads(json.dumps(value, default=str))
+    except Exception:
+        return None
+
+
+def create(task_id: str, goal: str, resumed_from: str = "", execution_scope: str = "",
+           spend_cap=None, budget_scope: str = "", envelope=None,
+           mission_id=None, parent_execution_id: str = "") -> Dict[str, Any]:
+    """Open a journal record for a task about to run. The submitting
+    execution's policy (spend cap, budget scope, envelope) and
+    parent identity ride along, so a resume restores the ORIGINAL
+    mission policy instead of the resumer's context (pass 26
+    B1#4) and a mission cancel can find its children (B2#5)."""
     rec = {
         "task_id": task_id, "goal": goal, "status": "running",
         "plan": None, "completed": [], "results": {},
         "blocked_reason": "", "result": "", "error": "",
         "resumed_from": resumed_from, "execution_scope": execution_scope or f"task:{task_id}",
+        "spend_cap": spend_cap, "budget_scope": budget_scope or "",
+        "envelope": _jsonable(envelope), "mission_id": mission_id,
+        "parent_execution_id": parent_execution_id or "",
         "created_at": time.time(), "updated_at": time.time(),
         "checkpoint_at": 0.0,
     }
