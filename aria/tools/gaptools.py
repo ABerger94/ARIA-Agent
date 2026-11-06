@@ -46,6 +46,7 @@ not, so a missing outcome module can never take a tool down.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -702,11 +703,22 @@ def sanitise(text, max_len: int = 200) -> str:
 
 
 def task_name_for(message, when) -> str:
-    """'ARIA Reminder <yyyymmddHHMM> <slug>' — unique per minute and
-    recognisable in the OS scheduler's list."""
+    """'ARIA Reminder <yyyymmddHHMM> <hash8> <slug>' — unique per
+    minute and recognisable in the OS scheduler's list.
+
+    Pass 26 B5#7: the slug alone (truncated to 24 chars) collided
+    for distinct messages sharing a 24-char prefix in the same
+    minute, and schtasks /Create /F then overwrote the earlier
+    reminder (task and script). The name now carries the first 8
+    hex chars of sha1 over the full sanitized message, so distinct
+    messages always differ; the hash is deterministic, so a retry
+    of the SAME reminder reuses the same name. The hash sits
+    before the slug so the name still ends with the slug."""
+    clean = sanitise(message, max_len=1000000)
+    digest = hashlib.sha1(clean.encode("utf-8")).hexdigest()[:8]
     slug = re.sub(r"[^a-z0-9]+", "-", str(message or "").lower()).strip("-")
     slug = slug[:24].strip("-") or "reminder"
-    return f"ARIA Reminder {when:%Y%m%d%H%M} {slug}"
+    return f"ARIA Reminder {when:%Y%m%d%H%M} {digest} {slug}"
 
 
 def build_notify_script(message, os_name) -> str:
