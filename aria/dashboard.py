@@ -243,6 +243,32 @@ ACTIVITY_COLORS = {'error': ('#ff6b6b', '#ffd9d9'),
                    'info': ('#8ea3b6', '#c2d2de')}
 
 
+def activity_colors(palette_id=None):
+    """The Activity tab's (level-tag, message-body) colours for a
+    palette. The dark defaults above are the message bodies only
+    when the text area sits on a dark background; on the light
+    palettes (Apple Modern #f5f5f7, Earthy Minimal #f8f6ee) the
+    pale tints are nearly invisible — e.g. error body #ffd9d9 on
+    #f5f5f7 (pass 25). There the message body is the severity
+    colour mixed most of the way toward the palette's own text
+    colour: dark, still severity-tinted, and readable on the
+    light background. The level tags keep their saturated
+    colours (bold tags, readable on either ground). An unknown
+    palette, or no palette at all, keeps the dark defaults."""
+    try:
+        from aria import palettes as _palettes
+        from aria import ui_prefs as _up
+        pid = palette_id or _up.get_palette()
+        toks = _palettes.tokens_of(pid) if pid else None
+    except Exception:
+        toks = None
+    if not toks or not _hex_is_light(toks.get('bg', '')):
+        return dict(ACTIVITY_COLORS)
+    text = toks.get('text') or '#1d1d1f'
+    return {kind: (lvl, _mix_hex(lvl, text, 0.62))
+            for kind, (lvl, _msg) in ACTIVITY_COLORS.items()}
+
+
 def _activity_kind(level):
     l = str(level).casefold()
     if any(k in l for k in ('error', 'err', 'fail', 'critical')):
@@ -259,12 +285,17 @@ _RESOLUTION_KIND = {'executed': 'ok', 'denied': 'warn',
                     're-parked': 'info', 'errored': 'error'}
 
 
-def activity_html(events, resolutions=None):
+def activity_html(events, resolutions=None, palette_id=None):
     """Render activity events [(ts, level, message, meta)] as
     coloured HTML, LVI-style: the level tag carries the colour
     (red error, amber warn, green ok, muted info), the message in
     a matching soft tint, timestamps dimmest. Escaped — a log
     line is never markup.
+
+    `palette_id` (pass 25): the message bodies follow the
+    palette — pale tints on dark grounds, dark severity-tinted
+    text on the light palettes. None resolves to the palette
+    currently set, so the dashboard call site needs no change.
 
     `resolutions` (pass 18): recent approval resolutions from
     aria.approval's journal, pinned above the log as a RECENT
@@ -273,13 +304,14 @@ def activity_html(events, resolutions=None):
     #2: with the model down, an executed approval was previously
     indistinguishable from a denial or a crash)."""
     import html as _html
+    colors = activity_colors(palette_id)
     parts = []
     if resolutions:
         parts.append(
             '<p style="margin:0 0 8px 0">'
             '<b style="color:#8ea3b6">RECENT APPROVALS</b></p>')
         for r in resolutions:
-            lvl_col, msg_col = ACTIVITY_COLORS[
+            lvl_col, msg_col = colors[
                 _RESOLUTION_KIND.get(r.get('verdict'), 'info')]
             when = time.strftime('%I:%M %p',
                                  time.localtime(r.get('ts', 0)))
@@ -294,7 +326,7 @@ def activity_html(events, resolutions=None):
                 f'<b style="color:{lvl_col}">APPROVAL</b><br/>'
                 f'<span style="color:{msg_col}">{body}</span></p>')
     for ts, level, message, *_rest in events:
-        lvl_col, msg_col = ACTIVITY_COLORS[_activity_kind(level)]
+        lvl_col, msg_col = colors[_activity_kind(level)]
         body = _html.escape(str(message)).replace('\n', '<br/>')
         parts.append(
             f'<p style="margin:0 0 8px 0">'
