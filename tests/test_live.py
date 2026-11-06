@@ -213,4 +213,143 @@ def test_manager_refuses_without_key_or_runner():
 def test_model_ladder_order():
     assert live.LIVE_MODELS[0] == 'gemini-3.1-flash-live-preview'
     assert 'gemini-2.5-flash-native-audio' in live.LIVE_MODELS[1]
+
+
+# -- pass 25: voice-off, stop, mic failure ---------------------------
+# Fake client/session plumbing for _run-level tests. No google-genai,
+# no sounddevice, no network: the types module is the _FakeTypes
+# stand-in above, the mic pump and play sink are stubbed per test.
+
+class _BlockingSession:
+    """A session whose receive() blocks forever (the model never
+    speaks and never disconnects) — the shape that exposed both
+    the stop bug (receive loop never ends) and the mic bug (a dead
+    mic left this session looking alive)."""
+
+    def __init__(self):
+        self.receive_calls = 0
+
+    async def receive(self):
+        self.receive_calls += 1
+        await asyncio.sleep(3600)
+        yield  # unreachable — marks this an async generator
+
+    async def send_realtime_input(self, audio=None):
+        return None
+
+    async def send_tool_response(self, function_responses):
+        return None
+
+
+class _FakeLiveCM:
+    def __init__(self, session):
+        self.session = session
+
+    async def __aenter__(self):
+        return self.session
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeClient:
+    def __init__(self, session):
+        self.session = session
+        self.aio = types.SimpleNamespace(
+            live=types.SimpleNamespace(
+                connect=lambda model=None, config=None:
+                    _FakeLiveCM(session)))
+
+
+def _make_manager(monkeypatch, logs, session, mic_stub, voice_on=True):
+    monkeypatch.setattr(live, '_genai_types', _FakeTypes)
+    monkeypatch.setattr(live, '_voice_enabled', lambda: voice_on)
+    mgr = live.LiveManager(
+        api_key='<redacted>',
+        tool_runner=lambda n, a: ('', True),
+        client_factory=lambda key: _FakeClient(session),
+        log=logs.append)
+    monkeypatch.setattr(live.LiveManager, '_mic_pump', mic_stub)
+    monkeypatch.setattr(
+        live.LiveManager, '_play_sink',
+        lambda self: _dummy_sink())
+    return mgr
+
+
+async def _dummy_sink():
+    return (lambda data: None,
+            types.SimpleNamespace(stop=lambda: None, close=lambda: None))
+
+
+async def _pump_forever(self, session, loop):
+    await asyncio.sleep(3600)
+
+
+async def _pump_dead(self, session, loop):
+    raise RuntimeError('mic exploded (fake)')
+
+
+def test_start_refuses_when_voice_off(monkeypatch):
+    logs = []
+    session = _BlockingSession()
+    mgr = _make_manager(monkeypatch, logs, session, _pump_forever,
+                        voice_on=False)
+    monkeypatch.setattr(live, 'HAVE_GENAI', True)
+    monkeypatch.setattr(live, '_genai', types.SimpleNamespace())
+    assert mgr.start() is False
+    assert mgr._thread is None or not mgr._thread.is_alive()
+    assert any('voice is off' in m for m in logs), logs
+
+
+def test_start_works_when_voice_on(monkeypatch):
+    logs = []
+    session = _BlockingSession()
+    mgr = _make_manager(monkeypatch, logs, session, _pump_forever,
+                        voice_on=True)
+    monkeypatch.setattr(live, 'HAVE_GENAI', True)
+    monkeypatch.setattr(live, '_genai', types.SimpleNamespace())
+    assert mgr.start() is True
+    assert mgr._thread is not None and mgr._thread.is_alive()
+    mgr.stop()
+    mgr._thread.join(timeout=5)
+    assert not mgr._thread.is_alive()
+
+
+def test_stop_ends_blocked_session(monkeypatch):
+    # Pass 25 (P1#7): stop() used to set the event only, and the
+    # receive loop never ended. With a session blocked in
+    # receive() forever, stop() must end the thread promptly and
+    # clear active. Driven through the real start()/stop() path.
+    import time
+    logs = []
+    session = _BlockingSession()
+    mgr = _make_manager(monkeypatch, logs, session, _pump_forever)
+    monkeypatch.setattr(live, 'HAVE_GENAI', True)
+    monkeypatch.setattr(live, '_genai', types.SimpleNamespace())
+    assert mgr.start() is True
+    for _ in range(100):
+        if mgr.active:
+            break
+        time.sleep(0.05)
+    assert mgr.active, 'session never became live'
+    mgr.stop()
+    mgr._thread.join(timeout=5)
+    assert not mgr._thread.is_alive()
+    assert mgr.active is False
+
+
+def test_mic_failure_ends_session(monkeypatch):
+    # Pass 25 (P2#10): a dead mic used to leave an apparently
+    # active, silent session. The mic task dying must end the
+    # session, clear active, and say so in the log.
+    logs = []
+    session = _BlockingSession()
+    mgr = _make_manager(monkeypatch, logs, session, _pump_dead)
+    monkeypatch.setattr(live, 'HAVE_GENAI', True)
+    monkeypatch.setattr(live, '_genai', types.SimpleNamespace())
+    assert mgr.start() is True
+    mgr._thread.join(timeout=5)
+    assert not mgr._thread.is_alive()
+    assert mgr.active is False
+    assert any('mic failed' in m for m in logs), logs
     assert live.MIC_RATE == 16000 and live.OUT_RATE == 24000

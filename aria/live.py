@@ -120,6 +120,23 @@ def _app_locked() -> bool:
         return False
 
 
+def _voice_enabled() -> bool:
+    """Current master voice on/off, read live from settings
+    (pass 25): speech.VOICE_ENABLED is import-time only, so a
+    toggle after boot would be invisible to Live. Fail-open on
+    any error, like _app_locked."""
+    try:
+        from aria import config as _cfg_lv
+        return bool(_cfg_lv.get_setting("voice_enabled", True))
+    except Exception:
+        pass
+    try:
+        from aria import speech as _speech_lv
+        return bool(getattr(_speech_lv, "VOICE_ENABLED", True))
+    except Exception:
+        return True
+
+
 def _runtime():
     """The execution-context module (aria/runtime.py), lazy-imported
     like _app_locked: the standalone test harness loads this file
@@ -320,6 +337,10 @@ class LiveManager:
         self.active = False
         self._resume_handle: Optional[str] = None
         self._live_model: Optional[str] = None
+        # Pass 25 (P1#7): the live session task + its loop, so
+        # stop() can cancel the receive loop from another thread.
+        self._session_task = None
+        self._loop = None
 
     # -- session resumption ---------------------------------------
     @property
@@ -364,13 +385,21 @@ class LiveManager:
                 pass
 
         import sounddevice as sd
-        stream = sd.RawInputStream(
-            samplerate=MIC_RATE, channels=1, dtype="int16",
-            blocksize=_MIC_CHUNK, device=self._mic_device,
-            callback=_cb)
-        stream.start()
+        stream = None
         try:
+            stream = sd.RawInputStream(
+                samplerate=MIC_RATE, channels=1, dtype="int16",
+                blocksize=_MIC_CHUNK, device=self._mic_device,
+                callback=_cb)
+            stream.start()
             while not self._stop.is_set():
+                # Pass 25: voice-off ends the pump (the session
+                # supervisor then ends the session). The old loop
+                # checked only _stop/app-lock/presence, so Live
+                # kept listening with voice off.
+                if not _voice_enabled():
+                    self._log("Voice off — stopping Gemini Live mic")
+                    return
                 try:
                     data = chunks.get_nowait()
                 except Exception:
@@ -394,11 +423,12 @@ class LiveManager:
                 await session.send_realtime_input(audio=_genai_types.Blob(
                     data=data, mime_type="audio/pcm;rate=16000"))
         finally:
-            try:
-                stream.stop()
-                stream.close()
-            except Exception:
-                pass
+            if stream is not None:
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception:
+                    pass
 
     async def _play_sink(self):
         """Returns (on_audio, closer): a sounddevice output stream
@@ -413,6 +443,10 @@ class LiveManager:
             if _app_locked():
                 # App lock: the laptop stays silent — Live audio
                 # bypasses speech.py's gates, so it is gated here.
+                return
+            if not _voice_enabled():
+                # Pass 25: voice-off must silence Live output too
+                # (speech.speak is gated; this sink was not).
                 return
             try:
                 stream.write(data)
@@ -495,18 +529,51 @@ class LiveManager:
                             on_resumption=self._store_resumption))
                         lock_task = asyncio.create_task(
                             self._lock_watch(session_task))
+                        # Pass 25 (P2#10): supervise the mic task.
+                        # The old code awaited only session_task, so
+                        # a mic-device failure died silently inside
+                        # its task while the session stayed "live"
+                        # with the model hearing nothing. Race the
+                        # two: whichever finishes first decides.
+                        # Pass 25 (P1#7): record the session task +
+                        # loop so stop() can cancel the receive loop
+                        # from another thread — setting the stop
+                        # event alone never ended it.
+                        self._session_task = session_task
+                        self._loop = asyncio.get_running_loop()
                         try:
-                            await session_task
+                            done, _pending = await asyncio.wait(
+                                {session_task, mic_task},
+                                return_when=asyncio.FIRST_COMPLETED)
+                            if (mic_task in done
+                                    and not session_task.done()):
+                                err = mic_task.exception()
+                                if err is None:
+                                    self._log("Gemini Live mic pump "
+                                              "ended — ending session")
+                                else:
+                                    self._log(f"Gemini Live mic failed "
+                                              f"({err}) — ending session")
+                                session_task.cancel()
+                                try:
+                                    await session_task
+                                except asyncio.CancelledError:
+                                    pass
                         except asyncio.CancelledError:
                             # The lock watcher cancels the session
                             # task when the app locks — that is a
                             # clean end, not a failure. Any other
-                            # cancellation propagates.
+                            # cancellation propagates (after stopping
+                            # the receive loop too — a cancelled wait
+                            # does not cancel its children).
+                            if not session_task.done():
+                                session_task.cancel()
                             if not self._stop.is_set():
                                 raise
-                            self._log("Gemini Live session ended "
-                                      "(app lock)")
+                            self._log("Gemini Live session ended")
                         finally:
+                            self._session_task = None
+                            self._loop = None
                             lock_task.cancel()
                             mic_task.cancel()
                             try:
@@ -569,6 +636,13 @@ class LiveManager:
         if self._tool_runner is None:
             self._log("Gemini Live unavailable: no tool dispatcher wired")
             return False
+        if not _voice_enabled():
+            # Pass 25: voice-off must not start a Live session —
+            # the old code started one and kept listening/speaking
+            # while voice was off (only speech.speak and the
+            # wake-word loop were gated).
+            self._log("Gemini Live unavailable: voice is off")
+            return False
         if self._thread is not None and self._thread.is_alive():
             return True
         self._stop.clear()
@@ -578,4 +652,15 @@ class LiveManager:
         return True
 
     def stop(self) -> None:
+        """End the session. Setting the stop event alone used to
+        leave the receive loop alive (run_session loops forever
+        re-entering receive()), so the session never ended — now
+        the live session task is cancelled on its own loop too."""
         self._stop.set()
+        loop = getattr(self, "_loop", None)
+        task = getattr(self, "_session_task", None)
+        if loop is not None and task is not None and not task.done():
+            try:
+                loop.call_soon_threadsafe(task.cancel)
+            except Exception:
+                pass
