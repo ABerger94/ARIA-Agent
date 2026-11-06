@@ -363,6 +363,11 @@ class MCPBridge:
                     if item is None:
                         return
                     tool, args, fut = item
+                    if fut.cancelled():
+                        # Pass 26 B3#9: the waiter timed out and
+                        # cancelled this future — the call must
+                        # never execute, only be dropped.
+                        continue
                     try:
                         result = await asyncio.to_thread(client.call_tool, tool, args or {})
                         if not fut.done():
@@ -392,6 +397,10 @@ class MCPBridge:
                             if item is None:  # shutdown sentinel
                                 return
                             tool, args, fut = item
+                            if fut.cancelled():
+                                # Pass 26 B3#9: timed-out waiter —
+                                # drop, never execute.
+                                continue
                             try:
                                 result = await session.call_tool(tool, args or {})
                                 if not fut.done():
@@ -415,6 +424,10 @@ class MCPBridge:
                             if item is None:  # shutdown sentinel
                                 return
                             tool, args, fut = item
+                            if fut.cancelled():
+                                # Pass 26 B3#9: timed-out waiter —
+                                # drop, never execute.
+                                continue
                             try:
                                 result = await session.call_tool(tool, args or {})
                                 if not fut.done():
@@ -449,7 +462,15 @@ class MCPBridge:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
         await entry["queue"].put((tool, arguments, fut))
-        return await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
+        try:
+            return await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
+        except asyncio.TimeoutError:
+            # Pass 26 B3#9: shield() deliberately did NOT cancel
+            # the future, so the actor would execute this call
+            # later and settle the orphan. Cancel the orphan
+            # here; the actor loop skips cancelled items.
+            fut.cancel()
+            raise
 
     async def _stop_actor(self, entry: Dict[str, Any]) -> None:
         task = entry.get("task")
