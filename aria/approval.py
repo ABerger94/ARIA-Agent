@@ -398,17 +398,27 @@ def _gui_binding():
 def _gui_binding_matches(bound, current) -> bool:
     """True when the replay-time window is the parked one.
 
-    Title + process is the identity (an hwnd can be reused after
-    the window closes); a title-less window falls back to hwnd.
+    Title + process is the identity, and when BOTH readings
+    carry an HWND it must match too (pass 26 B2#3a): two
+    different windows of the same app share title and process,
+    so title/process alone let one window satisfy another's
+    approval. An hwnd can be reused after the window closes,
+    so HWND alone is never the identity — it only refines
+    title/process. A title-less window falls back to hwnd.
     Either side unreadable never matches — a known binding that
     cannot be re-read refuses rather than guessing.
     """
     if not bound or not current:
         return False
     if bound.get("title") or bound.get("process"):
-        return ((bound.get("title") or "") == (current.get("title") or "")
-                and (bound.get("process") or "")
-                == (current.get("process") or ""))
+        if ((bound.get("title") or "") != (current.get("title") or "")
+                or (bound.get("process") or "")
+                != (current.get("process") or "")):
+            return False
+        if (bound.get("hwnd") is not None
+                and current.get("hwnd") is not None):
+            return bound.get("hwnd") == current.get("hwnd")
+        return True
     return (bound.get("hwnd") is not None
             and bound.get("hwnd") == current.get("hwnd"))
 
