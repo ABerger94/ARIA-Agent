@@ -1041,7 +1041,15 @@ def tool_mtg_advice(deck: str, card_name: str) -> str:
 
 
 def _price_db():
-    conn = sqlite3.connect(PRICE_WATCH_DB)
+    # Pass 26 B5#1: the price-watch DB is per-project — resolve
+    # through workspaces.path() so each project gets its own
+    # price_watches.db; the default project keeps the legacy
+    # file (PRICE_WATCH_DB) exactly as before.
+    try:
+        db_path = workspaces.path("price_watches.db", PRICE_WATCH_DB)
+    except Exception:
+        db_path = PRICE_WATCH_DB
+    conn = sqlite3.connect(db_path)
     conn.execute("""CREATE TABLE IF NOT EXISTS price_watches(
         id INTEGER PRIMARY KEY, url TEXT, target REAL, label TEXT,
         last_price REAL, alerted INTEGER DEFAULT 0, created TEXT)""")

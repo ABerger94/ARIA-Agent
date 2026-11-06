@@ -21,6 +21,18 @@ import sqlite3
 from aria.config import PRICE_WATCH_DB, add_log, redact
 from aria import config as _config_silent
 
+
+def _db_path():
+    """Per-project price-watch DB path (pass 26 B5#1): resolved
+    through workspaces.path() so each project gets its own
+    price_watches.db; the default project keeps the legacy file.
+    Falls back to the legacy path if project resolution fails."""
+    try:
+        from aria import workspaces
+        return workspaces.path("price_watches.db", PRICE_WATCH_DB)
+    except Exception:
+        return PRICE_WATCH_DB
+
 # JSON-LD product markup is the most reliable signal; fall back to $ amounts.
 _JSONLD_PRICE_RE = re.compile(r'"price"\s*:\s*"?([0-9][0-9,]*\.[0-9]{2})"?')
 _DOLLAR_PRICE_RE = re.compile(r'\$\s*([0-9][0-9,]*\.[0-9]{2})')
@@ -51,7 +63,7 @@ def check_price_watches() -> str:
     from aria import events as _events
 
     try:
-        conn = sqlite3.connect(PRICE_WATCH_DB)
+        conn = sqlite3.connect(_db_path())
         # The table is created lazily by builtins.tool_watch_price;
         # on a fresh install (no watch ever added) it doesn't exist
         # yet and the check must report "no watches", not fail.
@@ -79,11 +91,11 @@ def check_price_watches() -> str:
             add_log(f"Price check #{wid} ({label}): no price found on page")
             continue
         try:
-            with sqlite3.connect(PRICE_WATCH_DB) as db:
+            with sqlite3.connect(_db_path()) as db:
                 db.execute("UPDATE price_watches SET last_price=? WHERE id=?", (price, wid))
             if price <= float(target) and not alerted:
                 _events.emit_price_drop(label, target, price, url)
-                with sqlite3.connect(PRICE_WATCH_DB) as db:
+                with sqlite3.connect(_db_path()) as db:
                     db.execute("UPDATE price_watches SET alerted=1 WHERE id=?", (wid,))
                 alerts.append(f"DROP: '{label}' now ${price:.2f} (target ${float(target):.2f}) — {url}")
                 add_log(f"Price drop alert #{wid}: {label} ${price:.2f}")
@@ -105,7 +117,7 @@ def ensure_pricecheck_task() -> bool:
     from aria import scheduler as _scheduler
 
     try:
-        with sqlite3.connect(PRICE_WATCH_DB) as db:
+        with sqlite3.connect(_db_path()) as db:
             # Same lazy-create contract as check_price_watches: on a
             # fresh install the table doesn't exist until the first
             # watch is added — that is "no watches", not a setup
