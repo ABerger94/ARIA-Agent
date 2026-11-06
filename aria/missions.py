@@ -188,7 +188,14 @@ def _is_irreversible(tool: str) -> bool:
     if tool in _approval.DESTRUCTIVE_TOOLS or \
             tool in _EXTRA_IRREVERSIBLE:
         return True
-    return _config.is_discovered_mcp_tool(tool)
+    # User-defined tools run arbitrary Python in ARIA's process
+    # (pass 26 B3#2): approval.needs_approval and
+    # config.is_safe_mode_blocked already treat them as
+    # irreversible-class; missions must too, or an allowed user
+    # tool would execute preauthorized in auto mode without ever
+    # appearing in pre_approved_irreversible or [irreversible].
+    return _config.is_discovered_mcp_tool(tool) or \
+        _config.is_user_tool(tool)
 
 
 def _is_failure(out: Any) -> bool:
