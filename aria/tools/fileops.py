@@ -112,13 +112,35 @@ def _category_for(filename: str) -> str:
     return _OTHER
 
 
-def _unique_dest(dest_dir: str, name: str) -> str:
+def _unique_dest(dest_dir: str, name: str, reserved=None) -> str:
+    """First free destination for `name` in `dest_dir`.
+
+    `reserved` is a set of already-planned destinations (as
+    casefolded absolute paths, pass 26 B1#7): a planned move is
+    not on disk yet, so existence alone cannot see it — without
+    the reservation two sources could plan the same destination
+    and the second move would overwrite the first. Casefolded
+    because Windows treats A.txt and a.txt as the same file.
+    """
     base, ext = os.path.splitext(name)
     cand = os.path.join(dest_dir, name)
     i = 1
-    while os.path.exists(cand):
+    # Case-insensitive on-disk check as well: on Windows A.txt
+    # and a.txt are the same file, so os.path.exists alone
+    # cannot see the collision there (and this repo is tested
+    # on a case-sensitive FS, where the check must still hold).
+    try:
+        existing = {e.casefold() for e in os.listdir(dest_dir)}
+    except OSError:
+        existing = set()
+    while os.path.exists(cand) or (
+            reserved is not None
+            and os.path.abspath(cand).casefold() in reserved) or (
+            os.path.basename(cand).casefold() in existing):
         cand = os.path.join(dest_dir, f"{base}_{i}{ext}")
         i += 1
+    if reserved is not None:
+        reserved.add(os.path.abspath(cand).casefold())
     return cand
 
 
@@ -145,6 +167,7 @@ def tool_file_organize(directory: str, dry_run: bool = True) -> str:
     add_log(f"file_organize: {redact(d)} (dry_run={dry_run})")
 
     plan = []  # (src_abs, dest_abs)
+    reserved = set()  # planned destinations, casefolded (B1#7)
     skipped = 0
     escaped = 0
     try:
@@ -178,7 +201,7 @@ def tool_file_organize(directory: str, dry_run: bool = True) -> str:
                 skipped += 1
                 escaped += 1
                 continue
-            dest = _unique_dest(dest_dir, name)
+            dest = _unique_dest(dest_dir, name, reserved)
             plan.append((src, dest))
         except Exception:
             skipped += 1
@@ -212,6 +235,15 @@ def tool_file_organize(directory: str, dry_run: bool = True) -> str:
     for src, dest in plan:
         try:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
+            # Re-check at move time (B1#7): a destination that
+            # appeared since planning (another move, a race, a
+            # stale plan) must never be overwritten — skip the
+            # source instead of destroying what is there.
+            if os.path.exists(dest) and os.path.realpath(dest) != os.path.realpath(src):
+                errors.append(
+                    f"{os.path.basename(src)}: skipped, destination "
+                    f"already exists: {dest}")
+                continue
             shutil.move(src, dest)
             moved += 1
         except Exception as e:
