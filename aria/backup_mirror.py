@@ -186,6 +186,84 @@ def _is_secret_key(low: str) -> bool:
                for name in _SECRET_KEYS)
 
 
+# Credential-like CLI flags and URL query parameters (pass 26
+# B3#7): MCP configs carry args lists and url strings, so a
+# credential can hide as the value after --api-key or as
+# ?access_token=... — neither is an env/headers key or a
+# credential-named key, so _redact_settings used to miss them.
+_SECRET_FLAG_SEGMENTS = frozenset({
+    "token", "secret", "password", "passwd", "auth", "key",
+    "credential", "credentials", "private", "apikey"})
+_CREDENTIAL_PARAMS = frozenset({
+    "access_token", "api_key", "apikey", "token", "auth",
+    "password", "passwd", "secret", "client_secret",
+    "client-secret", "access_key", "session", "bearer"})
+
+
+def _is_credential_flag(flag: str) -> bool:
+    """True when a CLI flag names a credential: any dash-separated
+    segment of the flag is a secret word (--api-key, --token,
+    --github-token). Segment matching (not substring) so
+    --author does not count."""
+    name = str(flag).strip().lower().lstrip("-").replace("_", "-")
+    return any(seg in _SECRET_FLAG_SEGMENTS
+               for seg in name.split("-") if seg)
+
+
+def _is_credential_param(name: str) -> bool:
+    """True when a URL query parameter names a credential."""
+    low = str(name).lower()
+    return low in _CREDENTIAL_PARAMS or _is_secret_key(low)
+
+
+def _scrub_url_text(text: str) -> str:
+    """Replace credential material inside a URL-valued string:
+    query parameters naming a credential, and a password in the
+    userinfo. Returns the input unchanged when there is nothing
+    to scrub (so benign URLs are never re-encoded)."""
+    if "://" not in text:
+        return text
+    try:
+        from urllib.parse import (urlsplit, urlunsplit, parse_qsl,
+                                  urlencode, quote)
+        parts = urlsplit(text)
+        if not parts.netloc:
+            return text
+        netloc = parts.netloc
+        query = parts.query
+        changed = False
+        if parts.password is not None:
+            try:
+                port = parts.port
+            except ValueError:
+                port = None
+            host = parts.hostname or ""
+            if ":" in host and not host.startswith("["):
+                host = f"[{host}]"
+            if port:
+                host = f"{host}:{port}"
+            userinfo = ""
+            if parts.username:
+                userinfo = parts.username + ":" + quote(_REDACTED, safe="")
+            else:
+                userinfo = ":" + quote(_REDACTED, safe="")
+            netloc = userinfo + "@" + host
+            changed = True
+        if query:
+            pairs = parse_qsl(query, keep_blank_values=True)
+            scrubbed = [(k, _REDACTED if _is_credential_param(k) else v)
+                        for k, v in pairs]
+            if scrubbed != pairs:
+                query = urlencode(scrubbed, doseq=True)
+                changed = True
+        if not changed:
+            return text
+        return urlunsplit((parts.scheme, netloc, parts.path, query,
+                           parts.fragment))
+    except Exception:
+        return text
+
+
 def _redact_settings(obj) -> None:
     """Strip secrets from a parsed settings object, in place.
     MCP server env/headers are redacted per value (key names
@@ -200,11 +278,40 @@ def _redact_settings(obj) -> None:
                     value[sub] = _REDACTED
             elif _is_secret_key(low):
                 obj[key] = _REDACTED
+            elif isinstance(value, str):
+                # A URL-valued setting can carry credentials in
+                # its query string or userinfo (pass 26 B3#7).
+                obj[key] = _scrub_url_text(value)
             else:
                 _redact_settings(value)
     elif isinstance(obj, list):
-        for item in obj:
-            _redact_settings(item)
+        prev_flag = False
+        for i, item in enumerate(obj):
+            if not isinstance(item, str):
+                prev_flag = False
+                _redact_settings(item)
+                continue
+            if prev_flag and not item.startswith("-"):
+                # The value after a credential flag (pass 26 B3#7).
+                obj[i] = _REDACTED
+                prev_flag = False
+                continue
+            prev_flag = False
+            if item.startswith("--"):
+                if "=" in item:
+                    flag, _, _val = item.partition("=")
+                    if _is_credential_flag(flag):
+                        obj[i] = flag + "=" + _REDACTED
+                elif _is_credential_flag(item):
+                    prev_flag = True
+                continue
+            if "://" in item:
+                obj[i] = _scrub_url_text(item)
+                continue
+            if "=" in item:
+                key, _, _val = item.partition("=")
+                if _is_secret_key(key.strip().lower()):
+                    obj[i] = key + "=" + _REDACTED
 
 
 def _mirror_redacted_settings(slot: Path, temp: str) -> None:
