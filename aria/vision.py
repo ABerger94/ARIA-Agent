@@ -419,18 +419,26 @@ def tool_screenshot(name: str = "") -> str:
 def tool_take_photo(name: str = "") -> str:
     """Capture and save a still photograph from webcam."""
     frame = capture_webcam()
-    if frame is None and LATEST_CAMERA_FRAME is None:
+    if frame is None:
+        # A failed capture must never fall back to LATEST_CAMERA_FRAME:
+        # that frame is stale (from an earlier capture) and saving it
+        # as "Photo saved" would present an old photo as fresh, with
+        # no indication the camera failed.
         return "[Camera not available right now.]"
+    # Only the frame this capture just stored may be written.
+    fresh = LATEST_CAMERA_FRAME
+    if fresh is None:
+        return "[No camera frame captured.]"
     d = os.path.join(WORKSPACE_DIR, "photos")
     os.makedirs(d, exist_ok=True)
     path = os.path.join(d, _safe_name(name, datetime.now().strftime("photo_%Y%m%d_%H%M%S")) + ".jpg")
     try:
-        if LATEST_CAMERA_FRAME is not None:
-            cv2.imwrite(path, LATEST_CAMERA_FRAME)
-            return f"Photo saved: {path}"
-        return "[No camera frame captured.]"
+        ok = cv2.imwrite(path, fresh)
     except Exception as e:
         return f"[Photo save failed: {e}]"
+    if not ok:
+        return "[Photo save failed]"
+    return f"Photo saved: {path}"
 
 
 def tool_read_screen(question: str = "") -> str:
