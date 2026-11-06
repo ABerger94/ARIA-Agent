@@ -35,6 +35,7 @@ lazily inside functions — never at module level (no import cycles).
 #     hit this gate.
 # ============================================================================
 
+import copy
 import json
 import os
 import secrets
@@ -739,6 +740,18 @@ def _save_pending() -> None:
                 entry["operation_id"] = ec.get("operation_id", "")
                 entry["budget_scope"] = ec.get("budget_scope", "")
                 entry["spend_cap"] = ec.get("spend_cap")
+                # The mission envelope is part of the approval's
+                # identity (pass 26 B1#2): a restored entry must
+                # replay under the envelope it was parked in, not
+                # under whatever (if any) is active at approve
+                # time. Only JSON-serializable envelopes persist;
+                # anything else stays memory-only, as with args.
+                env = ec.get("envelope")
+                if env is not None:
+                    try:
+                        entry["envelope"] = json.loads(json.dumps(env))
+                    except (TypeError, ValueError):
+                        pass
             entries.append(entry)
         data_dir.write_json_atomic(_pending_file(),
                                    {"version": 2, "entries": entries})
@@ -812,6 +825,17 @@ def load_pending() -> int:
                     project=e.get("project"))
                 continue
             ctx = runtime.ExecutionContext(project=project)
+            exec_ctx = {
+                'project': project,
+                'cancel': threading.Event(),
+                'operation_id': e.get("operation_id") or "",
+                'budget_scope': e.get("budget_scope") or "",
+                'spend_cap': e.get("spend_cap")}
+            # An old-format entry carries no envelope: it restores
+            # WITHOUT one — never filled in from a latest or
+            # default envelope (pass 26 B1#2).
+            if isinstance(e.get("envelope"), dict):
+                exec_ctx['envelope'] = copy.deepcopy(e["envelope"])
             _PENDING[token] = {
                 "token": token,
                 "tool": str(e["tool"]),
@@ -822,12 +846,7 @@ def load_pending() -> int:
                                if isinstance(e.get("gui_binding"), dict)
                                else None),
                 "origin_context": ctx,
-                "execution_context": {
-                    'project': project,
-                    'cancel': threading.Event(),
-                    'operation_id': e.get("operation_id") or "",
-                    'budget_scope': e.get("budget_scope") or "",
-                    'spend_cap': e.get("spend_cap")},
+                "execution_context": exec_ctx,
             }
             loaded += 1
         except Exception as exc:
@@ -866,6 +885,16 @@ def request_approval(tool: str, args=None, desc=None) -> str:
             desc += f" in window '{gui_binding['title']}'"
     from aria import runtime
     ctx = runtime.current()
+    # The mission envelope is part of the approval's identity
+    # (pass 26 B1#2): snapshot it — a later mutation of the
+    # caller's envelope dict must not change the parked call,
+    # and the approve-token replay must run under it, not under
+    # whatever envelope (if any) is active when the user taps.
+    ec = {'project': ctx.project, 'cancel': ctx.cancel,
+          'operation_id': runtime.operation_id(),
+          'budget_scope': ctx.budget_scope, 'spend_cap': ctx.spend_cap}
+    if ctx.envelope is not None:
+        ec['envelope'] = copy.deepcopy(ctx.envelope)
     _PENDING[token] = {
         "token": token,
         "tool": tool,
@@ -874,9 +903,7 @@ def request_approval(tool: str, args=None, desc=None) -> str:
         "created_ts": time.time(),
         "gui_binding": gui_binding,
         "origin_context": ctx,
-        "execution_context": {'project': ctx.project, 'cancel': ctx.cancel,
-                              'operation_id': runtime.operation_id(),
-                              'budget_scope': ctx.budget_scope, 'spend_cap': ctx.spend_cap},
+        "execution_context": ec,
     }
     _save_pending()
     # Surfaces in the OPS Log tab via add_log.
@@ -970,7 +997,8 @@ def approve_token(token: str) -> str:
         from aria import runtime
         ctx = entry['execution_context']
         with runtime.execution('approval', project=ctx['project'], cancel=ctx['cancel'],
-                               budget_scope=ctx['budget_scope'], spend_cap=ctx['spend_cap']):
+                               budget_scope=ctx['budget_scope'], spend_cap=ctx['spend_cap'],
+                               envelope=ctx.get('envelope')):
             with runtime.operation(ctx['operation_id']):
                 result, _ok = _dispatch.execute_tool(
                     entry["tool"], entry["args"], preauthorized=True)
