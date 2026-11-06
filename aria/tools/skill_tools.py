@@ -237,6 +237,12 @@ def derive_patterns(chat_rows: List[Tuple],
             _id, _sender, message = row[0], row[1], row[2]
         except (TypeError, IndexError):
             continue
+        # Pass 25: only the human's instructions are evidence of a
+        # repeated instruction. ARIA's own replies ("A.R.I.A.",
+        # "ARIA") used to count too, so a repeated stock reply
+        # minted a pattern for an instruction Alek never gave.
+        if str(_sender or "").strip().lower() not in ("alek", "user"):
+            continue
         norm = re.sub(r"\s+", " ", str(message or "")).strip().lower()
         if len(norm) < 12:
             continue

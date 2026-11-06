@@ -518,6 +518,20 @@ def test_autonomous_kill_switch_only_blocks_autonomous(env):
     assert "passed its safety scan" in out
 
 
+def test_derive_patterns_ignores_aria_replies(env):
+    # Pass 25: ARIA's own repeated replies are not evidence of a
+    # repeated instruction — only the human's rows count.
+    rows = [(1, "A.R.I.A.", "Done — sorted your downloads folder."),
+            (2, "A.R.I.A.", "done — sorted your downloads folder."),
+            (3, "Alek", "Please sort my downloads folder by type"),
+            (4, "Alek", "please sort my downloads folder by type")]
+    patterns = stools.derive_patterns(rows, [])
+    kinds = {(p["kind"], p["count"]) for p in patterns}
+    assert ("repeated_instruction", 2) in kinds
+    # ARIA's reply alone, however often repeated, is no pattern.
+    assert stools.derive_patterns(rows[:2], []) == []
+
+
 def test_derive_patterns_counts_real_repetition(env):
     rows = [(1, "user", "Please sort my downloads folder by type"),
             (2, "user", "please sort my downloads folder by type"),
