@@ -130,14 +130,52 @@ def tool_fetch_url(url: str) -> str:
 
 # ---------------- File Tools ----------------
 def tool_write_file(filename: str, content: str) -> str:
-    """Save content to a file in the workspace directory (supports nested subdirectories)."""
+    """Save content to a file in the workspace directory (supports nested subdirectories).
+
+    Pass 26 B1#8: content is validated BEFORE the destination is
+    opened (a non-string used to raise TypeError only after "w"
+    had already truncated the existing file), and the write goes
+    through a temp file in the same directory + os.replace, so a
+    failure at any point leaves the original byte-identical.
+    """
+    from aria.outcome import ResultText, FAILED
+    if not isinstance(content, str):
+        return ResultText(
+            f"[Write failed: content must be text, got "
+            f"{type(content).__name__}. Nothing was written.]", FAILED)
     path = workspaces.resolve_workspace_file(filename, WORKSPACE_DIR)
     clean = os.path.relpath(path, workspaces.path('', WORKSPACE_DIR))
     parent_dir = os.path.dirname(path)
     if parent_dir:
         os.makedirs(parent_dir, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
+    try:
+        existing_mode = os.stat(path).st_mode if os.path.exists(path) else None
+    except OSError:
+        existing_mode = None
+    tmp_path = None
+    try:
+        import tempfile
+        fd, tmp_path = tempfile.mkstemp(
+            dir=parent_dir or ".", prefix=".aria-write-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+            if existing_mode is not None:
+                try:
+                    os.chmod(tmp_path, existing_mode)
+                except OSError:
+                    pass
+            os.replace(tmp_path, path)
+            tmp_path = None
+        except Exception:
+            raise
+    except Exception as e:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        return ResultText(f"[Write failed: {e}. The original file was left unchanged.]", FAILED)
     add_log(f"File saved: {clean}")
     return f"Successfully wrote {len(content)} characters to {clean}."
 
