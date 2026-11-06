@@ -46,9 +46,12 @@ import ipaddress
 import os
 import queue
 import re
+import socket
 import threading
+import time
 import urllib.parse
 import uuid
+from typing import Dict, List, Tuple
 
 from aria.config import WORKSPACE_DIR, add_log, get_setting
 from aria.outcome import (FAILED, ResultText, UNVERIFIED,
@@ -112,8 +115,51 @@ def _ipv4_is_private(value: int) -> bool:
     second = (value >> 16) & 0xFF
     # 0.0.0.0/8 ("this network") is non-routable; browsers treat
     # 0.0.0.0 as localhost.
+    # 169.254.0.0/16 is link-local (pass 26 B3#8 — the cloud
+    # metadata address 169.254.169.254 lived here unblocked);
+    # 100.64.0.0/10 is CGNAT shared address space, likewise
+    # non-routable from the public internet.
     return (first in (0, 10, 127) or (first == 192 and second == 168)
-            or (first == 172 and 16 <= second <= 31))
+            or (first == 172 and 16 <= second <= 31)
+            or (first == 169 and second == 254)
+            or (first == 100 and 64 <= second <= 127))
+
+
+# Hostname -> [ip, ...] cache for _resolve_host (pass 26 B3#8).
+# Brief TTL: a rebinding answer must not outlive the run.
+_DNS_CACHE: Dict[str, Tuple[float, List[str]]] = {}
+_DNS_CACHE_TTL = 60.0
+
+
+def _resolve_host(host: str) -> List[str]:
+    """Resolve a hostname to its IP literals (briefly cached).
+
+    Returns [] when the name cannot be resolved — the caller
+    treats that as private (fail closed). A genuine DNS failure
+    (socket.gaierror: NXDOMAIN, SERVFAIL, no resolver) returns
+    [] too; any other OSError (the transport itself is down, or
+    the test harness's offline guard) is re-raised so the caller
+    can keep its previous "could not consult DNS" behaviour for
+    public-looking names instead of blocking all browsing when
+    DNS is unreachable rather than answered.
+    """
+    now = time.monotonic()
+    cached = _DNS_CACHE.get(host)
+    if cached is not None and now - cached[0] < _DNS_CACHE_TTL:
+        return list(cached[1])
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return []
+    except OSError:
+        raise
+    addrs = []
+    for info in infos or []:
+        sockaddr = info[4] if len(info) > 4 else None
+        if sockaddr:
+            addrs.append(str(sockaddr[0]))
+    _DNS_CACHE[host] = (now, list(addrs))
+    return addrs
 
 
 def _is_private_host(host: str) -> bool:
@@ -143,9 +189,21 @@ def _is_private_host(host: str) -> bool:
     # (pass 25 — an expanded loopback host used to pass with LAN
     # access disabled).
     value = _ipv4_aton_value(host)
-    if value is None:
+    if value is not None:
+        return _ipv4_is_private(value)
+    # A hostname: resolve it and judge the addresses it points
+    # at (pass 26 B3#8 — a name resolving to 169.254.169.254
+    # used to sail through unchecked). A name the resolver
+    # answers as unresolvable fails closed; a DNS transport
+    # error leaves the previous behaviour (not private — the
+    # browser itself cannot navigate without DNS either).
+    try:
+        addrs = _resolve_host(host)
+    except OSError:
         return False
-    return _ipv4_is_private(value)
+    if not addrs:
+        return True
+    return any(_is_private_host(addr) for addr in addrs)
 
 
 def _url_blocked(url: str) -> str:
@@ -248,8 +306,47 @@ class BrowserSession:
             self._ctx = self.page = self._pw = None
 
     # -- actions --
+    def _assert_current_url_public(self):
+        """Refuse a landing on a private/loopback host.
+
+        Pass 26 B3#8: _url_blocked used to run only in the
+        tool's "open" branch, so a click, redirect, form submit
+        or back-navigation could land on a private host
+        unchecked. Every navigation below re-checks the page's
+        CURRENT url (which is also the post-redirect url) and,
+        on a private landing, navigates back and raises instead
+        of reporting the page. Only http/https landings are
+        judged — about:blank and other non-web pages are not
+        private hosts.
+        """
+        try:
+            url = self.page.url if self.page is not None else ""
+        except Exception:
+            return
+        try:
+            parsed = urllib.parse.urlparse(url or "")
+        except Exception:
+            return
+        if parsed.scheme not in ("http", "https"):
+            return
+        host = parsed.hostname or ""
+        if _is_private_host(host) and not get_setting(
+                "browser_agent_allow_lan", False):
+            try:
+                self.page.go_back()
+            except Exception:
+                pass
+            raise ValueError(
+                f"browser_agent: refused — navigation landed on "
+                f"{host}, a private/loopback address. Set "
+                "browser_agent_allow_lan to allow it.")
+
     def open(self, url):
+        blocked = _url_blocked(url)
+        if blocked:
+            raise ValueError(f"browser_agent: refused — {blocked}")
         self.page.goto(url, wait_until="domcontentloaded")
+        self._assert_current_url_public()
         return self.read()
 
     def read(self):
@@ -358,6 +455,7 @@ class BrowserSession:
         loc, label = self._resolve(target)
         loc.click()
         self.page.wait_for_timeout(600)
+        self._assert_current_url_public()
         return label
 
     def type_text(self, target, text):
@@ -448,6 +546,7 @@ class BrowserSession:
 
     def press(self, key):
         self.page.keyboard.press(key)
+        self._assert_current_url_public()
         return f"pressed {key}"
 
     def scroll(self, direction):
@@ -457,6 +556,7 @@ class BrowserSession:
 
     def back(self):
         self.page.go_back()
+        self._assert_current_url_public()
         return self.read()
 
     def screenshot(self):
