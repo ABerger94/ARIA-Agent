@@ -369,7 +369,17 @@ def tool_set_backup_mirror(args=None) -> str:
     copies landed and verified, unverified when the copy failed,
     done-with-a-note when no backups exist yet to copy."""
     params = args or {}
-    if params.get("clear"):
+    if "clear" in params and params["clear"] is not False:
+        # Only a literal bool True clears (pass 26 B3#1): the
+        # string "false" is truthy in Python, so the old
+        # `if params.get("clear"):` cleared the mirror while
+        # needs_approval() read it as False and never parked the
+        # call. Any other present value is rejected outright —
+        # the mirror is untouched, even on an approved replay.
+        if params["clear"] is not True:
+            return _failed_out(
+                "clear must be a boolean true or false — the "
+                "mirror was not changed")
         _set_setting("backup_mirror_dir", "")
         if mirror_dir() == "":
             return _done(mirror="off") + (

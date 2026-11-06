@@ -550,9 +550,17 @@ def needs_approval(tool: str, args=None) -> bool:
         # No path and no clear = a read-only status report of the
         # current mirror folder; only set/clear change anything
         # (persisting the folder and immediately copying the
-        # mirrored stores there), so only those gate.
-        return bool(str((args or {}).get("path") or "").strip()) or \
-            _as_bool((args or {}).get("clear"), default=False)
+        # mirrored stores there), so only those gate. A present
+        # clear value that is not a literal False gates — even a
+        # string "false": the handler rejects non-bool clear
+        # outright (pass 26 B3#1), so the two seams agree that
+        # only a bool True clears, and a malformed clear parks
+        # like file_organize's malformed dry_run instead of
+        # running ungated.
+        a = args or {}
+        if str(a.get("path") or "").strip():
+            return True
+        return "clear" in a and a["clear"] is not False
     return True
 
 
@@ -689,6 +697,10 @@ def _describe_tool(tool: str, args) -> str:
             return (f"export routine pack ({names}) to '{dest}' "
                     f"({fate})")
         if tool == "set_backup_mirror":
+            if "clear" in a and a["clear"] is not False \
+                    and a["clear"] is not True:
+                return ("clear backup mirroring with an invalid "
+                        "clear value — refused, nothing changes")
             if _as_bool(a.get("clear"), default=False):
                 return ("stop backup mirroring (clear the mirror "
                         "folder setting)")
