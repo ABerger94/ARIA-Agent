@@ -66,7 +66,7 @@ def _ago(secs: float) -> str:
     return f"{secs // 3600}h {secs % 3600 // 60}m ago"
 
 
-def _control_guard():
+def _control_guard(tool=None, raw_args=None):
     """The replay refusal, or None when the call is live.
 
     Both non-live scopes refuse (pass 18, closing the pass-16
@@ -76,7 +76,26 @@ def _control_guard():
     key reach the phone — the refusal text always claimed
     delegated calls were covered; now the check matches it.
     shelltool and restart_program check both scopes the same
-    way."""
+    way.
+
+    The approve replay is exempt (pass 25): under confirm-all
+    the approved call replays preauthorized, and the guard used
+    to refuse it — the approval was spent, the action died, and
+    the token logged "executed". approve_token sets the replay
+    marker for exactly the call it is replaying on this thread,
+    so a marker for this tool (exact args when the raw args are
+    known, name-only when a caller drives the tool function
+    directly) is the approved call, not a routine replay.
+    """
+    try:
+        from aria import approval as _approval_mod
+        if raw_args is not None:
+            if _approval_mod.in_approve_replay(tool, raw_args):
+                return None
+        elif tool is not None and _approval_mod.in_approve_replay_tool(tool):
+            return None
+    except Exception:
+        pass
     try:
         from aria.tools import dispatch
         if dispatch.in_preauthorized_scope() or \
@@ -231,8 +250,8 @@ def tool_phone_notifications(limit=10) -> str:
 
 # ── Control side ──────────────────────────────────────────────────
 
-def tool_phone_tap(ref: str = "", x=None, y=None) -> str:
-    if (refusal := _control_guard()) is not None:
+def tool_phone_tap(ref: str = "", x=None, y=None, _raw_args=None) -> str:
+    if (refusal := _control_guard("phone_tap", _raw_args)) is not None:
         return refusal
     ref = str(ref or "").strip()
     args: dict = {}
@@ -252,8 +271,8 @@ def tool_phone_tap(ref: str = "", x=None, y=None) -> str:
 
 
 def tool_phone_swipe(x1=None, y1=None, x2=None, y2=None,
-                     duration_ms="") -> str:
-    if (refusal := _control_guard()) is not None:
+                     duration_ms="", _raw_args=None) -> str:
+    if (refusal := _control_guard("phone_swipe", _raw_args)) is not None:
         return refusal
     coords = {"x1": _int_param(x1), "y1": _int_param(y1),
               "x2": _int_param(x2), "y2": _int_param(y2)}
@@ -269,8 +288,8 @@ def tool_phone_swipe(x1=None, y1=None, x2=None, y2=None,
     return err if err else f"Swiped {path} on the phone."
 
 
-def tool_phone_type(text: str = "", ref: str = "") -> str:
-    if (refusal := _control_guard()) is not None:
+def tool_phone_type(text: str = "", ref: str = "", _raw_args=None) -> str:
+    if (refusal := _control_guard("phone_type", _raw_args)) is not None:
         return refusal
     text = str(text or "")
     if not text:
@@ -284,8 +303,8 @@ def tool_phone_type(text: str = "", ref: str = "") -> str:
     return err if err else f"Typed {where} on the phone."
 
 
-def tool_phone_key(key: str = "") -> str:
-    if (refusal := _control_guard()) is not None:
+def tool_phone_key(key: str = "", _raw_args=None) -> str:
+    if (refusal := _control_guard("phone_key", _raw_args)) is not None:
         return refusal
     key = str(key or "").strip().lower()
     if key not in _KEY_NAMES:

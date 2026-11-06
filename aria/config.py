@@ -546,6 +546,15 @@ SAFE_MODE_BLOCKED_TOOLS = frozenset({
     "send_email",
     "drive_wheels",
     "move_head_servos",
+    # Phone input acts on whatever is on the phone's screen — a
+    # tap can buy, send, or delete — so safe mode hard-blocks it
+    # like the desktop GUI tools (ChatGPT x ARIA loop finding,
+    # pass 25). phone_open_app stays ungated here too: opening a
+    # named app is a discrete, describable action.
+    "phone_tap",
+    "phone_swipe",
+    "phone_type",
+    "phone_key",
     # MCP setup/connect spawn a model-chosen process (aria/mcp.py
     # stdio_client) — hard-blocked in safe mode like run_python_code.
     "mcp_setup",

@@ -1086,10 +1086,10 @@ def _init_default_registry():
     _REGISTRY["phone_open_app"] = lambda a: phone_mod.tool_phone_open_app(a.get("label", ""), a.get("package", ""))
     _REGISTRY["phone_read_screen"] = lambda a: phone_mod.tool_phone_read_screen()
     _REGISTRY["phone_notifications"] = lambda a: phone_mod.tool_phone_notifications(a.get("limit", 10))
-    _REGISTRY["phone_tap"] = lambda a: phone_mod.tool_phone_tap(a.get("ref", ""), a.get("x"), a.get("y"))
-    _REGISTRY["phone_swipe"] = lambda a: phone_mod.tool_phone_swipe(a.get("x1"), a.get("y1"), a.get("x2"), a.get("y2"), a.get("duration_ms", ""))
-    _REGISTRY["phone_type"] = lambda a: phone_mod.tool_phone_type(a.get("text", ""), a.get("ref", ""))
-    _REGISTRY["phone_key"] = lambda a: phone_mod.tool_phone_key(a.get("key", ""))
+    _REGISTRY["phone_tap"] = lambda a: phone_mod.tool_phone_tap(a.get("ref", ""), a.get("x"), a.get("y"), _raw_args=a)
+    _REGISTRY["phone_swipe"] = lambda a: phone_mod.tool_phone_swipe(a.get("x1"), a.get("y1"), a.get("x2"), a.get("y2"), a.get("duration_ms", ""), _raw_args=a)
+    _REGISTRY["phone_type"] = lambda a: phone_mod.tool_phone_type(a.get("text", ""), a.get("ref", ""), _raw_args=a)
+    _REGISTRY["phone_key"] = lambda a: phone_mod.tool_phone_key(a.get("key", ""), _raw_args=a)
 
     # ---- ARIA ULTIMATE (Module 2): file commander ----
     # Pass dry_run through raw, never bool()-coerced: bool(None) and

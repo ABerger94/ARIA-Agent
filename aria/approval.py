@@ -61,6 +61,17 @@ DESTRUCTIVE_TOOLS = frozenset({
     "gui_type",
     "close_window",
     "send_email",
+    # Phone input acts on whatever is on the phone's screen at
+    # that moment — a tap can buy, send, or delete — so it gates
+    # like the desktop GUI tools, not like a read (ChatGPT x ARIA
+    # loop finding, pass 25). phone_open_app stays ungated: opening
+    # a named app is a discrete, describable action, while input
+    # acts on unknown screen state. phone_list_apps / phone_status
+    # / phone_read_screen / phone_notifications stay read-only.
+    "phone_tap",
+    "phone_swipe",
+    "phone_type",
+    "phone_key",
     "github_push_file",
     "github_create_repo",
     "drive_wheels",
@@ -325,6 +336,20 @@ def in_approve_replay(tool, args) -> bool:
         return False
 
 
+def in_approve_replay_tool(tool) -> bool:
+    """True while approve_token() is replaying a call of this tool
+    on this thread, whatever its args. The marker is set only for
+    the call approve_token is replaying right now, so the name is
+    exact in practice — prefer in_approve_replay(tool, args) when
+    the raw args are available (phone_node's guard falls back to
+    this when a caller drives the tool function directly)."""
+    try:
+        current = getattr(_replay_local, "current", None)
+        return bool(current) and current[0] == tool
+    except Exception:
+        return False
+
+
 # Approval-control names must never gate. Since 2026-10-28 the
 # resolvers (approve / deny / set_approval_mode) are not model
 # tools at all — see aria/tools/dispatch.py — so this set now
@@ -475,6 +500,28 @@ def _describe_tool(tool: str, args) -> str:
             return f"click at screen coordinates ({a.get('x', 0)}, {a.get('y', 0)})"
         if tool == "gui_type":
             return f"type text ({len(str(a.get('text', '')))} chars)"
+        if tool == "phone_tap":
+            # The tap target is what the approver is deciding on —
+            # a ref names the screen element, coordinates name the
+            # spot. Never show a bare tool name for a phone tap.
+            ref = str(a.get("ref", "") or "").strip()
+            if ref:
+                return f"tap phone element '{ref}'"
+            return (f"tap phone at coordinates ({a.get('x', '?')}, "
+                    f"{a.get('y', '?')})")
+        if tool == "phone_swipe":
+            return (f"swipe phone ({a.get('x1', '?')}, {a.get('y1', '?')}) "
+                    f"→ ({a.get('x2', '?')}, {a.get('y2', '?')})")
+        if tool == "phone_type":
+            # The text is what gets typed into whatever field is
+            # focused — show it, capped, like send_email's body.
+            text = str(a.get("text", "") or "").replace("\n", " ").strip()
+            ref = str(a.get("ref", "") or "").strip()
+            where = f" into phone element '{ref}'" if ref else ""
+            return (f"type on phone{where} "
+                    f"({len(text)} chars): '{text[:200]}'")
+        if tool == "phone_key":
+            return f"press phone key '{a.get('key', '')}'"
         if tool == "close_window":
             return f"close window '{a.get('title', '')}'"
         if tool == "send_email":
