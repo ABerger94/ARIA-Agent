@@ -41,6 +41,7 @@ import os
 import secrets
 import threading
 import time
+import uuid
 from collections import deque
 from datetime import datetime, timezone
 
@@ -182,6 +183,23 @@ DESTRUCTIVE_TOOLS = frozenset({
 # memory-only (they simply don't survive a restart, as before).
 _PENDING = {}
 _pending_loaded = False
+
+# The pending store's lock (pass 26 B1#6): every _PENDING
+# mutation and every _save_pending snapshot+write holds this
+# one RLock. Without it a snapshot taken before a resolve could
+# be written after it, re-persisting a spent token that
+# load_pending() then restores after a restart. It is never held
+# while executing handlers or notifying listeners — only across
+# the store mutation and its save. RLock because purge_expired()
+# and _save_pending() nest inside request/approve/deny paths.
+_PENDING_LOCK = threading.RLock()
+
+
+def _pending_put(token, entry) -> None:
+    """Store one pending entry under the store lock."""
+    with _PENDING_LOCK:
+        _PENDING[token] = entry
+
 
 # Approve-replay marker (thread-local): approve_token() sets this
 # around its execute_tool replay to (tool, args-dict-copy), so a
@@ -700,7 +718,17 @@ def _save_pending() -> None:
     """Persist the serializable subset of _PENDING (fail-silent:
     a failed save must never break the approval itself). Called
     only when the set actually changed — park, resolve, expiry —
-    never on the dashboard's poll cadence."""
+    never on the dashboard's poll cadence.
+
+    The snapshot and the write happen under _PENDING_LOCK (pass
+    26 B1#6): without it a snapshot taken before a resolve could
+    be written after it, re-persisting a spent token.
+    """
+    with _PENDING_LOCK:
+        _save_pending_locked()
+
+
+def _save_pending_locked() -> None:
     try:
         entries = []
         for e in _PENDING.values():
@@ -836,7 +864,7 @@ def load_pending() -> int:
             # default envelope (pass 26 B1#2).
             if isinstance(e.get("envelope"), dict):
                 exec_ctx['envelope'] = copy.deepcopy(e["envelope"])
-            _PENDING[token] = {
+            _pending_put(token, {
                 "token": token,
                 "tool": str(e["tool"]),
                 "args": dict(e.get("args") or {}),
@@ -847,7 +875,7 @@ def load_pending() -> int:
                                else None),
                 "origin_context": ctx,
                 "execution_context": exec_ctx,
-            }
+            })
             loaded += 1
         except Exception as exc:
             config.log_silent("approval.load_pending_entry", exc)
@@ -890,12 +918,17 @@ def request_approval(tool: str, args=None, desc=None) -> str:
     # caller's envelope dict must not change the parked call,
     # and the approve-token replay must run under it, not under
     # whatever envelope (if any) is active when the user taps.
+    # A directly parked request has no active operation, so
+    # mint a stable id here (pass 26 B1#6): without one the
+    # replay mints a fresh uuid receipt id per attempt and the
+    # receipt journal cannot dedup replays of the same parked
+    # call. An explicit active operation id is kept as-is.
     ec = {'project': ctx.project, 'cancel': ctx.cancel,
-          'operation_id': runtime.operation_id(),
+          'operation_id': runtime.operation_id() or uuid.uuid4().hex,
           'budget_scope': ctx.budget_scope, 'spend_cap': ctx.spend_cap}
     if ctx.envelope is not None:
         ec['envelope'] = copy.deepcopy(ctx.envelope)
-    _PENDING[token] = {
+    _pending_put(token, {
         "token": token,
         "tool": tool,
         "args": dict(args or {}),
@@ -904,7 +937,7 @@ def request_approval(tool: str, args=None, desc=None) -> str:
         "gui_binding": gui_binding,
         "origin_context": ctx,
         "execution_context": ec,
-    }
+    })
     _save_pending()
     # Surfaces in the OPS Log tab via add_log.
     config.add_log(f"[approval] AWAITING_APPROVAL token={token} tool={tool}: {desc}")
@@ -925,18 +958,19 @@ def purge_expired() -> int:
     before this, an expired approval vanished silently, and
     'expired' was indistinguishable from 'denied' or 'executed'
     to everyone — user and model alike."""
-    now = time.time()
-    expired = [t for t, e in _PENDING.items()
-               if now - e.get("created_ts", 0) > APPROVAL_EXPIRY_S]
-    for t in expired:
-        entry = _PENDING.pop(t, None)
-        if entry is not None:
-            _record_resolution(
-                entry.get("tool"), entry.get("desc"), "expired",
-                "No answer within 10 minutes; it was not executed.",
-                project=_entry_project(entry))
-    if expired:
-        _save_pending()
+    with _PENDING_LOCK:
+        now = time.time()
+        expired = [t for t, e in _PENDING.items()
+                   if now - e.get("created_ts", 0) > APPROVAL_EXPIRY_S]
+        for t in expired:
+            entry = _PENDING.pop(t, None)
+            if entry is not None:
+                _record_resolution(
+                    entry.get("tool"), entry.get("desc"), "expired",
+                    "No answer within 10 minutes; it was not executed.",
+                    project=_entry_project(entry))
+        if expired:
+            _save_pending()
     return len(expired)
 
 
@@ -955,13 +989,18 @@ def approve_token(token: str) -> str:
     _ensure_pending_loaded()
     purge_expired()
     t = str(token or "").strip()
-    entry = _PENDING.pop(t, None)
+    # Pop and persist under one lock hold: a snapshot taken
+    # before this pop must never be written after it (pass 26
+    # B1#6). The lock is released before the handler runs.
+    with _PENDING_LOCK:
+        entry = _PENDING.pop(t, None)
+        if entry is not None:
+            _save_pending()
     if entry is None:
         config.add_log(
             f"[approval] approve FAILED token={t}: unknown or expired")
         return (f"[Approval error: unknown or expired token '{t}'. "
                 f"Call list_pending_approvals() to see open requests.]")
-    _save_pending()
     config.add_log(f"[approval] approved token={t} tool={entry['tool']} — executing")
     # A GUI approval is bound to the foreground window it was
     # parked against: if the user has switched windows since, the
@@ -1118,11 +1157,15 @@ def deny_token(token: str) -> str:
     _ensure_pending_loaded()
     purge_expired()
     t = str(token or "").strip()
-    entry = _PENDING.pop(t, None)
+    # Pop and persist under one lock hold (pass 26 B1#6) — see
+    # approve_token. The lock is released before listeners run.
+    with _PENDING_LOCK:
+        entry = _PENDING.pop(t, None)
+        if entry is not None:
+            _save_pending()
     if entry is None:
         return (f"[Approval error: unknown or expired token '{t}'. "
                 f"Call list_pending_approvals() to see open requests.]")
-    _save_pending()
     config.add_log(f"[approval] denied token={t} tool={entry['tool']} — dropped")
     _record_resolution(entry["tool"], entry["desc"], "denied",
                        "The user denied it; it was not executed.",
@@ -1147,28 +1190,30 @@ def pending_entries() -> list:
     _ensure_pending_loaded()
     purge_expired()
     now = time.time()
-    return [
-        {"token": e["token"], "tool": e["tool"], "desc": e["desc"],
-         "age_s": int(now - e.get("created_ts", now)),
-         "gui_binding": e.get("gui_binding"),
-         "project": _entry_project(e)}
-        for _t, e in sorted(_PENDING.items(),
-                            key=lambda kv: kv[1].get("created_ts", 0))
-    ]
+    with _PENDING_LOCK:
+        return [
+            {"token": e["token"], "tool": e["tool"], "desc": e["desc"],
+             "age_s": int(now - e.get("created_ts", now)),
+             "gui_binding": e.get("gui_binding"),
+             "project": _entry_project(e)}
+            for _t, e in sorted(_PENDING.items(),
+                                key=lambda kv: kv[1].get("created_ts", 0))
+        ]
 
 
 def list_pending() -> str:
     """Human-readable list of open approval requests."""
     _ensure_pending_loaded()
     purge_expired()
-    if not _PENDING:
-        return "[No pending approvals.]"
-    now = time.time()
-    lines = []
-    for t, e in sorted(_PENDING.items(),
-                       key=lambda kv: kv[1].get("created_ts", 0)):
-        age = int(now - e.get("created_ts", now))
-        lines.append(f"token={t} tool={e['tool']} age={age}s: {e['desc']}")
+    with _PENDING_LOCK:
+        if not _PENDING:
+            return "[No pending approvals.]"
+        now = time.time()
+        lines = []
+        for t, e in sorted(_PENDING.items(),
+                           key=lambda kv: kv[1].get("created_ts", 0)):
+            age = int(now - e.get("created_ts", now))
+            lines.append(f"token={t} tool={e['tool']} age={age}s: {e['desc']}")
     return f"{len(lines)} pending approval(s):\n" + "\n".join(lines)
 
 
