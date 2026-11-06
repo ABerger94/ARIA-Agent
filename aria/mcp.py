@@ -26,6 +26,27 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from aria import config
 
+# The Robinhood access token is attached only to the real Robinhood
+# origin (pass 25): a substring check on the raw URL let any
+# attacker URL containing "robinhood.com" — a suffix domain, a
+# query string, a path — receive the Bearer token.
+_ROBINHOOD_HOST = "robinhood.com"
+
+
+def is_robinhood_url(url: str) -> bool:
+    """True only for an HTTPS URL whose parsed hostname is
+    robinhood.com or one of its subdomains."""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url or "")
+        host = (parsed.hostname or "").lower()
+        return (parsed.scheme == "https"
+                and (host == _ROBINHOOD_HOST
+                     or host.endswith("." + _ROBINHOOD_HOST)))
+    except Exception:
+        return False
+
+
 SETTINGS_KEY = "mcp_servers"
 
 _SCHEMA_TYPES = {
@@ -320,7 +341,7 @@ class MCPBridge:
             transport = cfg.get("transport", "stdio")
             if transport == "http":
                 headers = dict(cfg.get("headers") or {})
-                if "robinhood.com" in cfg.get("url", "") and "Authorization" not in headers:
+                if is_robinhood_url(cfg.get("url", "")) and "Authorization" not in headers:
                     tfile = os.path.join(config.WORKSPACE_DIR, "robinhood_token.json")
                     if os.path.exists(tfile):
                         try:
