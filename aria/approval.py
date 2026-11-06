@@ -206,40 +206,75 @@ def add_resolution_listener(fn) -> None:
 _RESOLUTIONS = deque(maxlen=50)
 
 
-def _record_resolution(tool, desc, verdict, detail="") -> None:
+def _entry_project(entry) -> object:
+    """The project an approval entry belongs to, or None.
+
+    Live entries carry it in execution_context; restored entries
+    carry the persisted 'project' key."""
+    if not isinstance(entry, dict):
+        return None
+    ctx = entry.get("execution_context") or {}
+    return ctx.get("project") or entry.get("project")
+
+
+def _record_resolution(tool, desc, verdict, detail="", project=None) -> None:
     """Append one resolution record. Fail-silent: journaling an
-    outcome must never break resolving one."""
+    outcome must never break resolving one.
+
+    Pass 25: the record carries its origin project, so the
+    model-facing state note can show a turn only its own
+    project's resolutions. When no project is given, the current
+    project at record time is used."""
     try:
+        if project is None:
+            try:
+                from aria import workspaces
+                project = workspaces.current()
+            except Exception:
+                project = "default"
         _RESOLUTIONS.append({
             "ts": time.time(),
             "tool": str(tool or ""),
             "desc": config.redact(str(desc or ""))[:160],
             "verdict": str(verdict or ""),
             "detail": config.redact(str(detail or ""))[:500],
+            "project": str(project or "default"),
         })
     except Exception as exc:
         config.log_silent("approval.record_resolution", exc)
 
 
-def recent_resolutions(limit=5, within_s=1800) -> list:
+def recent_resolutions(limit=5, within_s=1800, project=None) -> list:
     """Resolution records from the last `within_s` seconds,
-    oldest first, capped at `limit` (the newest ones win)."""
+    oldest first, capped at `limit` (the newest ones win).
+    Pass a project to see only that project's resolutions."""
     now = time.time()
     return [r for r in list(_RESOLUTIONS)
-            if now - r["ts"] <= within_s][-limit:]
+            if now - r["ts"] <= within_s
+            and (project is None or r.get("project") == project)][-limit:]
 
 
-def approval_state_note() -> str:
+def approval_state_note(project=None) -> str:
     """Authoritative approval state for the model's system
     instruction: the live pending snapshot (tool + desc + age —
     never tokens) plus the recent resolution journal. Returns ""
     when nothing is pending and nothing recently resolved, so
-    the prompt is unchanged for users who never hit approvals."""
+    the prompt is unchanged for users who never hit approvals.
+
+    Pass 25: scoped to one project (the current one by default).
+    A turn bound to project B must not see project A's pending
+    tools or resolutions."""
     try:
-        entries = pending_entries()
+        from aria import workspaces
+        project = project or workspaces.current()
+    except Exception:
+        project = None
+    try:
+        entries = [e for e in pending_entries()
+                   if project is None or e.get("project") == project]
     except Exception:
         entries = []
-    recs = recent_resolutions()
+    recs = recent_resolutions(project=project)
     if not entries and not recs:
         return ""
     lines = []
@@ -583,7 +618,8 @@ def load_pending() -> int:
                 _record_resolution(
                     e.get("tool"), e.get("desc"), "expired",
                     "Expired while ARIA was not running; "
-                    "it was not executed.")
+                    "it was not executed.",
+                    project=e.get("project"))
                 continue
             project = e.get("project")
             if not project:
@@ -592,7 +628,8 @@ def load_pending() -> int:
                     "Not restored: parked before the origin "
                     "project was recorded, so it cannot be "
                     "proven to belong to the current project; "
-                    "it was not executed.")
+                    "it was not executed.",
+                    project=e.get("project"))
                 continue
             try:
                 from aria import workspaces
@@ -601,7 +638,8 @@ def load_pending() -> int:
                 _record_resolution(
                     e.get("tool"), e.get("desc"), "expired",
                     "Not restored: its origin project no "
-                    "longer exists; it was not executed.")
+                    "longer exists; it was not executed.",
+                    project=e.get("project"))
                 continue
             ctx = runtime.ExecutionContext(project=project)
             _PENDING[token] = {
@@ -686,7 +724,8 @@ def purge_expired() -> int:
         if entry is not None:
             _record_resolution(
                 entry.get("tool"), entry.get("desc"), "expired",
-                "No answer within 10 minutes; it was not executed.")
+                "No answer within 10 minutes; it was not executed.",
+                project=_entry_project(entry))
     if expired:
         _save_pending()
     return len(expired)
@@ -749,13 +788,15 @@ def approve_token(token: str) -> str:
             config.add_log(
                 f"[approval] token={t} did NOT execute: {result[:200]}")
             _record_resolution(entry["tool"], entry["desc"],
-                               "re-parked", result)
+                               "re-parked", result,
+                               project=_entry_project(entry))
         elif result.startswith("[Duplicate call blocked") or \
                 result.startswith("[Safe mode"):
             config.add_log(
                 f"[approval] token={t} did NOT execute: {result[:200]}")
             _record_resolution(entry["tool"], entry["desc"],
-                               "did NOT execute", result)
+                               "did NOT execute", result,
+                               project=_entry_project(entry))
         elif result.startswith("[Tool Error:") or \
                 result.startswith("[Error:"):
             # The handler ran and reported failure (dispatch turns
@@ -766,18 +807,21 @@ def approve_token(token: str) -> str:
             config.add_log(
                 f"[approval] token={t} executed: {result[:200]}")
             _record_resolution(entry["tool"], entry["desc"],
-                               "errored", result)
+                               "errored", result,
+                               project=_entry_project(entry))
         else:
             config.add_log(
                 f"[approval] token={t} executed: {result[:200]}")
             _record_resolution(entry["tool"], entry["desc"],
-                               "executed", result)
+                               "executed", result,
+                               project=_entry_project(entry))
         _notify_resolution(t, entry, True, result)
         return result
     except Exception as e:
         config.add_log(f"[approval] token={t} execution ERROR: {e}")
         _record_resolution(entry["tool"], entry["desc"],
-                           "errored", f"failed to execute: {e}")
+                           "errored", f"failed to execute: {e}",
+                           project=_entry_project(entry))
         _notify_resolution(
             t, entry, True,
             f"[Approval error: failed to execute approved call: {e}]")
@@ -798,7 +842,8 @@ def deny_token(token: str) -> str:
     _save_pending()
     config.add_log(f"[approval] denied token={t} tool={entry['tool']} — dropped")
     _record_resolution(entry["tool"], entry["desc"], "denied",
-                       "The user denied it; it was not executed.")
+                       "The user denied it; it was not executed.",
+                       project=_entry_project(entry))
     result = (f"Denied and dropped: {entry['desc']} (token={t}). "
               f"It was not executed.")
     _notify_resolution(t, entry, False, result)
@@ -808,7 +853,7 @@ def deny_token(token: str) -> str:
 def pending_entries() -> list:
     """Snapshot of open approvals for UI surfaces, oldest first.
 
-    Each entry: {token, tool, desc, age_s}. Expired entries are purged
+    Each entry: {token, tool, desc, age_s, project}. Expired entries are purged
     first, so a UI polling this never shows a request that can no longer
     be resolved. Read-only: resolving still goes through approve_token /
     deny_token, so every surface shares one execution path.
@@ -818,7 +863,8 @@ def pending_entries() -> list:
     now = time.time()
     return [
         {"token": e["token"], "tool": e["tool"], "desc": e["desc"],
-         "age_s": int(now - e.get("created_ts", now))}
+         "age_s": int(now - e.get("created_ts", now)),
+         "project": _entry_project(e)}
         for _t, e in sorted(_PENDING.items(),
                             key=lambda kv: kv[1].get("created_ts", 0))
     ]

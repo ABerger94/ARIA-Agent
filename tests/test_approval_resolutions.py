@@ -94,11 +94,38 @@ def state(tmp_path, monkeypatch):
     dispatch.reset_turn_state()
 
 
-def _park():
-    approval.request_approval("send_email", dict(ARGS),
-                              desc="send email to 'a@example.com'")
-    (token,) = list(approval._PENDING)
-    return token
+def test_note_is_scoped_to_current_project(state):
+    # Pass 25: a turn bound to one project used to see every
+    # project's pending approvals and resolutions.
+    from aria import workspaces
+    proj_b = workspaces.create("Project B")
+    with workspaces.use(proj_b):
+        token_b = _park(desc="send email to B project")
+    token_a = _park(desc="send email to A project")
+    # Pending entries carry their origin project.
+    by_token = {e["token"]: e for e in approval.pending_entries()}
+    assert by_token[token_b]["project"] == proj_b
+    assert by_token[token_a]["project"] == "default"
+    # The default-project turn sees only its own pending item.
+    note = approval.approval_state_note()
+    assert "A project" in note and "B project" not in note, note
+    # The B turn sees only B's.
+    with workspaces.use(proj_b):
+        note_b = approval.approval_state_note()
+    assert "B project" in note_b and "A project" not in note_b, note_b
+    # Resolutions are scoped the same way: denying B's request
+    # must not surface in the default project's note.
+    approval.deny_token(token_b)
+    note = approval.approval_state_note()
+    assert "denied" not in note, note
+    with workspaces.use(proj_b):
+        note_b = approval.approval_state_note()
+    assert "denied" in note_b, note_b
+
+
+def _park(desc="send email to 'a@example.com'"):
+    approval.request_approval("send_email", dict(ARGS), desc=desc)
+    return list(approval._PENDING)[-1]
 
 
 def test_executed_resolution_is_journaled_and_noted(state, monkeypatch):
