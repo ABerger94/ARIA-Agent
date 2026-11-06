@@ -140,6 +140,19 @@ _WS_HELLO_MAX_PAYLOAD = 1024 * 1024
 _WS_NODE_MAX_PAYLOAD = 4 * 1024 * 1024
 
 
+# Control opcodes (RFC 6455 §5.5): ping / pong / close. They may
+# be injected between the fragments of a data message and must be
+# handled, not appended to it.
+_WS_CONTROL_OPCODES = frozenset((0x8, 0x9, 0xA))
+# Fragment state stashed across _ws_read_frame calls when a
+# control frame is returned mid-message: id(rfile) ->
+# (first-opcode, payload-so-far). Popped when the message
+# completes or the read errors; at most one entry per live
+# socket. The rfile object stays alive for the whole
+# connection, so its id is stable across the two calls.
+_WS_FRAGMENT_STATE: dict[int, tuple[int, bytes]] = {}
+
+
 def _ws_read_frame(rfile, max_payload=1024 * 1024):
     """One whole frame: (opcode, payload). Raises on EOF. The
     total reassembled payload is capped (1 MiB default — node
@@ -147,9 +160,20 @@ def _ws_read_frame(rfile, max_payload=1024 * 1024):
     able to declare a multi-gigabyte frame and have the bridge
     accumulate it before auth ever ran, bounded only by the 30 s
     socket timeout. A declared length over the cap, or an
-    accumulation past it, closes the connection."""
-    payload_all = b""
-    opcode0 = None
+    accumulation past it, closes the connection.
+
+    Fragmentation (RFC 6455 §5.4/§5.5): after the first fragment
+    only continuation frames (opcode 0x0) may follow — a new data
+    frame mid-message is rejected, as is a stray continuation.
+    A control frame (ping/pong/close) injected between fragments
+    is returned immediately as its own frame, with the
+    in-progress fragment stashed and resumed on the next call,
+    so it is never appended to the application payload and its
+    FIN never completes the message. Control frames must arrive
+    whole (FIN=1) and carry at most 125 bytes."""
+    stashed = _WS_FRAGMENT_STATE.pop(id(rfile), None)
+    payload_all = b"" if stashed is None else stashed[1]
+    opcode0 = None if stashed is None else stashed[0]
     while True:
         head = rfile.read(2)
         if len(head) < 2:
@@ -170,6 +194,31 @@ def _ws_read_frame(rfile, max_payload=1024 * 1024):
             raise ConnectionError("websocket truncated")
         if masked:
             data = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+        if opcode in _WS_CONTROL_OPCODES:
+            if not fin:
+                raise ConnectionError(
+                    "websocket control frame must not be fragmented")
+            if n > 125:
+                raise ConnectionError(
+                    "websocket control frame too large")
+            if opcode0 is not None:
+                # Mid-fragment: stash the partial message and
+                # surface the control frame on its own — the
+                # caller answers it, then reads again to resume.
+                _WS_FRAGMENT_STATE[id(rfile)] = (opcode0, payload_all)
+            return opcode, data
+        if opcode == 0x0:
+            if opcode0 is None:
+                raise ConnectionError(
+                    "websocket continuation frame without a "
+                    "fragmented message")
+        elif opcode in (0x1, 0x2):
+            if opcode0 is not None:
+                raise ConnectionError(
+                    "websocket data frame during fragmented message")
+        else:
+            raise ConnectionError(
+                f"websocket unknown opcode {opcode:#x}")
         if opcode0 is None:
             opcode0 = opcode
         payload_all += data
