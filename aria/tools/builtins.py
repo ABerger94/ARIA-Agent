@@ -820,6 +820,7 @@ def _github_request(path: str, method: str = "GET", payload: Optional[dict] = No
         return None, f"GitHub request failed: {e}"
 
 
+@legacy_error_results('Push failed:')
 def tool_github_push(repo: str, filepath: str, content: str, message: str = "") -> str:
     """Create or update a file in a GitHub repo."""
     r_name = repo or f"{GITHUB_USERNAME}/ARIA-Agent"
@@ -838,6 +839,7 @@ def tool_github_push(repo: str, filepath: str, content: str, message: str = "") 
     return f"Pushed '{filepath}' to {r_name}."
 
 
+@legacy_error_results('Repo creation failed:')
 def tool_github_create_repo(name: str, description: str = "", private: bool = True) -> str:
     """Create a new GitHub repository."""
     add_log(f"GitHub: creating repo '{name}'")
