@@ -304,7 +304,13 @@ def test_confirm_mode_parks_approval(env):
     assert "passed its safety scan" in out
     assert "AWAITING_APPROVAL" in out
     assert parked["tool"] == "skill_activate"
-    assert parked["args"] == {"name": "list-sorter"}
+    # Pass 25: the parked approval binds the draft REVISION, not
+    # just the name — a retired-and-reproposed same-name draft
+    # cannot ride this token.
+    skill = store.find_skill("list-sorter")
+    assert parked["args"]["name"] == "list-sorter"
+    assert parked["args"]["revision"] == store.content_hash(skill)
+    assert parked["args"]["description"] == skill["description"]
     # Still a draft until the user approves; the pass is on record.
     skill = store.find_skill("list-sorter")
     assert skill["status"] == "draft"
@@ -313,6 +319,54 @@ def test_confirm_mode_parks_approval(env):
     result = gate.activate_skill("list-sorter")
     assert "ACTIVE" in result
     assert store.find_skill("list-sorter")["status"] == "active"
+
+
+def test_activation_approval_binds_to_draft_revision(env):
+    # Pass 25 (pass 21 runner-up): the approval used to park only
+    # {"name": name}, and activate_skill checked the CURRENT
+    # draft's scan — so a retired-and-reproposed same-name draft
+    # that passed its own scan rode the original token. Now the
+    # parked approval carries the revision, and the replay
+    # refuses a draft that no longer matches it.
+    parked = []
+
+    def fake_request(tool, args=None, desc=None):
+        parked.append((tool, dict(args or {})))
+        return "[AWAITING_APPROVAL token=deadbeef]"
+
+    env["monkeypatch"].setattr(approval, "request_approval",
+                               fake_request)
+    out = _propose(name="swap-skill", instructions=BENIGN)
+    assert "AWAITING_APPROVAL" in out
+    assert len(parked) == 1
+    first_args = parked[0][1]
+    assert first_args["revision"] == store.content_hash(
+        store.find_skill("swap-skill"))
+    # Retire v1, re-propose the same name with different
+    # instructions, scan passes on its own contents.
+    ok, _ = store.retire_skill("swap-skill")
+    assert ok
+    out = _propose(name="swap-skill",
+                   instructions="1. Read the list.\n2. Sort it "
+                                "by length, longest first.\n"
+                                "3. Present it back in chat.")
+    assert "AWAITING_APPROVAL" in out
+    assert len(parked) == 2
+    second_args = parked[1][1]
+    assert second_args["revision"] != first_args["revision"]
+    # Replaying the FIRST approval must refuse: the draft is no
+    # longer the revision that approval was for.
+    out = gate.activate_skill(
+        "swap-skill", revision=first_args["revision"],
+        description=first_args["description"])
+    assert "changed since its activation was approved" in out
+    assert store.find_skill("swap-skill")["status"] == "draft"
+    # Control: the SECOND approval activates the replacement.
+    out = gate.activate_skill(
+        "swap-skill", revision=second_args["revision"],
+        description=second_args["description"])
+    assert "ACTIVE" in out
+    assert store.find_skill("swap-skill")["status"] == "active"
 
 
 def test_auto_mode_activates_and_logs(env):

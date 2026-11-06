@@ -173,7 +173,12 @@ def tool_skill_activate(args: Dict[str, Any]) -> str:
     name = store.normalize_name((args or {}).get("name"))
     if not name:
         return "skill_activate needs a skill name."
-    return gate.activate_skill(name)
+    # Pass the parked revision through: an approval replay
+    # carries the revision frozen at park time, and activate_skill
+    # refuses a draft that no longer matches it (pass 25).
+    return gate.activate_skill(name,
+                               revision=(args or {}).get("revision"),
+                               description=(args or {}).get("description"))
 
 
 def tool_skill_retire(args: Dict[str, Any]) -> str:

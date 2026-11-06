@@ -260,13 +260,42 @@ def scan_draft(name: str) -> Optional[Dict[str, Any]]:
 
 # --- activation --------------------------------------------------------------
 
-def activate_skill(name: str) -> str:
+def freeze_activation_args(args) -> dict:
+    """Bind an activation approval to the draft revision as it
+    stands NOW (pass 25, the export freeze precedent): the
+    dispatcher calls this before stashing the pending approval,
+    so a direct model call to skill_activate parks the current
+    content hash + description, and an approve-token replay can
+    only activate that exact revision. A retired-and-reproposed
+    same-name draft — even one that passes its own scan — cannot
+    ride the original token. No file is created or changed here;
+    freezing only rewrites the stashed args."""
+    frozen = dict(args or {})
+    name = store.normalize_name(frozen.get("name"))
+    if not name:
+        return frozen
+    skill = store.find_skill(name)
+    if skill is None or skill["status"] != "draft":
+        return frozen
+    frozen["revision"] = store.content_hash(skill)
+    frozen["description"] = skill.get("description", "")
+    return frozen
+
+
+def activate_skill(name: str, revision=None, description=None) -> str:
     """Activate a draft whose recorded scan passed on its CURRENT
     contents. This is the only activation path: the gate flow calls
     it (auto mode), and the approval replay calls it via the
     skill_activate tool (confirm modes). The invariant is enforced
     here, not at the call sites, so no path can activate an
-    unscanned or post-scan-edited draft."""
+    unscanned or post-scan-edited draft.
+
+    `revision` / `description` (pass 25): when an approval parked
+    them, the draft must still BE that revision — a
+    retired-and-reproposed same-name draft that passes its own
+    scan does not ride the original token. Calls without them
+    (auto mode, direct activation) keep the scan+hash invariant
+    only."""
     if not store.skills_enabled():
         return "Skills are disabled in settings; activation refused."
     skill = store.find_skill(name)
@@ -286,6 +315,17 @@ def activate_skill(name: str) -> str:
         return (f"Skill '{name}' changed after its scan; the pass is "
                 "stale. Call skill_propose to re-scan before "
                 "activation.")
+    if revision is not None and revision != store.content_hash(skill):
+        return (f"Skill '{name}' changed since its activation was "
+                "approved; the approval was for a different revision. "
+                "Call skill_propose to re-scan and re-request "
+                "approval.")
+    if description is not None and description != (
+            skill.get("description") or ""):
+        return (f"Skill '{name}' changed since its activation was "
+                "approved; the approval was for a different "
+                "description. Call skill_propose to re-scan and "
+                "re-request approval.")
     ok, msg = store.activate_draft(name)
     if not ok:
         return msg
@@ -322,11 +362,14 @@ def gate_and_route(name: str) -> str:
     from aria import approval
     mode = approval.get_mode()
     if mode == "auto" and store.auto_activate_in_auto_mode():
-        result = activate_skill(name)
+        frozen = freeze_activation_args({"name": name})
+        result = activate_skill(name, revision=frozen.get("revision"),
+                                description=frozen.get("description"))
         return (f"Skill draft '{name}' passed its safety scan and "
                 f"auto-activated (approval mode is auto). {result}")
     parked = approval.request_approval(
-        "skill_activate", {"name": name},
+        "skill_activate",
+        freeze_activation_args({"name": name}),
         desc=f"Activate learned skill '{name}' "
              f"(passed its safety scan)")
     return (f"Skill draft '{name}' passed its safety scan. "

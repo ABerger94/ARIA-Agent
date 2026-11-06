@@ -481,6 +481,16 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
                     _gate_args = _routines_mod.freeze_export_args(_gate_args)
                 except Exception:
                     pass
+            if fn_name == "skill_activate":
+                # Freeze the draft revision into the pending entry
+                # (pass 25): a retired-and-reproposed same-name
+                # draft must not ride this token. Same shape as
+                # the export freeze above.
+                try:
+                    from aria.tools import skill_gate as _gate_mod
+                    _gate_args = _gate_mod.freeze_activation_args(_gate_args)
+                except Exception:
+                    pass
             return _approval_mod.request_approval(fn_name, _gate_args), False
 
     # 4. Risky tools safety & audit
