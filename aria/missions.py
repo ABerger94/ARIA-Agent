@@ -835,6 +835,19 @@ def cancel_mission(mid: int) -> str:
     waiting = [s for s in steps if s["status"] == "waiting"
                and s["approval_token"]]
     runtime.cancel_work(f'mission:{workspaces.current()}:{mid}')
+    # Delegated children outlive the mission's own cancel event
+    # unless stopped here (pass 26 B2#5): each child runs under
+    # its own execution id, so cancel_work above never reaches
+    # them. Only cancel when a queue instance exists — building
+    # one from a cancel call would start a worker for nothing.
+    stopped = 0
+    try:
+        from aria.agent import taskqueue as _taskqueue_mod
+        _queue = _taskqueue_mod._queue
+        if _queue is not None:
+            stopped = _queue.cancel_children_of_mission(mid)
+    except Exception as e:
+        _config.log_silent("missions.cancel_mission.children", e)
     _finish(mid, "cancelled",
             note="Cancelled by Alek — remaining steps will "
                  "not run.")
@@ -852,7 +865,8 @@ def cancel_mission(mid: int) -> str:
                 _approval.deny_token(s["approval_token"])
         except Exception as e:
             _config.log_silent("missions.cancel_mission", e)
-    return f"Mission #{mid} cancelled: '{m['goal']}'."
+    return (f"Mission #{mid} cancelled: '{m['goal']}'. "
+            f"Stopped {stopped} delegated child task(s).")
 
 
 def mission_summaries(limit: int = 10) -> List[Dict[str, Any]]:
