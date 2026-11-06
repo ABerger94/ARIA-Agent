@@ -8,6 +8,7 @@ import sys
 import json
 import re
 import secrets
+import threading
 from collections import deque
 from datetime import datetime
 
@@ -519,10 +520,21 @@ def settings_save(d: dict):
 def get_setting(key: str, default=None):
     return settings_load().get(key, default)
 
+
+# Pass 26 B3#5: set_setting is a read-modify-write over the whole
+# settings dict (load, mutate one key, save). Without a lock, two
+# threads setting different keys at once each load the same
+# snapshot and the second save silently drops the first key.
+# The lock is held across load + mutate + save; settings_save's
+# temp-file + os.replace is atomic bytes, not atomic updates.
+_SETTINGS_LOCK = threading.Lock()
+
+
 def set_setting(key: str, value):
-    d = settings_load()
-    d[key] = value
-    return settings_save(d)
+    with _SETTINGS_LOCK:
+        d = settings_load()
+        d[key] = value
+        return settings_save(d)
 
 
 # ---------------------------------------------------------------- safe mode
