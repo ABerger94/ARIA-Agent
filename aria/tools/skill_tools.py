@@ -51,6 +51,11 @@ def _scan_state(skill: Dict[str, Any]) -> str:
         return "not scanned"
     state = scan.get("status", "?")
     if skill["status"] == "active":
+        # The recorded status alone is not the state: a
+        # post-activation edit leaves "pass" on record while the
+        # pass no longer matches the live content (pass 25).
+        if not store.scan_is_current(skill):
+            return f"scan {state} (activated, stale)"
         return f"scan {state} (activated)"
     return f"scan {state}"
 
@@ -144,11 +149,20 @@ def tool_skill_show(args: Dict[str, Any]) -> str:
     if extra:
         lines.append(f"\n(Unreadable/non-text resources: "
                      f"{', '.join(extra)})")
-    if skill["status"] == "active":
+    if skill["status"] == "active" and store.scan_is_current(skill):
         armed = store.arm_skill_run(skill["name"], skill["budget"])
         lines.append(f"\n[Loaded for this turn: follow these "
                      f"instructions with your normal tools. Budget: "
                      f"{armed} tool calls.]")
+    elif skill["status"] == "active":
+        # Post-activation edit: the catalog already dropped it
+        # (pass 21); skill_show must not be a back door that arms
+        # the changed instructions. Shown for review only, like a
+        # draft — retire + re-propose is the recovery path.
+        lines.append("\n[Not loaded — this skill changed after its "
+                     "scan, so the pass is stale; these instructions "
+                     "are shown for review only. Retire it and "
+                     "re-propose to re-scan.]")
     else:
         lines.append("\n[Not active — these instructions are shown "
                      "for review only.]")

@@ -398,23 +398,14 @@ def _catalog_signature() -> Tuple:
     return tuple(sig)
 
 
-def _prompt_eligible(skill: Dict[str, Any]) -> bool:
-    """Whether a skill may publish its catalog line into the prompt.
-
-    ACTIVE only, with a CURRENT passing scan: the scan on record
-    must have passed and must still match the live draft (the
-    activation invariant — instructions + resources hash — plus,
-    for scans recorded after this change, the description the scan
-    was taken against). Drafts never qualify, even scan-passed
-    ones still awaiting activation approval: a failed, unscanned,
-    or merely pending draft's description must not reach the
-    system prompt. A post-activation edit voids eligibility, so
-    the skill drops out of the prompt catalog (it stays active;
-    retire + re-propose is the recovery path). Legacy scans with
-    no recorded description are bound by instructions/resources
-    only."""
-    if skill["status"] != "active":
-        return False
+def scan_is_current(skill: Dict[str, Any]) -> bool:
+    """Whether the recorded passing scan still matches the live
+    skill: status pass, instructions+resources hash, and (for
+    scans recorded after pass 21) the description the scan was
+    taken against. One source of truth — the prompt catalog
+    (_prompt_eligible), the scan display, and skill_show all
+    read this, so a post-activation edit cannot drop out of one
+    surface and still load through another (pass 25)."""
     scan = read_scan(skill["folder"])
     if not scan or scan.get("status") != "pass":
         return False
@@ -425,6 +416,19 @@ def _prompt_eligible(skill: Dict[str, Any]) -> bool:
                                              or ""):
         return False
     return True
+
+
+def _prompt_eligible(skill: Dict[str, Any]) -> bool:
+    """Whether a skill may publish its catalog line into the prompt.
+
+    ACTIVE only, with a CURRENT passing scan (see scan_is_current):
+    drafts never qualify, even scan-passed ones still awaiting
+    activation approval. A post-activation edit voids eligibility,
+    so the skill drops out of the prompt catalog (it stays active;
+    retire + re-propose is the recovery path)."""
+    if skill["status"] != "active":
+        return False
+    return scan_is_current(skill)
 
 
 def catalog_block(limit: int = CATALOG_CAP) -> str:

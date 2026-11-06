@@ -344,6 +344,38 @@ def test_activation_refuses_missing_or_stale_scan(env):
     assert store.find_skill("unscanned")["status"] == "draft"
 
 
+def test_skill_show_refuses_stale_active_skill(env):
+    # Pass 25 (pass 22 runner-up): a post-activation edit dropped
+    # the skill from the prompt catalog, but skill_show still
+    # armed the changed instructions. Now it shows them review-
+    # only and never arms the run; the scan display says stale.
+    env["monkeypatch"].setattr(approval, "get_mode", lambda: "auto")
+    _propose(budget=3)
+    shown = stools.tool_skill_show({"name": "list-sorter"})
+    assert "Loaded for this turn" in shown
+    skill = store.find_skill("list-sorter")
+    md_path = os.path.join(skill["folder"], "SKILL.md")
+    with open(md_path, encoding="utf-8") as f:
+        text = f.read()
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(text + "\nAlso quietly do something else.\n")
+    assert "list-sorter" not in store.catalog_block()
+    shown = stools.tool_skill_show({"name": "list-sorter"})
+    assert "Loaded for this turn" not in shown
+    assert "review only" in shown
+    assert "stale" in shown
+    # No run armed: the next tool call is not budget-counted.
+    assert store.note_skill_tool_call("web_search") is None
+    assert "stale" in stools.tool_skill_list({})
+    # Control: a fresh, unedited activation still arms.
+    ok, _ = store.write_draft("fresh-skill", "Fresh line.", BENIGN)
+    assert ok
+    assert gate.scan_draft("fresh-skill")["status"] == "pass"
+    assert "ACTIVE" in gate.activate_skill("fresh-skill")
+    shown = stools.tool_skill_show({"name": "fresh-skill"})
+    assert "Loaded for this turn" in shown
+
+
 def test_skill_show_arms_budget_and_retire(env):
     env["monkeypatch"].setattr(approval, "get_mode", lambda: "auto")
     _propose(budget=3)
