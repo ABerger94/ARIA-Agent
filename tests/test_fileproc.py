@@ -365,3 +365,49 @@ def test_process_and_report_channels():
     msgs = [m for _, _, m, _ in config.recent_events(50)]
     assert any("File processing failed" in m for m in msgs), msgs
     print("ok process_and_report_channels")
+
+
+def test_docx_zip_bomb_refused(tmp_path):
+    # Pass 25 (P2#16): the 64 MB gate measures the COMPRESSED
+    # size, so a tiny docx expanding past 32 MB used to be read
+    # whole into memory. The extract must refuse with a cap
+    # error instead of materialising the member.
+    bomb = tmp_path / "bomb.docx"
+    big = (f'<?xml version="1.0"?><w:document xmlns:w="{_W}"><w:body>'
+           "<w:p><w:r><w:t>" + "x" * 40_000_000 +
+           "</w:t></w:r></w:p></w:body></w:document>")
+    with zipfile.ZipFile(bomb, "w",
+                         compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr("word/document.xml", big)
+    assert bomb.stat().st_size < 1024 * 1024  # the gate sees a small file
+    r = fileproc.process_file(str(bomb), pool=NO_POOL)
+    assert "extract_error" in r["detail"], r["detail"]
+    assert "32 MB cap" in r["detail"]["extract_error"], r["detail"]
+    assert r["ok"]  # metadata still returned; only content refused
+    print("ok docx_zip_bomb_refused")
+
+
+def test_pdf_stream_bomb_refused(monkeypatch, tmp_path):
+    # Same cap on the stdlib PDF path: one FlateDecode stream
+    # expanding past 32 MB must be refused, not decompressed.
+    for module in ("pdfplumber", "pypdf", "PyPDF2"):
+        monkeypatch.setitem(sys.modules, module, None)
+    comp = zlib.compress(b"a" * 40_000_000)
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>",
+        b"<< /Length " + str(len(comp)).encode() +
+        b" /Filter /FlateDecode >>\nstream\n" + comp + b"\nendstream",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    for i, body in enumerate(objs, 1):
+        out += str(i).encode() + b" 0 obj\n" + body + b"\nendobj\n"
+    out += b"trailer << /Root 1 0 R >>\n%%EOF"
+    bomb = tmp_path / "bomb.pdf"
+    bomb.write_bytes(bytes(out))
+    assert bomb.stat().st_size < 1024 * 1024
+    r = fileproc.process_file(str(bomb), pool=NO_POOL)
+    assert "extract_error" in r["detail"], r["detail"]
+    assert "32 MB cap" in r["detail"]["extract_error"], r["detail"]
+    print("ok pdf_stream_bomb_refused")

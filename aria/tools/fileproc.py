@@ -334,6 +334,7 @@ def _pdf_extract(path: Path, max_chars: int, detail: Dict[str, Any]) -> str:
         except Exception:
             break
     detail["extractor"] = "stdlib-streams"
+    budget = _DecompressionBudget()
     out: List[str] = []
     total = 0
     for m in re.finditer(rb"stream\r?\n(.*?)endstream", data, re.S):
@@ -343,9 +344,17 @@ def _pdf_extract(path: Path, max_chars: int, detail: Dict[str, Any]) -> str:
         elif raw.endswith(b"\n"):
             raw = raw[:-1]
         try:
-            chunk = zlib.decompress(raw)
+            chunk = zlib.decompressobj().decompress(
+                raw, budget.room() + 1)
         except Exception:
             continue
+        if len(chunk) > budget.room():
+            # The stream expands past the budget: refuse the file
+            # rather than materialising the rest of it.
+            raise ValueError(
+                "decompressed content over the "
+                f"{budget.limit // (1024 * 1024)} MB cap — file not read")
+        budget.check(len(chunk))
         text = _pdf_stream_text(chunk)
         if text:
             out.append(text)
@@ -356,13 +365,58 @@ def _pdf_extract(path: Path, max_chars: int, detail: Dict[str, Any]) -> str:
 
 
 # --- Office formats: all three are zips of XML — stdlib can read them.
+#
+# Decompression budget (pass 25): the 64 MB file gate measures the
+# COMPRESSED size, so a zip bomb — a 1 MB docx whose document.xml
+# expands to gigabytes — sailed straight through z.read() /
+# zlib.decompress(), which have no cap. Every member/stream below
+# is read through one per-file budget (32 MB decompressed); past
+# it the extract refuses instead of allocating.
+_MAX_DECOMPRESSED_BYTES = 32 * 1024 * 1024
+
+
+class _DecompressionBudget:
+    def __init__(self, limit: int = _MAX_DECOMPRESSED_BYTES):
+        self.limit = limit
+        self.used = 0
+
+    def check(self, n: int) -> None:
+        self.used += n
+        if self.used > self.limit:
+            raise ValueError(
+                "decompressed content over the "
+                f"{self.limit // (1024 * 1024)} MB cap — file not read")
+
+    def room(self) -> int:
+        return self.limit - self.used
+
+
+def _read_zip_member_capped(zf, name: str, budget: _DecompressionBudget) -> bytes:
+    """One zip member, streamed in 64 KB chunks against the budget.
+    The declared size is checked first (cheap refusal), but the
+    streamed count is the enforcement — the header can lie."""
+    info = zf.getinfo(name)
+    if info.file_size > budget.room():
+        budget.check(info.file_size)  # raises with the cap message
+    chunks: List[bytes] = []
+    with zf.open(name) as f:
+        while True:
+            chunk = f.read(65536)
+            if not chunk:
+                break
+            budget.check(len(chunk))
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
 _W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 
 
 def _docx_extract(path: Path, max_chars: int, detail: Dict[str, Any]) -> str:
+    budget = _DecompressionBudget()
     with zipfile.ZipFile(path) as z:
-        xml = z.read("word/document.xml")
+        xml = _read_zip_member_capped(z, "word/document.xml", budget)
     root = ET.fromstring(xml)
     paras = []
     for p in root.iter(f"{_W_NS}p"):
@@ -374,18 +428,21 @@ def _docx_extract(path: Path, max_chars: int, detail: Dict[str, Any]) -> str:
 
 
 def _xlsx_extract(path: Path, max_chars: int, detail: Dict[str, Any]) -> str:
+    budget = _DecompressionBudget()
     with zipfile.ZipFile(path) as z:
         names = z.namelist()
         shared: List[str] = []
         if "xl/sharedStrings.xml" in names:
-            sroot = ET.fromstring(z.read("xl/sharedStrings.xml"))
+            sroot = ET.fromstring(_read_zip_member_capped(
+                z, "xl/sharedStrings.xml", budget))
             ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
             for si in sroot.iter(f"{ns}si"):
                 shared.append("".join(t.text or "" for t in si.iter(f"{ns}t")))
         detail["shared_strings"] = len(shared)
         sheet_names: List[str] = []
         if "xl/workbook.xml" in names:
-            wroot = ET.fromstring(z.read("xl/workbook.xml"))
+            wroot = ET.fromstring(_read_zip_member_capped(
+                z, "xl/workbook.xml", budget))
             ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
             sheet_names = [s.get("name", "") for s in wroot.iter(f"{ns}sheet")]
         detail["sheets"] = sheet_names
@@ -394,7 +451,8 @@ def _xlsx_extract(path: Path, max_chars: int, detail: Dict[str, Any]) -> str:
         preview: List[str] = []
         if sheets:
             ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
-            sroot = ET.fromstring(z.read(sheets[0]))
+            sroot = ET.fromstring(_read_zip_member_capped(
+                z, sheets[0], budget))
             rows = list(sroot.iter(f"{ns}row"))
             detail["rows_first_sheet"] = len(rows)
             for row in rows[:5]:
@@ -416,6 +474,7 @@ def _xlsx_extract(path: Path, max_chars: int, detail: Dict[str, Any]) -> str:
 
 
 def _pptx_extract(path: Path, max_chars: int, detail: Dict[str, Any]) -> str:
+    budget = _DecompressionBudget()
     with zipfile.ZipFile(path) as z:
         slides = sorted(
             (n for n in z.namelist()
@@ -424,7 +483,7 @@ def _pptx_extract(path: Path, max_chars: int, detail: Dict[str, Any]) -> str:
         detail["slides"] = len(slides)
         out = []
         for i, name in enumerate(slides, 1):
-            root = ET.fromstring(z.read(name))
+            root = ET.fromstring(_read_zip_member_capped(z, name, budget))
             texts = [t.text.strip() for t in root.iter(f"{_A_NS}t")
                      if t.text and t.text.strip()]
             if texts:
