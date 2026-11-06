@@ -18,11 +18,12 @@ from __future__ import annotations
 import time
 
 from aria import node_hub
+from aria import outcome
 
-NO_NODE = ("[No phone node is connected. Open the ARIA Node app "
+NO_NODE = ("No phone node is connected. Open the ARIA Node app "
            "on the phone and connect it to this bridge (address "
            "and bridge token are under Remote Control / Settings "
-           "→ Connections), then ask again.]")
+           "→ Connections), then ask again.")
 
 LIST_LIMIT = 6000
 APPS_LIST_LIMIT = 30000     # a full app inventory runs past 6,000
@@ -46,18 +47,24 @@ def _send(tool: str, action: str, args: dict, node: str = None):
     returned as-is — there is no silent fallback to another phone.
     When no node is named, the hub's _pick(None) behaviour applies
     (the most recently connected node).
+
+    Every failure path returns outcome.failed(...) so normalize
+    yields FAILED instead of reading a failure as DONE.
     """
     try:
         return node_hub.HUB.send_command(node, action, args), None
     except node_hub.NodeHubError as e:
         if e.code == "no_node":
             if node:
-                return None, (f"[No phone node named '{node}' is "
-                              "connected. Nothing was sent to any phone.]")
-            return None, NO_NODE
-        return None, f"[{tool} failed: {e}]"
+                return None, outcome.failed(
+                    tool,
+                    f"no phone node named '{node}' is connected — "
+                    "nothing was sent to any phone")
+            return None, outcome.failed(tool, NO_NODE)
+        return None, outcome.failed(tool, str(e))
     except Exception as e:
-        return None, f"[{tool} failed: the phone command failed: {e}]"
+        return None, outcome.failed(
+            tool, f"the phone command failed: {e}")
 
 
 def _cap(text: str, limit: int = LIST_LIMIT) -> str:
@@ -131,10 +138,12 @@ def tool_phone_status(node: str = None) -> str:
     if node:
         nodes = [n for n in nodes if n["name"] == node]
         if not nodes:
-            return (f"[No phone node named '{node}' is connected. "
-                    "Nothing was sent to any phone.]")
+            return outcome.failed(
+                "phone_status",
+                f"no phone node named '{node}' is connected — "
+                "nothing was sent to any phone")
     elif not nodes:
-        return NO_NODE
+        return outcome.failed("phone_status", NO_NODE)
     now = time.time()
     lines = []
     for n in nodes:
@@ -168,8 +177,10 @@ def tool_phone_open_app(label: str = "", package: str = "",
     label = str(label or "").strip()
     package = str(package or "").strip()
     if not label and not package:
-        return ("[phone_open_app failed: neither an app label nor a "
-                "package name was given — name the app to open.]")
+        return outcome.failed(
+            "phone_open_app",
+            "neither an app label nor a package name was given — "
+            "name the app to open")
     args = {}
     if package:
         args["package"] = package
@@ -279,9 +290,10 @@ def tool_phone_tap(ref: str = "", x=None, y=None, node: str = None,
     else:
         xi, yi = _int_param(x), _int_param(y)
         if xi is None or yi is None:
-            return ("[phone_tap failed: no target was given — pass "
-                    "a 'ref' from phone_read_screen, or both 'x' "
-                    "and 'y'.]")
+            return outcome.failed(
+                "phone_tap",
+                "no target was given — pass a 'ref' from "
+                "phone_read_screen, or both 'x' and 'y'")
         args = {"x": xi, "y": yi}
         target = f"coordinates ({xi}, {yi})"
     data, err = _send("phone_tap", "tap", args, node=node)
@@ -295,8 +307,10 @@ def tool_phone_swipe(x1=None, y1=None, x2=None, y2=None,
     coords = {"x1": _int_param(x1), "y1": _int_param(y1),
               "x2": _int_param(x2), "y2": _int_param(y2)}
     if any(v is None for v in coords.values()):
-        return ("[phone_swipe failed: a swipe needs all four "
-                "coordinates — 'x1', 'y1', 'x2', 'y2' — as numbers.]")
+        return outcome.failed(
+            "phone_swipe",
+            "a swipe needs all four coordinates — 'x1', 'y1', "
+            "'x2', 'y2' — as numbers")
     duration = _int_param(duration_ms)
     duration = 300 if duration is None else max(50, min(2000, duration))
     args = dict(coords, duration_ms=duration)
@@ -312,7 +326,7 @@ def tool_phone_type(text: str = "", ref: str = "", node: str = None,
         return refusal
     text = str(text or "")
     if not text:
-        return "[phone_type failed: no text was given to type.]"
+        return outcome.failed("phone_type", "no text was given to type")
     ref = str(ref or "").strip()
     args: dict = {"text": text}
     if ref:
@@ -327,8 +341,9 @@ def tool_phone_key(key: str = "", node: str = None, _raw_args=None) -> str:
         return refusal
     key = str(key or "").strip().lower()
     if key not in _KEY_NAMES:
-        return (f"[phone_key failed: '{key or '(none)'}' is not a "
-                f"key this tool can send — use one of: "
-                f"{', '.join(_KEY_NAMES)}.]")
+        return outcome.failed(
+            "phone_key",
+            f"'{key or '(none)'}' is not a key this tool can send — "
+            f"use one of: {', '.join(_KEY_NAMES)}")
     data, err = _send("phone_key", "key", {"key": key}, node=node)
     return err if err else f"Pressed {key} on the phone."
