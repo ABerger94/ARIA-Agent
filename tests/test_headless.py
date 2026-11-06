@@ -375,6 +375,7 @@ def test_body_protocol():
         for m in ('serial', 'serial.tools', 'serial.tools.list_ports'):
             sys.modules.pop(m, None)
 mcp_mod = importlib.import_module('aria.mcp')
+outcome_mod = importlib.import_module('aria.outcome')
 
 def test_mcp_schema():
     assert mcp_mod.sanitize_tool_name('mcp_fs__read-file!') == 'mcp_fs__read-file_'
@@ -425,7 +426,11 @@ def test_mcp_format():
     empty = types.SimpleNamespace(isError=False, content=[])
     assert mcp_mod.format_tool_result(ok) == 'hello'
     r = mcp_mod.format_tool_result(err)
-    assert r.startswith('[MCP tool error]') and 'nope' in r, r
+    # An isError result is a failure, not a result: normalize()
+    # must read FAILED, or the failed remote tool certifies its
+    # own mission step.
+    assert r.startswith('status=failed') and 'nope' in r, r
+    assert outcome_mod.normalize(r).status == 'failed'
     assert 'image' in mcp_mod.format_tool_result(img)
     assert 'empty' in mcp_mod.format_tool_result(empty)
 

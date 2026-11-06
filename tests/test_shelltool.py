@@ -21,6 +21,7 @@ tools_pkg.__path__ = [str(Path(__file__).parents[1] / 'aria' / 'tools')]
 sys.modules.setdefault('aria.tools', tools_pkg)
 
 import importlib
+outcome = importlib.import_module('aria.outcome')
 shelltool = importlib.import_module('aria.tools.shelltool')
 
 
@@ -40,8 +41,12 @@ def test_execute_nonzero_exit_and_stderr(tmp_path):
     out = shelltool._execute(
         _py('import sys; sys.stderr.write(chr(101)); sys.exit(3)'),
         str(tmp_path), 30)
-    assert out.startswith('Exit code: 3')
+    # A nonzero exit is a failure, not a result: normalize() must
+    # read FAILED, or the failed command certifies its own step.
+    assert out.startswith('status=failed'), out
+    assert 'exited with code 3' in out
     assert '--- stderr ---' in out
+    assert outcome.normalize(out).status == 'failed'
 
 
 def test_execute_no_output(tmp_path):

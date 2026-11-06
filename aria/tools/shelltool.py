@@ -257,6 +257,15 @@ def _execute(command: str, cwd: str, timeout: int) -> str:
     body = "\n".join(sections) if sections else "(no output)"
     if len(body) > OUTPUT_LIMIT:
         body = "[output truncated]\n" + body[-OUTPUT_LIMIT:]
+    if proc.returncode != 0:
+        # A nonzero exit is a failure, not a result: the old shape
+        # returned "Exit code: N" for ANY code, and normalize()
+        # read it as DONE — a failed command certified its own
+        # mission step (pass 25). Type it FAILED; the command's
+        # output follows as evidence, not as a success claim.
+        return (_failed(
+            f"the command exited with code {proc.returncode}",
+            command=command) + f"\n{body}")
     return f"Exit code: {proc.returncode}\n{body}"
 
 

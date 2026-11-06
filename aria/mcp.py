@@ -25,6 +25,7 @@ import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 from aria import config
+from aria import outcome
 
 # The Robinhood access token is attached only to the real Robinhood
 # origin (pass 25): a substring check on the raw URL let any
@@ -531,8 +532,13 @@ class MCPBridge:
             result = self._run(self._actor_call(name, tool, arguments, timeout),
                                timeout=timeout + 10.0)
         except Exception as e:
-            return f"[MCP call failed on '{name}': {e}]"
-        return format_tool_result(result)
+            # A failed call is a failure, not a result: the old
+            # "[MCP call failed ...]" string had no status= prefix,
+            # so normalize() read it as DONE (pass 25).
+            return outcome.failed(
+                f"mcp_{name}__{tool}",
+                f"MCP call failed on '{name}': {e}")
+        return format_tool_result(result, action=f"mcp_{name}__{tool}")
 
 
 _BRIDGE: Optional[MCPBridge] = None
@@ -645,14 +651,17 @@ def autoconnect_enabled_servers() -> str:
     return summary
 
 
-def format_tool_result(result: Any) -> str:
-    """Flatten an MCP CallToolResult into readable text."""
-    if getattr(result, "isError", False):
-        prefix = "[MCP tool error] "
-    else:
-        prefix = ""
-    chunks: List[str] = []
+def format_tool_result(result: Any, action: str = "mcp_tool") -> str:
+    """Flatten an MCP CallToolResult into readable text.
+
+    An isError result is a failure, not a result: the old shape
+    prefixed it with "[MCP tool error] " only, and normalize()
+    read it as DONE — a failed remote tool certified its own
+    mission step (pass 25). Type it FAILED via outcome.failed;
+    the error text is the reason.
+    """
     content = getattr(result, "content", None) or []
+    chunks: List[str] = []
     for block in content:
         btype = getattr(block, "type", "")
         if btype == "text":
@@ -668,4 +677,6 @@ def format_tool_result(result: Any) -> str:
     text = "\n".join(c for c in chunks if c).strip()
     if not text:
         text = "(empty result)"
-    return prefix + text
+    if getattr(result, "isError", False):
+        return outcome.failed(action, text)
+    return text
