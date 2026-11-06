@@ -159,28 +159,41 @@ def _make_lazy_handler(path, name):
     """
     state = {}
 
+    def _fail(message):
+        """A user-tool failure, typed FAILED (pass 26 B3#4): the
+        text is kept verbatim (existing tests pin it), but the
+        ResultText carries the status, so outcome.normalize()
+        yields FAILED instead of DONE — a failed user tool used
+        to read as a success. outcome is imported lazily, and a
+        failure to import it falls back to the plain string."""
+        try:
+            from aria import outcome as _outcome_mod
+            return _outcome_mod.ResultText(message, _outcome_mod.FAILED)
+        except Exception:
+            return message
+
     def _handler(args, _tool=name):
         if "run" not in state:
             try:
                 mod = _load_module_from_path(path)
             except Exception as _e:
                 state["run"] = None
-                return (f"[user tool '{_tool}' failed: import failed: "
-                        f"{_config.redact(str(_e))}]")
+                return _fail(f"[user tool '{_tool}' failed: import failed: "
+                             f"{_config.redact(str(_e))}]")
             run_fn = getattr(mod, "run", None)
             if not callable(run_fn):
                 state["run"] = None
-                return (f"[user tool '{_tool}' failed: no run(args) "
-                        f"function defined]")
+                return _fail(f"[user tool '{_tool}' failed: no run(args) "
+                             f"function defined]")
             state["run"] = run_fn
         run_fn = state.get("run")
         if run_fn is None:
-            return (f"[user tool '{_tool}' failed: the module failed "
-                    f"to load — see the log]")
+            return _fail(f"[user tool '{_tool}' failed: the module failed "
+                         f"to load — see the log]")
         try:
             return str(run_fn(args if isinstance(args, dict) else {}))
         except Exception as _e:
-            return f"[user tool '{_tool}' failed: {_config.redact(str(_e))}]"
+            return _fail(f"[user tool '{_tool}' failed: {_config.redact(str(_e))}]")
 
     _handler.__name__ = f"user_tool_{name}"
     return _handler
