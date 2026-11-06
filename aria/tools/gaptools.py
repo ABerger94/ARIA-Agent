@@ -971,6 +971,31 @@ def _strip_fences(text: str) -> str:
     return m.group(1).strip() if m else text
 
 
+# provider_text's failure shapes (aria/agent/providers.py): it
+# returns a NONEMPTY bracketed error string on every failure path,
+# never an empty string or None. A generation consumer that checks
+# only `if not code:` therefore saves the error text as if it were
+# code (pass 26 B1#9). Check explicitly against the known shapes —
+# never a broad heuristic — at the consumer seam.
+_PROVIDER_FAILURE_MARKERS = (
+    "[No provider responded.]",
+    "[Unparseable provider response.]",
+    "[No text in provider response.]",
+)
+_PROVIDER_FAILURE_PREFIX = "[provider_text error:"
+
+
+def _is_provider_failure(text) -> bool:
+    """True when a provider result is a failure marker (or empty),
+    not generated content."""
+    t = (text or "").strip()
+    if not t:
+        return True
+    if t in _PROVIDER_FAILURE_MARKERS:
+        return True
+    return t.startswith(_PROVIDER_FAILURE_PREFIX)
+
+
 def tool_code_helper(args) -> str:
     args = args or {}
     action = str(args.get("action") or "explain").strip().lower()
@@ -1001,6 +1026,11 @@ def tool_code_helper(args) -> str:
         if not code:
             return _failed("code_helper",
                            "the provider returned no code")
+        if _is_provider_failure(code):
+            # B1#9: a bracketed provider error is NOT code — it
+            # must never be saved as a file and reported done.
+            return _failed("code_helper",
+                           f"the code provider failed: {code.strip()}")
         # Security (2026-10-28): the save goes through the
         # dispatcher as write_file, not straight to the builtins
         # writer — code_helper is in neither policy set, so the
@@ -1064,6 +1094,11 @@ def tool_dev_agent(args) -> str:
             f"Plan a single-file {language} program for this request. "
             f"Reply with a brief plan only (a few short lines).\n\n"
             f"Request: {description}", role="code") or "")
+        if _is_provider_failure(plan):
+            # B1#9: a failed plan is not a plan — stop here,
+            # before any code is generated or saved.
+            return _failed("dev_agent",
+                           f"the code provider failed: {plan.strip()}")
         code = _strip_fences(str(_provider_text(
             _CODE_SYSTEM,
             f"Write the complete single-file {language} program for "
@@ -1074,6 +1109,11 @@ def tool_dev_agent(args) -> str:
         return _failed("dev_agent", f"the code provider failed: {exc}")
     if not code:
         return _failed("dev_agent", "the provider returned no code")
+    if _is_provider_failure(code):
+        # B1#9: a bracketed provider error is NOT code — it must
+        # never be saved as a file and reported done.
+        return _failed("dev_agent",
+                       f"the code provider failed: {code.strip()}")
     # Security (2026-10-28): same gated save as code_helper — the
     # write routes through the dispatcher as write_file, whose
     # approval gate a direct call must pass, instead of straight
