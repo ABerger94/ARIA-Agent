@@ -101,6 +101,49 @@ def test_workspace_listing_uses_the_bound_project(files):
     assert 'project.txt' in listing and 'personal.txt' not in listing
 
 
+def test_screen_watches_are_scoped_to_current_project(files, monkeypatch):
+    # Pass 25: watches lived in one install-global file with no
+    # project field, so same-name watches collided — and an
+    # unwatch cancelled the scheduler task by bare id against
+    # whichever project was current.
+    from aria import scheduler, screenwatch
+    # This harness stubs aria.scheduler; load the real module for
+    # this test (sched_add/sched_cancel/sched_list are the point).
+    import importlib.util
+    from pathlib import Path as _Path
+    _spec = importlib.util.spec_from_file_location(
+        "aria.scheduler",
+        str(_Path(__file__).parents[1] / "aria" / "scheduler.py"))
+    _real_sched = importlib.util.module_from_spec(_spec)
+    monkeypatch.setitem(sys.modules, "aria.scheduler", _real_sched)
+    _spec.loader.exec_module(_real_sched)
+    monkeypatch.setattr(screenwatch, "WATCHES_PATH",
+                        str(files / "screen_watches.json"))
+    project = workspaces.create("Watch B")
+    assert "Watching" in screenwatch.tool_watch_screen(
+        "build", "is the build done?", 300)
+    with workspaces.use(project):
+        memory.init_databases()  # the scheduler loop does this per project
+        assert "Watching" in screenwatch.tool_watch_screen(
+            "build", "is B done?", 300)
+    assert "is the build done?" in screenwatch.tool_list_screen_watches()
+    assert "is B done?" not in screenwatch.tool_list_screen_watches()
+    with workspaces.use(project):
+        assert "is B done?" in screenwatch.tool_list_screen_watches()
+        b_tasks = [t for t in _real_sched.sched_list()
+                   if t[1] == "screenwatch"]
+    assert len(b_tasks) == 1
+    b_task_id = b_tasks[0][0]
+    # Unwatching the default project's watch must leave B's
+    # scheduler task untouched.
+    assert "Stopped" in screenwatch.tool_unwatch_screen("build")
+    with workspaces.use(project):
+        remaining = [t for t in _real_sched.sched_list()
+                     if t[1] == "screenwatch"]
+        assert "is B done?" in screenwatch.tool_list_screen_watches()
+    assert [t[0] for t in remaining] == [b_task_id]
+
+
 def test_journal_write_is_scoped_to_current_project(files):
     # Pass 25: journal files were one global directory, so every
     # project's entries landed in the same dated file.

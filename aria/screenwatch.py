@@ -53,12 +53,24 @@ WATCHES_PATH = os.path.join(
 _CANONICAL_WATCHES_PATH = WATCHES_PATH
 
 
-def _ensure_migrated():
+def _watches_path() -> str:
+    """Per-project watches file (pass 25): the old install-global
+    file mixed every project's watches under one name space, so
+    project A's 'build' watch collided with project B's — and an
+    unwatch in the wrong project cancelled the wrong project's
+    scheduler task by id. Default project keeps the legacy path
+    (tests rebind WATCHES_PATH; that still works)."""
+    from aria import workspaces
+    return workspaces.path("screen_watches.json", WATCHES_PATH)
+
+
+def _ensure_migrated(path: str = None) -> None:
     """One-time copy of a real legacy ~/ARIA/screen_watches.json
     to the install root (V20), via aria.data_dir. Only when
-    WATCHES_PATH has not been rebound (tests). Fail-soft."""
+    the resolved path is the canonical default one (tests rebind
+    it; other projects have their own file). Fail-soft."""
     try:
-        if os.path.normpath(WATCHES_PATH) != os.path.normpath(
+        if os.path.normpath(path or WATCHES_PATH) != os.path.normpath(
                 _CANONICAL_WATCHES_PATH):
             return
         from aria import data_dir
@@ -77,9 +89,10 @@ def _sanitize_name(name: str) -> str:
 
 
 def _load() -> Dict[str, dict]:
-    _ensure_migrated()
+    path = _watches_path()
+    _ensure_migrated(path)
     try:
-        with open(WATCHES_PATH, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
             return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
@@ -87,9 +100,10 @@ def _load() -> Dict[str, dict]:
 
 
 def _save(watches: Dict[str, dict]) -> None:
-    _ensure_migrated()
-    os.makedirs(os.path.dirname(WATCHES_PATH), exist_ok=True)
-    with open(WATCHES_PATH, "w", encoding="utf-8") as fh:
+    path = _watches_path()
+    _ensure_migrated(path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
         json.dump(watches, fh, indent=2)
 
 
@@ -169,6 +183,7 @@ def tool_watch_screen(name: str, question: str, interval_s: int = 300) -> str:
     if name in watches:
         return f"[Already watching '{name}'. Use unwatch_screen first to replace it.]"
 
+    from aria import workspaces
     try:
         from aria import scheduler
         task_id = scheduler.sched_add("screenwatch", name, interval_s=interval)
@@ -179,6 +194,10 @@ def tool_watch_screen(name: str, question: str, interval_s: int = 300) -> str:
         "question": str(question).strip(),
         "interval_s": interval,
         "sched_task_id": task_id,
+        # Pass 25: the origin project, so an unwatch (and the
+        # scheduler tick) resolves the task id against the right
+        # project's DB instead of whichever project is current.
+        "project": workspaces.current(),
         "last_answer": None,
         "created": time.strftime("%Y-%m-%d %H:%M:%S"),
         "last_checked": None,
@@ -199,8 +218,14 @@ def tool_unwatch_screen(name: str) -> str:
     task_id = watch.get("sched_task_id")
     if task_id:
         try:
-            from aria import scheduler
-            scheduler.sched_cancel(int(task_id))
+            from aria import scheduler, workspaces
+            # Pass 25: cancel against the watch's origin project —
+            # the task id lives in that project's DB, and a bare
+            # cancel under the current project could delete an
+            # unrelated same-id task there.
+            origin = watch.get("project") or workspaces.current()
+            with workspaces.use(origin):
+                scheduler.sched_cancel(int(task_id))
         except Exception as e:
             add_log(f"Screen watch '{name}': failed to cancel task #{task_id}: {e}")
     _save(watches)
