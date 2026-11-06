@@ -103,3 +103,35 @@ def test_none_reply_still_advances_watermark(tmp_path, monkeypatch):
     _setup_db(tmp_path, monkeypatch)
     _run_one_pass(monkeypatch, lambda *a, **k: "NONE")
     assert proactive._consolidation_watermark() == 2
+
+
+def test_pass_stays_bound_to_cycle_start_project(tmp_path, monkeypatch):
+    # Pass 25 (P1#15): the loop thread had no workspaces.use(), so
+    # a change_project mid-pass re-resolved every project-scoped
+    # path under the new project. Seed rows in project B, start
+    # the pass bound to B, switch the active project mid-call —
+    # the watermark must still advance in B, not default.
+    from aria import workspaces
+    monkeypatch.setattr(config, "WORKSPACE_DIR", str(tmp_path))
+    _setup_db(tmp_path, monkeypatch)
+    proj_b = workspaces.create("Project B")
+    with workspaces.use(proj_b):
+        memory.init_databases()
+        conn = sqlite3.connect(memory.db_path())
+        conn.executemany(
+            "INSERT INTO chat_history (timestamp, sender, message) "
+            "VALUES (?, ?, ?)",
+            [("2026-11-05 22:00:00", "Alek", "B fact one"),
+             ("2026-11-05 22:01:00", "Alek", "B fact two")])
+        conn.commit()
+        conn.close()
+    workspaces.select(proj_b)
+
+    def _provider(*a, **k):
+        workspaces.select("default")  # change_project mid-pass
+        return "NONE"
+
+    _run_one_pass(monkeypatch, _provider)
+    with workspaces.use(proj_b):
+        assert proactive._consolidation_watermark() == 2
+    assert proactive._consolidation_watermark() == 0

@@ -439,6 +439,93 @@ def _set_consolidation_watermark(chat_id: int):
         conn.close()
 
 
+def _consolidation_pass() -> None:
+    """One idle-consolidation pass over the rows past the watermark.
+
+    Called by idle_consolidation_loop under a project binding (pass
+    25): every project-scoped touch here (chat DB, watermark,
+    contradictions file, skills) resolves under the project bound
+    at cycle start, never under a project switched mid-pass."""
+    wm = _consolidation_watermark()
+    with DB_LOCK:
+        conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
+        rows = conn.execute("SELECT id,sender,message FROM chat_history WHERE id>? ORDER BY id LIMIT 40",
+                            (wm,)).fetchall()
+        conn.close()
+
+    if not rows:
+        return
+
+    convo = "\n".join(f"{s}: {m[:300]}" for _, s, m in rows)
+    spine_lines = spine_digest(spine_tail(100))
+    if spine_lines:
+        convo = convo + "\n[recent events]\n" + "\n".join(spine_lines)
+
+    system_instruction = (
+        "You distill durable memories from a conversation log. Reply with 0-3 lines, "
+        "each exactly 'key: value' — a lasting fact, preference, or commitment about the user. "
+        "Skip small talk. If nothing durable, reply with the single word NONE."
+    )
+    contents = [{"role": "user", "parts": [{"text": convo}]}]
+    text = provider_text(system_instruction, _parts_text(contents))
+
+    if _provider_failure(text):
+        # Pass 25: a provider outage returns a bracketed
+        # sentinel, not a distillation. Advancing the
+        # watermark past it would permanently consume chat
+        # that was never distilled (and "[provider_text
+        # error: ...]" even parses as a bogus fact, since
+        # it contains a colon). Hold the watermark so the
+        # next pass retries these rows.
+        add_log(f"Idle consolidation: provider unavailable "
+                f"({text.strip()[:60]}), watermark held.")
+        return
+
+    last_id = rows[-1][0]
+
+    if text.strip().upper() == "NONE":
+        _set_consolidation_watermark(last_id)
+        add_log("Idle consolidation: no durable memories found.")
+        return
+
+    facts = []
+    for line in text.splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            k, v = k.strip().lower().replace(" ", "_"), v.strip()
+            if k and v:
+                facts.append((k, v))
+    # Reconcile, never blind-save (Gap fill 4): dupes are
+    # skipped, contradictions QUEUE for the user instead
+    # of silently overwriting the stored fact. The
+    # watermark advances only after reconciliation has
+    # actually consumed these rows.
+    from aria.agent import consolidation
+    counts = consolidation.reconcile(facts)
+    _set_consolidation_watermark(last_id)
+    if counts["saved"] or counts["contradictions"]:
+        add_log(f"Idle consolidation: {counts['saved']} new, "
+                f"{counts['dupes']} dupes skipped, "
+                f"{counts['contradictions']} contradiction(s) queued.")
+    # Skills v1 — autonomous authoring (Alek's call,
+    # 2026-11-04): consolidation passes ONLY, never
+    # mid-conversation. Repeated patterns in the rows and
+    # spine events just consumed may become skill DRAFTS —
+    # evidence-required, deduped, capped at 2/day, each
+    # announced in the Activity log by skill_tools itself.
+    # Drafts only: activation still runs the scan gate and
+    # the normal approval routing. Failures here must never
+    # break consolidation.
+    try:
+        from aria.tools import skill_tools as _skill_tools
+        for _outcome in _skill_tools.maybe_autonomous_drafts(
+                rows, spine_tail(100)):
+            add_log(f"Autonomous authoring: {_outcome}")
+    except Exception as _sk_err:
+        _config_silent.log_silent("autonomous_skill_drafting",
+                                  _sk_err)
+
+
 def idle_consolidation_loop(is_busy_fn: Callable[[], bool],
                             get_last_activity_fn: Callable[[], float]):
     time.sleep(300)
@@ -449,84 +536,13 @@ def idle_consolidation_loop(is_busy_fn: Callable[[], bool],
                 continue
             if time.time() - get_last_activity_fn() < 1800:
                 continue
-
-            wm = _consolidation_watermark()
-            with DB_LOCK:
-                conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
-                rows = conn.execute("SELECT id,sender,message FROM chat_history WHERE id>? ORDER BY id LIMIT 40",
-                                    (wm,)).fetchall()
-                conn.close()
-
-            if not rows:
-                continue
-
-            convo = "\n".join(f"{s}: {m[:300]}" for _, s, m in rows)
-            spine_lines = spine_digest(spine_tail(100))
-            if spine_lines:
-                convo = convo + "\n[recent events]\n" + "\n".join(spine_lines)
-
-            system_instruction = (
-                "You distill durable memories from a conversation log. Reply with 0-3 lines, "
-                "each exactly 'key: value' — a lasting fact, preference, or commitment about the user. "
-                "Skip small talk. If nothing durable, reply with the single word NONE."
-            )
-            contents = [{"role": "user", "parts": [{"text": convo}]}]
-            text = provider_text(system_instruction, _parts_text(contents))
-
-            if _provider_failure(text):
-                # Pass 25: a provider outage returns a bracketed
-                # sentinel, not a distillation. Advancing the
-                # watermark past it would permanently consume chat
-                # that was never distilled (and "[provider_text
-                # error: ...]" even parses as a bogus fact, since
-                # it contains a colon). Hold the watermark so the
-                # next pass retries these rows.
-                add_log(f"Idle consolidation: provider unavailable "
-                        f"({text.strip()[:60]}), watermark held.")
-                continue
-
-            last_id = rows[-1][0]
-
-            if text.strip().upper() == "NONE":
-                _set_consolidation_watermark(last_id)
-                add_log("Idle consolidation: no durable memories found.")
-                continue
-
-            facts = []
-            for line in text.splitlines():
-                if ":" in line:
-                    k, v = line.split(":", 1)
-                    k, v = k.strip().lower().replace(" ", "_"), v.strip()
-                    if k and v:
-                        facts.append((k, v))
-            # Reconcile, never blind-save (Gap fill 4): dupes are
-            # skipped, contradictions QUEUE for the user instead
-            # of silently overwriting the stored fact. The
-            # watermark advances only after reconciliation has
-            # actually consumed these rows.
-            from aria.agent import consolidation
-            counts = consolidation.reconcile(facts)
-            _set_consolidation_watermark(last_id)
-            if counts["saved"] or counts["contradictions"]:
-                add_log(f"Idle consolidation: {counts['saved']} new, "
-                        f"{counts['dupes']} dupes skipped, "
-                        f"{counts['contradictions']} contradiction(s) queued.")
-            # Skills v1 — autonomous authoring (Alek's call,
-            # 2026-11-04): consolidation passes ONLY, never
-            # mid-conversation. Repeated patterns in the rows and
-            # spine events just consumed may become skill DRAFTS —
-            # evidence-required, deduped, capped at 2/day, each
-            # announced in the Activity log by skill_tools itself.
-            # Drafts only: activation still runs the scan gate and
-            # the normal approval routing. Failures here must never
-            # break consolidation.
-            try:
-                from aria.tools import skill_tools as _skill_tools
-                for _outcome in _skill_tools.maybe_autonomous_drafts(
-                        rows, spine_tail(100)):
-                    add_log(f"Autonomous authoring: {_outcome}")
-            except Exception as _sk_err:
-                _config_silent.log_silent("autonomous_skill_drafting",
-                                          _sk_err)
+            # Pass 25: bind the whole pass to the project as it
+            # stands at cycle start. The loop thread has no
+            # workspaces.use() of its own, so a change_project
+            # mid-pass used to re-resolve every project-scoped
+            # path (chat DB, watermark, contradictions, skills)
+            # under the new project mid-call.
+            with workspaces.use(workspaces.current()):
+                _consolidation_pass()
         except Exception as e:
             add_log(f"Consolidation err: {e}")
