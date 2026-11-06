@@ -330,6 +330,9 @@ def run_routine_impl(name: str, params=None, start_at: int = 1) -> str:
     lines = []
     paused_at = None
     failed_at = None
+    stop_reason = None
+    final_uncertain = None
+    skipped = []
     for i, step in enumerate(steps, 1):
         if i < start_at:
             continue
@@ -349,6 +352,7 @@ def run_routine_impl(name: str, params=None, start_at: int = 1) -> str:
             lines.append(f"{i}. {tool} -> [Safe mode: '{tool}' is disabled. "
                          f"Disable safe mode to use shell, GUI control, "
                          f"or email.]")
+            skipped.append((i, tool))
             continue
         # Wrapper-effect steps (see _wrapper_nested_tool): the outer
         # name is ungated, but the nested effect is gated — so the
@@ -359,6 +363,7 @@ def run_routine_impl(name: str, params=None, start_at: int = 1) -> str:
             lines.append(f"{i}. {tool} -> [Safe mode: '{nested}' is disabled. "
                          f"Disable safe mode to use shell, GUI control, "
                          f"or email.]")
+            skipped.append((i, nested))
             continue
         # Destructive steps in an untrusted routine go through approval.
         # A wrapper step counts as destructive for this purpose when
@@ -392,28 +397,96 @@ def run_routine_impl(name: str, params=None, start_at: int = 1) -> str:
         # logged and the next step ran on top of it — a routine
         # whose first step failed still executed every later step.
         # (Steps are never marked optional, so every failure stops.)
-        from aria.outcome import FAILED, normalize
-        if normalize(result).status == FAILED:
+        # Pass 26 (B3#3): a step that came back unverified, ask, or
+        # started stops the routine the same way — running the next
+        # step on top of an unconfirmed / unfinished one is the
+        # same error one status over. Only an explicit DONE lets
+        # the loop continue.
+        from aria.outcome import FAILED, UNVERIFIED, ASK, STARTED, normalize
+        _step_status = normalize(result).status
+        if _step_status == FAILED:
+            stop_reason = (f"Routine '{sname}' STOPPED at step {i}: "
+                           f"'{tool}' failed — later steps not run.")
             lines.append(f"Routine stopped at step {i}: '{tool}' "
                          f"failed — later steps not run.")
             failed_at = i
             break
+        if _step_status in (UNVERIFIED, ASK, STARTED):
+            # An ASK step did not do the thing — it stops the
+            # routine wherever it sits. An UNVERIFIED / STARTED
+            # step DID run: with later steps remaining, the
+            # routine stops rather than building on unconfirmed
+            # work — but as the FINAL step there is nothing left
+            # to protect, so the routine completes and the
+            # uncertainty is carried on the outcome instead (a
+            # browser launch, unverified by design, is the
+            # standing case: stopping a one-step routine on it
+            # would report a completed launch as a failure).
+            if _step_status == ASK or i < len(steps):
+                stop_reason = (f"Routine '{sname}' STOPPED at step {i}: "
+                               f"'{tool}' returned status={_step_status} — "
+                               f"later steps not run.")
+                lines.append(f"Routine stopped at step {i}: '{tool}' "
+                             f"returned status={_step_status} — later "
+                             f"steps not run.")
+                failed_at = i
+                break
+            final_uncertain = (i, tool, _step_status)
     config.add_log(f"[routines] ran '{sname}' ({len(steps)} steps, trusted={trusted})")
     if paused_at is not None:
-        return (f"Routine '{sname}' PAUSED at step {paused_at} awaiting "
+        # Typed (pass 26 B3#3): a paused routine is ASK, not DONE —
+        # the prose body is kept as text after the typed prefix so
+        # existing readers still see the step lines and the token.
+        from aria import outcome as _outcome_mod
+        body = (f"Routine '{sname}' PAUSED at step {paused_at} awaiting "
                 f"approval (trusted={'yes' if trusted else 'no'}): "
                 f"approving the pending step resumes the routine "
                 f"automatically; resume_routine('{sname}') retries the "
                 f"paused step later.\n"
                 + "\n".join(lines))
+        return (_outcome_mod.ask(
+                    "run_routine",
+                    f"Routine '{sname}' paused at step {paused_at} "
+                    f"awaiting approval",
+                    routine=sname, step=paused_at)
+                + "\n" + body)
     _clear_paused_for_name(sname)
     if failed_at is not None:
-        return (f"Routine '{sname}' STOPPED at step {failed_at} "
-                f"(step failed, trusted={'yes' if trusted else 'no'}):\n"
+        from aria import outcome as _outcome_mod
+        reason = stop_reason or (f"Routine '{sname}' STOPPED at step "
+                                 f"{failed_at}.")
+        body = (reason
+                + f" (trusted={'yes' if trusted else 'no'}):\n"
                 + "\n".join(lines))
+        return (_outcome_mod.failed("run_routine", reason)
+                + "\n" + body)
     resumed = f"resumed from step {start_at}, " if start_at > 1 else ""
-    return (f"Routine '{sname}' replayed ({resumed}{len(steps)} steps, "
-            f"trusted={'yes' if trusted else 'no'}):\n" + "\n".join(lines))
+    if skipped:
+        # A routine that skipped steps in safe mode must not close
+        # with a clean "replayed" summary (pass 26 B3#3): the skips
+        # are named in the summary itself.
+        skipped_txt = ", ".join(f"step {i} ({t})" for i, t in skipped)
+        head = (f"Routine '{sname}' PARTIALLY replayed ({resumed}"
+                f"{len(steps)} steps, "
+                f"trusted={'yes' if trusted else 'no'}): "
+                f"{len(skipped)} step(s) skipped in safe mode "
+                f"({skipped_txt}) — the routine did NOT fully replay.")
+    else:
+        head = (f"Routine '{sname}' replayed ({resumed}{len(steps)} steps, "
+                f"trusted={'yes' if trusted else 'no'}):")
+    body = head + "\n" + "\n".join(lines)
+    if final_uncertain is not None:
+        # Every step ran, but the final one came back unverified
+        # or still under way: the outcome says so instead of
+        # claiming a checked success.
+        from aria import outcome as _outcome_mod
+        _fi, _ftool, _fstatus = final_uncertain
+        return (_outcome_mod.unverified(
+                    "run_routine",
+                    f"final step {_fi} ('{_ftool}') returned "
+                    f"status={_fstatus} — its effect is not confirmed")
+                + "\n" + body)
+    return body
 
 
 # ── Paused routines (pass 25, P2#7) ─────────────────────────────
