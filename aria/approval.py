@@ -461,8 +461,13 @@ def _describe_tool(tool: str, args) -> str:
             return f"run shell command '{a.get('command', '')}' in '{a.get('cwd', '')}'"
         if tool == "run_python_code":
             code = str(a.get("code", ""))
-            first = code.strip().splitlines()[0] if code.strip() else ""
-            return f"run Python code ({len(code)} chars): {first[:100]}"
+            # The first line alone can hide the payload (a comment
+            # or a blank line) — show the first three non-blank
+            # lines, capped, so the approver sees what runs.
+            lines = [ln.strip() for ln in code.strip().splitlines()
+                     if ln.strip()][:3]
+            preview = " / ".join(lines)[:300]
+            return f"run Python code ({len(code)} chars): {preview}"
         if tool == "write_file":
             return (f"write file '{a.get('filename', 'file.txt')}' "
                     f"({len(str(a.get('content', '')))} chars)")
@@ -473,7 +478,50 @@ def _describe_tool(tool: str, args) -> str:
         if tool == "close_window":
             return f"close window '{a.get('title', '')}'"
         if tool == "send_email":
-            return f"send email to '{a.get('to', '')}' re: '{a.get('subject', '')}'"
+            # The body is what actually gets sent — the old banner
+            # showed only to + subject, so a benign subject could
+            # carry any text at all.
+            body = str(a.get("body", "")).replace("\n", " ").strip()
+            preview = body[:200]
+            desc = (f"send email to '{a.get('to', '')}' "
+                    f"re: '{a.get('subject', '')}'")
+            if preview:
+                desc += f" — body: '{preview}'"
+            return desc
+        if tool == "mcp_setup":
+            # A server setup can carry credentials (env/headers)
+            # and a command to execute — never a bare tool name.
+            name = str(a.get("name", "") or "").strip()
+            transport = str(a.get("transport", "") or "").strip().lower()
+            target = str(a.get("command", "") or a.get("url", "") or "").strip()
+            extras = []
+            for key, label in (("env", "env vars"), ("headers", "headers")):
+                val = a.get(key)
+                if val:
+                    extras.append(
+                        f"{len(val)} {label}" if isinstance(val, dict)
+                        else label)
+            extra = f" ({', '.join(extras)})" if extras else ""
+            return (f"set up MCP server '{name}' "
+                    f"({transport or 'stdio'})"
+                    f"{' — ' + target if target else ''}{extra}")
+        if tool == "edit_own_code":
+            return (f"rewrite ARIA's own file '{a.get('path', '')}' "
+                    f"({len(str(a.get('content', '')))} chars)")
+        if tool == "patch_own_code":
+            old = str(a.get("old_text", "")).strip().splitlines()
+            new = str(a.get("new_text", "")).strip().splitlines()
+            old1 = old[0][:80] if old else ""
+            new1 = new[0][:80] if new else ""
+            return (f"patch ARIA's own file '{a.get('path', '')}': "
+                    f"replace '{old1}' with '{new1}'")
+        if tool == "desktop_control":
+            args = a.get("arguments") or {}
+            keys = ", ".join(str(k) for k in args) \
+                if isinstance(args, dict) else ""
+            return (f"run desktop action '{a.get('action', '')}' "
+                    f"on node '{a.get('node', '')}'"
+                    + (f" (args: {keys})" if keys else ""))
         if tool == "github_push_file":
             return f"push file '{a.get('filepath', '')}' to repo '{a.get('repo', '')}'"
         if tool == "github_create_repo":
