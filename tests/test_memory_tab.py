@@ -67,6 +67,21 @@ def test_forget_key_exact(tmp_path, monkeypatch):
     assert [r["key"] for r in memory.memory_rows_for_ui()] == ["fav_color"]
 
 
+def test_forget_entries_treats_keyword_literally(tmp_path, monkeypatch):
+    # Pass 25: a "%" query used to become %%% and delete every
+    # non-system row; "_" matched broadly too. Keywords are
+    # literal substrings now, and ordinary keywords still work.
+    _seed(tmp_path, monkeypatch)
+    assert memory.memory_forget_entries("%") == 0
+    # A literal "_" matches only the rows whose key or value
+    # contains one (fav_color, _internal_note) — the old
+    # wildcard behaviour deleted all three rows here.
+    assert memory.memory_forget_entries("_") == 2
+    assert [r["key"] for r in memory.memory_rows_for_ui()] == ["job"]
+    assert memory.memory_forget_entries("caesars") == 1
+    assert memory.memory_rows_for_ui() == []
+
+
 def test_rows_for_ui_unreadable_store_is_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(memory, "DB_PATH",
                         str(tmp_path / "missing_dir" / "nope.db"))

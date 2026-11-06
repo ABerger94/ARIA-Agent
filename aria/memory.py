@@ -786,15 +786,22 @@ def memory_db_probe() -> bool:
 
 
 def memory_forget_entries(query: str) -> int:
-    """Delete non-system memories matching keyword. Returns count of deleted rows."""
+    """Delete non-system memories matching keyword. Returns count of deleted rows.
+
+    The keyword is a LITERAL substring (pass 25): LIKE
+    metacharacters in it are escaped, so a query of "%" deletes
+    nothing instead of every row."""
     q = (query or "").strip().lower()
     if not q:
         return 0
+    escaped = (q.replace("\\", "\\\\").replace("%", "\\%")
+                 .replace("_", "\\_"))
+    pattern = f"%{escaped}%"
     with DB_LOCK:
         conn = sqlite3.connect(db_path())
         cur = conn.cursor()
-        cur.execute("SELECT id FROM memory WHERE category != 'system' AND (lower(key) LIKE ? OR lower(value) LIKE ?)",
-                    (f"%{q}%", f"%{q}%"))
+        cur.execute("SELECT id FROM memory WHERE category != 'system' AND (lower(key) LIKE ? ESCAPE '\\' OR lower(value) LIKE ? ESCAPE '\\')",
+                    (pattern, pattern))
         ids = [r[0] for r in cur.fetchall()]
         for rid in ids:
             cur.execute("DELETE FROM memory WHERE id = ?", (rid,))
