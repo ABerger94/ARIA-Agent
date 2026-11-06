@@ -61,13 +61,21 @@ def key_get(name, fallback="INSERT"):
 
 
 def save_keys():
-    """Persist _KEYS back to aria_keys.json (used when keys change at runtime)."""
+    """Persist _KEYS back to aria_keys.json (used when keys change at runtime).
+
+    Pass 25: the old code truncated aria_keys.json with a plain
+    open("w") and then dumped — a failure mid-dump (disk full,
+    killed process) left a truncated/partial file and destroyed
+    the previous keys. Write via the canonical atomic helper
+    (temp file in the same dir + os.replace) so a failed save
+    leaves the previous file intact.
+    """
     if _KEYS_BROKEN:
         print(f"[ARIA] Keys: NOT saving - {KEYS_FILE} has broken JSON. Fix it first.", flush=True)
         return False
     try:
-        with open(KEYS_FILE, "w", encoding="utf-8") as _f:
-            json.dump(_KEYS, _f, indent=2)
+        from aria import data_dir as _data_dir
+        _data_dir.write_json_atomic(KEYS_FILE, _KEYS)
         return True
     except Exception as _e:
         print(f"[ARIA] Keys: could not save {KEYS_FILE}: {_e}")
