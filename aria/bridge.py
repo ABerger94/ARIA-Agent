@@ -64,6 +64,13 @@ def phone_sessions():
 def revoke_phone_sessions():
     phone_sessions().revoke()
     add_log('Phone bridge: remembered phones disconnected.')
+    # The live sockets themselves are closed by the node pump in
+    # _handle_node_ws (fix B4#4): a session-authenticated node is
+    # revalidated on every frame and on every idle tick, so a
+    # revoked token is refused within one revalidation interval
+    # instead of living on until the socket happens to drop.
+    # BRIDGE_TOKEN / spent-pairing-token nodes are unaffected:
+    # their credentials are not session tokens.
 
 
 def phone_connection_status():
@@ -174,6 +181,33 @@ def _node_key_ok(key: str) -> bool:
     except Exception:
         pass
     return _consume_pairing(key)
+
+
+# How often a session-authenticated node connection re-checks
+# its hello credential while idle (B4#4): the pump's socket
+# timeout is this interval, and each timeout tick revalidates.
+# A revoked session is therefore refused within ~30 s even
+# when the node sends nothing. Idle sockets are still dropped
+# after _NODE_IDLE_TIMEOUT_S of silence, as before.
+_NODE_SESSION_REVALIDATE_S = 30.0
+_NODE_IDLE_TIMEOUT_S = 120.0
+
+
+def _node_auth_kind(key: str) -> str:
+    """'token' / 'session' / '' for a hello key, WITHOUT spending
+    a pairing token: only the token and session checks are
+    side-effect-free, so a key that passes neither here and still
+    authenticates must have been a fresh pairing token."""
+    if not key:
+        return ""
+    if BRIDGE_TOKEN and hmac.compare_digest(key, BRIDGE_TOKEN):
+        return "token"
+    try:
+        if phone_sessions().valid(key):
+            return "session"
+    except Exception:
+        pass
+    return ""
 
 
 def _generate_silent_wav() -> bytes:
@@ -923,6 +957,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
         hub = None
         name = ""
+        hello_key = ""
+        session_based = False
         try:
             conn.settimeout(30)
             opcode, payload = _ws_read_frame(self.rfile)
@@ -935,7 +971,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
             ok = isinstance(hello, dict) and hello.get("type") == "hello"
             if ok:
                 name = str(hello.get("node") or "").strip()
-                ok = bool(name) and _node_key_ok(str(hello.get("key") or ""))
+                hello_key = str(hello.get("key") or "")
+                # Classify BEFORE _node_key_ok: the pairing check
+                # spends its token, so it cannot be re-run to tell
+                # a pairing auth from a session auth afterwards.
+                session_based = _node_auth_kind(hello_key) == "session"
+                ok = bool(name) and _node_key_ok(hello_key)
             if not ok:
                 try:
                     conn.sendall(_ws_frame(0x8, struct.pack("!H", 4401)))
@@ -949,9 +990,48 @@ class BridgeHandler(BaseHTTPRequestHandler):
                          send=_send, close=_close)
             _send({"type": "welcome", "ok": True})
             add_log(f"Phone bridge: phone node '{name}' connected.")
-            conn.settimeout(120)
+            # Revalidation (B4#4): a node authenticated with a
+            # remembered-session token must stop working when that
+            # session is revoked. The credential is re-checked on
+            # every frame AND on every idle tick (the socket
+            # timeout below), so revocation bites within one
+            # interval even for a silent node. Refusal is a 4401
+            # close — the node's cue to ask for a fresh pairing.
+            # Token / pairing nodes are not session-based and are
+            # never revalidated: their credentials cannot be
+            # revoked this way, by design.
+            def _close_4401():
+                try:
+                    conn.sendall(_ws_frame(0x8, struct.pack("!H", 4401)))
+                except Exception:
+                    pass
+
+            def _session_revoked():
+                if not session_based:
+                    return False
+                try:
+                    return not phone_sessions().valid(hello_key)
+                except Exception:
+                    return False
+
+            conn.settimeout(_NODE_SESSION_REVALIDATE_S)
+            last_frame_at = time.monotonic()
             while True:
-                opcode, payload = _ws_read_frame(self.rfile)
+                try:
+                    opcode, payload = _ws_read_frame(self.rfile)
+                except TimeoutError:
+                    # Idle tick: revalidate, and drop a socket
+                    # silent for the old 120 s idle limit.
+                    if _session_revoked():
+                        _close_4401()
+                        break
+                    if time.monotonic() - last_frame_at >= _NODE_IDLE_TIMEOUT_S:
+                        break
+                    continue
+                last_frame_at = time.monotonic()
+                if _session_revoked():
+                    _close_4401()
+                    break
                 if opcode == 0x8:
                     break
                 if opcode == 0x9:
