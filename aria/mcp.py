@@ -523,7 +523,18 @@ class MCPBridge:
         if cfg.get("transport") != "http" and not _mcp_available():
             return False, _missing_dep_message()
         if key in self._sessions:
-            return True, f"MCP server '{key}' is already connected."
+            entry = self._sessions[key]
+            task = entry.get("task")
+            if task is not None and task.done():
+                # Pass 26 B4#2: a dead entry is not a connection.
+                # Drop it (unregistering its tools) and reconnect
+                # below instead of reporting "already connected".
+                stale = self._sessions.pop(key, None)
+                if stale is not None:
+                    _unregister_server_tools(
+                        key, stale.get("aria_names") or [])
+            else:
+                return True, f"MCP server '{key}' is already connected."
         try:
             task, queue, tools = self._run(self._spawn_actor(key, cfg), timeout=35.0)
         except Exception as e:
@@ -560,12 +571,17 @@ class MCPBridge:
         out = []
         for name, cfg in sorted(get_servers().items()):
             entry = self._sessions.get(name)
+            # Pass 26 B4#2: existence is not liveness — a dead
+            # actor task reports disconnected.
+            alive = (entry is not None and entry.get("task") is not None
+                     and not entry["task"].done())
             out.append({
                 "name": name,
                 "transport": cfg.get("transport"),
                 "enabled": bool(cfg.get("enabled", True)),
-                "connected": entry is not None,
-                "tools": len(entry.get("aria_names") or []) if entry else 0,
+                "connected": alive,
+                "tools": len(entry.get("aria_names") or [])
+                       if alive else 0,
             })
         return out
 
@@ -654,6 +670,21 @@ def _unregister_server_tools(server: str, aria_names: List[str]) -> None:
     from aria.tools import schemas as _schemas
     for n in aria_names:
         _schemas.unregister_dynamic_tool_declaration(n, toolkit="mcp")
+    # Pass 26 B4#2: the dispatch handler registered by
+    # _register_server_tools via register_tool lives in
+    # dispatch._REGISTRY, and there is no unregister_tool in
+    # aria/ — pop the name from the registry here so a
+    # disconnected server's tools stop being dispatchable.
+    # (dispatch.py belongs to another pass-26 agent's file set;
+    # the registry dict itself is importable.)
+    try:
+        from aria.tools import dispatch as _dispatch
+        registry = getattr(_dispatch, "_REGISTRY", None)
+        if registry is not None:
+            for n in aria_names:
+                registry.pop(n, None)
+    except Exception as _e_silent:
+        config.log_silent("_unregister_server_tools", _e_silent)
 
 
 def disconnect(name: str) -> Tuple[bool, str]:
