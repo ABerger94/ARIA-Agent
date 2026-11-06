@@ -546,6 +546,11 @@ SAFE_MODE_BLOCKED_TOOLS = frozenset({
     "send_email",
     "drive_wheels",
     "move_head_servos",
+    # face_tracking drives the head servos (vision.py
+    # face_track_loop calls send_servo_command directly), so it
+    # is a physical actuation like move_head_servos — hard-blocked
+    # in safe mode, not just a vision flag flip (pass 26 B2#1).
+    "face_tracking",
     # Phone input acts on whatever is on the phone's screen — a
     # tap can buy, send, or delete — so safe mode hard-blocks it
     # like the desktop GUI tools (ChatGPT x ARIA loop finding,
