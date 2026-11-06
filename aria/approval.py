@@ -812,6 +812,26 @@ def approve_token(token: str) -> str:
             with runtime.operation(ctx['operation_id']):
                 result, _ok = _dispatch.execute_tool(
                     entry["tool"], entry["args"], preauthorized=True)
+                # Pass 25 (P2#5a): the dispatch capture hook runs
+                # only for non-preauthorized calls and the parked
+                # call never reached it, so an approval-gated action
+                # executed via replay was lost from any open
+                # recording. Capture it here, when it actually ran —
+                # not when it re-parked behind a fresh approval, was
+                # duplicate-blocked, or was safe-mode refused (those
+                # never executed; a re-parked call is captured when
+                # ITS token is approved). Inside this block the
+                # workspace is the parked call's project, so the
+                # recording's project check sees the right one.
+                if not (str(result).startswith("[AWAITING_APPROVAL") or
+                        str(result).startswith("[Duplicate call blocked") or
+                        str(result).startswith("[Safe mode")):
+                    try:
+                        from aria import routines as _routines_mod
+                        _routines_mod.maybe_capture(
+                            entry["tool"], entry["args"])
+                    except Exception:
+                        pass
         result = str(result)
         origin = entry.get('origin_context')
         if origin is not None:

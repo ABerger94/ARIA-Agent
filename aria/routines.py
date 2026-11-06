@@ -22,8 +22,13 @@ lazily inside functions — never at module level (no import cycles).
 # function body: routines.py never imports dispatch at module level, and
 # dispatch never imports routines at module level, so no import cycle.
 #
-# Preauthorized calls are skipped so that approved replays and trusted-routine
-# replays don't re-record themselves while a recording happens to be open.
+# Preauthorized calls are skipped so that trusted-routine replays
+# don't re-record themselves while a recording happens to be open.
+# The exception is an approval replay: approve_token() captures the
+# replayed call itself, explicitly, when it actually executed (pass
+# 25) — the parked call never reached this hook, and the replay
+# runs preauthorized, so without that call the approved action
+# would be lost from the recording.
 #
 # --- BEGIN SNIPPET (paste verbatim, at function-body indentation) ---
 #     # Module 1 — Routine capture (ARIA ULTIMATE)
@@ -65,7 +70,12 @@ _EXCLUDED_TOOLS = frozenset({
 })
 
 # Module-level recording state. Set/checked via functions only.
-_RECORDING = {"name": None, "steps": [], "started_ts": None}
+# `project` is the workspace the recording started in (pass 25):
+# a recording captures only calls made in that project — without
+# it, a project switch mid-recording silently mixed another
+# project's actions into this routine.
+_RECORDING = {"name": None, "steps": [], "started_ts": None,
+              "project": None}
 
 _NAME_BAD_CHARS = re.compile(r"[^a-z0-9_-]")
 _PARAM_RE = re.compile(r"\{\{(\w+)\}\}")
@@ -106,6 +116,11 @@ def start_recording(name: str) -> str:
     _RECORDING["name"] = sname
     _RECORDING["steps"] = []
     _RECORDING["started_ts"] = time.time()
+    try:
+        from aria import workspaces
+        _RECORDING["project"] = workspaces.current()
+    except Exception:
+        _RECORDING["project"] = None
     config.add_log(f"[routines] recording started: '{sname}'")
     return (f"Recording routine '{sname}'. Perform the steps now — each tool "
             f"call is captured — then call routine_record_stop().")
@@ -114,13 +129,23 @@ def start_recording(name: str) -> str:
 def maybe_capture(tool: str, args=None) -> bool:
     """Record one executed call. No-op unless a recording is open.
 
-    Called from the dispatch.execute_tool capture hook. Returns True when the
+    Called from the dispatch.execute_tool capture hook (live calls)
+    and from approval.approve_token (approved replays, which the
+    hook never sees). A call from another project than the one the
+    recording started in is not captured. Returns True when the
     step was captured.
     """
     if not is_recording():
         return False
     if tool in _EXCLUDED_TOOLS:
         return False
+    try:
+        from aria import workspaces
+        project = _RECORDING.get("project")
+        if project is not None and workspaces.current() != project:
+            return False
+    except Exception:
+        pass
     try:
         _RECORDING["steps"].append({"tool": tool, "args": dict(args or {})})
     except Exception:
@@ -138,6 +163,7 @@ def stop_recording() -> str:
         "name": name,
         "created": datetime.now(timezone.utc).isoformat(),
         "trusted": False,  # routine_record_stop always sets trusted=false
+        "project": _RECORDING.get("project"),
         "steps": steps,
     }
     try:
@@ -148,10 +174,12 @@ def stop_recording() -> str:
         _RECORDING["name"] = None
         _RECORDING["steps"] = []
         _RECORDING["started_ts"] = None
+        _RECORDING["project"] = None
         return f"[Failed to save routine '{name}': {e}]"
     _RECORDING["name"] = None
     _RECORDING["steps"] = []
     _RECORDING["started_ts"] = None
+    _RECORDING["project"] = None
     config.add_log(f"[routines] saved '{name}' ({len(steps)} steps)")
     return (f"Saved routine '{name}': {len(steps)} step(s). "
             f"Replay it with run_routine('{name}'). "
