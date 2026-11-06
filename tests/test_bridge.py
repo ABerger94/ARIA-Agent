@@ -665,3 +665,55 @@ def test_tls_wrap_failure_does_not_serve_plaintext():
     finally:
         bridge.ensure_bridge_cert = real_ensure
     print("ok tls_wrap_failure_does_not_serve_plaintext")
+
+
+def _ws_test_frame(payload, opcode=0x1, fin=True):
+    import struct
+    head = bytes([(0x80 if fin else 0x00) | opcode])
+    n = len(payload)
+    if n < 126:
+        head += bytes([n])
+    elif n < 65536:
+        head += bytes([126]) + struct.pack("!H", n)
+    else:
+        head += bytes([127]) + struct.pack("!Q", n)
+    return head + payload
+
+
+def test_ws_frame_over_cap_declared_length_rejected():
+    # Pass 25 (P1#12): a peer could declare a multi-gigabyte
+    # frame and the bridge accumulated it pre-auth. A declared
+    # length over the 1 MiB cap must be refused from the header
+    # alone, before any payload is read.
+    import io
+    import struct
+    head = bytes([0x81, 127]) + struct.pack("!Q", 2 * 1024 * 1024)
+    try:
+        bridge._ws_read_frame(io.BytesIO(head))
+    except ConnectionError as e:
+        assert "too large" in str(e)
+    else:
+        raise AssertionError("oversized frame was accepted")
+    print("ok ws_frame_over_cap_declared_length_rejected")
+
+
+def test_ws_fragmented_message_over_cap_rejected():
+    # Two 600 KiB fragments: each under the cap, total over it.
+    import io
+    frag = _ws_test_frame(b"x" * (600 * 1024), opcode=0x1, fin=False)
+    cont = _ws_test_frame(b"y" * (600 * 1024), opcode=0x0, fin=True)
+    try:
+        bridge._ws_read_frame(io.BytesIO(frag + cont))
+    except ConnectionError as e:
+        assert "too large" in str(e)
+    else:
+        raise AssertionError("oversized fragmented message was accepted")
+    print("ok ws_fragmented_message_over_cap_rejected")
+
+
+def test_ws_small_frame_still_reads():
+    import io
+    opcode, payload = bridge._ws_read_frame(
+        io.BytesIO(_ws_test_frame(b"hello")))
+    assert opcode == 0x1 and payload == b"hello"
+    print("ok ws_small_frame_still_reads")

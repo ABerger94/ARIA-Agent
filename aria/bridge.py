@@ -120,8 +120,14 @@ def _ws_frame(opcode: int, payload: bytes) -> bytes:
     return head + payload
 
 
-def _ws_read_frame(rfile):
-    """One whole frame: (opcode, payload). Raises on EOF."""
+def _ws_read_frame(rfile, max_payload=1024 * 1024):
+    """One whole frame: (opcode, payload). Raises on EOF. The
+    total reassembled payload is capped (1 MiB default — node
+    messages are small JSON): an unauthenticated peer used to be
+    able to declare a multi-gigabyte frame and have the bridge
+    accumulate it before auth ever ran, bounded only by the 30 s
+    socket timeout. A declared length over the cap, or an
+    accumulation past it, closes the connection."""
     payload_all = b""
     opcode0 = None
     while True:
@@ -136,6 +142,8 @@ def _ws_read_frame(rfile):
             n = struct.unpack("!H", rfile.read(2))[0]
         elif n == 127:
             n = struct.unpack("!Q", rfile.read(8))[0]
+        if n > max_payload:
+            raise ConnectionError("websocket frame too large")
         mask = rfile.read(4) if masked else b""
         data = rfile.read(n) if n else b""
         if len(data) < n:
@@ -145,6 +153,8 @@ def _ws_read_frame(rfile):
         if opcode0 is None:
             opcode0 = opcode
         payload_all += data
+        if len(payload_all) > max_payload:
+            raise ConnectionError("websocket message too large")
         if fin:
             return opcode0, payload_all
 
