@@ -384,6 +384,40 @@ def in_approve_replay_tool(tool) -> bool:
 _GUI_BINDING_TOOLS = frozenset({"gui_click", "gui_type"})
 
 
+# Phone tools whose approvals are bound to the phone they were
+# parked against (pass 26 B2#2): a tap/swipe/type/key/open_app
+# acts on whatever phone is on screen, so the approval names the
+# phone — confirming later must not retarget the action onto a
+# phone that connected after the park. Reads (list_apps,
+# read_screen, notifications, status) do not act on a phone and
+# stay unbound. The binding is captured at park time and the
+# replay injects it into the call's args; a named node that is
+# no longer connected is refused by _send with nothing sent to
+# any phone. Mirrors _GUI_BINDING_TOOLS for desktop clicks.
+_PHONE_BINDING_TOOLS = frozenset({
+    "phone_tap", "phone_swipe", "phone_type", "phone_key",
+    "phone_open_app",
+})
+
+
+def _phone_binding(args):
+    """{"node": name} for a phone approval, or None.
+
+    An explicit `node` arg in the call wins; otherwise the
+    currently connected (newest) node. None when no node is
+    connected — the replay then fails as a no-node call, exactly
+    as an unbound call would today."""
+    explicit = (args or {}).get("node")
+    if isinstance(explicit, str) and explicit.strip():
+        return {"node": explicit.strip()}
+    try:
+        from aria import phone_node as _phone_mod
+        name = _phone_mod.current_node_name()
+    except Exception:
+        return None
+    return {"node": name} if name else None
+
+
 def _gui_binding():
     """The current foreground window (winctl.foreground_window),
     or None when it cannot be read. Fail-open: a platform with no
@@ -785,6 +819,11 @@ def _save_pending_locked() -> None:
                 # identity (see approve_token): a restored entry
                 # must still refuse when the window has changed.
                 entry["gui_binding"] = dict(e["gui_binding"])
+            if e.get("phone_binding"):
+                # Same for the phone binding (pass 26 B2#2): a
+                # restored entry must still send the action to
+                # the phone it was parked against.
+                entry["phone_binding"] = dict(e["phone_binding"])
             if project is not None:
                 entry["project"] = project
                 entry["operation_id"] = ec.get("operation_id", "")
@@ -895,6 +934,10 @@ def load_pending() -> int:
                 "gui_binding": (dict(e["gui_binding"])
                                if isinstance(e.get("gui_binding"), dict)
                                else None),
+                "phone_binding": (dict(e["phone_binding"])
+                                  if isinstance(e.get("phone_binding"),
+                                                dict)
+                                  else None),
                 "origin_context": ctx,
                 "execution_context": exec_ctx,
             })
@@ -933,6 +976,15 @@ def request_approval(tool: str, args=None, desc=None) -> str:
         gui_binding = _gui_binding()
         if gui_binding and gui_binding.get("title"):
             desc += f" in window '{gui_binding['title']}'"
+    # Bind a phone approval to the phone it was parked against:
+    # the banner names the phone, and the replay sends the action
+    # to exactly that phone (see approve_token) — never to
+    # whichever phone connected most recently since.
+    phone_binding = None
+    if tool in _PHONE_BINDING_TOOLS:
+        phone_binding = _phone_binding(args)
+        if phone_binding:
+            desc += f" on phone '{phone_binding['node']}'"
     from aria import runtime
     ctx = runtime.current()
     # The mission envelope is part of the approval's identity
@@ -957,6 +1009,7 @@ def request_approval(tool: str, args=None, desc=None) -> str:
         "desc": desc,
         "created_ts": time.time(),
         "gui_binding": gui_binding,
+        "phone_binding": phone_binding,
         "origin_context": ctx,
         "execution_context": ec,
     })
@@ -1069,6 +1122,19 @@ def approve_token(token: str) -> str:
             _record_resolution(entry["tool"], entry["desc"], "refused",
                                reason, project=_entry_project(entry))
             return reason
+    # A phone approval is bound to the phone it was parked
+    # against (pass 26 B2#2): inject the bound node into the
+    # replayed args BEFORE the replay marker is set, so the
+    # marker, the duplicate-call exemption, and the tool's own
+    # approve-replay check all see the final args. The named
+    # node path in phone_node._send refuses with a typed failure
+    # when that phone is no longer connected — nothing is ever
+    # sent to a different phone instead.
+    if (entry["tool"] in _PHONE_BINDING_TOOLS
+            and isinstance(entry.get("phone_binding"), dict)
+            and entry["phone_binding"].get("node")):
+        entry["args"] = {**(entry.get("args") or {}),
+                         "node": entry["phone_binding"]["node"]}
     _replay_local.current = (entry["tool"], dict(entry.get("args") or {}))
     try:
         from aria.tools import dispatch as _dispatch  # lazy: no import cycle
