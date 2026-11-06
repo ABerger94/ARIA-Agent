@@ -93,6 +93,13 @@ def check_price_watches() -> str:
         try:
             with sqlite3.connect(_db_path()) as db:
                 db.execute("UPDATE price_watches SET last_price=? WHERE id=?", (price, wid))
+            # Pass 26 B5#3: rearm — the flag is per DROP, not
+            # once-ever. A price back above target clears it, so
+            # the next genuine drop alerts again (transition
+            # model: above->below alerts, below->above rearms).
+            if price > float(target) and alerted:
+                with sqlite3.connect(_db_path()) as db:
+                    db.execute("UPDATE price_watches SET alerted=0 WHERE id=?", (wid,))
             if price <= float(target) and not alerted:
                 _events.emit_price_drop(label, target, price, url)
                 with sqlite3.connect(_db_path()) as db:
