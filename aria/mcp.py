@@ -611,7 +611,20 @@ def disconnect(name: str) -> Tuple[bool, str]:
 
 
 def autoconnect_enabled_servers() -> str:
-    """Connect every enabled server; failures are collected, never raised."""
+    """Connect every enabled server; failures are collected, never raised.
+
+    Pass 25: safe mode hard-blocks MCP setup/connect (config.py),
+    but startup autoconnect called this with no safe-mode check and
+    spawned server commands anyway. Refuse outright in safe mode —
+    nothing connects, nothing spawns.
+    """
+    if config.is_safe_mode():
+        summary = "skipped: safe mode is on (MCP autoconnect disabled)"
+        try:
+            config.add_log(f"[ARIA] MCP autoconnect: {summary}")
+        except Exception:
+            pass
+        return summary
     bridge = get_bridge()
     ok, failed = [], []
     for name, cfg in get_servers().items():
