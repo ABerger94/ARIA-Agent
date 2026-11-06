@@ -358,6 +358,25 @@ def test_verify_failure_closes_done_unverified(env):
     assert len(_calls("fake_note")) == 1
 
 
+def test_refused_browser_open_fails_the_mission(env):
+    # Pass 25 (pass 24 runner-up #2): a refused browser
+    # navigation used to return a plain string, normalize read
+    # it as DONE, and the mission certified itself done. The
+    # refusal is now typed FAILED at the handler boundary, so
+    # the step — and the mission — fail instead. browser_agent
+    # is not retry-safe, so there is no retry loop to wait out.
+    mid, _out = _create(
+        "refused navigation proof",
+        [("browser_agent", {"action": "open",
+                            "url": "http://localhost:8080/admin"})])
+    _approve_plan(mid)
+    row = _pump(mid, {"failed"})
+    assert row["status"] == "failed", row
+    steps = missions._step_rows(mid)
+    assert [s["status"] for s in steps] == ["failed"]
+    assert "refused" in (steps[0]["output"] or "")
+
+
 def test_mission_tools_reject_bad_input(env):
     out = missions.tool_mission_create(
         {"goal": "x", "steps": "not json"})

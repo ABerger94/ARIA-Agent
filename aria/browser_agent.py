@@ -50,6 +50,8 @@ import urllib.parse
 import uuid
 
 from aria.config import WORKSPACE_DIR, add_log, get_setting
+from aria.outcome import (FAILED, ResultText, UNVERIFIED,
+                          legacy_error_results)
 
 PROFILE_DIR = os.path.join(WORKSPACE_DIR, "browser_profile")
 SHOTS_DIR = os.path.join(WORKSPACE_DIR, "browser_shots")
@@ -810,6 +812,20 @@ def _guarded_press(key: str, *, approve_fn=None) -> str:
 
 # ---------------- the tool ----------------
 
+# The deterministic no-effect errors are typed FAILED at this
+# boundary (pass 24 runner-up): before this they were plain
+# strings, outcome.normalize read them as DONE, and missions
+# certified a refused navigation as a completed step. The
+# exception branch below types its own returns directly —
+# UNVERIFIED for effect actions (click/type/press may have
+# partially happened, so a mission must park, never blindly
+# retry), FAILED for the read-only ones.
+@legacy_error_results('browser_agent: refused — ',
+                      'browser_agent: open needs',
+                      'browser_agent: click needs',
+                      'browser_agent: type needs',
+                      'browser_agent: unknown action',
+                      'browser_agent: Playwright is not installed')
 def tool_browser_agent(args) -> str:
     args = args or {}
     action = str(args.get("action") or "").strip().lower()
@@ -869,4 +885,10 @@ def tool_browser_agent(args) -> str:
                 "it with: pip install playwright, then: playwright "
                 "install chromium — after that I can drive a browser.")
     except Exception as exc:
-        return f"browser_agent: {action} failed: {exc}"
+        msg = f"browser_agent: {action} failed: {exc}"
+        if action in ("click", "type", "press"):
+            # The effect may have partially happened (a click that
+            # raised after the browser acted); UNVERIFIED parks the
+            # mission step instead of retrying it blind.
+            return ResultText(msg, UNVERIFIED)
+        return ResultText(msg, FAILED)
