@@ -161,6 +161,11 @@ _RUNNING_SCRIPT = os.path.abspath(sys.argv[0] or "") if os.path.isfile(sys.argv[
 _BOOT_HASHES = _snapshot_hashes()
 _BOOT_HASH_SOUL = _file_sha256(SOUL_PATH)
 _RESTART_TIMER: Optional[threading.Timer] = None
+# Set once a self-edit restart is armed: the check is idempotent
+# across the paths that can trigger it (run_agent's finally, the
+# dispatch hook) — a second call only re-announces on its own
+# channel, never re-validates or re-arms.
+_SELF_EDIT_RESTART_ARMED = False
 
 
 def _restart_process() -> bool:
@@ -280,8 +285,20 @@ def _smoke_import_changed(changed) -> list:
     return failed
 
 
-def _maybe_restart_after_self_edit(say_fn: Callable[[str], None]):
-    global _RESTART_TIMER
+def _maybe_restart_after_self_edit(say_fn: Callable[[str], None] = None):
+    """Validate a self-edit and restart to load it (or restore the
+    last committed version when the new code is broken).
+
+    `say_fn` announces the restart on the caller's channel; None
+    means log-only (the dispatch hook's call, from paths with no
+    speech channel). The check is idempotent: once a restart is
+    armed, a later call only re-announces on its own channel —
+    run_agent's finally still speaks the restart even when the
+    dispatch hook armed it mid-turn.
+    """
+    global _RESTART_TIMER, _SELF_EDIT_RESTART_ARMED
+    if say_fn is None:
+        say_fn = lambda msg: add_log(f"[self-restart] {msg}")
     cur = _snapshot_hashes()
     # Deleted files are skipped: v9.34 never restarted on deletion, and the
     # running process still holds the module in memory. Restarting into a
@@ -291,6 +308,13 @@ def _maybe_restart_after_self_edit(say_fn: Callable[[str], None]):
     soul_changed = bool(_BOOT_HASH_SOUL and cur_soul and cur_soul != _BOOT_HASH_SOUL)
 
     if not changed and not soul_changed:
+        return
+
+    if _SELF_EDIT_RESTART_ARMED:
+        # A restart is already armed (the dispatch hook fired
+        # mid-turn, or a previous path armed it): announce it on
+        # this path's channel, but do not re-validate or re-arm.
+        say_fn("My code changed — restarting now to load the new version.")
         return
 
     bad = []  # (path, reason) for files that would crash the restart
@@ -328,6 +352,7 @@ def _maybe_restart_after_self_edit(say_fn: Callable[[str], None]):
         time.sleep(2.0)
         _restart_process()
 
+    _SELF_EDIT_RESTART_ARMED = True
     _RESTART_TIMER = threading.Timer(0.5, _waiter)
     _RESTART_TIMER.daemon = True
     _RESTART_TIMER.start()
@@ -907,3 +932,16 @@ def run_headless(prompt: str) -> str:
     the entry for one-shot headless turns."""
     sink: List[str] = []
     return run_agent(prompt, silent=True, reply_sink=sink)
+
+
+# Pass 25 (P2#18): the post-edit restart check lived only in
+# run_agent's finally, so approved, Live and delegated self-edits
+# never ran it. Dispatch is the one funnel every execution path
+# shares — register the check there so a successful self-edit arms
+# it wherever it executes (log-only announcement; run_agent's
+# finally still speaks it on its own channel).
+try:
+    from aria.tools import dispatch as _dispatch_mod
+    _dispatch_mod.register_restart_check(_maybe_restart_after_self_edit)
+except Exception:
+    pass

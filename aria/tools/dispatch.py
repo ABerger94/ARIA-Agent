@@ -81,6 +81,28 @@ _SPINE_HOOK: Callable[[str, dict], None] = default_spine_append
 _HUD_HOOK: Optional[Callable[[str], Any]] = None
 _LOG_HOOK: Callable[[str], None] = default_add_log
 _HISTORY_HOOK: Optional[Callable[[dict], None]] = None
+# Post-self-edit restart check (pass 25, P2#18): brain registers
+# _maybe_restart_after_self_edit here at import. Dispatch is the
+# one funnel every execution path shares (brain turns, approved
+# replays, Live tool calls, delegated tasks), so a successful
+# self-edit arms the check wherever it executes. Unregistered
+# (tests, bare dispatch use) the hook is a silent no-op.
+_RESTART_CHECK: Optional[Callable[[], None]] = None
+
+
+def register_restart_check(fn: Callable[[], None]) -> None:
+    global _RESTART_CHECK
+    _RESTART_CHECK = fn
+
+
+def _run_restart_check() -> None:
+    fn = _RESTART_CHECK
+    if fn is None:
+        return
+    try:
+        fn()
+    except Exception as _e_silent:
+        _config_mod.log_silent("execute_tool.restart_check", _e_silent)
 
 # Registry of Tools
 _REGISTRY: Dict[str, Callable[[dict], str]] = {}
@@ -654,6 +676,17 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
         except Exception as _e_silent:
             _config_mod.log_silent("execute_tool", _e_silent)
 
+    # A successful self-edit promises a post-turn restart check
+    # (selfedit._RESTART_NOTE) — validate the change, restore the
+    # last committed version when it is broken, restart to load
+    # it. The check used to live only in brain.run_agent's finally,
+    # so approved, Live and delegated edits never ran it. Record
+    # the landing here, while `r` is still the handler's own
+    # string (it is truncated/wrapped below); the check itself
+    # fires at the return site, after receipts and capture.
+    self_edit_landed = fn_name in ("edit_own_code", "patch_own_code") and (
+        str(r).startswith("Rewrote ") or str(r).startswith("Patched "))
+
     # Commit the real receipt BEFORE the caller's mission/task checkpoint.
     structured = action_journal.add_evidence(fn_name, args or {}, normalize(r))
     action_journal.finish(operation_id, structured)
@@ -675,6 +708,12 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
             _routines_mod.maybe_capture(fn_name, args or {})
         except Exception as _e_silent:
             _config_mod.log_silent("execute_tool", _e_silent)
+    # 7c. Post-self-edit restart check (pass 25, P2#18): a landed
+    # edit arms the check wherever it executed — the brain's
+    # run_agent finally is no longer the only call site. No-op
+    # when no check is registered; never let it break dispatch.
+    if self_edit_landed:
+        _run_restart_check()
     return r, False
 
 
