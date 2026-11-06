@@ -633,6 +633,13 @@ def face_track_loop(is_busy_fn: Optional[Callable[[], bool]] = None):
             busy = is_busy_fn() if is_busy_fn else False
             if not FACE_TRACKING or busy:
                 continue
+            # Safe mode re-check, every iteration: the tool gate covers
+            # enabling tracking, but a loop started before safe mode
+            # was turned on must stop driving the head servos too.
+            # Disabling tracking needs no approval, so only the
+            # servo-writing path is gated here.
+            if _config_silent.is_safe_mode():
+                continue
             cap = open_body_camera()
             ret, frame = cap.read()
             cap.release()
