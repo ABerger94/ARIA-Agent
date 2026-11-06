@@ -38,6 +38,7 @@ lazily inside functions — never at module level (no import cycles).
 # --- END SNIPPET ---
 # ============================================================================
 
+import contextvars
 import hashlib
 import json
 import os
@@ -50,6 +51,20 @@ from aria import config
 from aria import data_dir
 
 MAX_NAME_LEN = 40
+
+# Structural bounds (pass 26 B4#9): packs and nesting.
+MAX_PACK_MEMBERS = 100
+MAX_PACK_MEMBER_BYTES = 1 * 1024 * 1024
+MAX_PACK_TOTAL_BYTES = 10 * 1024 * 1024
+MAX_ROUTINE_STEPS = 500
+MAX_ROUTINE_DEPTH = 5
+
+# Nesting state for run_routine_impl: a nested routine re-enters
+# through dispatch, which drops extra parameters, so the depth
+# and the set of routines already running ride contextvars.
+_ROUTINE_DEPTH = contextvars.ContextVar("aria_routine_depth", default=0)
+_ROUTINE_ACTIVE = contextvars.ContextVar("aria_routine_active",
+                                         default=frozenset())
 
 # Tools never captured into a routine: the routine tools themselves, the
 # approval controls, and save_memory (memory writes are personal, not
@@ -255,6 +270,39 @@ def _wrapper_nested_tool(tool, args):
 
 
 def run_routine_impl(name: str, params=None, start_at: int = 1) -> str:
+    """Replay a routine, bounded (pass 26 B4#9): at most
+    MAX_ROUTINE_DEPTH nested routine levels, and a routine
+    already running in this context cannot run itself again.
+    The nested call re-enters through dispatch, which drops extra
+    parameters, so the depth and the active set ride contextvars,
+    not arguments — the body below does the actual replay."""
+    from aria import outcome as _outcome_mod
+    sname = sanitize_name(name)
+    if not sname:
+        return "[Routine name has no valid characters.]"
+    depth = _ROUTINE_DEPTH.get()
+    active = _ROUTINE_ACTIVE.get()
+    if sname in active:
+        return _outcome_mod.failed(
+            "run_routine",
+            f"Routine '{sname}' is already running — refusing direct "
+            f"self-recursion (a routine cannot run itself).")
+    if depth >= MAX_ROUTINE_DEPTH:
+        return _outcome_mod.failed(
+            "run_routine",
+            f"Routine '{sname}' refused: routine nesting depth "
+            f"{depth} reached the cap of {MAX_ROUTINE_DEPTH} — a "
+            f"routine cannot nest further.")
+    depth_token = _ROUTINE_DEPTH.set(depth + 1)
+    active_token = _ROUTINE_ACTIVE.set(active | {sname})
+    try:
+        return _run_routine_impl_body(name, params, start_at)
+    finally:
+        _ROUTINE_DEPTH.reset(depth_token)
+        _ROUTINE_ACTIVE.reset(active_token)
+
+
+def _run_routine_impl_body(name: str, params=None, start_at: int = 1) -> str:
     """Replay a routine's steps via dispatch.execute_tool.
 
     `start_at` (1-based) resumes a paused routine from a step:
@@ -1003,9 +1051,21 @@ def export_pack(names, dest_path: str, overwrite: bool = False) -> str:
 
 
 def _valid_routine_data(data) -> bool:
-    return (isinstance(data, dict)
+    # Structural bounds (pass 26 B4#9): a routine is at most
+    # MAX_ROUTINE_STEPS steps, and every step is a dict naming a
+    # string tool — an import must not land a 10,000-step routine
+    # or steps the replay loop cannot even name.
+    if not (isinstance(data, dict)
             and isinstance(data.get("steps"), list)
-            and bool(sanitize_name(data.get("name"))))
+            and bool(sanitize_name(data.get("name")))):
+        return False
+    steps = data["steps"]
+    if len(steps) > MAX_ROUTINE_STEPS:
+        return False
+    return all(isinstance(s, dict)
+               and isinstance(s.get("tool"), str)
+               and bool(s.get("tool"))
+               for s in steps)
 
 
 def import_pack(pack_path: str) -> str:
@@ -1019,11 +1079,34 @@ def import_pack(pack_path: str) -> str:
         return f"[Not a valid pack file: {e}]"
     try:
         try:
-            manifest = json.loads(z.read("manifest.json"))
+            manifest_info = z.getinfo("manifest.json")
         except KeyError:
             return "[Pack has no manifest.json — refusing to import.]"
+        if manifest_info.file_size > MAX_PACK_MEMBER_BYTES:
+            return ("[Pack refused: manifest.json exceeds the "
+                    "per-member size cap.]")
+        manifest = json.loads(z.read("manifest.json"))
         if manifest.get("format") != PACK_FORMAT:
             return "[Not an ARIA routine pack — refusing to import.]"
+        # Structural bounds (pass 26 B4#9), validated BEFORE any
+        # member is read: z.read() materializes the whole member,
+        # so a size check after the read is no defence against a
+        # zip bomb. Refusing here imports nothing at all.
+        if len(z.infolist()) > MAX_PACK_MEMBERS:
+            return (f"[Pack refused: {len(z.infolist())} members exceeds "
+                    f"the {MAX_PACK_MEMBERS}-member pack cap.]")
+        total_bytes = manifest_info.file_size
+        for _info in z.infolist():
+            if _info.is_dir() or _info.filename == "manifest.json":
+                continue
+            if _info.file_size > MAX_PACK_MEMBER_BYTES:
+                return (f"[Pack refused: '{_info.filename}' exceeds the "
+                        f"per-member size cap ({MAX_PACK_MEMBER_BYTES} "
+                        f"bytes).]")
+            total_bytes += _info.file_size
+            if total_bytes > MAX_PACK_TOTAL_BYTES:
+                return (f"[Pack refused: pack exceeds the total "
+                        f"{MAX_PACK_TOTAL_BYTES}-byte budget.]")
         imported, skipped, bad = [], [], []
         os.makedirs(_routines_dir(), exist_ok=True)
         for info in z.infolist():
