@@ -826,12 +826,22 @@ def memory_forget(query: str) -> str:
 
 
 def journal_write(entry: str) -> str:
-    """Write an entry to the daily dated markdown journal."""
+    """Write an entry to the daily dated markdown journal.
+
+    Pass 25: the journal directory is resolved per project, so a
+    non-default project's entries no longer land in the default
+    workspace's journal files alongside other projects' entries.
+    """
     spine_append("journal", {"entry": entry})
     try:
-        os.makedirs(JOURNAL_DIR, exist_ok=True)
+        # The legacy dir is computed at call time (not from the
+        # import-time JOURNAL_DIR constant) so the project
+        # resolution sees the live workspace root.
+        journal_dir = workspaces.path(
+            "journal", os.path.join(WORKSPACE_DIR, "journal"))
+        os.makedirs(journal_dir, exist_ok=True)
         day = datetime.now()
-        path = os.path.join(JOURNAL_DIR, day.strftime("%Y-%m-%d") + ".md")
+        path = os.path.join(journal_dir, day.strftime("%Y-%m-%d") + ".md")
         new = not os.path.exists(path)
         with open(path, "a", encoding="utf-8") as f:
             if new:

@@ -101,6 +101,23 @@ def test_workspace_listing_uses_the_bound_project(files):
     assert 'project.txt' in listing and 'personal.txt' not in listing
 
 
+def test_journal_write_is_scoped_to_current_project(files):
+    # Pass 25: journal files were one global directory, so every
+    # project's entries landed in the same dated file.
+    from datetime import datetime
+    day = datetime.now().strftime("%Y-%m-%d") + ".md"
+    project = workspaces.create("Journal B")
+    builtins.journal_write("default entry")
+    with workspaces.use(project):
+        builtins.journal_write("project B entry")
+    default_file = files / "journal" / day
+    project_file = files / "projects" / project / "journal" / day
+    assert "default entry" in default_file.read_text()
+    assert "project B entry" not in default_file.read_text()
+    assert "project B entry" in project_file.read_text()
+    assert "default entry" not in project_file.read_text()
+
+
 def test_code_helper_cannot_read_outside_project_file_roots(files, monkeypatch):
     # Pass 25: code_helper's file_path was absent from
     # FILE_ARGUMENTS, so dispatch never root-checked it and the
