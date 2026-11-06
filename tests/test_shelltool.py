@@ -7,6 +7,7 @@ preauthorized refusal, one confirmation at a time, live calls
 park through approval.request_approval with the exact text).
 aria.approval / aria.tools.dispatch are stubbed at the
 sys.modules seam, as in tests/test_confirm_banner.py."""
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -54,6 +55,27 @@ def test_execute_timeout_is_failed_not_output(tmp_path):
     out = shelltool._execute(
         _py('import time; time.sleep(3)'), str(tmp_path), 1)
     assert 'status=failed' in out and 'timed out after 1s' in out
+
+
+def test_execute_timeout_kills_descendants(tmp_path):
+    # Pass 25 (P2#4): a timed-out command's descendants used to
+    # keep running orphaned — subprocess.run kills only the shell.
+    # The wrapper spawns a sleeper carrying a unique marker; after
+    # the timeout neither the wrapper nor the sleeper may survive.
+    marker = 'p2_4_descendant_marker'
+    code = (
+        'import subprocess, sys, time; '
+        f"subprocess.Popen([sys.executable, '-c', "
+        f"'import time; time.sleep(25)  # {marker}']); "
+        'time.sleep(25)')
+    try:
+        out = shelltool._execute(_py(code), str(tmp_path), 1)
+        assert 'status=failed' in out and 'timed out after 1s' in out
+        found = subprocess.run(['pgrep', '-f', marker],
+                               capture_output=True, text=True)
+        assert found.returncode == 1, found.stdout
+    finally:
+        subprocess.run(['pkill', '-f', marker], capture_output=True)
 
 
 def test_execute_truncates_to_tail(tmp_path):

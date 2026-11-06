@@ -9,6 +9,7 @@ Runs background workers for:
 from __future__ import annotations
 
 import os
+import signal
 import time
 import threading
 import subprocess
@@ -48,6 +49,38 @@ def _fmt_size(num_bytes: int) -> str:
 
 # --- Background Job Management ---
 
+def _group_kwargs() -> dict:
+    """Spawn flags that put a job in its own process group, so a
+    cancel kills the whole tree, not just the shell (same shape
+    as shelltool._group_kwargs; kept local — workers must not
+    import a gated tool module)."""
+    if os.name == "nt":
+        return {"creationflags": getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {"start_new_session": True}
+
+
+def _kill_job_tree(proc, sig=signal.SIGTERM) -> None:
+    """Signal a job's whole process group, falling back to the
+    leader alone (a fake/stub Popen in tests has no real group).
+    Never raises."""
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True, timeout=10)
+            return
+        os.killpg(os.getpgid(proc.pid), sig)
+    except Exception:
+        try:
+            if sig == signal.SIGKILL:
+                proc.kill()
+            else:
+                proc.terminate()
+        except Exception:
+            pass
+
+
 def start_background_job(command: str, name: str = "") -> Dict[str, Any]:
     """Spawn an asynchronous background job and track execution in worker supervisor."""
     job_name = name or (command[:40] + ("..." if len(command) > 40 else ""))
@@ -61,7 +94,8 @@ def start_background_job(command: str, name: str = "") -> Dict[str, Any]:
         with os.fdopen(fd, 'w', encoding='utf-8', errors='ignore') as log_fp:
             proc = subprocess.Popen(
                 command, shell=True, stdout=log_fp, stderr=subprocess.STDOUT,
-                cwd=workspaces.path('', WORKSPACE_DIR))
+                cwd=workspaces.path('', WORKSPACE_DIR),
+                **_group_kwargs())
         jid = job_db_create(job_name, command, proc.pid, log_file)
         
         with _JOBS_LOCK:
@@ -78,10 +112,7 @@ def start_background_job(command: str, name: str = "") -> Dict[str, Any]:
         }
     except Exception as e:
         if proc is not None and proc.poll() is None:
-            try:
-                proc.terminate()
-            except Exception as exc:
-                _config_silent.log_silent('untracked_background_job_cleanup', exc)
+            _kill_job_tree(proc, signal.SIGKILL)
         add_log(f"Worker: Failed to start background job: {e}")
         return {"error": str(e)}
 
@@ -106,10 +137,12 @@ def cancel_background_job(job_id: int) -> bool:
         if key in _ACTIVE_JOBS:
             proc, log_file, name, _ = _ACTIVE_JOBS[key]
             try:
-                proc.terminate()
+                # Kill the whole tree: terminating only the shell
+                # left descendants running orphaned.
+                _kill_job_tree(proc, signal.SIGTERM)
                 time.sleep(0.2)
                 if proc.poll() is None:
-                    proc.kill()
+                    _kill_job_tree(proc, signal.SIGKILL)
             except Exception as _e_silent:
                 _config_silent.log_silent("cancel_background_job", _e_silent)
                 return False

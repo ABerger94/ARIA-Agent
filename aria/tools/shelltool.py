@@ -73,6 +73,8 @@ inside the handler, so tests can stub the `aria` package.
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -182,17 +184,63 @@ def _normalize(args) -> dict:
 
 # ── Execution (pure: no gate in here) ──────────────────────────────
 
+def _group_kwargs() -> dict:
+    """Spawn flags that put the command in its own process group,
+    so a timeout/cancel kills the whole tree, not just the shell.
+    POSIX: start_new_session (the shell becomes the group leader;
+    its children inherit the group). Windows: a new process group
+    for taskkill /T to walk."""
+    if os.name == "nt":
+        return {"creationflags": getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {"start_new_session": True}
+
+
+def _kill_tree(proc) -> None:
+    """Kill a spawned process and everything it started. Killing
+    only the shell left descendants running orphaned (a timed-out
+    `sleep 30 & wait` kept sleeping; a cancelled background job's
+    grandchildren kept writing). Best effort on both platforms;
+    never raises."""
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True, timeout=10)
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
+
+
 def _execute(command: str, cwd: str, timeout: int) -> str:
     """Run the command and render the result. Separate from the
     handler so tests can exercise execution (timeout, exit code,
     truncation, cwd) without the confirmation layer in the way."""
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             command, shell=True, cwd=cwd or None,
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-            timeout=timeout)
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace",
+            **_group_kwargs())
+    except Exception as e:
+        return _failed(
+            f"the command could not be started: {e}",
+            command=command)
+    try:
+        out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        # The direct child (the shell) is not the whole tree:
+        # kill the process group so descendants die with it.
+        _kill_tree(proc)
+        try:
+            proc.communicate(timeout=5)
+        except Exception:
+            pass
         return _failed(
             f"the command timed out after {timeout}s and was stopped",
             command=command)
@@ -202,14 +250,14 @@ def _execute(command: str, cwd: str, timeout: int) -> str:
             command=command)
 
     sections = []
-    if result.stdout:
-        sections.append(f"--- stdout ---\n{result.stdout.rstrip()}")
-    if result.stderr:
-        sections.append(f"--- stderr ---\n{result.stderr.rstrip()}")
+    if out:
+        sections.append(f"--- stdout ---\n{out.rstrip()}")
+    if err:
+        sections.append(f"--- stderr ---\n{err.rstrip()}")
     body = "\n".join(sections) if sections else "(no output)"
     if len(body) > OUTPUT_LIMIT:
         body = "[output truncated]\n" + body[-OUTPUT_LIMIT:]
-    return f"Exit code: {result.returncode}\n{body}"
+    return f"Exit code: {proc.returncode}\n{body}"
 
 
 def _safe_mode_on() -> bool:
