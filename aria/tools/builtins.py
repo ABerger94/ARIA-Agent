@@ -660,11 +660,24 @@ def tool_read_email(query: str = "", limit: int = 10, unread_only: bool = False,
                     raise imaplib.IMAP4.error("X-GM-RAW failed")
             except Exception:
                 typ, data = m.uid("SEARCH", None, "TEXT", query)
+            if typ != "OK":
+                return "Gmail search failed."
+            uids = (data[0] or b"").split()
+            if unread_only:
+                # Pass 25: the UNSEEN criterion used to be built
+                # and then discarded on the query branch, so
+                # unread_only was silently ignored. Intersect with
+                # a second UNSEEN search instead.
+                typ2, data2 = m.uid("SEARCH", None, "UNSEEN")
+                if typ2 != "OK":
+                    return "Gmail search failed."
+                unseen = set((data2[0] or b"").split())
+                uids = [u for u in uids if u in unseen]
         else:
             typ, data = m.uid("SEARCH", None, *(criteria or ["ALL"]))
-        if typ != "OK":
-            return "Gmail search failed."
-        uids = (data[0] or b"").split()
+            if typ != "OK":
+                return "Gmail search failed."
+            uids = (data[0] or b"").split()
         try:
             limit = max(1, min(50, int(limit)))
         except Exception:
