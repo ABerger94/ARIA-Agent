@@ -853,9 +853,12 @@ def note_take(text: str) -> str:
     text = (text or "").strip()
     if not text:
         return "[Nothing to note - empty text.]"
-    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
     journal_write(f"Note to self: {text}")
     try:
+        # Pass 25: minute-resolution keys collided — two notes in
+        # one minute upserted the same key and the first was lost.
+        # Seconds+microseconds keep every note its own row.
         memory_save("note", f"note {stamp}", text)
     except Exception as e:
         add_log(f"Note memory save failed: {e}")
