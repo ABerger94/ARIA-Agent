@@ -14,6 +14,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import types
 
 _TMPHOME = tempfile.mkdtemp(prefix="aria_mcp_actor_leak_")
@@ -37,7 +38,7 @@ class NeverReadyClient:
         pass
 
     def initialize(self):
-        _NEVER.wait(30)
+        _NEVER.wait(5)
 
     def list_tools(self):
         return []
@@ -88,5 +89,9 @@ def test_run_timeout_cancels_coroutine():
         pass
     else:
         raise AssertionError("_run should have timed out")
+    # The cancellation is delivered to the loop thread via
+    # call_soon_threadsafe — give it a moment to land before
+    # asserting.
+    time.sleep(0.5)
     assert state == ["cancelled"], state
     print("ok run_timeout_cancels_coroutine")
