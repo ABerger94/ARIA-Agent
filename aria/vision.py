@@ -578,6 +578,16 @@ def _first_look_image(image_path: str = ""):
         if staged and os.path.splitext(staged)[1].lower() in _FIRST_LOOK_MIME:
             path = staged
     if path:
+        # Roots check, explicit AND staged alike: dispatch only enforces
+        # FILE_ARGUMENTS for a supplied image_path, so the staged-file
+        # fallback would otherwise let the model read a file the
+        # configured roots forbid. Resolve first (symlinks included),
+        # then refuse with dispatch's own shape. Staging itself is
+        # unchanged — receive_file() still stages any dropped file.
+        from aria import workspaces as _workspaces
+        if not _workspaces.file_allowed(os.path.realpath(path)):
+            return None, "image/jpeg", (
+                "status=failed reason=\"File is outside this project\u2019s configured roots\"")
         if not os.path.isfile(path):
             return None, "image/jpeg", f"[Image not found: {path}]"
         try:

@@ -27,7 +27,7 @@ from aria.bridge_sessions import BridgeSessions, SESSION_SECONDS
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional, Callable, Any
 
-from aria.config import PHONE_BRIDGE_PORT, BRIDGE_TOKEN, ROOT_DIR, WORKSPACE_DIR, add_log, lan_ip, get_setting
+from aria.config import PHONE_BRIDGE_PORT, BRIDGE_TOKEN, ROOT_DIR, WORKSPACE_DIR, add_log, lan_ip, get_setting, FILEPROC_TRANSCRIBE_MAX_BYTES
 from aria.vision import (
     get_face_frame_jpeg, publish_phone_frame, get_phone_frame_jpeg,
     get_phone_frame_status, describe_phone_view,
@@ -151,6 +151,14 @@ _WS_CONTROL_OPCODES = frozenset((0x8, 0x9, 0xA))
 # socket. The rfile object stays alive for the whole
 # connection, so its id is stable across the two calls.
 _WS_FRAGMENT_STATE: dict[int, tuple[int, bytes]] = {}
+
+
+# Per-route HTTP body cap for do_POST (B4#7): /api/ask takes a
+# small JSON directive, never a multi-megabyte body. The voice
+# cap is FILEPROC_TRANSCRIBE_MAX_BYTES (25 MiB, aria/config.py)
+# — what the transcriber accepts — and upload/camframe keep
+# their existing caps, now enforced through _read_body too.
+_BRIDGE_ASK_MAX_BYTES = 1024 * 1024
 
 
 def _ws_read_frame(rfile, max_payload=1024 * 1024):
@@ -1125,6 +1133,27 @@ class BridgeHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def _read_body(self, max_bytes, too_large_error=b'{"error":"request body too large"}'):
+        """Read the request body bounded by max_bytes (B4#7).
+
+        Returns the body bytes, or None after sending the error
+        response: 400 when Content-Length is not an integer, 413
+        when it is negative or over the cap. The cap is enforced
+        from the header alone — an over-cap body is never read —
+        and a negative length never reaches rfile.read(-1)
+        (read-until-EOF, which used to stall the handler thread
+        until socket timeout/close). A missing Content-Length
+        reads as an empty body."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            self._send(400, b'{"error":"bad content length"}')
+            return None
+        if length < 0 or length > max_bytes:
+            self._send(413, too_large_error)
+            return None
+        return self.rfile.read(length) if length else b""
+
     def do_GET(self):
         if self.path.split("?", 1)[0] == "/node/ws":
             self._handle_node_ws()
@@ -1619,17 +1648,17 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send(401, b'{"error":"bad or missing bridge token"}')
             return
 
-        length = int(self.headers.get("Content-Length", 0))
         if self.path.startswith("/api/upload"):
             # Files from the bridge /upload page land in ARIA's inbox.
             ctype = self.headers.get("Content-Type", "")
             if "multipart/form-data" not in ctype:
                 self._send(400, b'{"error":"multipart/form-data required"}')
                 return
-            if length > inbox_mod.MAX_UPLOAD_BYTES:
-                self._send(413, b'{"error":"upload too large (100 MB cap)"}')
+            body = self._read_body(
+                inbox_mod.MAX_UPLOAD_BYTES,
+                b'{"error":"upload too large (100 MB cap)"}')
+            if body is None:
                 return
-            body = self.rfile.read(length)
             try:
                 parts = inbox_mod.parse_multipart(body, ctype)
             except Exception as e:
@@ -1667,10 +1696,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         if self.path.startswith("/api/camframe"):
             # Camera frame uploaded by the bridge page (ARIA_BODY_CAMERA=bridge).
-            if length > 1_000_000:
-                self._send(413, b'{"error":"frame too large"}')
+            body = self._read_body(1_000_000, b'{"error":"frame too large"}')
+            if body is None:
                 return
-            body = self.rfile.read(length)
             ctype = self.headers.get("Content-Type", "").split(";")[0].strip()
             if ctype not in ("image/jpeg", "application/octet-stream") \
                     or not publish_phone_frame(body):
@@ -1679,7 +1707,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send(200, b'{"ok":true}')
             return
         if self.path.startswith("/api/voice"):
-            audio_in = self.rfile.read(length)
+            audio_in = self._read_body(FILEPROC_TRANSCRIBE_MAX_BYTES)
+            if audio_in is None:
+                return
             mime = self.headers.get("Content-Type", "audio/webm")
             try:
                 text = transcribe_audio(audio_in, mime)
@@ -1711,8 +1741,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.wfile.write(audio_out)
             return
 
+        body = self._read_body(_BRIDGE_ASK_MAX_BYTES)
+        if body is None:
+            return
         try:
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            payload = json.loads(body.decode("utf-8"))
             text = payload.get("text", "")
             want_audio = bool(payload.get("want_audio", False))
         except Exception:
