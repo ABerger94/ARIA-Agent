@@ -439,8 +439,11 @@ def needs_approval(tool: str, args=None) -> bool:
     # Discovered MCP tools cannot be enumerated in the static set: their
     # names are generated when a server connects, and the remote tool's
     # effects are unknown, so the canonical classifier gates them all.
+    # User-defined tools are the same shape (arbitrary code in ARIA's
+    # process, dynamic names) and gate the same way (pass 25).
     if tool not in DESTRUCTIVE_TOOLS:
-        return config.is_discovered_mcp_tool(tool)
+        return (config.is_discovered_mcp_tool(tool)
+                or config.is_user_tool(tool))
     if tool == "file_organize":
         # Only an explicit boolean True — or an omitted dry_run, which
         # defaults to the preview — is a preview. Any other present
@@ -616,6 +619,22 @@ def _describe_tool(tool: str, args) -> str:
                     f"and on every later store write")
         if tool == "move_head_servos":
             return f"move head servos (pan={a.get('pan', 90)} tilt={a.get('tilt', 45)})"
+        if config.is_user_tool(tool):
+            # A user tool runs arbitrary code from
+            # aria/tools/user_tools/ — the banner names the file's
+            # own description, so the approver sees what the code
+            # claims to do, never a bare tool name.
+            desc = ""
+            try:
+                from aria.tools import usertools as _ut
+                decl = _ut.get_user_tool_decl(tool)
+                desc = str((decl or {}).get("description", "") or "")
+            except Exception:
+                desc = ""
+            if desc:
+                return f"run user-defined tool '{tool}' — {desc}"
+            return (f"run user-defined tool '{tool}' (arbitrary code "
+                    f"from aria/tools/user_tools/)")
     except Exception as _e_silent:
         config.log_silent("_describe_tool", _e_silent)
     return f"execute tool '{tool}'"

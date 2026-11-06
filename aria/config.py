@@ -612,6 +612,32 @@ def is_discovered_mcp_tool(name) -> bool:
     return parse_discovered_mcp_tool(name) is not None
 
 
+# User-defined tools (aria/tools/user_tools/*.py) run arbitrary
+# Python in ARIA's process, so policy treats them like discovered
+# MCP tools: approval under confirm-risky, hard-blocked in safe
+# mode. Their names are dynamic (registered at load time), so
+# they cannot be enumerated in the static policy sets — this
+# registry is the canonical classifier, populated by
+# aria/tools/usertools.py (ChatGPT x ARIA loop finding, pass 25).
+_USER_TOOL_NAMES = set()
+
+
+def register_user_tool(name) -> None:
+    """Record *name* as a loaded user-defined tool."""
+    if isinstance(name, str) and name:
+        _USER_TOOL_NAMES.add(name)
+
+
+def unregister_user_tool(name) -> None:
+    """Forget *name* (tool removed or reload failed)."""
+    _USER_TOOL_NAMES.discard(name)
+
+
+def is_user_tool(name) -> bool:
+    """True if *name* is a currently loaded user-defined tool."""
+    return isinstance(name, str) and name in _USER_TOOL_NAMES
+
+
 def is_safe_mode_blocked(name) -> bool:
     """True if *name* is hard-blocked while safe mode is enabled.
 
@@ -619,7 +645,8 @@ def is_safe_mode_blocked(name) -> bool:
     MCP tools are blocked by classification because their dynamic
     names cannot be enumerated in that set.
     """
-    return name in SAFE_MODE_BLOCKED_TOOLS or is_discovered_mcp_tool(name)
+    return (name in SAFE_MODE_BLOCKED_TOOLS
+            or is_discovered_mcp_tool(name) or is_user_tool(name))
 
 
 def is_safe_mode() -> bool:

@@ -12,6 +12,18 @@ defining:
 Loading never crashes boot: import errors, bad names, and name collisions
 with the existing registry are logged (via aria.config.add_log) and skipped.
 
+Deferred import (pass 25): loading only READS the file (AST scan for
+TOOL_NAME / DESCRIPTION / PARAMETERS and a ``def run``) — no module code
+runs at load time. The module is imported lazily, once, on its handler's
+first call, so the import happens under the same approval / safe-mode
+policy as the call itself.
+
+Policy (pass 25): a user tool runs arbitrary Python in ARIA's process,
+so its name is registered in config's user-tool classifier
+(config.is_user_tool) — approval under confirm-risky, hard-blocked in
+safe mode, like a discovered MCP tool. Reload unregisters names for
+removed tools.
+
 Wiring for the coordinator (integration pass):
   - on dispatch init:  usertools.load_user_tools_into_registry()
   - tool:              usertools.tool_reload_user_tools()  -> registry name "reload_user_tools"
@@ -23,6 +35,7 @@ Top-level imports here are stdlib + aria.config only; dispatch is imported
 lazily inside functions to avoid import cycles.
 """
 
+import ast
 import importlib.util
 import os
 import re
@@ -66,11 +79,102 @@ def _normalize_parameters(params):
     return {"type": "OBJECT", "properties": {}, "required": []}
 
 
+def _scan_module(path, fname):
+    """Read a user tool file's metadata WITHOUT executing it.
+
+    Pass 25: the loader used to exec_module() every file at boot,
+    so a planted file's top-level code ran ungated before any
+    approval — and the tool then ran with no policy classification
+    at all. The metadata (TOOL_NAME / DESCRIPTION / PARAMETERS and
+    whether run() is defined) is now read by AST only; the module
+    itself is imported lazily, once, on the first call of its
+    handler — so the import runs under the same approval /
+    safe-mode policy as the call. Literal values only: a computed
+    TOOL_NAME or TOOL_DESCRIPTION falls back to the invalid /
+    empty default and the file is skipped or described plainly.
+    Returns (name, desc, params) or None when skipped.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            source = f.read()
+    except Exception as _e:
+        _config.add_log(f"[user-tools] skipped {fname}: could not read: {_config.redact(str(_e))}")
+        return None
+    try:
+        tree = ast.parse(source, filename=fname)
+    except SyntaxError as _e:
+        _config.add_log(f"[user-tools] skipped {fname}: syntax error: {_config.redact(str(_e))}")
+        return None
+    assigns = {}
+    has_run = False
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name):
+            try:
+                assigns[node.targets[0].id] = ast.literal_eval(node.value)
+            except Exception:
+                pass
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                and node.name == "run":
+            has_run = True
+    name = assigns.get("TOOL_NAME")
+    if not isinstance(name, str) or not _NAME_RE.match(name):
+        _config.add_log(
+            f"[user-tools] skipped {fname}: TOOL_NAME {name!r} invalid "
+            f"(must match ^[a-z][a-z0-9_]{{2,40}}$)")
+        return None
+    if not has_run:
+        _config.add_log(f"[user-tools] skipped {fname}: no run(args) function defined")
+        return None
+    desc = assigns.get("TOOL_DESCRIPTION", "")
+    params = _normalize_parameters(assigns.get("TOOL_PARAMETERS"))
+    return (name, str(desc or ""), params)
+
+
+def _make_lazy_handler(path, name):
+    """A handler that imports its module once, on first call.
+
+    The module's top-level code runs at most once per process:
+    a failed import or a non-callable run() is cached as broken
+    and later calls return the failure instead of re-executing.
+    """
+    state = {}
+
+    def _handler(args, _tool=name):
+        if "run" not in state:
+            try:
+                mod = _load_module_from_path(path)
+            except Exception as _e:
+                state["run"] = None
+                return (f"[user tool '{_tool}' failed: import failed: "
+                        f"{_config.redact(str(_e))}]")
+            run_fn = getattr(mod, "run", None)
+            if not callable(run_fn):
+                state["run"] = None
+                return (f"[user tool '{_tool}' failed: no run(args) "
+                        f"function defined]")
+            state["run"] = run_fn
+        run_fn = state.get("run")
+        if run_fn is None:
+            return (f"[user tool '{_tool}' failed: the module failed "
+                    f"to load — see the log]")
+        try:
+            return str(run_fn(args if isinstance(args, dict) else {}))
+        except Exception as _e:
+            return f"[user tool '{_tool}' failed: {_config.redact(str(_e))}]"
+
+    _handler.__name__ = f"user_tool_{name}"
+    return _handler
+
+
 def load_user_tools(scan_dir=None):
     """Scan ``scan_dir`` (default aria/tools/user_tools/) for user tool modules.
 
     Returns a list of (name, handler_fn, declaration_dict) tuples.
     NEVER raises: every failure mode is logged and skipped.
+    No module code runs here — metadata comes from an AST scan and
+    the import is deferred to the handler's first call (see
+    _scan_module / _make_lazy_handler).
     """
     d = scan_dir or _SCAN_DIR
     results = []
@@ -82,50 +186,32 @@ def load_user_tools(scan_dir=None):
         if fname.startswith("_") or not fname.endswith(".py"):
             continue
         path = os.path.join(d, fname)
-        try:
-            mod = _load_module_from_path(path)
-        except Exception as _e:
-            _config.add_log(f"[user-tools] skipped {fname}: import failed: {_config.redact(str(_e))}")
+        scanned = _scan_module(path, fname)
+        if scanned is None:
             continue
-        try:
-            name = getattr(mod, "TOOL_NAME", None)
-            desc = getattr(mod, "TOOL_DESCRIPTION", "")
-            params = _normalize_parameters(getattr(mod, "TOOL_PARAMETERS", None))
-            run_fn = getattr(mod, "run", None)
-            if not isinstance(name, str) or not _NAME_RE.match(name):
-                _config.add_log(
-                    f"[user-tools] skipped {fname}: TOOL_NAME {name!r} invalid "
-                    f"(must match ^[a-z][a-z0-9_]{{2,40}}$)")
-                continue
-            if not callable(run_fn):
-                _config.add_log(f"[user-tools] skipped {fname}: no run(args) function defined")
-                continue
-            if name in existing or name in _USER_TOOLS:
-                _config.add_log(
-                    f"[user-tools] skipped '{name}' ({fname}): name collides with "
-                    f"an existing tool")
-                continue
-
-            def _handler(args, _run=run_fn, _tool=name):
-                try:
-                    return str(_run(args if isinstance(args, dict) else {}))
-                except Exception as _e:
-                    return f"[user tool '{_tool}' failed: {_config.redact(str(_e))}]"
-
-            _handler.__name__ = f"user_tool_{name}"
-            decl = {"name": name, "description": str(desc) or name, "parameters": params}
-            _USER_TOOLS[name] = (_handler, decl)
-            results.append((name, _handler, decl))
-            _config.add_log(f"[user-tools] loaded '{name}' from {fname}")
-        except Exception as _e:
-            _config.add_log(f"[user-tools] skipped {fname}: {_config.redact(str(_e))}")
+        name, desc, params = scanned
+        if name in existing or name in _USER_TOOLS:
+            _config.add_log(
+                f"[user-tools] skipped '{name}' ({fname}): name collides with "
+                f"an existing tool")
             continue
+        handler = _make_lazy_handler(path, name)
+        decl = {"name": name, "description": desc or name, "parameters": params}
+        _USER_TOOLS[name] = (handler, decl)
+        results.append((name, handler, decl))
+        _config.add_log(f"[user-tools] loaded '{name}' from {fname}")
     return results
 
 
 def get_user_tools():
     """Currently loaded user tools as [(name, handler_fn, declaration_dict)]."""
     return [(name, handler, decl) for name, (handler, decl) in _USER_TOOLS.items()]
+
+
+def get_user_tool_decl(name):
+    """The model-facing declaration dict for *name*, or None."""
+    entry = _USER_TOOLS.get(name)
+    return entry[1] if entry else None
 
 
 def _register_into_dispatch(loaded):
@@ -145,8 +231,14 @@ def _register_into_dispatch(loaded):
         if name in dispatch.get_registered_tools():
             _config.add_log(f"[user-tools] skipped '{name}': collides with existing registry tool")
             _USER_TOOLS.pop(name, None)
+            _config.unregister_user_tool(name)
             continue
         dispatch.register_tool(name, handler)
+        # The name is a user tool: it runs arbitrary code in ARIA's
+        # process, so the approval / safe-mode classifiers must see
+        # it (config.is_user_tool) — without this the tool ran with
+        # no policy at all (pass 25).
+        _config.register_user_tool(name)
         # Pass 25: the declaration is the model-facing schema —
         # without it the tool stays dispatch-callable but invisible
         # to the model until restart. Boot wiring did this step in
@@ -174,6 +266,11 @@ def tool_reload_user_tools() -> str:
         if isinstance(reg, dict):
             for name in before:
                 reg.pop(name, None)
+        # Drop stale policy names too, or removed tools stay gated
+        # under a name that no longer exists (and a re-added tool
+        # with the same name would inherit a stale classification).
+        for name in before:
+            _config.unregister_user_tool(name)
         # Drop stale model declarations too, or removed tools stay callable.
         try:
             from aria.tools.schemas import unregister_dynamic_tool_declaration
