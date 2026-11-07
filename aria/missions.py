@@ -628,9 +628,10 @@ def _settle_job_child(mid, step, handle, project) -> None:
     except Exception:
         pass
     use = workspaces.use(project) if project else contextlib.nullcontext()
+    # Pass 28 #23: fetch the row by id — a list-based lookup
+    # mistakes any job older than the list window for missing.
     with use:
-        jobs = _workers_mod.list_background_jobs(200)
-    row = next((j for j in jobs if j.get("id") == jid), None)
+        row = _memory.job_db_get(jid)
     if row is None:
         _set_step(step["id"], status="uncertain",
                   output=f"Background job #{jid} has no record — its "

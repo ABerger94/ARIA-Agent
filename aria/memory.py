@@ -1004,3 +1004,23 @@ def job_db_list(limit: int = 10) -> List[Dict[str, Any]]:
         out = [dict(r) for r in rows]
         conn.close()
     return out
+
+
+def job_db_get(job_id) -> Optional[Dict[str, Any]]:
+    """One background-job row by id (pass 28 #23): a child-job
+    lookup must not depend on a recency window — list-based
+    lookups mistake any job older than the window for missing.
+    Returns None for an unknown id or an unparsable one."""
+    try:
+        jid = int(job_id)
+    except (TypeError, ValueError):
+        return None
+    with DB_LOCK:
+        conn = sqlite3.connect(db_path())
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        row = cur.execute(
+            "SELECT * FROM background_jobs WHERE id = ?",
+            (jid,)).fetchone()
+        conn.close()
+    return dict(row) if row is not None else None
