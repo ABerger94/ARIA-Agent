@@ -451,12 +451,36 @@ class BrowserSession:
         el = self.page.locator(target).first
         return el, _element_label(el)
 
-    def click(self, target):
-        loc, label = self._resolve(target)
-        loc.click()
+    def click_resolved(self, loc, label):
+        """Click a locator _guarded_click already resolved + validated.
+
+        Pass 27 #8: clicking via click(target) re-resolved the
+        target after validation, so a DOM swap between the two
+        resolves could substitute a different control. An element
+        handle is bound to the exact DOM node the label was read
+        from — a detached or replaced node fails here instead of
+        clicking its replacement.
+        """
+        element_handle = getattr(loc, "element_handle", None)
+        if callable(element_handle):
+            handle = element_handle()
+            if handle is None:
+                raise ValueError(
+                    "browser_agent: the control disappeared before "
+                    "the click — refusing to re-resolve it.")
+            handle.click()
+        else:
+            # Locators without a handle API (test doubles): click
+            # the already-resolved locator — still no second
+            # resolution of the target.
+            loc.click()
         self.page.wait_for_timeout(600)
         self._assert_current_url_public()
         return label
+
+    def click(self, target):
+        loc, label = self._resolve(target)
+        return self.click_resolved(loc, label)
 
     def type_text(self, target, text):
         loc, _label = self._resolve(target)
@@ -665,6 +689,22 @@ def _auto_lane_open(approval_module) -> bool:
     return mode == "auto" and not _safe_mode_on()
 
 
+def _click_validated(session, target, loc, label):
+    """Click the control _resolve already validated.
+
+    Pass 27 #8: session.click(target) re-resolved the target
+    after validation, so a DOM swap between the two resolves
+    could substitute a different control. Prefer the session's
+    click_resolved (element-handle click on the exact node the
+    label was read from); sessions without it fall back to the
+    single click(target) call.
+    """
+    click_resolved = getattr(session, "click_resolved", None)
+    if callable(click_resolved):
+        return click_resolved(loc, label)
+    return session.click(target)
+
+
 # ---------------- guarded execution ----------------
 
 def _guarded_click(target: str, *, approve_fn=None) -> str:
@@ -711,7 +751,7 @@ def _guarded_click(target: str, *, approve_fn=None) -> str:
             _loc, live_label = session._resolve(target)
             if _is_irreversible(live_label):
                 return ("stale", live_label, session.context())
-            clicked = session.click(target)
+            clicked = _click_validated(session, target, _loc, live_label)
             return ("clicked", clicked, session.read())
         kind, a, b = _RUNNER.call(_do)
         if kind == "clicked":
@@ -771,7 +811,7 @@ def _guarded_click(target: str, *, approve_fn=None) -> str:
         if _is_irreversible(live_label) and (
                 live_label != label or live_ctx != ctx):
             return ("stale", live_label, live_ctx)
-        clicked = session.click(target)
+        clicked = _click_validated(session, target, _loc, live_label)
         return ("clicked", clicked, session.read())
     kind, a, b = _RUNNER.call(_do_checked)
     if kind == "clicked":
