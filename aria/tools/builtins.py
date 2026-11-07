@@ -1131,12 +1131,13 @@ def tool_mcp_setup(name: str = "", command: str = "", args: str = "",
                               args=args, env=env, url=url, headers=headers)
 
 
-def tool_mcp_connect(name: str = "") -> str:
+def tool_mcp_connect(name: str = "", _config_digest: str = None) -> str:
     """Connect to one MCP server (by name) or all enabled servers; loads their tools."""
     from aria import mcp as mcp_mod
     bridge = mcp_mod.get_bridge()
     if name and name.strip():
-        ok, msg = bridge.connect(name.strip())
+        ok, msg = bridge.connect(name.strip(),
+                                 expected_config_digest=_config_digest)
         return msg
     servers = mcp_mod.get_servers()
     enabled = [n for n, c in servers.items() if c.get("enabled", True)]

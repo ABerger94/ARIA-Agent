@@ -425,6 +425,19 @@ def _freeze_park_args(fn_name: str, args: dict) -> dict:
         # execute a file replaced after the park.
         from aria.tools import usertools as _ut_mod
         gate_args = _ut_mod.freeze_user_tool_args(fn_name, gate_args)
+    elif fn_name == "mcp_connect" and (args or {}).get("name"):
+        # Pass 27 #19: bind a named mcp_connect approval to the
+        # server config it was approved against. (A connect-all
+        # approval has no single config to bind.)
+        from aria import mcp as _mcp_mod
+        bound = _mcp_mod.freeze_mcp_connect_args(args["name"])
+        gate_args = {**gate_args, **bound}
+    elif _config_mod.is_discovered_mcp_tool(fn_name):
+        # Pass 27 #19: bind a discovered-MCP-tool approval to the
+        # live tool registration of its server when connected;
+        # unbound when not (see freeze_discovered_tool_args).
+        from aria import mcp as _mcp_mod
+        gate_args = _mcp_mod.freeze_discovered_tool_args(fn_name, gate_args)
     return gate_args
 
 
@@ -1197,7 +1210,8 @@ def _init_default_registry():
         a.get("name", ""), a.get("command", ""), a.get("args", ""),
         a.get("url", ""), a.get("env", ""), a.get("headers", ""),
         a.get("transport", ""))
-    _REGISTRY["mcp_connect"] = lambda a: builtins.tool_mcp_connect(a.get("name", ""))
+    _REGISTRY["mcp_connect"] = lambda a: builtins.tool_mcp_connect(
+        a.get("name", ""), a.get("_config_digest"))
     _REGISTRY["mcp_disconnect"] = lambda a: builtins.tool_mcp_disconnect(a.get("name", ""))
     _REGISTRY["mcp_list_servers"] = lambda a: builtins.tool_mcp_list_servers()
     _REGISTRY["mcp_remove_server"] = lambda a: builtins.tool_mcp_remove_server(a.get("name", ""))

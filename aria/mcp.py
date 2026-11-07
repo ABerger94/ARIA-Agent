@@ -16,6 +16,7 @@ dispatch can call them without an event loop of its own.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 from types import SimpleNamespace
 import json
@@ -110,6 +111,67 @@ def _missing_dep_message() -> str:
 def get_servers() -> Dict[str, Dict[str, Any]]:
     d = config.get_setting(SETTINGS_KEY, {}) or {}
     return d if isinstance(d, dict) else {}
+
+
+def server_config_digest(name: str, cfg: Optional[Dict[str, Any]] = None) -> str:
+    """Stable digest of one server's stored configuration.
+
+    Pass 27 #19: an mcp_connect approval is bound to the config it
+    was approved against — the digest is a hash, so no secret in
+    the config (commands, env values, headers) is ever exposed.
+    """
+    if cfg is None:
+        cfg = get_servers().get((name or "").strip().lower()) or {}
+    blob = json.dumps(cfg, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def _registration_digest(tools: List[Any]) -> str:
+    """Stable digest of a server's registered tool set (names +
+    descriptions + input schemas). A reconnect that changes the
+    tools the server exposes changes the digest, so an approval
+    granted against the old registration cannot execute against
+    the new one (pass 27 #19)."""
+    rows = []
+    for t in tools or []:
+        schema = getattr(t, "inputSchema", None) or {}
+        rows.append([getattr(t, "name", ""),
+                     getattr(t, "description", "") or "",
+                     json.dumps(schema, sort_keys=True, default=str)])
+    rows.sort(key=lambda r: r[0])
+    return hashlib.sha256(
+        json.dumps(rows, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def freeze_mcp_connect_args(name: str) -> Dict[str, Any]:
+    """Bind an mcp_connect approval to the CURRENT server config.
+
+    Raises ValueError for an unknown server, so no revisionless
+    approval is parked (same contract as usertools freeze).
+    """
+    key = (name or "").strip().lower()
+    servers = get_servers()
+    if key not in servers:
+        raise ValueError(f"No MCP server named '{name}'.")
+    return {"_config_digest": server_config_digest(key, servers[key])}
+
+
+def freeze_discovered_tool_args(tool: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Bind a discovered-MCP-tool approval to the CURRENT tool
+    registration of its server. When the server is not connected
+    there is no registration to bind to, so the args pass through
+    unbound — a tool registered without a live session (the state
+    the approval-gating tests pin) stays approvable, and the
+    call-time check in call_tool still enforces any digest that
+    IS present. The residual: a tool parked while disconnected
+    carries no registration binding."""
+    server, _remote = config.parse_discovered_mcp_tool(tool)
+    digest = get_bridge().registration_digest(server)
+    if digest is None:
+        return dict(args or {})
+    out = dict(args or {})
+    out["_registration_digest"] = digest
+    return out
 
 
 def save_servers(servers: Dict[str, Dict[str, Any]]) -> None:
@@ -539,14 +601,26 @@ class MCPBridge:
             except Exception as _e_silent:
                 config.log_silent("_stop_actor", _e_silent)
 
-    def connect(self, name: str, timeout: float = 30.0) -> Tuple[bool, str]:
-        """Connect one server and register its tools. Returns (ok, message)."""
+    def connect(self, name: str, timeout: float = 30.0,
+                expected_config_digest: Optional[str] = None) -> Tuple[bool, str]:
+        """Connect one server and register its tools. Returns (ok, message).
+
+        Pass 27 #19: when expected_config_digest is given (an
+        approved mcp_connect), the stored config must still match
+        it — the check runs BEFORE spawning the server command, so
+        a stale approval never launches a changed command.
+        """
         servers = get_servers()
         key = (name or "").strip().lower()
         if key not in servers:
             return False, (f"No MCP server named '{name}'. "
                            f"Known: {', '.join(sorted(servers)) or 'none'}.")
         cfg = servers[key]
+        if expected_config_digest is not None and \
+                server_config_digest(key, cfg) != expected_config_digest:
+            return False, (f"MCP server '{key}' configuration changed "
+                           "since approval — re-approve to connect with "
+                           "the new configuration.")
         if cfg.get("transport") != "http" and not _mcp_available():
             return False, _missing_dep_message()
         if key in self._sessions:
@@ -571,6 +645,9 @@ class MCPBridge:
         self._sessions[key] = entry
         aria_names = _register_server_tools(key, tools)
         entry["aria_names"] = aria_names
+        # Pass 27 #19: the registration revision the discovered
+        # tools were approved against (see _registration_digest).
+        entry["registration_digest"] = _registration_digest(tools)
         return True, (f"Connected to MCP server '{key}' "
                       f"({cfg.get('transport')}); loaded {len(aria_names)} tools: "
                       f"{', '.join(aria_names[:8])}"
@@ -594,6 +671,12 @@ class MCPBridge:
             self.disconnect(n)
         return f"Disconnected {len(names)} MCP server(s)." if names else "No MCP servers were connected."
 
+    def registration_digest(self, name: str) -> Optional[str]:
+        """Digest of the tool registration currently live for a
+        connected server (pass 27 #19); None when not connected."""
+        entry = self._sessions.get((name or "").strip().lower())
+        return entry.get("registration_digest") if entry else None
+
     def status(self) -> List[Dict[str, Any]]:
         out = []
         for name, cfg in sorted(get_servers().items()):
@@ -615,6 +698,28 @@ class MCPBridge:
     def call_tool(self, name: str, tool: str, arguments: Dict[str, Any],
                   timeout: float = 120.0) -> str:
         """Call a tool on a connected server; returns formatted text."""
+        arguments = dict(arguments or {})
+        # Pass 27 #19: a parked discovered-tool call carries the
+        # registration digest it was approved against. The server
+        # may have reconnected with different tools since — refuse
+        # typed FAILED instead of executing the old approval
+        # against the new registration. Calls with no digest (auto
+        # mode) run as before; the key never reaches the server.
+        approved = arguments.pop("_registration_digest", None)
+        if approved is not None:
+            current = self.registration_digest(name)
+            if current is None:
+                return outcome.failed(
+                    f"mcp_{name}__{tool}",
+                    f"MCP server '{name}' is not connected — cannot "
+                    "verify the approved tool registration; re-approve "
+                    "after reconnecting.")
+            if current != approved:
+                return outcome.failed(
+                    f"mcp_{name}__{tool}",
+                    f"MCP server '{name}' tool registration changed "
+                    "since approval — re-approve to call the new "
+                    "registration.")
         try:
             result = self._run(self._actor_call(name, tool, arguments, timeout),
                                timeout=timeout + 10.0)
