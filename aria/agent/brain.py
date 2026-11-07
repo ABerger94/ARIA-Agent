@@ -142,6 +142,14 @@ def _watched_source_files() -> List[str]:
     pkg_dir = os.path.join(repo, "aria")
     if os.path.isdir(pkg_dir):
         for root, _dirs, names in os.walk(pkg_dir):
+            # Pass 27 #5: user tools are untrusted third-party
+            # code, loaded only through the deferred import gate
+            # (reload_user_tools). The restart watcher used to
+            # smoke-import changed files here, executing a
+            # user-tool module body with no approval. Prune the
+            # whole directory from the walk, so a user-tool edit
+            # neither imports nor arms a restart.
+            _dirs[:] = [d for d in _dirs if d != "user_tools"]
             for n in names:
                 if n.endswith(".py"):
                     files.append(os.path.join(root, n))
@@ -265,6 +273,11 @@ def _smoke_import_changed(changed) -> list:
     failed = []
     for p in changed:
         if not (p.endswith(".py") and os.path.isfile(p)):
+            continue
+        # Pass 27 #5 (defense in depth): never import a user-tool
+        # module body here, even if a caller passes one directly
+        # — the deferred import gate owns those files.
+        if (os.sep + "user_tools" + os.sep) in p:
             continue
         rel = os.path.relpath(p, repo_dir)
         if rel.startswith(".."):
