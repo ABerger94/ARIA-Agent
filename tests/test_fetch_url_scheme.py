@@ -47,6 +47,7 @@ import importlib
 
 builtins = importlib.import_module("aria.tools.builtins")
 gap = importlib.import_module("aria.tools.gaptools")
+outcome = importlib.import_module("aria.outcome")
 
 SENTINEL = "SENTINEL-BRIDGE-TOKEN-DO-NOT-LEAK"
 
@@ -120,7 +121,10 @@ NON_HTTP_URLS = [
 @pytest.mark.parametrize("url", NON_HTTP_URLS)
 def test_non_http_urls_refused_before_opener(recording_opener, url):
     result = builtins.tool_fetch_url(url)
-    assert result.startswith("[Could not fetch")
+    # Pass 28 #31: a failed fetch is a failure, not a success —
+    # the old "[Could not fetch ...]" string normalized as DONE.
+    assert outcome.normalize(result).status == "failed", result
+    assert "Could not fetch" in result
     assert SENTINEL not in result
     assert builtins._fetch_html(url) is None
     assert recording_opener.calls == []
@@ -130,9 +134,21 @@ def test_file_url_to_real_sentinel_file_never_read(
         recording_opener, sentinel_file):
     url = "file://" + sentinel_file
     result = builtins.tool_fetch_url(url)
-    assert result.startswith("[Could not fetch")
+    assert outcome.normalize(result).status == "failed", result
+    assert "Could not fetch" in result
     assert SENTINEL not in result
     assert recording_opener.calls == []
+
+
+def test_http_fetch_failure_is_typed_failed(monkeypatch):
+    class _RaisingOpener:
+        def open(self, req, timeout=None):
+            raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(builtins, "_HTTP_ONLY_OPENER", _RaisingOpener())
+    result = builtins.tool_fetch_url("https://example.com/page")
+    assert outcome.normalize(result).status == "failed", result
+    assert "Could not fetch" in result
 
 
 def test_real_opener_has_no_local_file_handlers():

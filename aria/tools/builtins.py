@@ -142,7 +142,11 @@ def tool_fetch_url(url: str) -> str:
     """Fetch URL and strip scripts/styles into clean readable text."""
     html = _fetch_html(url)
     if not html:
-        return f"[Could not fetch {url}]"
+        # Pass 28 #31: a failed fetch is a failure — the old
+        # "[Could not fetch ...]" string normalized as DONE, so a
+        # step depending on the page proceeded as if it had it.
+        from aria.outcome import failed
+        return failed("fetch_url", f"Could not fetch {url}")
     return _html_to_text(html)[:MAX_TOOL_OUTPUT]
 
 
@@ -1140,6 +1144,11 @@ def tool_mcp_connect(name: str = "", _config_digest: str = None,
     if name and name.strip():
         ok, msg = bridge.connect(name.strip(),
                                  expected_config_digest=_config_digest)
+        # Pass 28 #31: the old code returned the message bare and
+        # discarded ok — "Could not connect ..." normalized as
+        # DONE. A failed connect is a failure.
+        if not ok:
+            return _outcome_mod.failed("mcp_connect", msg)
         return msg
     # Pass 28 #9: a connect-all approval binds the enabled server
     # set it was granted against. Verify BEFORE spawning
@@ -1160,9 +1169,21 @@ def tool_mcp_connect(name: str = "", _config_digest: str = None,
                 "mcp_setup(name='filesystem', command='npx', "
                 "args='[\"-y\", \"@modelcontextprotocol/server-filesystem\", \"C:/data\"]').")
     lines = []
+    failed = 0
     for n in enabled:
         ok, msg = bridge.connect(n)
         lines.append(("OK  " if ok else "FAIL") + f" {msg}")
+        if not ok:
+            failed += 1
+    # Pass 28 #31: connecting to nothing at all used to return the
+    # "FAIL ..." lines as a DONE result. All-failed is a failure
+    # (the per-server lines ride along after the status). A partial
+    # connect keeps the lines as-is — the successes are real.
+    if failed == len(enabled):
+        return (_outcome_mod.failed(
+                    "mcp_connect",
+                    f"Could not connect to any of the {len(enabled)} "
+                    "enabled MCP server(s)") + "\n" + "\n".join(lines))
     return "\n".join(lines)
 
 

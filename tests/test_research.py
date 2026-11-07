@@ -35,6 +35,7 @@ _speech = types.ModuleType("aria.speech")
 sys.modules["aria.speech"] = _speech
 
 research = importlib.import_module("aria.research")
+outcome = importlib.import_module("aria.outcome")
 
 
 _HITS = [
@@ -129,6 +130,19 @@ def test_tool_list_and_read_round_trip(tmp_path, monkeypatch):
     assert "unknown action" in research.tool_research(
         {"action": "bogus"})
     print("ok tool_round_trip")
+
+
+def test_tool_run_failure_is_typed_failed(tmp_path, monkeypatch):
+    # Pass 28 #31: "Research failed: ..." normalized as DONE.
+    _use_tmp(tmp_path, monkeypatch)
+    res = research.tool_research({"action": "run", "question": ""})
+    assert outcome.normalize(res).status == "failed", res
+    monkeypatch.setattr(research, "_ddgs_search", lambda q: [])
+    res = research.tool_research({"action": "run", "question": "widgets?"})
+    assert outcome.normalize(res).status == "failed", res
+    assert "No sources" in res
+    assert research.list_research() == []
+    print("ok tool_run_failure_is_typed_failed")
 
 
 def test_section_text_for_briefing_tab(tmp_path, monkeypatch):

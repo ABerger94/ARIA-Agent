@@ -663,7 +663,17 @@ def tool_browser_control(args) -> str:
     except Exception as exc:
         return _failed("browser_control", f"fetch failed: {exc}",
                        url=url)
-    if not text or text.startswith("[Could not fetch"):
+    # Pass 28 #31: tool_fetch_url returns a typed FAILED on
+    # failure — judge by status, not the old "[Could not fetch"
+    # string (which normalized as DONE and is gone).
+    _oc = _outcome()
+    _fetch_failed = False
+    if _oc is not None:
+        try:
+            _fetch_failed = _oc.normalize(text).status == "failed"
+        except Exception:
+            _fetch_failed = False
+    if not text or _fetch_failed:
         return _failed("browser_control",
                        f"could not fetch {url}", url=url)
     truncated = text[:4000]

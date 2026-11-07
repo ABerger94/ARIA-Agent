@@ -351,7 +351,7 @@ def _pdf_extract(path: Path, max_chars: int, detail: Dict[str, Any]) -> str:
         if len(chunk) > budget.room():
             # The stream expands past the budget: refuse the file
             # rather than materialising the rest of it.
-            raise ValueError(
+            raise _Refused(
                 "decompressed content over the "
                 f"{budget.limit // (1024 * 1024)} MB cap — file not read")
         budget.check(len(chunk))
@@ -375,6 +375,13 @@ def _pdf_extract(path: Path, max_chars: int, detail: Dict[str, Any]) -> str:
 _MAX_DECOMPRESSED_BYTES = 32 * 1024 * 1024
 
 
+class _Refused(ValueError):
+    """A deliberate policy refusal (e.g. the decompression cap) —
+    not an extraction failure. The tool declined, with a reason,
+    so the result stays ok=True with the refusal noted (pass 28
+    #31: a refusal is a complete, honest answer, unlike a crash)."""
+
+
 class _DecompressionBudget:
     def __init__(self, limit: int = _MAX_DECOMPRESSED_BYTES):
         self.limit = limit
@@ -383,7 +390,7 @@ class _DecompressionBudget:
     def check(self, n: int) -> None:
         self.used += n
         if self.used > self.limit:
-            raise ValueError(
+            raise _Refused(
                 "decompressed content over the "
                 f"{self.limit // (1024 * 1024)} MB cap — file not read")
 
@@ -698,10 +705,25 @@ def process_file(path, question: str = "", *, pool=None,
                     detail["sniffed_text"] = True
                 else:
                     detail["note"] = "binary or unrecognised — metadata only"
+        except _Refused as e:
+            # A deliberate policy refusal (decompression cap): the
+            # tool declined with a reason, so the result stays ok
+            # and the refusal becomes the summary body via note.
+            # Not an extraction failure — no _surface, no ok=False.
+            detail["refusal"] = str(e)
+            detail["note"] = str(e)
+            text = ""
         except Exception as e:
             _surface("fileproc", e,
                      user_message="I couldn't read that file's contents.")
             detail["extract_error"] = str(e)
+            # Pass 28 #31: an extraction that RAISES is a genuine
+            # tool failure, not a degraded summary — the tool
+            # boundary turns ok=False into a typed FAILED. (The
+            # audio-transcribe degradation is different: it fails
+            # INSIDE the extractor, keeps its metadata, and stays
+            # ok=True — see _media_extract.)
+            result["ok"] = False
             text = ""
 
     # ---- compose the summary
@@ -767,11 +789,21 @@ def tool_process_file(path: str = "", question: str = "") -> str:
         from aria.outcome import failed
         return failed('process_file', 'File is outside this project’s configured roots')
     try:
-        return summarize_file(p, question)
+        res = process_file(p, question)
     except FileNotFoundError:
         return ResultText(f"[File not found: {p}]", FAILED)
     except Exception as e:
         return ResultText(f"[File processing failed: {e}]", FAILED)
+    # Pass 28 #31: an extraction that raised (ok=False) is a
+    # genuine failure — the old code returned the degraded "No
+    # readable content" summary as DONE. Metadata-only files
+    # (binary, legacy formats) keep ok=True and stay DONE.
+    if not res.get("ok", True):
+        from aria.outcome import failed
+        return failed("process_file",
+                      res["detail"].get("extract_error")
+                      or "could not extract content")
+    return res["summary"]
 
 
 def process_and_report(path, **kw) -> Optional[Dict[str, Any]]:
@@ -787,6 +819,13 @@ def process_and_report(path, **kw) -> Optional[Dict[str, Any]]:
         _surface("fileproc", e,
                  user_message="I couldn't process that file.")
         add_log(f"File processing failed: {Path(str(path)).name} ({e})")
+        return None
+    # Pass 28 #31: an extraction that raised (ok=False) already
+    # surfaced via _surface in process_file — log it as failed
+    # here instead of a "File processed" line.
+    if not result.get("ok", True):
+        add_log(f"File processing failed: {Path(str(path)).name} "
+                f"({result['detail'].get('extract_error', 'extraction failed')})")
         return None
     add_log(f"File processed: {result['name']} "
             f"({result['type']}, {result['size']})")

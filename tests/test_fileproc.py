@@ -36,6 +36,7 @@ import importlib
 
 config = importlib.import_module("aria.config")
 fileproc = importlib.import_module("aria.tools.fileproc")
+outcome = importlib.import_module("aria.outcome")
 
 # ---------------------------------------------------------------- fixtures
 FIX = tempfile.mkdtemp(prefix="aria_fileproc_")
@@ -353,6 +354,35 @@ def test_tool_process_file_and_staged_default():
     print("ok tool_process_file_and_staged_default")
 
 
+def test_tool_process_file_extraction_failure_is_failed(monkeypatch):
+    # Pass 28 #31: an extraction that RAISES is a genuine tool
+    # failure — the old code swallowed it into detail and returned
+    # a DONE "No readable content" summary. (The audio-transcribe
+    # degradation is different: it fails INSIDE the extractor, keeps
+    # its metadata, and stays DONE — see test_audio_transcribe_
+    # failure_honest.)
+    def boom(p, max_chars, detail):
+        raise RuntimeError("disk read blew up")
+
+    monkeypatch.setattr(fileproc, "_extract_plain_text", boom)
+    out = fileproc.tool_process_file(P_TEXT, "")
+    assert outcome.normalize(out).status == "failed", out
+    assert "disk read blew up" in out
+    r = fileproc.process_file(P_TEXT)
+    assert r["ok"] is False, r
+    assert "extract_error" in r["detail"], r["detail"]
+    print("ok tool_process_file_extraction_failure_is_failed")
+
+
+def test_tool_process_file_binary_metadata_only_stays_done():
+    # Control: a file that yields metadata but no text is an honest
+    # DONE summary, not a failure — the degradation design stands.
+    out = fileproc.tool_process_file(P_BIN, "")
+    assert outcome.normalize(out).status == "done", out
+    assert "metadata only" in out
+    print("ok tool_process_file_binary_metadata_only_stays_done")
+
+
 def test_process_and_report_channels():
     config._EVENT_RING.clear()
     r = fileproc.process_and_report(P_TEXT, pool=NO_POOL)
@@ -381,8 +411,11 @@ def test_docx_zip_bomb_refused(tmp_path):
         z.writestr("word/document.xml", big)
     assert bomb.stat().st_size < 1024 * 1024  # the gate sees a small file
     r = fileproc.process_file(str(bomb), pool=NO_POOL)
-    assert "extract_error" in r["detail"], r["detail"]
-    assert "32 MB cap" in r["detail"]["extract_error"], r["detail"]
+    # Pass 28 #31: a deliberate cap refusal is recorded as a
+    # refusal (not an extraction error) and the result stays ok —
+    # the tool declined with a reason, it did not fail.
+    assert "refusal" in r["detail"], r["detail"]
+    assert "32 MB cap" in r["detail"]["refusal"], r["detail"]
     assert r["ok"]  # metadata still returned; only content refused
     print("ok docx_zip_bomb_refused")
 
@@ -408,6 +441,10 @@ def test_pdf_stream_bomb_refused(monkeypatch, tmp_path):
     bomb.write_bytes(bytes(out))
     assert bomb.stat().st_size < 1024 * 1024
     r = fileproc.process_file(str(bomb), pool=NO_POOL)
-    assert "extract_error" in r["detail"], r["detail"]
-    assert "32 MB cap" in r["detail"]["extract_error"], r["detail"]
+    # Pass 28 #31: a deliberate cap refusal is recorded as a
+    # refusal (not an extraction error); the tool declined, it did
+    # not fail.
+    assert "refusal" in r["detail"], r["detail"]
+    assert "32 MB cap" in r["detail"]["refusal"], r["detail"]
+    assert r["ok"]
     print("ok pdf_stream_bomb_refused")

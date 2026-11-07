@@ -29,6 +29,7 @@ _tools_pkg.__path__ = [PKG + "/tools"]
 sys.modules["aria.tools"] = _tools_pkg
 
 gap = importlib.import_module("aria.tools.gaptools")
+outcome = importlib.import_module("aria.outcome")
 
 TODAY = date(2026, 10, 27)  # a Tuesday
 
@@ -310,7 +311,11 @@ def test_browser_failures(fake_builtins):
     ).startswith("status=failed")
     assert gap.tool_browser_control(
         {"action": "go_to"}).startswith("status=failed")
-    fake_builtins.fetch_text = "[Could not fetch https://x]"
+    # Pass 28 #31: the fake fetch failure must use the real failure
+    # shape — a typed FAILED, not the old "[Could not fetch"
+    # string (which normalized as DONE and is gone).
+    fake_builtins.fetch_text = outcome.failed(
+        "fetch_url", "Could not fetch https://x")
     assert gap.tool_browser_control(
         {"action": "get_text", "url": "https://x"}
     ).startswith("status=failed")

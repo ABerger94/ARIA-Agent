@@ -261,7 +261,9 @@ def tool_research(args) -> str:
                 "use run, list, or read.")
     result = run_research(str(args.get("question") or ""))
     if not result["ok"]:
-        return f"Research failed: {result['error']}"
+        # Pass 28 #31: "Research failed: ..." normalized as DONE.
+        from aria.outcome import failed
+        return failed("research", result["error"])
     return (f"Research brief #{result['id']} filed: {result['question']}\n"
             f"Short answer: {result['summary']}\n"
             f"Based on {result['sources']} sources, cross-checked. "
