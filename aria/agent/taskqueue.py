@@ -483,6 +483,10 @@ class TaskQueue:
 
 _queue: Optional[TaskQueue] = None
 _queue_lock = threading.Lock()
+# Projects whose journals have been crash-recovered in this
+# process (pass 28 #18): the journal is project-scoped, so
+# recovery must run once per project, not once per process.
+_recovered_projects = set()
 
 
 def get_queue() -> TaskQueue:
@@ -492,9 +496,16 @@ def get_queue() -> TaskQueue:
         if _queue is None:
             _queue = TaskQueue()
             _queue.start()
-            # Crash recovery (Gap fill 3): journal records a dead
-            # process left 'running' become blocked — visible and
-            # resumable, never silently re-run or silently lost.
+        # Crash recovery (Gap fill 3): journal records a dead
+        # process left 'running' become blocked — visible and
+        # resumable, never silently re-run or silently lost.
+        # Pass 28 #18: recover the CURRENT project the first time
+        # it is seen, not only the project active at singleton
+        # init — a project first used later never had its
+        # interrupted records recovered.
+        project = workspaces.current()
+        if project not in _recovered_projects:
+            _recovered_projects.add(project)
             try:
                 n = taskstore.recover_interrupted()
                 if n:
