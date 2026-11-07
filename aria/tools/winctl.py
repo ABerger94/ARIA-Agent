@@ -68,6 +68,59 @@ def foreground_window():
         return None
 
 
+def bring_to_foreground(hwnd) -> bool:
+    """Bring a top-level window to the foreground. Returns True
+    only when that window IS the foreground window afterwards.
+
+    Pass 27 #21: clicking Confirm on ARIA's dashboard activates
+    ARIA's own window, so the GUI approval bound to the target
+    window would be refused by the very click that granted it.
+    approve_token restores the bound window first and then
+    revalidates — this is the restore half. A minimized window
+    is restored before focusing. SetForegroundWindow is
+    restricted by the foreground lock when called from ARIA's
+    worker thread, so a failed first attempt retries once with
+    this thread's input attached to the foreground thread.
+    Windows only; False elsewhere or on any error. Never raises.
+    """
+    if not _is_windows():
+        return False
+    w = _win32()
+    if w is None:
+        return False
+    win32gui, win32con = w
+    try:
+        hwnd = int(hwnd)
+    except (TypeError, ValueError):
+        return False
+    if not hwnd:
+        return False
+    try:
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        win32gui.SetForegroundWindow(hwnd)
+        if win32gui.GetForegroundWindow() == hwnd:
+            return True
+        try:
+            import win32api
+            import win32process
+            fg = win32gui.GetForegroundWindow()
+            if fg and fg != hwnd:
+                fg_tid = win32gui.GetWindowThreadProcessId(fg)[0]
+                my_tid = win32api.GetCurrentThreadId()
+                win32process.AttachThreadInput(my_tid, fg_tid, True)
+                try:
+                    win32gui.SetForegroundWindow(hwnd)
+                finally:
+                    win32process.AttachThreadInput(my_tid, fg_tid, False)
+        except Exception:
+            pass
+        return win32gui.GetForegroundWindow() == hwnd
+    except Exception as _e_silent:
+        _config_silent.log_silent("bring_to_foreground", _e_silent)
+        return False
+
+
 def window_at_point(x: int, y: int):
     """The top-level window under screen point (x, y), or None.
 

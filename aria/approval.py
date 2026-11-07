@@ -429,6 +429,23 @@ def _gui_binding():
         return None
 
 
+def _restore_gui_binding(bound) -> None:
+    """Bring the parked GUI binding's window back to the
+    foreground (pass 27 #21). Best-effort and silent: a failed
+    restore leaves the foreground as it is, and approve_token's
+    re-check then refuses as before. Only the restore is done
+    here — the revalidation after it is the existing check, so a
+    window that cannot be restored still refuses."""
+    try:
+        hwnd = (bound or {}).get("hwnd")
+        if hwnd is None:
+            return
+        from aria.tools import winctl as _winctl
+        _winctl.bring_to_foreground(hwnd)
+    except Exception:
+        return
+
+
 def _gui_binding_matches(bound, current) -> bool:
     """True when the replay-time window is the parked one.
 
@@ -1203,7 +1220,16 @@ def approve_token(token: str) -> str:
     # to check and proceeds as before.
     bound = entry.get("gui_binding")
     if entry["tool"] in _GUI_BINDING_TOOLS and bound:
+        # Pass 27 #21: clicking Confirm on ARIA's dashboard
+        # activates ARIA's own window, so the foreground no longer
+        # matches the bound window — the act of confirming would
+        # refuse the approval just granted. Restore the bound
+        # window first, THEN revalidate: the check below still
+        # refuses when the restore fails or the window is gone.
         current = _gui_binding()
+        if not _gui_binding_matches(bound, current):
+            _restore_gui_binding(bound)
+            current = _gui_binding()
         if not _gui_binding_matches(bound, current):
             if current is None:
                 why = ("the foreground window could not be read at "
