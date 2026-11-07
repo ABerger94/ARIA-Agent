@@ -10,6 +10,7 @@ import base64
 import hashlib
 import hmac
 import secrets
+import socket
 import struct
 import threading
 import io
@@ -1777,6 +1778,78 @@ class BridgeHandler(BaseHTTPRequestHandler):
         ).encode("utf-8"))
 
 
+class _BridgeHTTPServer(ThreadingHTTPServer):
+    """HTTP(S) server for the phone bridge with bounded handshakes.
+
+    Pass 27 #14: the listening socket used to be TLS-wrapped, so
+    accept() performed the handshake synchronously in the accept
+    loop — one client that connected without handshaking stalled
+    every other client until it closed. Now the listener stays
+    plain TCP and each accepted connection is wrapped with a
+    DEFERRED handshake (do_handshake_on_connect=False) under a
+    per-operation timeout, so the handshake happens in the
+    connection's own handler thread and a stalled client times
+    out there instead of wedging the accept loop. The same
+    timeout bounds header/body reads on the connection (a slow
+    drip-feed can still hold a connection, but every single
+    read is bounded). A semaphore caps concurrent handler
+    threads; at capacity the connection is refused immediately
+    instead of queueing another thread.
+    """
+
+    daemon_threads = True
+    _MAX_CONNECTIONS = 32
+    _CONN_TIMEOUT_S = 10.0
+
+    def __init__(self, *args, ssl_context=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._ssl_context = ssl_context
+        self._conn_sem = threading.Semaphore(self._MAX_CONNECTIONS)
+
+    def get_request(self):
+        conn, addr = super().get_request()
+        if self._ssl_context is not None:
+            # Deferred handshake: wrap_socket with
+            # do_handshake_on_connect=False performs no I/O here,
+            # so accept() returns immediately and the handshake
+            # runs in the connection thread under the timeout.
+            conn = self._ssl_context.wrap_socket(
+                conn, server_side=True, do_handshake_on_connect=False)
+        conn.settimeout(self._CONN_TIMEOUT_S)
+        return conn, addr
+
+    def process_request(self, request, client_address):
+        if not self._conn_sem.acquire(blocking=False):
+            add_log("Bridge at connection capacity — refusing "
+                    f"{client_address}")
+            try:
+                request.close()
+            except Exception:
+                pass
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._conn_sem.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._conn_sem.release()
+
+    def handle_error(self, request, client_address):
+        # A stalled handshake / reset from a scanner is routine
+        # noise on a TLS port — one log line, not a traceback.
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ssl.SSLError, socket.timeout,
+                            ConnectionResetError, BrokenPipeError)):
+            add_log(f"Bridge connection dropped ({client_address}): {exc}")
+            return
+        super().handle_error(request, client_address)
+
+
 def start_bridge_server(port: int = PHONE_BRIDGE_PORT) -> Optional[ThreadingHTTPServer]:
     """Start the phone bridge. Returns the server, or None when
     the HTTPS wrap fails — the bridge stays down rather than
@@ -1787,13 +1860,13 @@ def start_bridge_server(port: int = PHONE_BRIDGE_PORT) -> Optional[ThreadingHTTP
     # it; every route requires the bridge token regardless). The
     # "phone_bridge_host" setting overrides in either direction.
     host = _bridge_bind_host()
-    srv = ThreadingHTTPServer((host, port), BridgeHandler)
     online_scheme = BRIDGE_SCHEME
+    ssl_context = None
     if BRIDGE_SCHEME == "https" and BRIDGE_CERT and BRIDGE_KEY:
         try:
-            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            ctx.load_cert_chain(certfile=BRIDGE_CERT, keyfile=BRIDGE_KEY)
-            srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ssl_context.load_cert_chain(certfile=BRIDGE_CERT,
+                                        keyfile=BRIDGE_KEY)
         except Exception as e:
             # Fail CLOSED, not open: the operator configured HTTPS
             # (a cert exists and the scheme says so), so serving
@@ -1803,11 +1876,9 @@ def start_bridge_server(port: int = PHONE_BRIDGE_PORT) -> Optional[ThreadingHTTP
             add_log(f"Bridge TLS wrap failed — bridge NOT started: {e}")
             print(f"[ARIA] Bridge TLS wrap failed — bridge NOT "
                   f"started: {e}", flush=True)
-            try:
-                srv.server_close()
-            except Exception:
-                pass
             return None
+    srv = _BridgeHTTPServer((host, port), BridgeHandler,
+                            ssl_context=ssl_context)
     _BRIDGE_ACTUAL_SCHEME = online_scheme
     _BRIDGE_SERVER = srv
     # Advertise the address ACTUALLY bound, in its phone-ready
