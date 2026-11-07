@@ -136,19 +136,26 @@ def save_history(history):
     data_dir.write_json_atomic(destination, history)
 
 
-# ARIA's own control files at the default workspace root
-# (pass 27 #2). settings.json carries safe_mode, so a model file
-# write of {"safe_mode": false} would switch safe mode off from
-# inside auto mode — and moving settings.json away would do the
+# ARIA's own control files at the workspace root — and at each named
+# project's root (pass 28 #1). settings.json carries safe_mode, so a
+# model file write of {"safe_mode": false} would switch safe mode off
+# from inside auto mode — and moving settings.json away would do the
 # same (settings_load then reads an empty dict). These files are
 # written only by ARIA's own code paths (config.settings_save,
-# memory, scheduler, history); file tools must never create,
-# overwrite, move, or delete the workspace-root copies. Reads stay
-# allowed — only writes refuse. A same-named file inside a project
-# subfolder or a named project is not the control file.
+# memory, scheduler, history, taskstore); file tools must never
+# create, overwrite, move, or delete the copies at a workspace root
+# or a project root. Reads stay allowed — only writes refuse. A
+# same-named file in any other subfolder is an ordinary document,
+# not the control file. The set is built from the live paths, not
+# legacy constants: the live memory DB is aria_memory.db (config's
+# MEMORY_DB robot_memory.db is unused), and the delegated-task
+# journal delegated_tasks.json carries mission policy — both were
+# missing, so a model write could replace the live DB or forge a
+# journal record that resumes a task outside its mission's cap.
 RESERVED_CONTROL_FILES = frozenset({
-    "settings.json", "mood.json", "robot_memory.db", "chat_history.db",
-    "scheduler.db", "price_watches.db", "aria_master_log.md",
+    "settings.json", "mood.json", "robot_memory.db", "aria_memory.db",
+    "chat_history.db", "scheduler.db", "price_watches.db",
+    "delegated_tasks.json", "aria_master_log.md",
     "where_we_left_off.md", "memory_spine.jsonl",
     "conversation_context.json",
 })
@@ -156,15 +163,22 @@ RESERVED_CONTROL_FILES = frozenset({
 
 def is_reserved_control_file(abs_path, workspace_root=None) -> bool:
     """True when abs_path names a reserved control file at the
-    default workspace root."""
+    default workspace root or directly under a named project's root
+    (<root>/projects/<id>/<name>). A same-named file in any other
+    subfolder is an ordinary document."""
     from aria import config
     root = Path(workspace_root or config.WORKSPACE_DIR).resolve()
     try:
         target = Path(str(abs_path)).resolve()
     except Exception:
         return False
-    return (target.parent == root
-            and target.name.casefold() in RESERVED_CONTROL_FILES)
+    if target.name.casefold() not in RESERVED_CONTROL_FILES:
+        return False
+    if target.parent == root:
+        return True
+    parent = target.parent
+    return (parent.parent.name == "projects"
+            and parent.parent.parent == root)
 
 
 def file_allowed(filename):

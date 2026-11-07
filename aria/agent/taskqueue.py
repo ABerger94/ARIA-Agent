@@ -180,16 +180,28 @@ class TaskQueue:
             # running uncapped on the resumer's context. A record
             # written before these fields existed has none of the
             # keys — only then does the resumer's context win.
-            if "spend_cap" in resume_rec:
-                parent_cap = resume_rec.get("spend_cap")
-            if "budget_scope" in resume_rec:
-                parent_scope = resume_rec.get("budget_scope") or ""
-            if "envelope" in resume_rec:
-                parent_env = resume_rec.get("envelope")
-            if "mission_id" in resume_rec:
-                parent_mid = resume_rec.get("mission_id")
-            if "parent_execution_id" in resume_rec:
-                parent_exec_id = resume_rec.get("parent_execution_id") or ""
+            # Pass 28 #1: an explicit null (or, for the string
+            # fields, an empty value) in the record counts as
+            # absent — a journal record carrying "envelope": null /
+            # "spend_cap": null must not override the resumer's
+            # live policy with nothing (that is how a forged
+            # record escaped a capped mission); only a real value
+            # restores the original policy. spend_cap keeps the
+            # is-not-None test because a $0 cap is meaningful;
+            # budget_scope / parent_execution_id take the truthy
+            # test because "" is their "no value" default and a
+            # default-scope record must not drop the resumer's
+            # mission scope (spend attribution) or parent link.
+            if resume_rec.get("spend_cap") is not None:
+                parent_cap = resume_rec["spend_cap"]
+            if resume_rec.get("budget_scope"):
+                parent_scope = resume_rec["budget_scope"]
+            if resume_rec.get("envelope") is not None:
+                parent_env = resume_rec["envelope"]
+            if resume_rec.get("mission_id") is not None:
+                parent_mid = resume_rec["mission_id"]
+            if resume_rec.get("parent_execution_id"):
+                parent_exec_id = resume_rec["parent_execution_id"]
         task = Task(
             priority=priority.value,
             created_at=time.time(),

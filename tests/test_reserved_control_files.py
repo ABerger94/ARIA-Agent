@@ -85,3 +85,41 @@ def test_is_reserved_control_file(ws):
         str(ws / "sub" / "settings.json"), str(ws))
     assert not workspaces.is_reserved_control_file(
         str(ws / "notes.txt"), str(ws))
+
+
+def test_write_file_refuses_live_db_and_journal(ws):
+    # Pass 28 #1: the live DB is aria_memory.db (not the legacy
+    # robot_memory.db) and the task journal carries mission policy.
+    for name in ("aria_memory.db", "delegated_tasks.json"):
+        out = builtins.tool_write_file(name, "garbage")
+        assert "control file" in str(out), out
+        assert not (ws / name).exists()
+
+
+def test_project_root_control_files_reserved(ws):
+    # Pass 28 #1: a named project's own live state is reserved too.
+    assert workspaces.is_reserved_control_file(
+        str(ws / "projects" / "proj1" / "aria_memory.db"), str(ws))
+    assert workspaces.is_reserved_control_file(
+        str(ws / "projects" / "proj1" / "delegated_tasks.json"), str(ws))
+    assert workspaces.is_reserved_control_file(
+        str(ws / "projects" / "proj1" / "settings.json"), str(ws))
+    # But a same-named file deeper than a project root is ordinary.
+    assert not workspaces.is_reserved_control_file(
+        str(ws / "projects" / "proj1" / "sub" / "aria_memory.db"), str(ws))
+    assert not workspaces.is_reserved_control_file(
+        str(ws / "projects" / "aria_memory.db"), str(ws))
+
+
+def test_write_file_refuses_project_live_db(ws, monkeypatch):
+    # Pass 28 #1: bound to a named project, write_file("aria_memory.db")
+    # must refuse the project's live DB, not write it.
+    monkeypatch.setattr(workspaces, "current", lambda: "proj1")
+    monkeypatch.setattr(workspaces, "get",
+                        lambda project=None: {"settings": {}})
+    out = builtins.tool_write_file("aria_memory.db", "garbage")
+    assert "control file" in str(out), out
+    assert not (ws / "projects" / "proj1" / "aria_memory.db").exists()
+    out = builtins.tool_write_file("notes.txt", "hello")
+    assert "Successfully wrote" in str(out), out
+    assert (ws / "projects" / "proj1" / "notes.txt").exists()
