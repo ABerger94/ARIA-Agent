@@ -142,6 +142,21 @@ def _failed(reason, **facts) -> str:
             "with the reason. Do not claim any part of it succeeded.")
 
 
+def _unverified(reason, **facts) -> str:
+    # Pass 28 #27: a timeout is UNVERIFIED, never FAILED — FAILED
+    # renders "This did NOT happen", but a command cut short may
+    # already have had effects. Mirrors _failed's seam + fallback.
+    mod = _module("aria.outcome")
+    if mod is not None:
+        return mod.unverified("run_shell_command", reason, **facts)
+    return (f"status=unverified action=run_shell_command"
+            f"{_render_facts(facts)}"
+            f' reason="{reason}"'
+            " -- NOT confirmed. Tell the user plainly that you asked "
+            "and cannot confirm it worked, and say what they can "
+            "check. Do NOT say it is done.")
+
+
 def _ask(question, **facts) -> str:
     mod = _module("aria.outcome")
     if mod is not None:
@@ -296,8 +311,9 @@ def _execute(command: str, cwd: str, timeout: int) -> str:
             proc.wait(timeout=5)
         except Exception:
             pass
-        return _failed(
-            f"the command timed out after {timeout}s and was stopped",
+        return _unverified(
+            f"the command timed out after {timeout}s and was stopped; "
+            f"it may already have had effects",
             command=command)
     except Exception as e:
         return _failed(

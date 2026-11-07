@@ -54,12 +54,29 @@ def test_execute_no_output(tmp_path):
     assert out == 'Exit code: 0\n(no output)'
 
 
-def test_execute_timeout_is_failed_not_output(tmp_path):
+def test_execute_timeout_is_unverified_not_failed(tmp_path):
+    # Pass 28 #27: a timed-out command is UNVERIFIED, not FAILED —
+    # FAILED renders "This did NOT happen", but the command may
+    # already have had effects before the timeout cut it short.
     # _execute directly, below the handler's 5s clamp: a 3s sleep
     # against a 1s timeout.
     out = shelltool._execute(
         _py('import time; time.sleep(3)'), str(tmp_path), 1)
-    assert 'status=failed' in out and 'timed out after 1s' in out
+    assert 'status=unverified' in out and 'timed out after 1s' in out
+    assert 'did NOT happen' not in out, out
+    assert outcome.normalize(out).status == 'unverified'
+
+
+def test_execute_timeout_after_effect_is_unverified(tmp_path):
+    # The command wrote a file, THEN hung: the effect stands, so
+    # the outcome must not claim nothing happened.
+    marker = tmp_path / "effect_27.txt"
+    code = (f"open(r'{marker}', 'w').write('done'); "
+            "import time; time.sleep(30)")
+    out = shelltool._execute(_py(code), str(tmp_path), 1)
+    assert marker.read_text() == "done"
+    assert outcome.normalize(out).status == 'unverified', out
+    assert 'may already have had effects' in out, out
 
 
 def test_execute_timeout_kills_descendants(tmp_path):
@@ -75,7 +92,9 @@ def test_execute_timeout_kills_descendants(tmp_path):
         'time.sleep(25)')
     try:
         out = shelltool._execute(_py(code), str(tmp_path), 1)
-        assert 'status=failed' in out and 'timed out after 1s' in out
+        # Pass 28 #27: a timeout is UNVERIFIED (its effects are
+        # unknown), not FAILED.
+        assert 'status=unverified' in out and 'timed out after 1s' in out
         found = subprocess.run(['pgrep', '-f', marker],
                                capture_output=True, text=True)
         assert found.returncode == 1, found.stdout

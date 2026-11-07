@@ -68,5 +68,7 @@ def test_streaming_timeout_still_kills(tmp_path):
             "[print(i, flush=True) or time.sleep(0.01) "
             "for i in range(100000)]")
     out = shelltool._execute(_py(code), str(tmp_path), 2)
-    assert "status=failed" in out and "timed out after 2s" in out
+    # Pass 28 #27: a timeout is UNVERIFIED (its effects are
+    # unknown), not FAILED.
+    assert "status=unverified" in out and "timed out after 2s" in out
     print("ok streaming_timeout")
