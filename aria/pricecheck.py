@@ -38,8 +38,18 @@ _JSONLD_PRICE_RE = re.compile(r'"price"\s*:\s*"?([0-9][0-9,]*\.[0-9]{2})"?')
 _DOLLAR_PRICE_RE = re.compile(r'\$\s*([0-9][0-9,]*\.[0-9]{2})')
 
 
-def extract_price(text: str):
-    """Best-effort price extraction. Returns float or None."""
+def extract_price(text: str, label: str = None):
+    """Best-effort price extraction. Returns float or None.
+
+    Pass 28 #38: the $ fallback used to take min() of every $
+    amount on the page, so a $4.99 shipping line or a $9.99
+    accessory beat the item's own price and fired a false drop
+    alert. Now: JSON-LD wins; one distinct $ amount is the price;
+    several amounts are disambiguated by the watch label (the
+    amount nearest a label occurrence in the text); several
+    amounts with no label on the page are ambiguous — None
+    instead of a guess.
+    """
     if not text:
         return None
     m = _JSONLD_PRICE_RE.search(text)
@@ -48,13 +58,25 @@ def extract_price(text: str):
             return float(m.group(1).replace(",", ""))
         except ValueError:
             pass
-    prices = []
+    prices = []  # (start position, value)
     for m in _DOLLAR_PRICE_RE.finditer(text):
         try:
-            prices.append(float(m.group(1).replace(",", "")))
+            prices.append((m.start(), float(m.group(1).replace(",", ""))))
         except ValueError:
             continue
-    return min(prices) if prices else None
+    if not prices:
+        return None
+    if len({v for _, v in prices}) == 1:
+        return prices[0][1]
+    label = (label or "").strip()
+    if label:
+        spots = [m.start() for m in re.finditer(
+            re.escape(label), text, re.IGNORECASE)]
+        if spots:
+            return min(prices,
+                       key=lambda p: min(abs(p[0] - s)
+                                         for s in spots))[1]
+    return None
 
 
 def check_price_watches() -> str:
@@ -83,7 +105,7 @@ def check_price_watches() -> str:
         checked += 1
         try:
             text = _builtins.tool_fetch_url(url or "")
-            price = extract_price(text or "")
+            price = extract_price(text or "", label)
         except Exception as e:
             add_log(f"Price check #{wid} ({label}) fetch failed: {redact(str(e))}")
             continue
