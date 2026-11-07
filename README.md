@@ -122,9 +122,10 @@ first unfinished step. A step inside the envelope runs unattended in
 `auto` approval mode; a step outside it, or an irreversible action the
 envelope didn't name, parks through the *existing* approval store (the
 same banner / Shell card / phone band as everything else — there is no
-second approval path), and because that store is in-memory, a parked
-step whose token expired or died with a restart is simply re-parked
-fresh. After the last step, a verify pass judges the recorded outputs
+second approval path). That store persists pending approvals to disk, so a
+parked step survives a restart and replays under the project, budget, and
+envelope it was parked in; a token past its 10-minute expiry is journaled
+as expired instead of restored, and the step is then re-parked fresh. After the last step, a verify pass judges the recorded outputs
 against the goal — at most two repair attempts, then the mission closes
 `done_unverified` and says so. The delivery summary (asked / done /
 evidence / parked-or-failed) surfaces as a card on Shell Home's Today
@@ -170,7 +171,7 @@ suite:
 
 | Area | What's there |
 |---|---|
-| Computer & files | `launch_app`, `open_app_or_url`, window control (`list_windows`, `focus_window`, `minimize_window`, `close_window`, `window_snap`), GUI control (`gui_click`, `gui_type`), clipboard (`clipboard_read`, `clipboard_write`), `run_python_code` (sandboxed), `run_shell_command` (a real shell — in auto approval mode it runs on your say-so; in the confirm modes the exact command parks behind an on-screen CONFIRM first — never from routines or delegated tasks), `browser_control` (open a URL, or fetch a page's text), `browser_agent` (a supervised real-browser driver in her own profile — one action per call; irreversible clicks like pay/send/delete execute in auto mode and are stashed for approval in the confirm modes, private addresses refused), the File Commander (`file_organize` — dry-run plan first, always; `file_find_advanced`, `find_file`, `file_duplicates`, `disk_usage`), `process_file`, `fetch_url`, `web_search`, `research` (deep multi-source briefs — reads the sources, cites them, cross-checks its own claims, files the brief to the Briefing tab) |
+| Computer & files | `launch_app`, `open_app_or_url`, window control (`list_windows`, `focus_window`, `minimize_window`, `close_window`, `window_snap`), GUI control (`gui_click`, `gui_type`), clipboard (`clipboard_read`, `clipboard_write`), `run_python_code` (process isolation only — same interpreter, user, and filesystem access as ARIA herself, not an OS sandbox), `run_shell_command` (a real shell — in auto approval mode it runs on your say-so; in the confirm modes the exact command parks behind an on-screen CONFIRM first — never from routines or delegated tasks), `browser_control` (open a URL, or fetch a page's text), `browser_agent` (a supervised real-browser driver in her own profile — one action per call; irreversible clicks like pay/send/delete execute in auto mode and are stashed for approval in the confirm modes, private addresses refused), the File Commander (`file_organize` — dry-run plan first, always; `file_find_advanced`, `find_file`, `file_duplicates`, `disk_usage`), `process_file`, `fetch_url`, `web_search`, `research` (deep multi-source briefs — reads the sources, cites them, cross-checks its own claims, files the brief to the Briefing tab) |
 | Travel & games | `flight_finder` (builds and opens a Google Flights search — prices live on the page and are never invented), `game_updater` (Steam: list installed games, report flagged updates, queue a validate/update; Epic honestly unsupported) |
 | Media | `media_control` (one tool over her own video player and the system: play/pause, seek by fraction or seconds, volume), `spotify`, `media_key`, `volume`, `dj` — transport is explicit and verified, aimed at the real media session (see NOW PLAYING, below) |
 | Phone node | `phone_status`, `phone_list_apps`, `phone_open_app`, `phone_read_screen` (accessibility tree with tap targets), `phone_notifications`, `phone_tap`, `phone_swipe`, `phone_type`, `phone_key` — via the ARIA Node Android app |
