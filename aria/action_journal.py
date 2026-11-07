@@ -12,7 +12,7 @@ import sqlite3
 from contextlib import contextmanager
 import time
 
-from aria.outcome import ToolResult, normalize, DONE, FAILED, UNVERIFIED
+from aria.outcome import ToolResult, normalize, ASK, DONE, FAILED, UNVERIFIED
 from aria.tool_policy import retry_safe
 
 
@@ -45,12 +45,22 @@ def begin(operation_id, tool, args):
         row = db.execute('SELECT tool,fingerprint,state,result,receipt,artifacts '
                          'FROM action_receipts WHERE id=?', (operation_id,)).fetchone()
         if row:
-            if row[1] != fingerprint:
+            if row[2] == 'ask':
+                # Pass 28 #30: a stored ASK is a no-effect outcome —
+                # the tool asked for input and did nothing, so the
+                # receipt must never be returned or block a
+                # re-attempt (same args, or new ones now that the
+                # question has been answered). Drop it; the insert
+                # below records a fresh attempt. This also heals
+                # rows written before finish() stopped storing ASK.
+                db.execute('DELETE FROM action_receipts WHERE id=?',
+                           (operation_id,))
+            elif row[1] != fingerprint:
                 return ToolResult(FAILED, 'status=failed reason="Action id reused with different arguments"')
-            if row[2] != 'executing' and not (row[2] == FAILED and retry_safe(tool)):
+            elif row[2] != 'executing' and not (row[2] == FAILED and retry_safe(tool)):
                 return ToolResult(row[2], row[3] or '', json.loads(row[4] or '{}'),
                                   tuple(json.loads(row[5] or '[]')))
-            if row[2] == 'executing' and not retry_safe(tool):
+            elif row[2] == 'executing' and not retry_safe(tool):
                 return ToolResult(UNVERIFIED,
                     'status=unverified reason="An earlier attempt may already have taken effect; '
                     'check its receipt or destination before creating another action" '
@@ -66,7 +76,11 @@ def begin(operation_id, tool, args):
 def finish(operation_id, result):
     result = normalize(result)
     # Approval is an unexecuted request. The approved replay owns this same id.
-    if result.text.startswith('[AWAITING_APPROVAL'):
+    # Pass 28 #30: an ASK outcome is likewise no-effect — the tool asked for
+    # input and did nothing, so persisting it as a receipt would return the
+    # stale question forever and permanently block the resumed task from
+    # re-attempting the step. Drop the row; the next attempt executes fresh.
+    if result.text.startswith('[AWAITING_APPROVAL') or result.status == ASK:
         with _connect() as db:
             db.execute('DELETE FROM action_receipts WHERE id=?', (operation_id,))
         return
