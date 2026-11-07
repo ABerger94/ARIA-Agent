@@ -40,6 +40,7 @@ import hashlib
 import importlib.util
 import os
 import re
+import threading
 
 from aria import config as _config
 
@@ -204,8 +205,14 @@ def _make_lazy_handler(path, name):
     The module's top-level code runs at most once per process:
     a failed import or a non-callable run() is cached as broken
     and later calls return the failure instead of re-executing.
+    Pass 27 #27: the import is serialized by a per-handler lock
+    (double-checked: a cheap check outside, the deciding check
+    inside) — without it, two concurrent first calls could both
+    see an empty cache and both execute the module's top-level
+    code, contradicting "at most once".
     """
     state = {}
+    init_lock = threading.Lock()
 
     def _fail(message):
         """A user-tool failure, typed FAILED (pass 26 B3#4): the
@@ -245,21 +252,30 @@ def _make_lazy_handler(path, name):
         # A cached import belongs to the digest it was loaded
         # from: an approval for NEW bytes must execute the new
         # bytes, not the stale cached module.
+        # Pass 27 #27: serialize the import. The outer check
+        # avoids taking the lock on every call; the inner check,
+        # under the lock, re-decides — so concurrent first calls
+        # (or concurrent re-imports for a new digest) cannot both
+        # enter _load_module_from_path and run the module's
+        # top-level code twice.
         if ("run" not in state or (approved is not None
                                    and state.get("digest") != approved)):
-            try:
-                mod = _load_module_from_path(path)
-            except Exception as _e:
-                state["run"] = None
-                return _fail(f"[user tool '{_tool}' failed: import failed: "
-                             f"{_config.redact(str(_e))}]")
-            run_fn = getattr(mod, "run", None)
-            if not callable(run_fn):
-                state["run"] = None
-                return _fail(f"[user tool '{_tool}' failed: no run(args) "
-                             f"function defined]")
-            state["run"] = run_fn
-            state["digest"] = source_digest(path)
+            with init_lock:
+                if ("run" not in state or (approved is not None
+                                           and state.get("digest") != approved)):
+                    try:
+                        mod = _load_module_from_path(path)
+                    except Exception as _e:
+                        state["run"] = None
+                        return _fail(f"[user tool '{_tool}' failed: import failed: "
+                                     f"{_config.redact(str(_e))}]")
+                    run_fn = getattr(mod, "run", None)
+                    if not callable(run_fn):
+                        state["run"] = None
+                        return _fail(f"[user tool '{_tool}' failed: no run(args) "
+                                     f"function defined]")
+                    state["run"] = run_fn
+                    state["digest"] = source_digest(path)
         run_fn = state.get("run")
         if run_fn is None:
             return _fail(f"[user tool '{_tool}' failed: the module failed "
