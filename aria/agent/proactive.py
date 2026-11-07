@@ -122,13 +122,29 @@ def process_event_queue(speak_fn: Callable[[str], None],
                         is_busy_fn: Callable[[], bool]) -> int:
     """Drain the Module 5 event bus and route each event through the EXISTING
     ``proactive_say`` decline-learning/suppression logic. NEVER bypasses
-    ``proactive_say``. Returns the number of events spoken."""
+    ``proactive_say``. Returns the number of events spoken.
+
+    Pass 28 #40: the old drain-then-maybe-speak discarded every event
+    that arrived while the user was busy. Busy at entry drains
+    nothing; busy mid-loop holds the unspoken remainder for the
+    next cycle (re-queued without re-notifying subscribers). A
+    decline-suppressed event still drops deliberately.
+    """
     try:
-        from aria.events import drain
+        from aria.events import drain, queue_size, requeue
     except Exception as e:
         add_log(f"Heartbeat: event bus import failed: {e}")
         return 0
+    try:
+        if is_busy_fn():
+            add_log(f"Heartbeat: holding {queue_size()} event-bus "
+                    f"notification(s) (user busy)")
+            return 0
+    except Exception as e:
+        add_log(f"Heartbeat: busy check failed: {e}")
+        return 0
     spoken = 0
+    held = []
     try:
         events = drain()
     except Exception as e:
@@ -136,6 +152,11 @@ def process_event_queue(speak_fn: Callable[[str], None],
         return 0
     for ev in events:
         try:
+            # The user may have become busy since the entry check —
+            # hold the rest instead of speaking into a call.
+            if is_busy_fn():
+                held.append(ev)
+                continue
             event_type = ev.get("type", "")
             text = _event_nudge_text(event_type, ev.get("payload", {}))
             if not text:
@@ -144,8 +165,18 @@ def process_event_queue(speak_fn: Callable[[str], None],
             if proactive_say(f"event_{event_type}", text, speak_fn,
                              is_busy_fn, lambda: False):
                 spoken += 1
+            elif is_busy_fn():
+                # Became busy between the check above and the speak
+                # attempt — hold it, don't drop it.
+                held.append(ev)
+            # Else: declined/suppressed — drop deliberately.
         except Exception as e:
             add_log(f"Heartbeat: event processing failed: {e}")
+    if held:
+        for ev in held:
+            requeue(ev)
+        add_log(f"Heartbeat: holding {len(held)} event-bus "
+                f"notification(s) for the next cycle (user busy)")
     if spoken:
         add_log(f"Heartbeat: spoke {spoken} event-bus notification(s)")
     return spoken

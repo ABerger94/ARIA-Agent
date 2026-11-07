@@ -110,6 +110,19 @@ def drain() -> List[Dict[str, Any]]:
         return items
 
 
+def requeue(event: Dict[str, Any]) -> None:
+    """Put a drained event back on the bus WITHOUT re-notifying
+    subscribers (they already saw it at first emit). Pass 28 #40:
+    an event drained while the user was busy must wait for the
+    next cycle, not vanish. Held events land behind anything
+    emitted since the drain."""
+    try:
+        with _bus_lock:
+            _bus.append(dict(event))
+    except Exception as e:  # noqa: BLE001 - the bus never breaks callers
+        add_log(f"events: requeue failed: {e}")
+
+
 def queue_size() -> int:
     """Current number of undrained events."""
     with _bus_lock:
