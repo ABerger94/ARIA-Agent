@@ -224,6 +224,7 @@ def evaluate_autonomous_goals(action_fn: Optional[Callable[..., str]] = None,
         goal_db_update(gid, status="running")
 
         res_text = ""
+        ran = False
         try:
             if action_fn:
                 # Pass 27 #16: run the goal under the policy
@@ -236,20 +237,30 @@ def evaluate_autonomous_goals(action_fn: Optional[Callable[..., str]] = None,
                     res_text = action_fn(
                         "autonomous",
                         f"[Autonomous Task: {title}] {desc}")
+                ran = True
             else:
                 res_text = "Goal evaluated (no action dispatcher bound)."
         except Exception as e:
             res_text = f"Goal execution error: {e}"
             add_log(f"Heartbeat: Goal #{gid} failed: {e}")
 
-        # If recurring, reschedule; otherwise mark complete
+        # Pass 28 #39: a goal that never ran (no dispatcher) or
+        # errored is NOT complete — the old code marked every
+        # one-shot goal completed, burying the failure so it
+        # would never run. A failed one-shot parks as "failed"
+        # (not due, so no retry loop) with the error as its
+        # result; a failed recurring goal reschedules as before
+        # (its next cycle retries) but is not reported as done.
         if interval > 0:
             next_t = time.time() + interval
             goal_db_update(gid, status="active", last_result=res_text, next_run=next_t)
             add_log(f"Heartbeat: Goal #{gid} rescheduled in {interval}s.")
-        else:
+        elif ran:
             goal_db_update(gid, status="completed", last_result=res_text)
             add_log(f"Heartbeat: Goal #{gid} completed.")
+        else:
+            goal_db_update(gid, status="failed", last_result=res_text)
+            add_log(f"Heartbeat: Goal #{gid} failed (not completed).")
 
         spine_append("autonomous_goal", {"goal_id": gid, "title": title, "result": str(res_text)[:200]})
 
