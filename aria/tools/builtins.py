@@ -163,6 +163,11 @@ def tool_write_file(filename: str, content: str) -> str:
             f"{type(content).__name__}. Nothing was written.]", FAILED)
     path = workspaces.resolve_workspace_file(filename, WORKSPACE_DIR)
     clean = os.path.relpath(path, workspaces.path('', WORKSPACE_DIR))
+    if workspaces.is_reserved_control_file(path, WORKSPACE_DIR):
+        return ResultText(
+            f"[Write failed: '{clean}' is one of ARIA's own control "
+            f"files (it carries settings like safe mode) — file "
+            f"tools cannot write it. Nothing was written.]", FAILED)
     parent_dir = os.path.dirname(path)
     if parent_dir:
         os.makedirs(parent_dir, exist_ok=True)

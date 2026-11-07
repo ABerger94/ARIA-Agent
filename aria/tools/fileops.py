@@ -185,6 +185,16 @@ def tool_file_organize(directory: str, dry_run: bool = True) -> str:
             if _is_dotfile(name):
                 skipped += 1
                 continue
+            # ARIA's own control files (settings.json carries
+            # safe_mode) must never be moved out of the workspace
+            # root — moving settings.json away would switch safe
+            # mode off exactly like writing it (pass 27 #2).
+            from aria import config as _config
+            from aria import workspaces as _workspaces
+            if _workspaces.is_reserved_control_file(
+                    src, _config.WORKSPACE_DIR):
+                skipped += 1
+                continue
             if not os.path.isfile(src):
                 skipped += 1
                 continue

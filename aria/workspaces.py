@@ -136,6 +136,37 @@ def save_history(history):
     data_dir.write_json_atomic(destination, history)
 
 
+# ARIA's own control files at the default workspace root
+# (pass 27 #2). settings.json carries safe_mode, so a model file
+# write of {"safe_mode": false} would switch safe mode off from
+# inside auto mode — and moving settings.json away would do the
+# same (settings_load then reads an empty dict). These files are
+# written only by ARIA's own code paths (config.settings_save,
+# memory, scheduler, history); file tools must never create,
+# overwrite, move, or delete the workspace-root copies. Reads stay
+# allowed — only writes refuse. A same-named file inside a project
+# subfolder or a named project is not the control file.
+RESERVED_CONTROL_FILES = frozenset({
+    "settings.json", "mood.json", "robot_memory.db", "chat_history.db",
+    "scheduler.db", "price_watches.db", "aria_master_log.md",
+    "where_we_left_off.md", "memory_spine.jsonl",
+    "conversation_context.json",
+})
+
+
+def is_reserved_control_file(abs_path, workspace_root=None) -> bool:
+    """True when abs_path names a reserved control file at the
+    default workspace root."""
+    from aria import config
+    root = Path(workspace_root or config.WORKSPACE_DIR).resolve()
+    try:
+        target = Path(str(abs_path)).resolve()
+    except Exception:
+        return False
+    return (target.parent == root
+            and target.name.casefold() in RESERVED_CONTROL_FILES)
+
+
 def file_allowed(filename):
     """Optional project roots restrict file tools; an empty list keeps legacy access."""
     roots = get().get('settings', {}).get('file_roots') or []
