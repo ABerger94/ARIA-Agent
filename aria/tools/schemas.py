@@ -345,7 +345,9 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
     {   'description': 'Minimize a window by (partial) title.',
         'name': 'minimize_window',
         'parameters': {'properties': {'title': {'type': 'STRING'}}, 'required': ['title'], 'type': 'OBJECT'}},
-    {   'description': 'Close a window by (partial) title..',
+    {   'description': 'Close a window by title: an exact title wins, a unique partial match closes, several matches are refused '
+                       'with a list of them; the close is verified (a window left open by an unsaved-changes dialog is reported '
+                       'as failed).',
         'name': 'close_window',
         'parameters': {'properties': {'title': {'type': 'STRING'}}, 'required': ['title'], 'type': 'OBJECT'}},
     {   'description': 'Unified media control. Actions: play, pause, stop, next, prev, seek_to, '

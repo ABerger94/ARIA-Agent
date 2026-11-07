@@ -523,6 +523,31 @@ def _find_window(gw, title: str):
     return None
 
 
+# Pass 28 #36: how long a close is given to take effect before
+# the tool reports the window still open.
+_CLOSE_POLL_ATTEMPTS = 10
+_CLOSE_POLL_SECONDS = 0.2
+
+
+def _find_window_to_close(gw, title: str):
+    """Resolve a close target without guessing. An exact
+    (case-insensitive) title match wins; otherwise the unique
+    substring match; several matches are ambiguous — returns
+    (None, [their titles]) so the caller refuses instead of
+    closing whichever window happened to be first."""
+    t_lower = title.lower()
+    windows = [w for w in gw.getAllWindows() if w.title.strip()]
+    exact = [w for w in windows if w.title.lower() == t_lower]
+    if len(exact) == 1:
+        return exact[0], []
+    if len(exact) > 1:
+        return None, [w.title for w in exact]
+    matches = [w for w in windows if t_lower in w.title.lower()]
+    if len(matches) == 1:
+        return matches[0], []
+    return None, [w.title for w in matches]
+
+
 def tool_list_windows() -> str:
     gw = _gw()
     if not gw:
@@ -568,15 +593,29 @@ def tool_close_window(title: str) -> str:
     gw = _gw()
     if not gw:
         return "[pygetwindow not installed]"
-    w = _find_window(gw, title)
-    if not w:
+    w, ambiguous = _find_window_to_close(gw, title)
+    if w is None:
+        if ambiguous:
+            return (f"[Close failed: '{title}' matches "
+                    f"{len(ambiguous)} windows: "
+                    f"{', '.join(ambiguous)} — close one by its "
+                    f"full title]")
         return f"[No window matching '{title}']"
     try:
         t = w.title
         w.close()
-        return f"Closed: {t}"
     except Exception as e:
         return f"[Close failed: {e}]"
+    # Pass 28 #36: w.close() only asks the app to close — an
+    # unsaved-changes dialog leaves the window open, so the old
+    # unconditional "Closed: ..." claimed success either way.
+    # Re-poll the window list: the title must actually be gone.
+    for _ in range(_CLOSE_POLL_ATTEMPTS):
+        if not any(x.title == t for x in gw.getAllWindows()):
+            return f"Closed: {t}"
+        time.sleep(_CLOSE_POLL_SECONDS)
+    return (f"[Close failed: window '{t}' is still open after the "
+            f"close request — it may be waiting on unsaved changes]")
 
 
 _MEDIA_ACTIONS = {
