@@ -265,7 +265,11 @@ class TaskQueue:
             task.cancel_flag.set()
             task.status = TaskStatus.CANCELLED
             add_log(f"Task cancelled: [{task_id}]")
-            return True
+        # Pass 28 #16: persist the cancellation — the journal
+        # record must not stay 'pending', or a restart's recovery
+        # would resurrect the cancelled task as resumable.
+        taskstore.finish(task_id, "cancelled")
+        return True
 
     def cancel_children_of_mission(self, mission_id) -> int:
         """Cancel every queued/running task submitted under
@@ -277,6 +281,7 @@ class TaskQueue:
         if mission_id is None:
             return 0
         stopped = 0
+        stopped_ids = []
         with self._lock:
             for task in self._tasks.values():
                 if task.mission_id != mission_id:
@@ -290,8 +295,15 @@ class TaskQueue:
                 task.cancel_flag.set()
                 task.status = TaskStatus.CANCELLED
                 stopped += 1
+                stopped_ids.append(task.task_id)
                 add_log(f"Task cancelled with mission {mission_id}: "
                         f"[{task.task_id}]")
+        # Pass 28 #16: persist each cancellation (see cancel()
+        # above) — a mission-cancelled child must not resurrect as
+        # resumable after a restart. Outside the queue lock: the
+        # journal write is disk I/O.
+        for tid in stopped_ids:
+            taskstore.finish(tid, "cancelled")
         return stopped
 
     def get_status(self, task_id: str) -> Optional[dict]:
