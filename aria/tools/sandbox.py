@@ -34,6 +34,23 @@ def call_signature(fn_name: str, args: dict) -> str:
                                           usedforsecurity=False).hexdigest()
 
 
+def _type_mismatch(type_name: str, value: Any) -> bool:
+    """True when value does not match the declared schema type.
+    Judged only when the schema declares a type; undeclared types
+    never mismatch. (bool is not int: isinstance(True, int) is
+    True in Python, so integers and numbers exclude bools.)"""
+    t = str(type_name or "").lower()
+    if t == "string":
+        return not isinstance(value, str)
+    if t == "boolean":
+        return not isinstance(value, bool)
+    if t == "integer":
+        return not isinstance(value, int) or isinstance(value, bool)
+    if t == "number":
+        return not isinstance(value, (int, float)) or isinstance(value, bool)
+    return False
+
+
 def missing_required_args(fn_name: str, args: dict, decls: Optional[Dict[str, Any]] = None) -> List[str]:
     """Check tool call arguments against schema declarations for missing/empty required params.
 
@@ -58,20 +75,43 @@ def missing_required_args(fn_name: str, args: dict, decls: Optional[Dict[str, An
         v = args[p]
         if isinstance(v, str) and not v.strip():
             return True
-        t = str((props.get(p) or {}).get("type") or "").lower()
-        if t == "string" and not isinstance(v, str):
-            return True
-        if t == "boolean" and not isinstance(v, bool):
-            return True
-        if t == "integer" and (not isinstance(v, int)
-                               or isinstance(v, bool)):
-            return True
-        if t == "number" and (not isinstance(v, (int, float))
-                              or isinstance(v, bool)):
-            return True
-        return False
+        return _type_mismatch(
+            str((props.get(p) or {}).get("type") or ""), v)
 
     return [p for p in required if _invalid(p)]
+
+
+def mistyped_optional_args(fn_name: str, args: dict, decls: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Optional schema params given a wrong-typed value (pass 28 #32).
+
+    missing_required_args only ever checked REQUIRED params, so an
+    optional boolean passed as "false" sailed through and was
+    bool()-coerced downstream — bool("false") is True, the opposite
+    of what was asked (and private="false" created a PRIVATE repo).
+    A present optional whose value does not match its declared
+    schema type is listed here; dispatch rejects the call before
+    any coercion can misread it. Absent optionals are fine, and an
+    explicit null counts as unset (the handler's default applies) —
+    only a present, non-null, wrong-typed value is a mistype.
+    Undeclared params are skipped, as in missing_required_args.
+    """
+    all_decls = decls or get_tool_decls_by_name()
+    decl = all_decls.get(fn_name)
+    if not decl:
+        return []
+    required = set((decl.get("parameters") or {}).get("required", []))
+    props = (decl.get("parameters") or {}).get("properties", {}) or {}
+    args = args or {}
+    out = []
+    for p, spec in props.items():
+        if p in required or p not in args:
+            continue
+        v = args[p]
+        if v is None:
+            continue
+        if _type_mismatch(str((spec or {}).get("type") or ""), v):
+            out.append(p)
+    return out
 
 
 def target_mentioned(target: str, message: str) -> bool:

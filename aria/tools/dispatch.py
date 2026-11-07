@@ -22,6 +22,7 @@ from aria.tools.schemas import (
 )
 from aria.tools.sandbox import (
     RISKY_TOOLS, call_signature, missing_required_args,
+    mistyped_optional_args,
     stale_target_check, risky_description, truncate_output,
     tool_run_python
 )
@@ -602,6 +603,21 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
             False
         )
 
+    # Pass 28 #32: an optional param given a wrong-typed value
+    # (e.g. unread_only="false") used to sail through and be
+    # bool()-coerced downstream — bool("false") is True, the
+    # opposite of what was asked. Reject before any coercion can
+    # misread it; absent optionals and explicit nulls (unset) pass.
+    mistyped = mistyped_optional_args(fn_name, args)
+    if mistyped:
+        return (
+            f"[Argument error: {fn_name} got a wrong-typed value for "
+            f"{', '.join(mistyped)}. Pass "
+            f"{'them' if len(mistyped) > 1 else 'it'} with the "
+            f"schema's type.]",
+            False
+        )
+
     # 3b. ARIA ULTIMATE (Module 4) — approval gating. Destructive tools pause
     # for user approval unless preauthorized (approve-token replay, trusted
     # routine replay) or the mode is auto. Lazy import: no import cycle.
@@ -1109,7 +1125,11 @@ def _init_default_registry():
         a.get("repo", ""), a.get("filepath", ""), a.get("content", ""), a.get("message", "")
     )
     _REGISTRY["github_create_repo"] = lambda a: builtins.tool_github_create_repo(
-        a.get("name", ""), a.get("description", ""), bool(a.get("private", True))
+        # Pass 28 #32: private passes through raw, never
+        # bool()-coerced — bool("false") is True, which created a
+        # PRIVATE repo when public was asked for. Dispatch step 3
+        # now rejects a non-bool private before this runs.
+        a.get("name", ""), a.get("description", ""), a.get("private", True)
     )
     _REGISTRY["write_file"] = lambda a: builtins.tool_write_file(a.get("filename", "file.txt"), a.get("content", ""))
     _REGISTRY["edit_own_code"] = lambda a: selfedit_mod.tool_edit_own_code(a.get("path", ""), a.get("content", ""))
@@ -1212,7 +1232,10 @@ def _init_default_registry():
     _REGISTRY["set_theme"] = lambda a: tool_set_theme(a)
     _REGISTRY["gmail_setup"] = lambda a: builtins.tool_gmail_setup(a.get("gmail_user", ""), a.get("app_password", ""))
     _REGISTRY["send_email"] = lambda a: builtins.tool_send_email(a.get("to", ""), a.get("subject", ""), a.get("body", ""))
-    _REGISTRY["read_email"] = lambda a: builtins.tool_read_email(a.get("query", ""), a.get("limit", 10), bool(a.get("unread_only", False)), a.get("uid", ""))
+    # Pass 28 #32: unread_only passes through raw, never
+    # bool()-coerced — bool("false") is True. Dispatch step 3 now
+    # rejects a non-bool unread_only before this runs.
+    _REGISTRY["read_email"] = lambda a: builtins.tool_read_email(a.get("query", ""), a.get("limit", 10), a.get("unread_only", False), a.get("uid", ""))
 
     # Scheduler tools
     _REGISTRY["morning_briefing"] = lambda a: scheduler.tool_briefing()
