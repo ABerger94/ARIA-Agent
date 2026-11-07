@@ -297,17 +297,36 @@ class TaskQueue:
     def get_status(self, task_id: str) -> Optional[dict]:
         with self._lock:
             task = self._tasks.get(task_id)
-            if not task or task.project != workspaces.current():
+            if task is not None:
+                if task.project != workspaces.current():
+                    return None
+                elapsed = (time.time() - task.started_at) if (
+                    task.status == TaskStatus.RUNNING and task.started_at) else 0.0
+                return {
+                    "task_id": task.task_id,
+                    "goal": task.goal,
+                    "status": task.status.value,
+                    "result": task.result,
+                    "error": task.error,
+                    "elapsed_s": round(elapsed, 1),
+                    "budget_s": int(getattr(_config, "DELEGATED_TASK_BUDGET_S", 600)),
+                }
+            # Pass 28 #12: after a restart the in-memory queue is
+            # empty, but the journal still holds the task — fall
+            # back to the durable record instead of reporting "no
+            # record". The journal file is project-scoped
+            # (workspaces.path), so this cannot leak across
+            # projects; a live in-memory task still wins above.
+            rec = taskstore.get(task_id)
+            if rec is None:
                 return None
-            elapsed = (time.time() - task.started_at) if (
-                task.status == TaskStatus.RUNNING and task.started_at) else 0.0
             return {
-                "task_id": task.task_id,
-                "goal": task.goal,
-                "status": task.status.value,
-                "result": task.result,
-                "error": task.error,
-                "elapsed_s": round(elapsed, 1),
+                "task_id": rec["task_id"],
+                "goal": rec.get("goal", ""),
+                "status": rec.get("status", ""),
+                "result": rec.get("result", ""),
+                "error": rec.get("error", ""),
+                "elapsed_s": 0.0,
                 "budget_s": int(getattr(_config, "DELEGATED_TASK_BUDGET_S", 600)),
             }
 
