@@ -124,7 +124,7 @@ def _existing_registry_names():
         return set()
 
 
-def _load_module_from_path(path):
+def _load_module_from_path(path, source=None):
     stem = os.path.splitext(os.path.basename(path))[0]
     mod_name = "aria.tools.user_tools." + stem
     spec = importlib.util.spec_from_file_location(mod_name, path)
@@ -136,10 +136,14 @@ def _load_module_from_path(path):
     # second-resolution mtime, so a file rewritten within the same
     # second would execute STALE bytecode — the old revision under
     # a new approval, after the handler just verified the new
-    # bytes. Compiling the bytes just read executes exactly the
-    # bytes the digest was computed over.
-    with open(path, "rb") as f:
-        source = f.read()
+    # bytes. Pass 28 #3: when the caller hands us the exact bytes
+    # it already hashed, compile those — the digest and the
+    # executed code then describe one read. Only when no bytes are
+    # supplied do we read the file here (and then nothing else has
+    # hashed them, so there is no check to race).
+    if source is None:
+        with open(path, "rb") as f:
+            source = f.read()
     code = compile(source, path, "exec")
     exec(code, mod.__dict__)
     return mod
@@ -257,9 +261,30 @@ def _make_lazy_handler(path, name):
         # mismatch (or an unreadable source) refuses typed FAILED
         # instead of executing under the old approval. Calls with
         # no digest (auto mode, no approval to bind) run as before.
+        # Pass 28 #3: the check and the import share ONE read of
+        # the file, done under the import lock — the digest is
+        # computed from the exact bytes that are then compiled, so
+        # a writer swapping the file between a check and an import
+        # can no longer execute the replacement under the old
+        # digest. No digest is read outside the lock at all, and
+        # the cached digest is the digest of the executed bytes.
         call_args = args if isinstance(args, dict) else {}
         approved = call_args.get("_source_digest")
         if approved is not None:
+            call_args = {k: v for k, v in call_args.items()
+                         if k != "_source_digest"}
+        # A cached import belongs to the digest it was loaded
+        # from: an approval for NEW bytes must execute the new
+        # bytes, not the stale cached module. And an approval for
+        # the CACHED digest must still refuse when the file has
+        # changed since — the cached module is only runnable while
+        # the file still matches the approval. This check reads
+        # the file, but it never leads to executing a fresh read:
+        # the code that runs is the cached in-memory module, whose
+        # bytes were verified at import time, so a swap after this
+        # read cannot substitute code.
+        if (approved is not None and "run" in state
+                and state.get("digest") == approved):
             current = source_digest(path)
             if current is None:
                 return _fail(f"[user tool '{_tool}' refused: source "
@@ -269,11 +294,6 @@ def _make_lazy_handler(path, name):
                 return _fail(f"[user tool '{_tool}' refused: source "
                              f"changed since approval — re-approve to "
                              f"run the new revision]")
-            call_args = {k: v for k, v in call_args.items()
-                         if k != "_source_digest"}
-        # A cached import belongs to the digest it was loaded
-        # from: an approval for NEW bytes must execute the new
-        # bytes, not the stale cached module.
         # Pass 27 #27: serialize the import. The outer check
         # avoids taking the lock on every call; the inner check,
         # under the lock, re-decides — so concurrent first calls
@@ -286,7 +306,19 @@ def _make_lazy_handler(path, name):
                 if ("run" not in state or (approved is not None
                                            and state.get("digest") != approved)):
                     try:
-                        mod = _load_module_from_path(path)
+                        with open(path, "rb") as f:
+                            source = f.read()
+                    except Exception:
+                        return _fail(f"[user tool '{_tool}' refused: source "
+                                     f"unreadable — cannot verify the approved "
+                                     f"revision]")
+                    digest = hashlib.sha256(source).hexdigest()
+                    if approved is not None and digest != approved:
+                        return _fail(f"[user tool '{_tool}' refused: source "
+                                     f"changed since approval — re-approve to "
+                                     f"run the new revision]")
+                    try:
+                        mod = _load_module_from_path(path, source=source)
                     except Exception as _e:
                         state["run"] = None
                         return _fail(f"[user tool '{_tool}' failed: import failed: "
@@ -309,7 +341,7 @@ def _make_lazy_handler(path, name):
                                      f"def run() is not supported — define "
                                      f"a plain def run(args)]")
                     state["run"] = run_fn
-                    state["digest"] = source_digest(path)
+                    state["digest"] = digest
         run_fn = state.get("run")
         if run_fn is None:
             return _fail(f"[user tool '{_tool}' failed: the module failed "
