@@ -252,7 +252,12 @@ class AgentExecutor:
         def _state() -> Dict[str, Any]:
             return {"goal": goal, "plan": plan,
                     "completed": list(completed),
-                    "results": dict(results)}
+                    "results": dict(results),
+                    # Pass 28 #20: a step that spawned a delegated
+                    # child parks with the child's id in the
+                    # checkpoint, so a resume settles THAT child
+                    # instead of submitting another one.
+                    "pending_child": pending_child}
 
         def _checkpoint() -> None:
             if on_checkpoint is not None:
@@ -262,6 +267,9 @@ class AgentExecutor:
                     add_log(f"taskexec: checkpoint callback failed ({e})")
 
         add_log(f"taskexec: starting delegated task '{goal[:60]}'")
+        # Pass 28 #20: a pending child survives in the checkpoint
+        # state across parks; a fresh run has none.
+        pending_child = (resume or {}).get("pending_child")
         if resume and resume.get("plan"):
             # Resume from a persisted checkpoint: reuse the plan,
             # keep the finished steps and their results. skip_steps
@@ -295,6 +303,58 @@ class AgentExecutor:
             for step in steps:
                 if step.get("step") in skip_steps:
                     continue  # resume: this step already ran
+                if pending_child and pending_child.get("step") == \
+                        step.get("step"):
+                    # Pass 28 #20: this step already spawned a
+                    # child and parked waiting for it — settle the
+                    # child from the durable journal instead of
+                    # submitting another one. The journal is the
+                    # source of truth (same project: delegate_task
+                    # submits under the parent's project).
+                    from aria.agent import taskstore as _ts
+                    _child = _ts.get(
+                        str(pending_child.get("task_id") or ""))
+                    _cstatus = (_child or {}).get("status")
+                    if _cstatus == "completed":
+                        results[step.get("step")] = \
+                            (_child or {}).get("result") or ""
+                        completed.append(step)
+                        pending_child = None
+                        _checkpoint()
+                        continue
+                    if _cstatus in ("failed", "cancelled"):
+                        failed_step = step
+                        failed_error = (
+                            (_child or {}).get("error")
+                            or (_child or {}).get("result")
+                            or f"delegated child "
+                               f"{pending_child.get('task_id')} "
+                               f"{_cstatus}")
+                        pending_child = None
+                        break
+                    if _cstatus == "blocked":
+                        raise TaskBlocked(
+                            f"delegated child "
+                            f"{pending_child.get('task_id')} is blocked: "
+                            f"{(_child or {}).get('blocked_reason') or 'needs input'}",
+                            _state())
+                    if _cstatus in ("pending", "running", "interrupted"):
+                        raise TaskBlocked(
+                            f"waiting for delegated child "
+                            f"{pending_child.get('task_id')} "
+                            f"(step {step.get('step')})",
+                            _state())
+                    # No journal record (or an unknown status): the
+                    # child cannot be settled — fail the step so the
+                    # replan path retries the delegation instead of
+                    # spawning a second child or certifying nothing.
+                    failed_step = step
+                    failed_error = (
+                        f"delegated child "
+                        f"{pending_child.get('task_id')} has no journal "
+                        f"record")
+                    pending_child = None
+                    break
                 if _cancelled():
                     add_log("taskexec: task cancelled")
                     return "Task cancelled."
@@ -355,6 +415,30 @@ class AgentExecutor:
                         raise
                     except Exception as e:
                         out = f"[Tool Error: {type(e).__name__}: {e}]"
+                    if tool in ("delegate_task", "task_resume") and \
+                            normalize(out).status == STARTED:
+                        # Pass 28 #20: a child-spawning step that
+                        # started a child parks WITH the child's
+                        # handle in the checkpoint — the generic
+                        # STARTED branch below would park with the
+                        # step uncheckpointed, and the resume would
+                        # submit another child instead of settling
+                        # this one.
+                        _m = re.search(r"task_id=([A-Za-z0-9_-]+)",
+                                       str(out))
+                        _p = re.search(r"project=([A-Za-z0-9_-]+)",
+                                       str(out))
+                        if _m is not None:
+                            pending_child = {
+                                "step": step.get("step"),
+                                "task_id": _m.group(1),
+                                "project": (_p.group(1) if _p
+                                            else None)}
+                            raise TaskBlocked(
+                                f"waiting for delegated child "
+                                f"{_m.group(1)} "
+                                f"(step {step.get('step')})",
+                                _state())
                     if normalize(out).status in (UNVERIFIED, STARTED, ASK) and not str(out).startswith('[AWAITING_APPROVAL'):
                         raise TaskBlocked(str(out), _state())
                     # Approval gate / safe mode FIRST: those strings

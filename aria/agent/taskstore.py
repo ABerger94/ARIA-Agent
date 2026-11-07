@@ -145,6 +145,7 @@ def create(task_id: str, goal: str, resumed_from: str = "", execution_scope: str
         "results": {str(k): v for k, v in (results or {}).items()},
         "blocked_reason": "", "result": "", "error": "",
         "resumed_from": resumed_from, "resumed_by": "",
+        "pending_child": None,
         "execution_scope": execution_scope or f"task:{task_id}",
         "spend_cap": spend_cap, "budget_scope": budget_scope or "",
         "envelope": _jsonable(envelope), "mission_id": mission_id,
@@ -178,7 +179,10 @@ def create(task_id: str, goal: str, resumed_from: str = "", execution_scope: str
 def checkpoint(task_id: str, state: Dict[str, Any]) -> None:
     """Persist execution progress: plan + completed steps +
     their results, exactly what a resume needs to skip finished
-    work instead of repeating it."""
+    work instead of repeating it. Also persists a pending_child
+    (pass 28 #20): a step that spawned a delegated child parks
+    with the child's id durable, so a resume settles that child
+    instead of submitting another one."""
     with _LOCK:
         data = _load()
         rec = data.get(task_id)
@@ -188,6 +192,7 @@ def checkpoint(task_id: str, state: Dict[str, Any]) -> None:
         rec["completed"] = state.get("completed") or []
         rec["results"] = {str(k): v for k, v in
                           (state.get("results") or {}).items()}
+        rec["pending_child"] = state.get("pending_child")
         rec["checkpoint_at"] = time.time()
         rec["updated_at"] = time.time()
         _save(data)

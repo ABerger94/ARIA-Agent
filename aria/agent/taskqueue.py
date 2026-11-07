@@ -151,6 +151,7 @@ class TaskQueue:
             resume_state = {"plan": rec.get("plan"),
                             "completed": rec.get("completed") or [],
                             "results": rec.get("results") or {},
+                            "pending_child": rec.get("pending_child"),
                             "execution_scope": execution_scope}
             if not goal:
                 goal = rec.get("goal", "")
