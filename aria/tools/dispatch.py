@@ -916,8 +916,19 @@ def _tool_delegate_task(args: dict) -> str:
 
     tid = taskqueue.get_queue().submit(goal, priority=priority,
                                        speak=_announce)
-    return (f"Delegated as task {tid}: {goal} — it runs in the "
-            f"background and I'll announce the outcome when it finishes.")
+    # Pass 27 #25: a delegation is STARTED, not DONE — the plain
+    # string used to normalize as DONE, so a mission certified
+    # the step before the work finished (or failed). The typed
+    # STARTED carries the durable child handle (task id + the
+    # project it was submitted under) so the parent settles from
+    # the child's terminal outcome instead of certifying the
+    # submission. The voice announcement on completion is
+    # unchanged (the speak callback above).
+    from aria import outcome as _outcome_mod
+    from aria import workspaces as _ws_mod
+    return _outcome_mod.started(
+        "delegate_task", task_id=tid, project=_ws_mod.current(),
+        goal=goal)
 
 
 def _tool_task_status(args: dict) -> str:

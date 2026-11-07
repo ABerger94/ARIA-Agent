@@ -19,6 +19,7 @@ introduced; record_receipt is a trusted UI operation, never a model tool.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import re
@@ -103,6 +104,15 @@ def _ensure_tables() -> None:
                 retries INTEGER NOT NULL DEFAULT 0,
                 approval_token TEXT
             )""")
+            # Pass 27 #25: a step waiting on a delegated task or
+            # background job stores the durable child handle
+            # (kind + id + project) so a later tick can settle it
+            # from the child's terminal outcome.
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(mission_steps)")}
+            if "child_handle" not in cols:
+                conn.execute("ALTER TABLE mission_steps "
+                             "ADD COLUMN child_handle TEXT")
             conn.commit()
         finally:
             conn.close()
@@ -149,8 +159,8 @@ def _mission_row(mid: int) -> Optional[Dict[str, Any]]:
 def _step_rows(mid: int) -> List[Dict[str, Any]]:
     rows = _query(
         "SELECT id, idx, tool, args, status, output, retries, "
-        "approval_token FROM mission_steps WHERE mission_id = ? "
-        "ORDER BY idx", (mid,))
+        "approval_token, child_handle FROM mission_steps "
+        "WHERE mission_id = ? ORDER BY idx", (mid,))
     out = []
     for r in rows:
         try:
@@ -159,7 +169,8 @@ def _step_rows(mid: int) -> List[Dict[str, Any]]:
             args = {}
         out.append({"id": r[0], "idx": r[1], "tool": r[2],
                     "args": args, "status": r[4], "output": r[5],
-                    "retries": r[6], "approval_token": r[7]})
+                    "retries": r[6], "approval_token": r[7],
+                    "child_handle": r[8]})
     return out
 
 
@@ -491,6 +502,135 @@ def _reconcile_parked() -> None:
             _park_plan(mid)
 
 
+def _reconcile_waiting_children(mid: int) -> None:
+    """Settle steps waiting on a delegated task / background job
+    from the child's terminal outcome (pass 27 #25).
+
+    Called at the top of each _run_mission pass, before the
+    worker decides the mission is blocked: a finished child
+    settles its step through _handle_step_result (so a failed
+    child retries / fails the mission exactly like a failed
+    step, and a completed child marks the step done), and the
+    loop then proceeds to the next step in the same pass. A
+    child that is still running leaves the step waiting.
+
+    A child with no record at all (the task queue is in-memory
+    until pass 27 #26 persists submissions, so a restart can
+    lose it; a job row can likewise be gone) is NOT certified:
+    the step goes 'uncertain' and the mission 'blocked_input',
+    surfacing the loss instead of completing on a submission.
+    Never raises: a failed lookup leaves the step waiting.
+    """
+    try:
+        steps = [s for s in _step_rows(mid)
+                 if s["status"] == "waiting_child"]
+        if not steps:
+            return
+        for step in steps:
+            try:
+                handle = json.loads(step.get("child_handle") or "{}")
+            except Exception:
+                handle = {}
+            kind = handle.get("kind")
+            project = handle.get("project")
+            try:
+                if kind == "delegated_task":
+                    _settle_delegated_child(mid, step, handle, project)
+                elif kind == "background_job":
+                    _settle_job_child(mid, step, handle, project)
+                else:
+                    _set_step(step["id"], status="uncertain",
+                              output="Started a child with no usable "
+                                     "handle — its outcome cannot be "
+                                     "verified.")
+            except Exception as e:
+                _config.log_silent(
+                    "missions._reconcile_waiting_children", e)
+    except Exception as e:
+        _config.log_silent("missions._reconcile_waiting_children", e)
+
+
+def _settle_delegated_child(mid, step, handle, project) -> None:
+    """One delegated-task child: settle its mission step from the
+    task's terminal status, or leave it waiting while the task
+    runs. A missing task record marks the step uncertain."""
+    from aria.agent import taskqueue
+    from aria import outcome as _outcome_mod
+    tid = handle.get("task_id")
+    if not tid:
+        _set_step(step["id"], status="uncertain",
+                  output="Delegated task handle has no task id — its "
+                         "outcome cannot be verified.")
+        return
+    use = workspaces.use(project) if project else contextlib.nullcontext()
+    with use:
+        st = taskqueue.get_queue().get_status(tid)
+    if st is None:
+        _set_step(step["id"], status="uncertain",
+                  output=f"Delegated task {tid} has no record — it "
+                         f"may have been lost on restart; its outcome "
+                         f"cannot be verified.")
+        return
+    status = (st.get("status") or "")
+    if status in ("pending", "running", "blocked"):
+        return  # still under way; keep waiting
+    if status == "completed":
+        result = str(st.get("result") or
+                     f"Delegated task {tid} completed.")
+        _handle_step_result(mid, step, result)
+        return
+    reason = (st.get("error") or
+              f"Delegated task {tid} ended {status}.")
+    _handle_step_result(
+        mid, step,
+        _outcome_mod.failed("delegate_task", str(reason)))
+
+
+def _settle_job_child(mid, step, handle, project) -> None:
+    """One background-job child: settle its mission step from the
+    job DB's terminal status. The DB row is reconciled first
+    (the scheduler's poll does the same), so a process that
+    finished since the last tick is read as finished, not
+    running."""
+    from aria.agent import workers as _workers_mod
+    from aria import outcome as _outcome_mod
+    jid = handle.get("job_id")
+    if not jid:
+        _set_step(step["id"], status="uncertain",
+                  output="Background job handle has no job id — its "
+                         "outcome cannot be verified.")
+        return
+    try:
+        _workers_mod._poll_background_jobs()
+    except Exception:
+        pass
+    use = workspaces.use(project) if project else contextlib.nullcontext()
+    with use:
+        jobs = _workers_mod.list_background_jobs(200)
+    row = next((j for j in jobs if j.get("id") == jid), None)
+    if row is None:
+        _set_step(step["id"], status="uncertain",
+                  output=f"Background job #{jid} has no record — its "
+                         f"outcome cannot be verified.")
+        return
+    status = (row.get("status") or "")
+    if status == "running":
+        return  # still under way; keep waiting
+    if status == "completed":
+        _handle_step_result(
+            mid, step,
+            f"Background job #{jid} completed (exit 0).")
+        return
+    code = row.get("exit_code")
+    _handle_step_result(
+        mid, step,
+        _outcome_mod.failed(
+            "manage_background_job",
+            f"Background job #{jid} ended {status}"
+            + (f" with exit code {code}" if code is not None
+               else "")))
+
+
 def executor_tick() -> bool:
     # Keep approved work running even after the desktop switches projects.
     for project in workspaces.list_projects():
@@ -517,7 +657,8 @@ def _executor_tick() -> bool:
             return False
         rows = _query(
             "SELECT id FROM missions WHERE plan_approved = 1 AND "
-            "status IN ('planned', 'running', 'verifying') "
+            "status IN ('planned', 'running', 'verifying', "
+            "'waiting_child') "
             "ORDER BY id LIMIT 1")
         if not rows:
             return False
@@ -632,6 +773,22 @@ def _run_mission(mid: int) -> None:
             except ValueError:
                 pass
         steps = _step_rows(mid)
+        # Pass 27 #25: settle steps waiting on a child first — a
+        # finished child completes/fails its step here, and the
+        # loop then proceeds to the next step in the same pass.
+        _reconcile_waiting_children(mid)
+        steps = _step_rows(mid)
+        # The reconciliation may have finished the mission (a
+        # failed child fails it): re-read before picking the
+        # next step, or the stale row lets the loop run on past a
+        # terminal mission.
+        m = _mission_row(mid)
+        if m is None or m["status"] in TERMINAL or \
+                m["status"] == "paused":
+            return
+        if any(s['status'] == 'waiting_child' for s in steps):
+            _set_mission(mid, status='waiting_child')
+            return
         if any(s['status'] == 'uncertain' for s in steps):
             _set_mission(mid, status='blocked_input')
             return
@@ -733,6 +890,37 @@ def _execute_step(dispatch, tool: str, args: dict, *,
     return str(result)
 
 
+_CHILD_HANDLE_RE = {
+    "delegate_task": (r"task_id=([A-Za-z0-9_-]+)", "task_id"),
+    "manage_background_job": (r"job_id=(\d+)", "job_id"),
+}
+
+
+def _parse_child_handle(tool: str, result: str):
+    """(kind, handle) for a STARTED result carrying a durable
+    child handle, else (None, None). Pass 27 #25: delegate_task
+    and manage_background_job return outcome.started with the
+    child id + project as facts; the mission parses them back
+    here so a later tick can settle the step from the child's
+    terminal outcome. The project rides along because the child
+    stores are project-scoped (taskqueue.get_status and the job
+    DB both filter by the current project)."""
+    spec = _CHILD_HANDLE_RE.get(tool or "")
+    if spec is None:
+        return None, None
+    pattern, key = spec
+    m = re.search(pattern, str(result or ""))
+    if not m:
+        return None, None
+    p = re.search(r"project=([A-Za-z0-9_-]+)", str(result or ""))
+    handle = {"kind": ("delegated_task" if tool == "delegate_task"
+                       else "background_job"),
+              key: (int(m.group(1)) if key == "job_id"
+                    else m.group(1)),
+              "project": p.group(1) if p else None}
+    return handle["kind"], handle
+
+
 def _handle_step_result(mid: int, step: Dict[str, Any],
                         result: str) -> bool:
     """Record one step outcome. Returns True when the worker
@@ -761,6 +949,23 @@ def _handle_step_result(mid: int, step: Dict[str, Any],
                 f"{question[:80]}")
         return True
     structured = normalize(result)
+    if structured.status == STARTED:
+        # Pass 27 #25: a step that started a child (delegated
+        # task / background job) waits on that child — it is NOT
+        # done, and it is NOT 'uncertain' either: the child handle
+        # is stored and a later tick settles the step from the
+        # child's terminal outcome. A STARTED result with no
+        # handle falls through to the generic branch below.
+        kind, handle = _parse_child_handle(step["tool"], result)
+        if kind is not None:
+            _set_step(step["id"], status="waiting_child",
+                      child_handle=json.dumps(handle),
+                      output=str(structured)[:_OUTPUT_CAP])
+            _set_mission(mid, status="waiting_child")
+            add_log(f"[mission] #{mid} step {idx + 1} started a "
+                    f"{kind} ({handle}); waiting for its terminal "
+                    f"outcome")
+            return True
     if structured.status in (UNVERIFIED, STARTED, ASK):
         _set_step(step['id'], status='uncertain', output=str(structured)[:_OUTPUT_CAP])
         _set_mission(mid, status='blocked_input')

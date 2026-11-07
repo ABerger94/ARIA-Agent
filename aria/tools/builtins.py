@@ -1248,7 +1248,18 @@ def tool_manage_background_job(action: str = "list", command: str = "",
         res = agent_mod.start_background_job(command, name=name)
         if "error" in res:
             return f"Failed to start background job: {res['error']}"
-        return f"Background job #{res['job_id']} started (PID {res['pid']}): '{res['name']}'. Tracking in worker supervisor."
+        # Pass 27 #25: a started job is STARTED, not DONE — the
+        # plain string used to normalize as DONE, so a mission
+        # certified the step before the command finished (or
+        # failed). The typed STARTED carries the durable child
+        # handle (job id + project) so the parent settles from
+        # the job's terminal outcome.
+        from aria.outcome import started as _started
+        from aria import workspaces as _ws_mod
+        return _started("manage_background_job",
+                        job_id=res["job_id"],
+                        project=_ws_mod.current(),
+                        name=res["name"])
 
     if act == "list":
         jobs = agent_mod.list_background_jobs(15)
