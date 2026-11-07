@@ -36,6 +36,7 @@ lazily inside functions to avoid import cycles.
 """
 
 import ast
+import hashlib
 import importlib.util
 import os
 import re
@@ -47,6 +48,43 @@ _SCAN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_tools
 
 # name -> (handler_fn, declaration_dict); handler_fn takes a dict and returns str
 _USER_TOOLS = {}
+# name -> source file path, for the revision binding (pass 27 #18).
+_USER_TOOL_PATHS = {}
+
+
+def source_digest(path):
+    """SHA-256 of a user-tool file's bytes, or None when unreadable."""
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except Exception:
+        return None
+
+
+def freeze_user_tool_args(name, args):
+    """Bind a to-be-parked user-tool call to its source revision.
+
+    Pass 27 #18: metadata is scanned once while the module is
+    imported later, so replacing the file between scan and
+    invocation executed the replacement under the old declaration.
+    The freeze reads the CURRENT bytes at park time and stores
+    their digest in the parked args; the handler refuses to run
+    when the file no longer matches. Raises ValueError when the
+    source cannot be read — the caller must refuse to park a
+    revisionless approval, like the skill/trust freezes.
+    """
+    path = _USER_TOOL_PATHS.get(name)
+    if not path:
+        raise ValueError(
+            f"user tool '{name}' has no known source file")
+    digest = source_digest(path)
+    if digest is None:
+        raise ValueError(
+            f"user tool '{name}' source is unreadable — cannot bind "
+            "an approval to it")
+    gate_args = dict(args or {})
+    gate_args["_source_digest"] = digest
+    return gate_args
 
 
 def _reserved_names():
@@ -85,7 +123,17 @@ def _load_module_from_path(path):
     if spec is None or spec.loader is None:
         raise ImportError(f"could not build import spec for {path}")
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    # Execute the freshly-read bytes, not the loader's .pyc
+    # (pass 27 #18): the bytecode cache is keyed on the file's
+    # second-resolution mtime, so a file rewritten within the same
+    # second would execute STALE bytecode — the old revision under
+    # a new approval, after the handler just verified the new
+    # bytes. Compiling the bytes just read executes exactly the
+    # bytes the digest was computed over.
+    with open(path, "rb") as f:
+        source = f.read()
+    code = compile(source, path, "exec")
+    exec(code, mod.__dict__)
     return mod
 
 
@@ -173,7 +221,32 @@ def _make_lazy_handler(path, name):
             return message
 
     def _handler(args, _tool=name):
-        if "run" not in state:
+        # Pass 27 #18: when the call carries an approved source
+        # digest, the file must still match it BEFORE the module
+        # is imported — the import itself executes top-level code,
+        # so checking after import would run the replacement. A
+        # mismatch (or an unreadable source) refuses typed FAILED
+        # instead of executing under the old approval. Calls with
+        # no digest (auto mode, no approval to bind) run as before.
+        call_args = args if isinstance(args, dict) else {}
+        approved = call_args.get("_source_digest")
+        if approved is not None:
+            current = source_digest(path)
+            if current is None:
+                return _fail(f"[user tool '{_tool}' refused: source "
+                             f"unreadable — cannot verify the approved "
+                             f"revision]")
+            if current != approved:
+                return _fail(f"[user tool '{_tool}' refused: source "
+                             f"changed since approval — re-approve to "
+                             f"run the new revision]")
+            call_args = {k: v for k, v in call_args.items()
+                         if k != "_source_digest"}
+        # A cached import belongs to the digest it was loaded
+        # from: an approval for NEW bytes must execute the new
+        # bytes, not the stale cached module.
+        if ("run" not in state or (approved is not None
+                                   and state.get("digest") != approved)):
             try:
                 mod = _load_module_from_path(path)
             except Exception as _e:
@@ -186,12 +259,13 @@ def _make_lazy_handler(path, name):
                 return _fail(f"[user tool '{_tool}' failed: no run(args) "
                              f"function defined]")
             state["run"] = run_fn
+            state["digest"] = source_digest(path)
         run_fn = state.get("run")
         if run_fn is None:
             return _fail(f"[user tool '{_tool}' failed: the module failed "
                          f"to load — see the log]")
         try:
-            return str(run_fn(args if isinstance(args, dict) else {}))
+            return str(run_fn(call_args))
         except Exception as _e:
             return _fail(f"[user tool '{_tool}' failed: {_config.redact(str(_e))}]")
 
@@ -236,6 +310,7 @@ def load_user_tools(scan_dir=None):
         handler = _make_lazy_handler(path, name)
         decl = {"name": name, "description": desc or name, "parameters": params}
         _USER_TOOLS[name] = (handler, decl)
+        _USER_TOOL_PATHS[name] = path
         results.append((name, handler, decl))
         _config.add_log(f"[user-tools] loaded '{name}' from {fname}")
     return results

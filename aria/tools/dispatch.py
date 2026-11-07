@@ -419,6 +419,12 @@ def _freeze_park_args(fn_name: str, args: dict) -> dict:
     elif fn_name == "trust_routine":
         from aria import routines as _routines_mod
         gate_args = _routines_mod.freeze_trust_args(gate_args)
+    elif _config_mod.is_user_tool(fn_name):
+        # Pass 27 #18: bind the approval to the user tool's
+        # current source revision — a pending approval must not
+        # execute a file replaced after the park.
+        from aria.tools import usertools as _ut_mod
+        gate_args = _ut_mod.freeze_user_tool_args(fn_name, gate_args)
     return gate_args
 
 
