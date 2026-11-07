@@ -156,6 +156,31 @@ def freeze_mcp_connect_args(name: str) -> Dict[str, Any]:
     return {"_config_digest": server_config_digest(key, servers[key])}
 
 
+def servers_digest(servers: Optional[Dict[str, Dict[str, Any]]] = None) -> str:
+    """Stable digest of the ENABLED server set: each enabled
+    server's name + config digest, sorted. A connect-all approval
+    binds this set (pass 28 #9): a server added, removed,
+    disabled, or reconfigured after the park changes the digest,
+    so the replay refuses instead of connecting a set the
+    approval never covered. Disabled servers are not connected by
+    a connect-all and are not part of the set."""
+    if servers is None:
+        servers = get_servers()
+    rows = sorted(
+        (name, server_config_digest(name, cfg))
+        for name, cfg in (servers or {}).items()
+        if (cfg or {}).get("enabled", True))
+    return hashlib.sha256(
+        json.dumps(rows, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def freeze_mcp_connect_all_args() -> Dict[str, Any]:
+    """Bind a connect-all mcp_connect approval to the CURRENT
+    enabled server set (pass 28 #9). There is no single config
+    to bind, but the set itself is the approval's scope."""
+    return {"_servers_digest": servers_digest()}
+
+
 def freeze_discovered_tool_args(tool: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """Bind a discovered-MCP-tool approval to the CURRENT tool
     registration of its server AND to the CURRENT server config.

@@ -1131,14 +1131,28 @@ def tool_mcp_setup(name: str = "", command: str = "", args: str = "",
                               args=args, env=env, url=url, headers=headers)
 
 
-def tool_mcp_connect(name: str = "", _config_digest: str = None) -> str:
+def tool_mcp_connect(name: str = "", _config_digest: str = None,
+                     _servers_digest: str = None) -> str:
     """Connect to one MCP server (by name) or all enabled servers; loads their tools."""
     from aria import mcp as mcp_mod
+    from aria import outcome as _outcome_mod
     bridge = mcp_mod.get_bridge()
     if name and name.strip():
         ok, msg = bridge.connect(name.strip(),
                                  expected_config_digest=_config_digest)
         return msg
+    # Pass 28 #9: a connect-all approval binds the enabled server
+    # set it was granted against. Verify BEFORE spawning
+    # anything — a server added, removed, disabled, or
+    # reconfigured since the park refuses the whole replay, so no
+    # new command launches under the old approval. Calls with no
+    # digest (auto mode) run as before.
+    if _servers_digest is not None and \
+            mcp_mod.servers_digest() != _servers_digest:
+        return _outcome_mod.failed(
+            "mcp_connect",
+            "MCP server set changed since approval — re-approve to "
+            "connect the new set.")
     servers = mcp_mod.get_servers()
     enabled = [n for n, c in servers.items() if c.get("enabled", True)]
     if not enabled:

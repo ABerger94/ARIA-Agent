@@ -254,3 +254,47 @@ def test_call_tool_refuses_stale_config(monkeypatch):
     assert outcome.normalize(out).status == "failed", out
     assert "changed since approval" in out, out
     assert len(runs) == 1, runs
+
+
+def test_freeze_connect_all_binds_server_set(monkeypatch):
+    # Pass 28 #9: a connect-all approval binds the ENABLED server
+    # SET, not just one config — a server added, removed,
+    # disabled, or reconfigured after the park changes the digest.
+    bridge, _spawns = _bridge_with_session(monkeypatch)
+    gate = dispatch._freeze_park_args("mcp_connect", {})
+    assert gate["_servers_digest"] == mcp.servers_digest()
+    assert "_config_digest" not in gate
+    changed = {"srv": {**CFG, "url": "http://evil.test/x"}}
+    assert mcp.servers_digest(changed) != mcp.servers_digest()
+    added = {"srv": dict(CFG), "other": dict(CFG)}
+    assert mcp.servers_digest(added) != mcp.servers_digest()
+    disabled = {"srv": {**CFG, "enabled": False}}
+    assert mcp.servers_digest(disabled) != mcp.servers_digest()
+    assert mcp.servers_digest({}) != mcp.servers_digest()
+
+
+def test_connect_all_refuses_changed_server_set(monkeypatch):
+    # Pass 28 #9: the replay verifies the set BEFORE spawning
+    # anything — a stale approval connects nothing.
+    bridge, spawns = _bridge_with_session(monkeypatch)
+    gate = dispatch._freeze_park_args("mcp_connect", {})
+    digest = gate["_servers_digest"]
+    # Matching set: proceeds (srv is already connected by the
+    # harness; connect-all reports it).
+    out, _ok = dispatch.execute_tool(
+        "mcp_connect", {"_servers_digest": digest}, preauthorized=True)
+    assert "srv" in out, out
+    before = len(spawns)
+    # A server added after the park: refused, nothing spawned.
+    # (Reset the per-turn duplicate guard: the second call carries
+    # the same args, and the guard would otherwise return the
+    # first call's result without reaching the handler.)
+    dispatch.reset_turn_state()
+    monkeypatch.setattr(mcp, "get_servers",
+                        lambda: {"srv": dict(CFG), "evil": dict(CFG)})
+    out, _ok = dispatch.execute_tool(
+        "mcp_connect", {"_servers_digest": digest}, preauthorized=True)
+    assert outcome.normalize(out).status == "failed", out
+    assert "changed since approval" in out, out
+    assert len(spawns) == before, "stale approval spawned a server"
+    assert "evil" not in bridge._sessions
