@@ -8,8 +8,10 @@ import hashlib
 import json
 import os
 import re
+import signal
 import sys
 import subprocess
+import threading
 from typing import Dict, List, Optional, Set, Tuple, Callable, Any
 
 from aria.config import MAX_TOOL_OUTPUT, GITHUB_USERNAME
@@ -144,6 +146,71 @@ def _python_command(temp_script: str):
     return [sys.executable, temp_script]
 
 
+# The most output a run ever stores (pass 28 #26): the tool
+# budget plus headroom, mirroring shelltool's _STORE_LIMIT shape.
+_STORE_LIMIT = MAX_TOOL_OUTPUT + 4096
+
+
+def _group_kwargs() -> dict:
+    """Spawn flags that put a script in its own process group, so
+    a timeout kills the whole tree, not just the script (same
+    shape as shelltool._group_kwargs)."""
+    if os.name == "nt":
+        return {"creationflags": getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {"start_new_session": True}
+
+
+def _kill_tree(proc) -> None:
+    """Kill a script and everything it started. Killing only the
+    script left descendants running orphaned. Best effort on
+    both platforms; never raises."""
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True, timeout=10)
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
+
+
+def _drain(stream, store: list, cap: int, state: dict) -> None:
+    """Read one text stream to EOF, storing at most `cap` chars.
+
+    Keeps draining past the budget — stopping would fill the pipe
+    and deadlock the child — but stops storing, and records the
+    true total so the truncation note can name it. Never raises;
+    a dead stream just ends the drain."""
+    stored = 0
+    try:
+        while True:
+            chunk = stream.read(4096)
+            if not chunk:
+                break
+            state["total"] += len(chunk)
+            if stored < cap:
+                take = chunk[:cap - stored]
+                store.append(take)
+                stored += len(take)
+                if len(chunk) > len(take):
+                    state["truncated"] = True
+            else:
+                state["truncated"] = True
+    except Exception:
+        pass
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+
 def tool_run_python(code: str,
                     workspace_dir: Optional[str] = None,
                     timeout: int = 15,
@@ -178,26 +245,68 @@ def tool_run_python(code: str,
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(code)
         try:
-            result = subprocess.run(
+            # Pass 28 #26: Popen + drain threads instead of
+            # subprocess.run(capture_output=True) — the run
+            # collected the whole output unboundedly in memory,
+            # and a timeout killed only the script while its
+            # descendants ran on. The script runs in its own
+            # process group so a timeout kills the tree.
+            proc = subprocess.Popen(
                 _python_command(temp_script),
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=workspace_dir
-            )
-            output = result.stdout + result.stderr
-            if result.returncode:
-                return ResultText(
-                    f"[Execution Error: Script exited with code {result.returncode}]\n{output}", FAILED)
-            if log_callback:
-                log_callback("Execution complete.")
-            return output if output.strip() else "[Code ran with no console output]"
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace",
+                cwd=workspace_dir, **_group_kwargs())
+        except Exception as e:
+            return ResultText(f"[Execution Error: {e}]", FAILED)
+        out_parts: list = []
+        err_parts: list = []
+        out_state = {"truncated": False, "total": 0}
+        err_state = {"truncated": False, "total": 0}
+        readers = []
+        for stream, parts, state in (
+                (proc.stdout, out_parts, out_state),
+                (proc.stderr, err_parts, err_state)):
+            t = threading.Thread(
+                target=_drain,
+                args=(stream, parts, _STORE_LIMIT, state),
+                daemon=True)
+            t.start()
+            readers.append(t)
+        try:
+            proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
+            # The direct child (the script) is not the whole
+            # tree: kill the process group so descendants die
+            # with it.
+            _kill_tree(proc)
+            for t in readers:
+                t.join(timeout=5)
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
             return ResultText(
                 f"[Execution Error: Script timed out after {timeout} seconds; "
                 "it may have made changes before stopping]", UNVERIFIED)
         except Exception as e:
             return ResultText(f"[Execution Error: {e}]", FAILED)
+        for t in readers:
+            # The pipes hit EOF once the process (and any children
+            # holding its stdout open) exit; do not hang the tool
+            # on a descendant that inherited the pipe — render
+            # what was stored instead.
+            t.join(timeout=5)
+        output = "".join(out_parts) + "".join(err_parts)
+        if out_state["truncated"] or err_state["truncated"]:
+            total = out_state["total"] + err_state["total"]
+            output += (f"\n...[output truncated, {total} chars "
+                       f"total]")
+        if proc.returncode:
+            return ResultText(
+                f"[Execution Error: Script exited with code {proc.returncode}]\n{output}", FAILED)
+        if log_callback:
+            log_callback("Execution complete.")
+        return output if output.strip() else "[Code ran with no console output]"
     finally:
         if temp_script and os.path.exists(temp_script):
             try:
