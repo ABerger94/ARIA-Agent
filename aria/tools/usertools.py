@@ -9,7 +9,11 @@ defining:
 
     def run(args: dict) -> str: ...  # the handler (sync only —
     # an ``async def run`` is rejected: it can never execute, see
-    # _scan_module / _make_lazy_handler, pass 27 #28)
+    # _scan_module / _make_lazy_handler, pass 27 #28). A run() may
+    # also return a ResultText / ToolResult / {"status": ...} dict:
+    # structured results pass through intact so dispatch's
+    # normalize() reads the status once (pass 27 #29); anything
+    # else is coerced with str() as before.
 
 Loading never crashes boot: import errors, bad names, and name collisions
 with the existing registry are logged (via aria.config.add_log) and skipped.
@@ -311,9 +315,31 @@ def _make_lazy_handler(path, name):
             return _fail(f"[user tool '{_tool}' failed: the module failed "
                          f"to load — see the log]")
         try:
-            return str(run_fn(call_args))
+            result = run_fn(call_args)
         except Exception as _e:
             return _fail(f"[user tool '{_tool}' failed: {_config.redact(str(_e))}]")
+        # Pass 27 #29: return structured results intact and let
+        # dispatch's normalize() read them once at the boundary. A
+        # ResultText(FAILED) or a {"status": "failed", ...} dict
+        # used to be str()'d here, flattening it to a plain string
+        # that normalize() then read as DONE — a failed user tool
+        # reported as a success. ResultText is a str subclass, so
+        # it must be checked before the str() fallthrough; a dict
+        # passes through only when it carries a status outcome
+        # knows, so a plain data dict still coerces as before.
+        try:
+            from aria import outcome as _outcome_mod
+        except Exception:
+            return str(result)
+        if isinstance(result, (_outcome_mod.ResultText,
+                              _outcome_mod.ToolResult)):
+            return result
+        if isinstance(result, dict) and result.get("status") in (
+                _outcome_mod.DONE, _outcome_mod.UNVERIFIED,
+                _outcome_mod.FAILED, _outcome_mod.ASK,
+                _outcome_mod.STARTED):
+            return result
+        return str(result)
 
     _handler.__name__ = f"user_tool_{name}"
     return _handler
