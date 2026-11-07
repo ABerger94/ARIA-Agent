@@ -7,7 +7,9 @@ defining:
     TOOL_DESCRIPTION = "..."         # one-line summary for the model
     TOOL_PARAMETERS = {"type": "OBJECT", "properties": {...}, "required": [...]}
 
-    def run(args: dict) -> str: ...  # the handler
+    def run(args: dict) -> str: ...  # the handler (sync only —
+    # an ``async def run`` is rejected: it can never execute, see
+    # _scan_module / _make_lazy_handler, pass 27 #28)
 
 Loading never crashes boot: import errors, bad names, and name collisions
 with the existing registry are logged (via aria.config.add_log) and skipped.
@@ -38,6 +40,7 @@ lazily inside functions to avoid import cycles.
 import ast
 import hashlib
 import importlib.util
+import inspect
 import os
 import re
 import threading
@@ -175,6 +178,7 @@ def _scan_module(path, fname):
         return None
     assigns = {}
     has_run = False
+    run_kind = None  # 'sync' | 'async' | None, of the LAST run def
     for node in tree.body:
         if isinstance(node, ast.Assign) and len(node.targets) == 1 \
                 and isinstance(node.targets[0], ast.Name):
@@ -185,6 +189,8 @@ def _scan_module(path, fname):
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
                 and node.name == "run":
             has_run = True
+            run_kind = ("async" if isinstance(node, ast.AsyncFunctionDef)
+                        else "sync")
     name = assigns.get("TOOL_NAME")
     if not isinstance(name, str) or not _NAME_RE.match(name):
         _config.add_log(
@@ -193,6 +199,18 @@ def _scan_module(path, fname):
         return None
     if not has_run:
         _config.add_log(f"[user-tools] skipped {fname}: no run(args) function defined")
+        return None
+    # Pass 27 #28: an async run() can never execute — the handler
+    # has no event loop to await it on, so the old code str()'d
+    # the coroutine object ("<coroutine object ...>") and that
+    # normalized as DONE while the body never ran. Reject it at
+    # scan time, loudly, instead of loading a tool that silently
+    # never works. When both forms are defined, the LAST one wins
+    # at runtime, so that is the one judged.
+    if run_kind == "async":
+        _config.add_log(
+            f"[user-tools] skipped {fname}: async def run() is not "
+            f"supported — define a plain def run(args)")
         return None
     desc = assigns.get("TOOL_DESCRIPTION", "")
     params = _normalize_parameters(assigns.get("TOOL_PARAMETERS"))
@@ -274,6 +292,18 @@ def _make_lazy_handler(path, name):
                         state["run"] = None
                         return _fail(f"[user tool '{_tool}' failed: no run(args) "
                                      f"function defined]")
+                    # Pass 27 #28: the scan rejects async run(), but
+                    # the file is mutable — a sync run can be replaced
+                    # by an async one after the scan (and a fresh
+                    # approval would then pass the digest check).
+                    # Refuse here instead of str()'ing a coroutine
+                    # object that normalizes as DONE while the body
+                    # never runs.
+                    if inspect.iscoroutinefunction(run_fn):
+                        state["run"] = None
+                        return _fail(f"[user tool '{_tool}' failed: async "
+                                     f"def run() is not supported — define "
+                                     f"a plain def run(args)]")
                     state["run"] = run_fn
                     state["digest"] = source_digest(path)
         run_fn = state.get("run")
