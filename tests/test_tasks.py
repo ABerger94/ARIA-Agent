@@ -351,7 +351,12 @@ def test_queue_executor_end_to_end():
     steps = [_step("fake_e2e", params={"x": "a"}),
              _step("fake_e2e", params={"x": "{prev}"})]
     ex = taskexec.AgentExecutor(
-        llm=lambda p, s=None: "VERDICT: PASS" if s is None else _plan_json(steps),
+        # Pass 28 #11: the LLM contract is llm(prompt, system) — the
+        # verifier passes the reviewer instruction as `system`, the
+        # planner passes its own system prompt. Key the double on
+        # the system text, not on a missing second argument.
+        llm=lambda p, s: ("VERDICT: PASS" if s and "skeptical reviewer" in s
+                          else _plan_json(steps)),
         summarizer=lambda goal, completed: "E2E SUMMARY",
         sleep_fn=lambda s: None)
     q = taskqueue.TaskQueue(executor_factory=lambda: ex)

@@ -186,8 +186,14 @@ class AgentExecutor:
             f"{str(results.get(s.get('step'), ''))[:400]}"
             for s in completed) or "(no completed steps)"
         try:
+            # Pass 28 #11: the LLM contract is llm(prompt, system)
+            # (planner.py:24) — _default_llm requires `system`
+            # positionally. The old one-argument call raised
+            # TypeError on every verification, so the except path
+            # parked every verified task as blocked and the
+            # default verifier could never pass anything.
             out = llm(
-                f'Goal: "{goal}"\n\nRecorded step results:\n{evidence}\n\n'
+                f'Goal: "{goal}"\n\nRecorded step results:\n{evidence}',
                 "You are a skeptical reviewer. Did the recorded "
                 "results actually accomplish the goal? Answer with "
                 "exactly one line: 'VERDICT: PASS' or "
