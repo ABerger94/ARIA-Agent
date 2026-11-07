@@ -30,8 +30,18 @@ def _is_refused(path: str) -> Optional[str]:
 
 
 def _resolve_dir(directory: str) -> "tuple[str, Optional[str]]":
-    """Expand and validate a directory. Returns (abs_path, refusal_message_or_None)."""
-    d = os.path.abspath(os.path.expanduser(directory or ""))
+    """Expand and validate a directory. Returns (abs_path, refusal_message_or_None).
+
+    Pass 27 #3: a non-string (or empty) directory used to fall
+    back to the process directory (`directory or ""` -> abspath
+    of "" is the cwd), so file_organize(directory=false) moved
+    files outside the configured roots. Wrong-typed input is
+    refused here as well as at the dispatcher.
+    """
+    if not isinstance(directory, str) or not directory.strip():
+        return "", (f"[Error: directory must be a text path, got "
+                    f"{type(directory).__name__}.]")
+    d = os.path.abspath(os.path.expanduser(directory))
     refused = _is_refused(d)
     if refused:
         return d, refused

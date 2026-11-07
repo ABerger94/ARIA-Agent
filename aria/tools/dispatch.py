@@ -442,6 +442,22 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
                 False)
     for key in FILE_ARGUMENTS.get(fn_name, ()):
         path = (args or {}).get(key)
+        if path is None:
+            continue
+        # Pass 27 #3: a wrong-typed file argument used to skip this
+        # check entirely (`if not path: continue`), and
+        # _resolve_dir(False) then fell back to the process
+        # directory — file_organize(directory=false) moved files
+        # outside the configured roots. A supplied file argument
+        # must be a string before any root check runs. (An empty
+        # string still skips here — some file args are optional —
+        # but the handlers refuse it: _resolve_dir rejects "" and
+        # resolve_workspace_file rejects "".)
+        if not isinstance(path, str):
+            return (f"[Argument error: {fn_name} requires '{key}' "
+                    f"to be a file path, got "
+                    f"{type(path).__name__}. Nothing was executed.]",
+                    False)
         if not path:
             continue
         if fn_name in {'read_file','write_file'}:

@@ -33,15 +33,43 @@ def call_signature(fn_name: str, args: dict) -> str:
 
 
 def missing_required_args(fn_name: str, args: dict, decls: Optional[Dict[str, Any]] = None) -> List[str]:
-    """Check tool call arguments against schema declarations for missing/empty required params."""
+    """Check tool call arguments against schema declarations for missing/empty required params.
+
+    Pass 27 #3: a wrong-typed value also counts as missing — a
+    required string param given `false` used to pass this check
+    (it is not None and not a string), and downstream code then
+    fell back to the process directory. Type is judged only when
+    the schema declares one; undeclared params keep the old
+    presence-only behaviour.
+    """
     all_decls = decls or get_tool_decls_by_name()
     decl = all_decls.get(fn_name)
     if not decl:
         return []
     required = (decl.get("parameters") or {}).get("required", [])
+    props = (decl.get("parameters") or {}).get("properties", {}) or {}
     args = args or {}
-    return [p for p in required if p not in args or args[p] is None
-            or isinstance(args[p], str) and not args[p].strip()]
+
+    def _invalid(p):
+        if p not in args or args[p] is None:
+            return True
+        v = args[p]
+        if isinstance(v, str) and not v.strip():
+            return True
+        t = str((props.get(p) or {}).get("type") or "").lower()
+        if t == "string" and not isinstance(v, str):
+            return True
+        if t == "boolean" and not isinstance(v, bool):
+            return True
+        if t == "integer" and (not isinstance(v, int)
+                               or isinstance(v, bool)):
+            return True
+        if t == "number" and (not isinstance(v, (int, float))
+                              or isinstance(v, bool)):
+            return True
+        return False
+
+    return [p for p in required if _invalid(p)]
 
 
 def target_mentioned(target: str, message: str) -> bool:
