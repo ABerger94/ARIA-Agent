@@ -248,24 +248,28 @@ def _drain(stream, store: list, cap: int, state: dict) -> None:
     the budget — stopping would fill the pipe and deadlock the
     child — but stops storing, and records that output was cut.
     Never raises; a dead stream just ends the drain.
+
+    Pass 28 #28: the store keeps the stream's TAIL, not its
+    head. The render below cuts the body's tail to the display
+    budget, so a head-capped store made the render show the
+    middle of the stream and discarded the command's actual
+    ending twice over. A rolling buffer keeps the ending.
     """
-    stored = 0
+    buf = ""
     try:
         while True:
             chunk = stream.read(4096)
             if not chunk:
                 break
-            if stored < cap:
-                take = chunk[:cap - stored]
-                store.append(take)
-                stored += len(take)
-                if len(chunk) > len(take):
-                    state["truncated"] = True
-            else:
+            buf += chunk
+            if len(buf) > cap:
                 state["truncated"] = True
+                buf = buf[-cap:] if cap > 0 else ""
     except Exception:
         pass
     finally:
+        if buf:
+            store.append(buf)
         try:
             stream.close()
         except Exception:

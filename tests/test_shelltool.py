@@ -111,6 +111,21 @@ def test_execute_truncates_to_tail(tmp_path):
     assert body.endswith('x' * 100)
 
 
+def test_execute_truncation_keeps_actual_ending(tmp_path):
+    # Pass 28 #28: the store kept the FIRST cap chars while the
+    # render cut the body's tail, so for a flood longer than the
+    # store cap the shown text was the middle of the stream and
+    # the command's real ending was discarded twice. The output
+    # must end where the command ended.
+    code = ("import sys; [print(f'line {i}', flush=True) "
+            "for i in range(3000)]")
+    out = shelltool._execute(_py(code), str(tmp_path), 30)
+    assert '[output truncated]' in out
+    assert 'line 2999' in out, out[-200:]
+    assert 'line 2990' in out
+    assert 'line 0\n' not in out, out[:200:]
+
+
 def test_execute_start_error_is_failed(tmp_path):
     out = shelltool._execute(_py('pass'), str(tmp_path / 'missing'), 30)
     assert 'status=failed' in out and 'could not be started' in out
