@@ -17,6 +17,45 @@ from aria.memory import DB_LOCK, DB_PATH
 from aria.tools.builtins import tool_focus_window
 
 
+_SPOTIFY_URI_TYPES = frozenset({
+    "track", "album", "playlist", "artist", "episode", "show",
+    "user", "collection", "search",
+})
+_SPOTIFY_URI_RE = re.compile(
+    r"^spotify:(track|album|playlist|artist|episode|show|user"
+    r"|collection|search):[A-Za-z0-9%._-]+$")
+_SPOTIFY_LINK_TYPES = frozenset({
+    "track", "album", "playlist", "artist", "episode", "show", "user",
+})
+
+
+def is_spotify_launch_target(value: str) -> bool:
+    """True only for a Spotify URI or an open.spotify.com link.
+
+    (ChatGPT x ARIA loop pass 27 #1: play_uri / DJ passed arbitrary
+    model text — or a stored-memory playlist value, which is also
+    model-writable — straight to os.startfile, so a .bat path
+    launched a program with zero approvals. Only Spotify targets
+    may reach startfile; anything else is refused first. The id
+    charset admits base62 ids and percent-encoded search queries
+    but no path separator, scheme, whitespace, or shell metachar.)
+    """
+    v = (value or "").strip()
+    if _SPOTIFY_URI_RE.match(v):
+        return True
+    try:
+        parsed = urllib.parse.urlparse(v)
+    except Exception:
+        return False
+    if (parsed.scheme != "https"
+            or (parsed.hostname or "").lower() != "open.spotify.com"):
+        return False
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) != 2 or parts[0] not in _SPOTIFY_LINK_TYPES:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9]+", parts[1]))
+
+
 CURATED_MOODS = {
     "chill": ("spotify:playlist:37i9dQZF1DWWQRwui0ExPn", "Lofi Beats"),
     "lofi": ("spotify:playlist:37i9dQZF1DWWQRwui0ExPn", "Lofi Beats"),
@@ -135,8 +174,11 @@ def tool_spotify(action: str = "play_pause", query: str = "") -> str:
                 return tool_spotify(action="play_uri", query=m_uri)
 
         # Launch search in Spotify
+        search_uri = "spotify:search:" + urllib.parse.quote(q)
+        if not is_spotify_launch_target(search_uri):
+            return "[Could not open Spotify search: bad search target.]"
         try:
-            os.startfile("spotify:search:" + urllib.parse.quote(q))
+            os.startfile(search_uri)
             time.sleep(1.8)
             tool_focus_window("Spotify")
             time.sleep(0.3)
@@ -206,6 +248,10 @@ def tool_spotify(action: str = "play_pause", query: str = "") -> str:
     if a == "play_uri":
         if not q:
             return "[Give me a spotify: URI, e.g. spotify:playlist:xxx.]"
+        if not is_spotify_launch_target(q):
+            return (f"[Refused: '{q}' is not a Spotify URI or an "
+                    f"open.spotify.com link — nothing was launched. "
+                    f"Give me a spotify: URI or a Spotify link.]")
         try:
             os.startfile(str(q))
         except Exception as e:
@@ -243,8 +289,12 @@ def tool_dj(request: str) -> str:
         clean_name = re.sub(r"\b(play|shuffle|shuffled|some|something|music|me|my|"
                             r"playlist|playlists|on|spotify)\b", "", q).strip()
         if clean_name:
+            search_uri = ("spotify:search:"
+                          + urllib.parse.quote(clean_name))
+            if not is_spotify_launch_target(search_uri):
+                return "[Could not open Spotify search: bad search target.]"
             try:
-                os.startfile("spotify:search:" + urllib.parse.quote(clean_name))
+                os.startfile(search_uri)
                 time.sleep(1.8)
                 tool_focus_window("Spotify")
                 time.sleep(0.3)
@@ -255,6 +305,13 @@ def tool_dj(request: str) -> str:
         return (f"[I don't have a playlist saved for '{request}' - tell me the "
                 f"Spotify link once and I'll remember it for next time.]")
 
+    # Stored playlist URIs live in memory, which the model can
+    # write — a poisoned stored value must not reach startfile
+    # (pass 27 #1). Curated moods are constants, so they pass.
+    if not is_spotify_launch_target(uri):
+        return (f"[Refused: the saved playlist for '{request}' is not "
+                f"a Spotify URI or link — nothing was launched. Tell "
+                f"me the Spotify link once and I'll remember it.]")
     try:
         os.startfile(uri)
     except Exception as e:
