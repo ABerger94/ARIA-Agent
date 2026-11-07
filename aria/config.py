@@ -605,8 +605,12 @@ SAFE_MODE_BLOCKED_TOOLS = frozenset({
 # conservatively: approval under confirm-risky and a hard block in
 # safe mode. The built-in MCP management tools have no "__"
 # separator and are classified by their own static policy entries.
+# The tool part is `*`, not `+` (pass 27 #4): a bare
+# mcp_<server>__ name — which registration now refuses, but which
+# could pre-date this fix in a live process — must still classify
+# as discovered, never as an ordinary tool.
 _DISCOVERED_MCP_TOOL_RE = re.compile(
-    r"^mcp_(?P<server>[A-Za-z0-9_.-]+)__(?P<tool>[A-Za-z0-9_.-]+)$")
+    r"^mcp_(?P<server>[A-Za-z0-9_.-]+)__(?P<tool>[A-Za-z0-9_.-]*)$")
 
 
 def parse_discovered_mcp_tool(name):

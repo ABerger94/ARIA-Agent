@@ -671,18 +671,33 @@ def _register_server_tools(server: str, tools: List[Any]) -> List[str]:
     aria_names: List[str] = []
     seen = set()
     for t in tools:
-        base = f"mcp_{server}__{getattr(t, 'name', 'tool')}"
+        # Pass 27 #4: an empty (or otherwise unclassifiable)
+        # remote name used to register as mcp_<server>__, which
+        # the policy regex — requiring a non-empty tool part —
+        # does not classify as a discovered tool, so the handler
+        # ran ungated in safe mode. Reject such names here and
+        # never register them; the server keeps its other tools.
+        remote_name = getattr(t, "name", "")
+        if (not isinstance(remote_name, str)
+                or not re.fullmatch(r"[A-Za-z0-9_.-]+", remote_name)):
+            config.log_silent(
+                "_register_server_tools",
+                ValueError(
+                    f"refused MCP tool with invalid remote name "
+                    f"{remote_name!r} from server {server!r}"))
+            continue
+        base = f"mcp_{server}__{remote_name}"
         aria_name = _unique_tool_name(base, seen)
         seen.add(aria_name)
         schema = getattr(t, "inputSchema", None) or {}
-        desc = getattr(t, "description", "") or getattr(t, "name", "")
+        desc = getattr(t, "description", "") or remote_name
         decl = {
             "name": aria_name,
             "description": f"[MCP:{server}] {desc}".strip()[:600],
             "parameters": convert_schema(schema),
         }
         _schemas.register_dynamic_tool_declaration(aria_name, decl, toolkit="mcp")
-        mcp_tool_name = getattr(t, "name", "")
+        mcp_tool_name = remote_name
         server_key = server
 
         def _handler(a, _s=server_key, _t=mcp_tool_name, _b=bridge):
