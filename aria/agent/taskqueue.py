@@ -207,6 +207,23 @@ class TaskQueue:
             parent_execution_id=parent_exec_id,
             mission_id=parent_mid,
         )
+        # Pass 27 #26: persist the pending record — goal, policy
+        # snapshot (cap, scope, envelope), and stable identity —
+        # BEFORE the in-memory enqueue and before submit returns
+        # the id (the acknowledgement). A task queued but never
+        # started used to exist only in memory: an exit before
+        # a worker picked it up lost it with no trace, and
+        # recover_interrupted had no record to recover. The
+        # record's callbacks (speak/on_complete) cannot be
+        # persisted — a recovered task resumes without them; the
+        # outcome stays in the event ring + registry.
+        taskstore.create(
+            task_id, goal, resumed_from=resume_from,
+            execution_scope=task.execution_scope,
+            spend_cap=task.spend_cap, budget_scope=task.budget_scope,
+            envelope=task.envelope, mission_id=task.mission_id,
+            parent_execution_id=task.parent_execution_id,
+            status="pending")
         with self._condition:
             self._queue.append(task)
             self._queue.sort(key=lambda t: (t.priority, t.created_at))
@@ -323,11 +340,19 @@ class TaskQueue:
         add_log(f"Task running: [{task.task_id}] {task.goal[:60]}")
         # Journal first (Gap fill 3): the record exists before any
         # step runs, so a crash mid-task leaves a resumable trace.
-        taskstore.create(task.task_id, task.goal,
-                         resumed_from=task.resumed_from, execution_scope=task.execution_scope,
-                         spend_cap=task.spend_cap, budget_scope=task.budget_scope,
-                         envelope=task.envelope, mission_id=task.mission_id,
-                         parent_execution_id=task.parent_execution_id)
+        # Pass 27 #26: submit() already opened the record as
+        # 'pending' — flip it to 'running' instead of overwriting
+        # it, so the submit-time identity, policy, and created_at
+        # survive. A record from before that change (or a resume
+        # whose id is new) is created as before.
+        if taskstore.get(task.task_id) is None:
+            taskstore.create(task.task_id, task.goal,
+                             resumed_from=task.resumed_from, execution_scope=task.execution_scope,
+                             spend_cap=task.spend_cap, budget_scope=task.budget_scope,
+                             envelope=task.envelope, mission_id=task.mission_id,
+                             parent_execution_id=task.parent_execution_id)
+        else:
+            taskstore.finish(task.task_id, "running")
 
         def _ckpt(state: dict) -> None:
             taskstore.checkpoint(task.task_id, state)

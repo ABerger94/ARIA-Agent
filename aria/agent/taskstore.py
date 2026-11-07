@@ -88,14 +88,23 @@ def _jsonable(value):
 
 def create(task_id: str, goal: str, resumed_from: str = "", execution_scope: str = "",
            spend_cap=None, budget_scope: str = "", envelope=None,
-           mission_id=None, parent_execution_id: str = "") -> Dict[str, Any]:
+           mission_id=None, parent_execution_id: str = "",
+           status: str = "running") -> Dict[str, Any]:
     """Open a journal record for a task about to run. The submitting
     execution's policy (spend cap, budget scope, envelope) and
     parent identity ride along, so a resume restores the ORIGINAL
     mission policy instead of the resumer's context (pass 26
-    B1#4) and a mission cancel can find its children (B2#5)."""
+    B1#4) and a mission cancel can find its children (B2#5).
+
+    Pass 27 #26: submit() opens the record as status='pending'
+    BEFORE acknowledging the submission, so a task queued but
+    never started survives a restart as a visible, resumable
+    record instead of vanishing. _run_task_bound flips a pending
+    record to 'running' when the worker starts it; the default
+    status='running' keeps the direct-create path unchanged.
+    """
     rec = {
-        "task_id": task_id, "goal": goal, "status": "running",
+        "task_id": task_id, "goal": goal, "status": status,
         "plan": None, "completed": [], "results": {},
         "blocked_reason": "", "result": "", "error": "",
         "resumed_from": resumed_from, "execution_scope": execution_scope or f"task:{task_id}",
@@ -165,11 +174,12 @@ def resumable() -> List[Dict[str, Any]]:
 
 
 def recover_interrupted() -> int:
-    """Mark records a dead process left 'running' as blocked —
-    the honest state: their outcome is unknown, and a human (or
-    ARIA, asked) resumes them explicitly from the checkpoint.
-    Returns how many were recovered. Called when the queue
-    singleton is first built."""
+    """Mark records a dead process left 'running' — and records
+    left 'pending' (queued but never started, pass 27 #26) — as
+    blocked: the honest state is that their outcome is unknown
+    (or never began), and a human (or ARIA, asked) resumes them
+    explicitly from the checkpoint. Returns how many were
+    recovered. Called when the queue singleton is first built."""
     count = 0
     with _LOCK:
         data = _load()
@@ -178,6 +188,13 @@ def recover_interrupted() -> int:
                 rec["status"] = "blocked"
                 rec["blocked_reason"] = (
                     "interrupted: ARIA restarted mid-task")
+                rec["updated_at"] = time.time()
+                count += 1
+            elif rec.get("status") == "pending":
+                rec["status"] = "blocked"
+                rec["blocked_reason"] = (
+                    "queued but never started: ARIA restarted "
+                    "before execution")
                 rec["updated_at"] = time.time()
                 count += 1
         if count:

@@ -378,8 +378,10 @@ def test_delegate_tools_end_to_end():
     try:
         out, _ = dispatch.execute_tool(
             "delegate_task", {"goal": "research the thing"})
-        assert out.startswith("Delegated as task "), out
-        tid = out.split(":")[0].replace("Delegated as task ", "").strip()
+        # Pass 27 #25: delegate_task returns a STARTED outcome
+        # carrying the child handle, not "Delegated as task".
+        assert out.startswith("status=started action=delegate_task "), out
+        tid = out.split("task_id=")[1].split()[0]
         assert _wait_for(
             lambda: (taskqueue.get_queue().get_status(tid) or {})
             .get("status") == "completed")
