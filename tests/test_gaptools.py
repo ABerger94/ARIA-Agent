@@ -492,6 +492,22 @@ def test_code_helper_reads_file_and_caps(tmp_path, fake_provider):
     assert out.startswith("status=failed")
 
 
+def test_read_code_arg_reads_bounded_not_whole(tmp_path, monkeypatch):
+    # Pass 28 #33: the old read_text()[:20000] read the whole file
+    # into memory first, then truncated. The read must be bounded
+    # — prove it by making read_text raise: the fix never calls it.
+    def _boom(self, *a, **k):
+        raise AssertionError("unbounded read_text call")
+
+    f = tmp_path / "big.py"
+    f.write_text("z" * 100000)
+    monkeypatch.setattr(Path, "read_text", _boom)
+    code, err = gap._read_code_arg({"file_path": str(f)})
+    assert err is None, err
+    assert code is not None and len(code) == 20000, len(code or "")
+    assert set(code) == {"z"}
+
+
 class _FakeWriteDispatch:
     """The gated save seam (2026-10-28): generated writes route
     through the dispatcher as write_file so they carry write_file's

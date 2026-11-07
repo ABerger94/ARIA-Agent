@@ -982,7 +982,12 @@ def _read_code_arg(args):
     except Exception:
         pass
     try:
-        return path.read_text(encoding="utf-8", errors="replace")[:20000], None
+        # Pass 28 #33: read at most the cap, never the whole file —
+        # the old read_text()[:20000] materialised a multi-GB file
+        # before truncating it. read(20000) returns the same first
+        # 20000 characters with a bounded read.
+        with path.open(encoding="utf-8", errors="replace") as f:
+            return f.read(20000), None
     except OSError as exc:
         return None, f"could not read {file_path}: {exc}"
 

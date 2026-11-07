@@ -270,6 +270,13 @@ def cancel_background_job(job_id: int) -> bool:
     return False
 
 
+# Bytes of a job log get_background_job_log ever reads: the tail
+# window. A job that logs verbosely for hours can grow its log
+# past gigabytes; the old readlines() materialised all of it to
+# show 40 lines (pass 28 #33).
+_LOG_TAIL_BYTES = 65536
+
+
 def get_background_job_log(job_id: int, tail_lines: int = 40) -> str:
     """Read the stdout/stderr log output for a given job."""
     jobs = job_db_list(50)
@@ -282,8 +289,26 @@ def get_background_job_log(job_id: int, tail_lines: int = 40) -> str:
         return f"Log file for job #{job_id} does not exist."
 
     try:
-        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()
+        size = os.path.getsize(log_path)
+        start = max(0, size - _LOG_TAIL_BYTES)
+        with open(log_path, "rb") as f:
+            if start:
+                # The window starts mid-file: if the byte before
+                # it is a newline, the window starts on a line
+                # boundary and its first line is whole; otherwise
+                # that first line is partial and is dropped.
+                f.seek(start - 1)
+                boundary = f.read(1) == b"\n"
+                f.seek(start)
+            else:
+                boundary = True
+            data = f.read()
+        lines = data.decode("utf-8", errors="ignore").splitlines(keepends=True)
+        # Drop the partial first line only when whole lines follow
+        # it — a single-line window IS the tail fragment, not a
+        # partial line to discard.
+        if len(lines) > 1 and not boundary:
+            lines = lines[1:]
         tail = "".join(lines[-tail_lines:]) if lines else "(no output captured yet)"
         return f"Job #{job_id} ({target_job.get('name')}) Status: {target_job.get('status')}\n---\n{tail}"
     except Exception as e:
