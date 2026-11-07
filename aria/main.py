@@ -1023,7 +1023,11 @@ def _start_live_if_configured() -> bool:
             on_assistant_text=lambda t: memory.log_conversation('A.R.I.A.', t),
             on_state=_on_state,
             log=add_log,
-            presence_check=presence_allows_speech)
+            presence_check=presence_allows_speech,
+            # Pass 27 #20: re-checked at every Live turn boundary
+            # — enabling project budgets mid-session ends Live
+            # (pipeline re-arms) instead of running unbudgeted.
+            policy_check=usage.project_budget_enabled)
         if manager.start():
             _LIVE_MANAGER = manager
             add_log("Voice mode: Gemini Live (pipeline listener off)")

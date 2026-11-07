@@ -171,7 +171,50 @@ class _TurnCancelSink:
             event.set()
 
 
-async def _execute_tool_call(tool_runner, fc) -> Dict[str, Any]:
+def _workspaces():
+    """The workspaces module, lazy-imported like _runtime: the
+    standalone test harness loads this file without the package."""
+    try:
+        from aria import workspaces as _ws_lv
+        return _ws_lv
+    except Exception:
+        return None
+
+
+def _selected_project():
+    """The user's currently selected project, ignoring any project
+    bound by an enclosing execution context (pass 27 #20). Inside
+    run_session's per-turn context, workspaces.current() returns
+    the project bound when the receive() pass started — before the
+    user's turn arrived. selected() is the live user selection."""
+    _ws = _workspaces()
+    if _ws is None:
+        return None
+    try:
+        return _ws.selected()
+    except Exception:
+        return None
+
+
+@contextlib.contextmanager
+def _use_project(project):
+    """Bind the given project for the enclosed call, or no-op
+    when there is none (auto/standalone paths). workspaces.use
+    validates the project exists; a project deleted since the
+    turn began raises here and the caller treats it as a refused
+    tool call."""
+    if project is None:
+        yield
+        return
+    _ws = _workspaces()
+    if _ws is None:
+        yield
+        return
+    with _ws.use(project):
+        yield
+
+
+async def _execute_tool_call(tool_runner, fc, project=None) -> Dict[str, Any]:
     """Run one Live function call through the shared dispatcher
     (in an executor — dispatch is synchronous and may wait on a
     human approval) and shape the result as a FunctionResponse
@@ -187,7 +230,15 @@ async def _execute_tool_call(tool_runner, fc) -> Dict[str, Any]:
     project, and cancellation) instead of the executor worker's
     own thread-local context, which used to survive across turns
     and swallow repeated identical calls as duplicates (ChatGPT
-    improvement pass 23, verified + fixed 2026-11-05)."""
+    improvement pass 23, verified + fixed 2026-11-05).
+
+    Project (pass 27 #20): when run_session passes the project
+    captured at turn onset, the copied call is created under
+    that project — the receive() pass bound the project selected
+    before the user's turn arrived, which may no longer be the
+    project the turn belongs to. project=None keeps the old
+    behaviour (the pass-entry project).
+    """
     name = getattr(fc, "name", "") or ""
     if _app_locked():
         return {"id": getattr(fc, "id", None), "name": name,
@@ -196,9 +247,10 @@ async def _execute_tool_call(tool_runner, fc) -> Dict[str, Any]:
     loop = asyncio.get_running_loop()
     try:
         _rt = _runtime()
-        _call = (_rt.copied_call(tool_runner, name, args)
-                 if _rt is not None
-                 else lambda: tool_runner(name, args))
+        with _use_project(project):
+            _call = (_rt.copied_call(tool_runner, name, args)
+                     if _rt is not None
+                     else lambda: tool_runner(name, args))
         result, _ok = await loop.run_in_executor(None, _call)
         text = result if isinstance(result, str) else str(result)
     except Exception as e:  # a tool failure is an answer, not a crash
@@ -213,8 +265,12 @@ async def run_session(session, *, tool_runner,
                       on_audio: Optional[Callable] = None,
                       on_turn: Optional[Callable] = None,
                       on_resumption: Optional[Callable] = None,
-                      cancel_sink=None) -> None:
+                      cancel_sink=None,
+                      policy_check: Optional[Callable[[], bool]] = None) -> Optional[str]:
     """Drive one connected Live session across ALL its turns.
+
+    Returns "policy" when policy_check ends the session (the
+    manager logs the reason and re-arms the pipeline), else None.
 
     The google-genai SDK's ``session.receive()`` yields exactly
     ONE model turn per call — its loop breaks the moment a
@@ -261,6 +317,23 @@ async def run_session(session, *, tool_runner,
     out_buf: List[str] = []
     while True:
         got_any = False
+        # Pass 27 #20: the project policy is re-checked at every
+        # turn boundary, not only at startup — enabling project
+        # budgets mid-session ends Live cleanly here (the
+        # manager's finally re-arms the pipeline) instead of
+        # letting unbudgeted calls continue. A failing check
+        # fails open: a broken policy read must not kill voice.
+        if policy_check is not None:
+            try:
+                if policy_check():
+                    return "policy"
+            except Exception:
+                pass
+        # Pass 27 #20: the project this turn belongs to, captured
+        # at turn onset (first user input) — NOT the project
+        # bound when this receive() pass started waiting, which
+        # may predate a project switch by minutes.
+        turn_project: Optional[str] = None
         # One execution context per turn, bound on this task for
         # the whole pass and propagated into the executor by
         # _execute_tool_call (runtime.copied_call). It retires
@@ -310,6 +383,8 @@ async def run_session(session, *, tool_runner,
                         it = getattr(content, "input_transcription", None)
                         if it is not None and getattr(it, "text", None):
                             in_buf.append(it.text)
+                            if turn_project is None:
+                                turn_project = _selected_project()
                         ot = getattr(content, "output_transcription", None)
                         if ot is not None and getattr(ot, "text", None):
                             out_buf.append(ot.text)
@@ -326,7 +401,8 @@ async def run_session(session, *, tool_runner,
                         responses = []
                         for fc in getattr(tool_call, "function_calls", None) or []:
                             responses.append(
-                                await _execute_tool_call(tool_runner, fc))
+                                await _execute_tool_call(
+                                    tool_runner, fc, project=turn_project))
                         if responses:
                             await session.send_tool_response(
                                 function_responses=responses)
@@ -365,7 +441,8 @@ class LiveManager:
                  on_state: Optional[Callable] = None,
                  log: Optional[Callable] = None,
                  client_factory: Optional[Callable] = None,
-                 presence_check: Optional[Callable] = None):
+                 presence_check: Optional[Callable] = None,
+                 policy_check: Optional[Callable[[], bool]] = None):
         self._api_key = api_key
         self._voice = voice or DEFAULT_VOICE
         self._system_instruction = system_instruction
@@ -378,6 +455,12 @@ class LiveManager:
         self._log = log or (lambda msg: None)
         self._client_factory = client_factory
         self._presence_check = presence_check
+        # Pass 27 #20: re-checked at every turn boundary by
+        # run_session — True ends Live when the project policy
+        # changes (e.g. budgets enabled mid-session) instead of
+        # letting unbudgeted calls continue. main.py passes
+        # usage.project_budget_enabled.
+        self._policy_check = policy_check
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.active = False
@@ -592,7 +675,8 @@ class LiveManager:
                             on_assistant_text=self._on_assistant_text,
                             on_audio=sink,
                             on_resumption=self._store_resumption,
-                            cancel_sink=self._turn_cancel))
+                            cancel_sink=self._turn_cancel,
+                            policy_check=self._policy_check))
                         lock_task = asyncio.create_task(
                             self._lock_watch(session_task))
                         # Pass 25 (P2#10): supervise the mic task.
@@ -656,6 +740,18 @@ class LiveManager:
                                         "Gemini Live session failed "
                                         f"({sess_err}) — failing over")
                                     break
+                                elif (not session_task.cancelled()
+                                        and session_task.result()
+                                        == "policy"):
+                                    # Pass 27 #20: the policy check
+                                    # ended the session at a turn
+                                    # boundary — say why, so the
+                                    # clean end is not mistaken for
+                                    # a dropped stream.
+                                    self._log(
+                                        "Gemini Live ended — project "
+                                        "budgets are now enabled; "
+                                        "pipeline voice takes over")
                             elif mic_task in done:
                                 err = mic_task.exception()
                                 if err is None:
