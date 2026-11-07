@@ -229,7 +229,8 @@ def init_databases():
             sender TEXT, message TEXT)''')
         cur.execute('''CREATE TABLE IF NOT EXISTS scheduled_tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT,
-            prompt TEXT, interval_s INTEGER, next_run TEXT, created TEXT)''')
+            prompt TEXT, interval_s INTEGER, next_run TEXT, created TEXT,
+            policy TEXT)''')
         cur.execute('''CREATE TABLE IF NOT EXISTS autonomous_goals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT,
@@ -239,8 +240,15 @@ def init_databases():
             next_run REAL,
             status TEXT DEFAULT 'pending',
             last_result TEXT,
+            policy TEXT,
             created_at REAL,
             updated_at REAL)''')
+        # Pass 27 #16: origin-policy columns on pre-existing tables.
+        for _table in ("scheduled_tasks", "autonomous_goals"):
+            if "policy" not in {r[1] for r in cur.execute(
+                    f"PRAGMA table_info({_table})")}:
+                cur.execute(
+                    f"ALTER TABLE {_table} ADD COLUMN policy TEXT")
         cur.execute('''CREATE TABLE IF NOT EXISTS autonomous_incidents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp REAL,
@@ -812,16 +820,48 @@ def memory_forget_entries(query: str) -> int:
 
 # --- Autonomous Goals, Incidents, & Background Jobs Database Helpers ---
 
-def goal_db_create(title: str, description: str, interval_s: int = 0, priority: int = 5, delay_s: int = 0) -> int:
+def ensure_policy_columns():
+    """Idempotently add the pass-27-#16 origin-policy columns to
+    scheduled_tasks and autonomous_goals (same migration as
+    init_databases, for callers that touch the tables directly
+    without a boot-time init — e.g. the scheduler loop)."""
+    with DB_LOCK:
+        conn = sqlite3.connect(db_path())
+        try:
+            for table in ("scheduled_tasks", "autonomous_goals"):
+                cols = {r[1] for r in conn.execute(
+                    f"PRAGMA table_info({table})")}
+                if "policy" not in cols:
+                    conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN policy TEXT")
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def goal_db_create(title: str, description: str, interval_s: int = 0, priority: int = 5, delay_s: int = 0, policy=None) -> int:
     now = time.time()
     next_run = now + max(0, delay_s)
+    # Pass 27 #16: persist the originating policy (mission
+    # envelope, budget scope, spend cap) so the goal's later
+    # execution restores it instead of running uncapped from
+    # the poller context. An explicit policy wins; otherwise
+    # snapshot the creating execution.
+    if policy is None:
+        try:
+            from aria import runtime as _runtime
+            policy = _runtime.origin_policy_snapshot()
+        except Exception:
+            policy = {}
+    policy_json = json.dumps(policy or {}, default=str)
+    ensure_policy_columns()
     with DB_LOCK:
         conn = sqlite3.connect(db_path())
         cur = conn.cursor()
         cur.execute("""INSERT INTO autonomous_goals
-                   (title, description, priority, interval_s, next_run, status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)""",
-                    (title, description, priority, interval_s, next_run, now, now))
+                   (title, description, priority, interval_s, next_run, status, policy, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)""",
+                    (title, description, priority, interval_s, next_run, policy_json, now, now))
         gid = cur.lastrowid
         conn.commit()
         conn.close()

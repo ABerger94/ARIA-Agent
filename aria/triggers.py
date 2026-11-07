@@ -37,7 +37,7 @@ import threading
 import time
 
 from aria.config import WORKSPACE_DIR, add_log
-from aria import workspaces, data_dir
+from aria import workspaces, data_dir, runtime
 
 STORE_DIR = WORKSPACE_DIR
 _SOURCES = ("email", "folder", "presence_return")
@@ -77,13 +77,25 @@ def _save_triggers(triggers: list) -> None:
 
 
 def create_trigger(name: str, source: str, task: str, rule=None,
-                   mode: str = "ask") -> dict:
+                   mode: str = "ask", policy=None) -> dict:
     """Validate + store one trigger. Returns {"ok", ...}."""
     name = (name or "").strip()
     source = (source or "").strip().lower()
     task = (task or "").strip()
     mode = (mode or "ask").strip().lower()
     rule = rule if isinstance(rule, dict) else {}
+    # Pass 27 #16: persist the originating policy (mission
+    # envelope, budget scope, spend cap) so the firing restores
+    # it instead of running uncapped from the poller context. An
+    # explicit policy wins; otherwise snapshot the creating
+    # execution.
+    if policy is None:
+        policy = runtime.origin_policy_snapshot()
+    try:
+        policy_json = json.dumps(policy or {}, default=str)
+        policy = json.loads(policy_json)
+    except Exception:
+        policy = {}
     if not name:
         return {"ok": False, "error": "a trigger needs a name."}
     if source not in _SOURCES:
@@ -104,7 +116,8 @@ def create_trigger(name: str, source: str, task: str, rule=None,
         return {"ok": False, "error": f"a trigger named '{name}' exists."}
     tid = (triggers[-1]["id"] + 1) if triggers else 1
     entry = {"id": tid, "name": name, "source": source, "rule": rule,
-             "task": task, "mode": mode, "enabled": True}
+             "task": task, "mode": mode, "enabled": True,
+             "policy": policy}
     triggers.append(entry)
     _save_triggers(triggers)
     add_log(f"[trigger] created #{tid} '{name}' ({source}, {mode}): {task}")
@@ -167,7 +180,20 @@ def _announce(text: str) -> None:
 
 
 def _default_fire(trigger: dict, detail: str) -> str:
-    """Carry out one firing; returns a short outcome string."""
+    """Carry out one firing; returns a short outcome string.
+
+    Pass 27 #16: the firing runs under the policy snapshotted
+    when the trigger was created (mission envelope, spend cap,
+    budget scope) — the ask path parks its approval under that
+    policy, and the auto path's taskqueue.submit captures it as
+    the submitting execution's policy. A legacy trigger with no
+    policy fires exactly as before.
+    """
+    with runtime.origin_policy(trigger.get("policy"), kind='trigger'):
+        return _fire_unwrapped(trigger, detail)
+
+
+def _fire_unwrapped(trigger: dict, detail: str) -> str:
     goal = (f"[Trigger: {trigger['name']}] {trigger['task']} "
             f"(fired by {detail})")
     if trigger["mode"] == "ask":

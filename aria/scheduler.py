@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Callable, List, Tuple, Dict, Any
 
 from aria.config import ROOT_DIR, add_log
-from aria.memory import DB_LOCK, DB_PATH
+from aria.memory import DB_LOCK, DB_PATH, ensure_policy_columns
 import aria.speech as speech
 from aria import config as _config_silent
 
@@ -229,15 +229,32 @@ def tool_briefing() -> str:
 
 
 
-def sched_add(kind: str, prompt: str, delay_s: int = 0, interval_s: int = 0) -> int:
+def _fire_scheduled(tid, prompt, policy_json, run_agent_fn):
+    """Run one scheduled prompt under the policy snapshotted when
+    it was created (pass 27 #16) — the mission envelope, spend
+    cap and budget scope it was created under, instead of the
+    scheduler's bare context. A legacy row with no policy runs
+    exactly as before."""
+    with runtime.origin_policy(policy_json, kind='scheduled'):
+        run_agent_fn(f"[Scheduled task] {prompt}")
+
+
+def sched_add(kind: str, prompt: str, delay_s: int = 0, interval_s: int = 0, policy=None) -> int:
     nxt = datetime.now() + timedelta(seconds=delay_s if kind == "once" else interval_s)
+    # Pass 27 #16: persist the originating policy (mission
+    # envelope, budget scope, spend cap) so the firing restores
+    # it instead of running uncapped from the scheduler context.
+    if policy is None:
+        policy = runtime.origin_policy_snapshot()
+    policy_json = json.dumps(policy or {}, default=str)
+    ensure_policy_columns()
     with DB_LOCK:
         conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
         cur = conn.cursor()
-        cur.execute("""INSERT INTO scheduled_tasks (kind, prompt, interval_s, next_run, created)
-                       VALUES (?, ?, ?, ?, ?)""",
+        cur.execute("""INSERT INTO scheduled_tasks (kind, prompt, interval_s, next_run, created, policy)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
                     (kind, prompt, interval_s, nxt.strftime("%Y-%m-%d %H:%M:%S"),
-                     datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"), policy_json))
         tid = cur.lastrowid
         conn.commit()
         conn.close()
@@ -294,13 +311,15 @@ def sched_add_on_return(message: str) -> int:
     """An on-return reminder (pass 6): same table, kind='on_return',
     sentinel next_run so the timed due-query never picks it up; the
     reminder gate delivers it after Alek returns to the laptop."""
+    policy_json = json.dumps(runtime.origin_policy_snapshot(), default=str)
+    ensure_policy_columns()
     with DB_LOCK:
         conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
         cur = conn.cursor()
-        cur.execute("""INSERT INTO scheduled_tasks (kind, prompt, interval_s, next_run, created)
-                       VALUES (?, ?, ?, ?, ?)""",
+        cur.execute("""INSERT INTO scheduled_tasks (kind, prompt, interval_s, next_run, created, policy)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
                     ("on_return", message, 0, "9999-12-31 23:59:59",
-                     datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"), policy_json))
         tid = cur.lastrowid
         conn.commit()
         conn.close()
@@ -504,15 +523,16 @@ def scheduler_loop(is_busy_fn: Optional[Callable[[], bool]] = None,
                     if not os.path.exists(memory.db_path()):
                         memory.init_databases()
                     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    ensure_policy_columns()
                     due = []
                     with DB_LOCK:
                         conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
                         cur = conn.cursor()
-                        cur.execute("SELECT id, kind, prompt, interval_s FROM scheduled_tasks WHERE next_run <= ?", (now,))
+                        cur.execute("SELECT id, kind, prompt, interval_s, policy FROM scheduled_tasks WHERE next_run <= ?", (now,))
                         due = cur.fetchall()
                         conn.close()
 
-                    for tid, kind, prompt, interval_s in due:
+                    for tid, kind, prompt, interval_s, policy_json in due:
                         if kind == "once":
                             # Quiet hours (pass 6): a timed reminder that
                             # falls due overnight waits for the first
@@ -587,7 +607,8 @@ def scheduler_loop(is_busy_fn: Optional[Callable[[], bool]] = None,
                                 _config_silent.log_silent("scheduler_loop", _e_silent)
                             if run_agent_fn:
                                 threading.Thread(target=runtime.copied_call(
-                                                 run_agent_fn, f"[Scheduled task] {prompt}"),
+                                                 _fire_scheduled, tid, prompt,
+                                                 policy_json, run_agent_fn),
                                                  daemon=True).start()
 
                     # ARIA ULTIMATE (Module 5): inbox poller — emits inbox_new_file

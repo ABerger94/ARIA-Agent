@@ -17,6 +17,7 @@ from typing import Optional, Callable, Dict, Any, Tuple, List
 import psutil
 
 from aria.config import WORKSPACE_DIR, add_log
+from aria import runtime
 from aria.memory import (
     DB_LOCK, DB_PATH, spine_append, spine_tail, spine_digest,
     goal_db_create, goal_db_list, goal_db_get_due, goal_db_update, goal_db_delete
@@ -225,7 +226,16 @@ def evaluate_autonomous_goals(action_fn: Optional[Callable[..., str]] = None,
         res_text = ""
         try:
             if action_fn:
-                res_text = action_fn("autonomous", f"[Autonomous Task: {title}] {desc}")
+                # Pass 27 #16: run the goal under the policy
+                # snapshotted when it was created (mission
+                # envelope, spend cap, budget scope) instead of
+                # the poller context. A legacy goal with no
+                # policy runs exactly as before.
+                with runtime.origin_policy(
+                        goal.get("policy"), kind='autonomous'):
+                    res_text = action_fn(
+                        "autonomous",
+                        f"[Autonomous Task: {title}] {desc}")
             else:
                 res_text = "Goal evaluated (no action dispatcher bound)."
         except Exception as e:

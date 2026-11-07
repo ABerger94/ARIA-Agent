@@ -5,6 +5,7 @@ import contextlib
 import contextvars
 from dataclasses import dataclass, field
 import functools
+import json
 import threading
 import time
 import uuid
@@ -124,6 +125,77 @@ def operation(value):
         yield
     finally:
         _OPERATION.reset(token)
+
+
+def origin_policy_snapshot():
+    """Snapshot the calling execution's policy for deferred work.
+
+    Pass 27 #16: schedules, triggers and autonomous goals used to
+    persist only a prompt — their later execution started from the
+    scheduler/poller context with no envelope, cap or parent, so a
+    trigger created under a capped mission fired uncapped. The
+    snapshot carries the envelope (which names the mission via
+    mission_id when the caller is a mission step), the budget
+    scope and the spend cap, so the deferred run restores them
+    instead of running free. A non-mission caller snapshots
+    envelope None / cap None — restoring that is exactly today's
+    behaviour. Never raises: an unreadable context snapshots as
+    an empty policy (legacy behaviour) rather than breaking the
+    creation.
+    """
+    try:
+        ctx = current()
+    except Exception:
+        return {}
+    try:
+        env = ctx.envelope
+        snapshot = {
+            "envelope": dict(env) if isinstance(env, dict) else None,
+            "mission_id": (env.get("mission_id")
+                           if isinstance(env, dict) else None),
+            "budget_scope": ctx.budget_scope or "",
+            "spend_cap": ctx.spend_cap,
+        }
+        json.dumps(snapshot, default=str)  # must survive storage
+        return snapshot
+    except Exception:
+        return {}
+
+
+def parse_origin_policy(policy):
+    """Parse a stored origin policy (JSON text, dict, or nothing)
+    into a plain dict. Legacy records with no policy parse to {},
+    which restores exactly today's behaviour."""
+    if not policy:
+        return {}
+    if isinstance(policy, dict):
+        return policy
+    try:
+        parsed = json.loads(policy)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+@contextlib.contextmanager
+def origin_policy(policy, kind='deferred'):
+    """Enter an execution under a snapshotted origin policy.
+
+    Pass 27 #16: deferred work (a schedule firing, a trigger, an
+    autonomous goal) runs inside this with the envelope, budget
+    scope and spend cap it was created under — a newly minted
+    scope would reset cumulative spending against the mission's
+    cap, so the snapshotted scope is restored, not a fresh one.
+    An empty policy (legacy record, or a caller with no envelope
+    or cap) enters a plain execution, exactly as today.
+    """
+    policy = parse_origin_policy(policy)
+    env = policy.get("envelope")
+    with execution(kind,
+                   envelope=env if isinstance(env, dict) else None,
+                   budget_scope=policy.get("budget_scope") or "",
+                   spend_cap=policy.get("spend_cap")):
+        yield
 
 
 def snapshot():
