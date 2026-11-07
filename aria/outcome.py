@@ -127,7 +127,12 @@ def normalize(value):
         elif (text.startswith(('[Tool Error', '[Argument error', 'Unknown tool:',
                                '[Safe mode', '[Approval error', '[Approval refused',
                                '[Duplicate call blocked'))
-              or 'Traceback (most recent call last)' in text):
+              # Pass 28 #29: a traceback only signals failure when
+              # it LEADS the output (the handler's own error). Read
+              # content — a log file, a fetched page — can contain
+              # one mid-text; that is data, not an execution error.
+              or text.lstrip().startswith(
+                  'Traceback (most recent call last)')):
             status = FAILED
         else:
             # Existing tools return human text; preserve that public API.

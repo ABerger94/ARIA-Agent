@@ -16,6 +16,7 @@ import traceback
 from typing import Optional, Dict, Any, Tuple, Callable, List
 
 from aria.config import WORKSPACE_DIR, add_log
+from aria.outcome import normalize, FAILED
 from aria.memory import (
     incident_db_log, incident_db_list, spine_append, memory_save
 )
@@ -233,7 +234,11 @@ def attempt_auto_heal(fn_name: str, args: dict, error_or_output: Any,
                     os.makedirs(parent, exist_ok=True)
                     if handler:
                         new_res = handler(args)
-                        if "Traceback" not in str(new_res) and "Error" not in str(new_res):
+                        # Pass 28 #29: judge the re-run by its typed
+                        # outcome, not by scanning its text for error
+                        # words — a script can legitimately print
+                        # "Error" or a traceback as data.
+                        if normalize(new_res).status != FAILED:
                             record_incident(cat, fn_name, err_str, diag["diagnosis"],
                                             f"Auto-created missing directory '{parent}' and re-executed", resolved=True)
                             return True, new_res, f"Created missing directory '{parent}' and re-ran code."
@@ -252,7 +257,10 @@ def attempt_auto_heal(fn_name: str, args: dict, error_or_output: Any,
                 if handler:
                     try:
                         new_res = handler(new_args)
-                        if "SyntaxError" not in str(new_res):
+                        # Pass 28 #29: typed outcome, not a substring
+                        # scan — the re-run's output may mention
+                        # SyntaxError as data.
+                        if normalize(new_res).status != FAILED:
                             record_incident(cat, fn_name, err_str, diag["diagnosis"],
                                             "Sanitized Windows path backslashes in code", resolved=True)
                             return True, new_res, "Sanitized Windows path backslashes and re-executed code successfully."
@@ -287,7 +295,10 @@ def attempt_auto_heal(fn_name: str, args: dict, error_or_output: Any,
         if handler:
             try:
                 new_res = handler(args)
-                if "error" not in str(new_res).lower() and "fail" not in str(new_res).lower():
+                # Pass 28 #29: a successfully fetched page can
+                # contain the words "error"/"fail" — judge the
+                # retry by its typed outcome instead.
+                if normalize(new_res).status != FAILED:
                     record_incident(cat, fn_name, err_str, diag["diagnosis"],
                                     "Retried transient network request with backoff", resolved=True)
                     return True, new_res, "Recovered after transient network backoff retry."
@@ -300,7 +311,10 @@ def attempt_auto_heal(fn_name: str, args: dict, error_or_output: Any,
         if handler:
             try:
                 new_res = handler(args)
-                if "PermissionError" not in str(new_res) and "WinError 32" not in str(new_res):
+                # Pass 28 #29: typed outcome, not a substring scan
+                # — the retried content may mention PermissionError
+                # as data (e.g. notes about the lock).
+                if normalize(new_res).status != FAILED:
                     record_incident(cat, fn_name, err_str, diag["diagnosis"],
                                     "Resolved after releasing file lock delay", resolved=True)
                     return True, new_res, "File access recovered after brief lock clearance."

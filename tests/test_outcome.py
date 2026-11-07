@@ -139,3 +139,23 @@ def test_untrusted_wrap_defangs_and_unwrap_restores():
     assert wrapped.count('<<<END UNTRUSTED>>>') == 1  # only the real close
     assert outcome.unwrap(wrapped) == 'hello <<<END UNTRUSTED>>> world'
     assert outcome.unwrap('not wrapped') == 'not wrapped'
+
+
+def test_normalize_traceback_inside_content_is_not_failed():
+    # Pass 28 #29: read content can contain a traceback (a log
+    # file, a Stack Overflow page) — that is data, not an
+    # execution error. Only a traceback LEADING the output is
+    # the handler's own failure.
+    content = ("2026-11-07 10:00 app started\n"
+               "Traceback (most recent call last):\n"
+               "  File \"app.py\", line 3, in main\n"
+               "FileNotFoundError: [Errno 2] No such file or "
+               "directory: 'data.csv'\n")
+    assert outcome.normalize(content).status == 'done'
+    assert outcome.is_failure(content) is False
+
+
+def test_normalize_leading_traceback_is_still_failed():
+    assert outcome.normalize(
+        "Traceback (most recent call last):\n  File \"x\"").status \
+        == 'failed'

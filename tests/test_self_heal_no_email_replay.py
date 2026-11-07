@@ -259,3 +259,56 @@ def test_transient_fetch_still_heals(monkeypatch):
         'fetch_url', {}, 'timed out', lambda args: 'fetched')
     assert healed is True
     assert out == 'fetched'
+
+
+# ------------------------------------------------------------ pass 28 #29: read content is not an error
+
+_READ_CONTENT = (
+    "2026-11-07 10:00 app started\n"
+    "Traceback (most recent call last):\n"
+    "  File \"app.py\", line 3, in main\n"
+    "FileNotFoundError: [Errno 2] No such file or directory: "
+    "'data.csv'\n"
+    "ModuleNotFoundError: No module named 'pandas'\n")
+
+
+def test_read_content_with_error_words_is_not_healed_via_dispatch():
+    _fresh()
+    calls = []
+
+    def _stub_read(args):
+        calls.append(dict(args or {}))
+        return _READ_CONTENT
+
+    orig = dispatch._REGISTRY.get('read_file')
+    dispatch._REGISTRY['read_file'] = _stub_read
+    try:
+        res, _ok = dispatch.execute_tool(
+            'read_file', {'filename': 'app.log'})
+    finally:
+        if orig is not None:
+            dispatch._REGISTRY['read_file'] = orig
+        else:
+            dispatch._REGISTRY.pop('read_file', None)
+    assert len(calls) == 1, f'read handler ran {len(calls)} times'
+    assert res == _READ_CONTENT, res
+    assert 'Autonomous Self-Healing' not in res, res
+
+
+def test_heuristic5_retry_content_with_error_words_is_healed(monkeypatch):
+    monkeypatch.setattr(self_healing.time, 'sleep', lambda s: None)
+    healed, out, _msg = self_healing.attempt_auto_heal(
+        'fetch_url', {}, 'timed out',
+        lambda args: 'The error handling guide: why requests fail '
+                     'and how to fix failure modes.')
+    assert healed is True
+    assert 'error handling guide' in out
+
+
+def test_heuristic6_retry_content_with_error_words_is_healed(monkeypatch):
+    monkeypatch.setattr(self_healing.time, 'sleep', lambda s: None)
+    healed, out, _msg = self_healing.attempt_auto_heal(
+        'read_file', {}, PermissionError('file is locked'),
+        lambda args: 'Notes on PermissionError: how the lock works.')
+    assert healed is True
+    assert 'PermissionError' in out
