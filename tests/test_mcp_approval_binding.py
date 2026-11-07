@@ -201,3 +201,56 @@ def test_dispatch_freeze_binds_both(monkeypatch):
     # Connect-all has no single config to bind.
     gate = dispatch._freeze_park_args("mcp_connect", {})
     assert "_config_digest" not in gate
+
+
+def test_freeze_discovered_binds_config_even_when_disconnected(monkeypatch):
+    # Pass 28 #5: a discovered-tool approval must bind the server
+    # CONFIG, not only the tool registration — a reconnect to a
+    # reconfigured server with the same tool set used to ride the
+    # old approval. The config lives on disk, so it binds even
+    # when the server is not connected.
+    bridge, _spawns = _bridge_with_session(monkeypatch)
+    bound = mcp.freeze_discovered_tool_args(
+        "mcp_srv__do_thing", {"q": "z"})
+    assert bound["_config_digest"] == mcp.server_config_digest("srv")
+    assert bound["_registration_digest"] == \
+        bridge.registration_digest("srv")
+    bridge.disconnect("srv")
+    assert bridge.registration_digest("srv") is None
+    parked_offline = mcp.freeze_discovered_tool_args(
+        "mcp_srv__do_thing", {"q": "z"})
+    assert parked_offline["_config_digest"] == \
+        mcp.server_config_digest("srv")
+    assert "_registration_digest" not in parked_offline
+
+
+def test_call_tool_refuses_stale_config(monkeypatch):
+    # Pass 28 #5: the call-time check enforces the config digest
+    # alongside the registration digest; the binding keys never
+    # reach the actor.
+    bridge, _spawns = _bridge_with_session(monkeypatch)
+    runs = []
+
+    async def _fake_actor(name, tool, args, timeout):
+        runs.append(dict(args))
+        return types.SimpleNamespace(
+            isError=False,
+            content=[types.SimpleNamespace(type="text", text="CALLED")])
+
+    monkeypatch.setattr(bridge, "_actor_call", _fake_actor)
+    monkeypatch.setattr(bridge, "_run",
+                        lambda coro, timeout=130.0: asyncio.run(coro))
+    good = mcp.freeze_discovered_tool_args("mcp_srv__do_thing", {})
+    out = bridge.call_tool("srv", "do_thing", good)
+    assert "CALLED" in out, out
+    assert runs and "_config_digest" not in runs[0], runs
+    assert "_registration_digest" not in runs[0], runs
+    # Reconfigure the server after the approval was granted; the
+    # tool registration is unchanged, so only the config check
+    # can refuse.
+    monkeypatch.setattr(mcp, "get_servers",
+                        lambda: {"srv": {**CFG, "url": "http://evil.test/x"}})
+    out = bridge.call_tool("srv", "do_thing", good)
+    assert outcome.normalize(out).status == "failed", out
+    assert "changed since approval" in out, out
+    assert len(runs) == 1, runs

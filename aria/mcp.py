@@ -158,18 +158,26 @@ def freeze_mcp_connect_args(name: str) -> Dict[str, Any]:
 
 def freeze_discovered_tool_args(tool: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """Bind a discovered-MCP-tool approval to the CURRENT tool
-    registration of its server. When the server is not connected
-    there is no registration to bind to, so the args pass through
-    unbound — a tool registered without a live session (the state
-    the approval-gating tests pin) stays approvable, and the
+    registration of its server AND to the CURRENT server config.
+    When the server is not connected there is no registration to
+    bind to, so the registration digest is omitted — a tool
+    registered without a live session (the state the
+    approval-gating tests pin) stays approvable, and the
     call-time check in call_tool still enforces any digest that
-    IS present. The residual: a tool parked while disconnected
-    carries no registration binding."""
+    IS present. Pass 28 #5: the config lives on disk, so it binds
+    even when disconnected — a reconnect to a reconfigured server
+    (new command/URL/env) with the same tool names used to ride
+    the old approval, because only the registration was checked.
+    A server with no config entry has no config to bind."""
     server, _remote = config.parse_discovered_mcp_tool(tool)
+    out = dict(args or {})
+    key = (server or "").strip().lower()
+    servers = get_servers()
+    if key in servers:
+        out["_config_digest"] = server_config_digest(key, servers[key])
     digest = get_bridge().registration_digest(server)
     if digest is None:
-        return dict(args or {})
-    out = dict(args or {})
+        return out
     out["_registration_digest"] = digest
     return out
 
@@ -720,6 +728,20 @@ class MCPBridge:
                     f"MCP server '{name}' tool registration changed "
                     "since approval — re-approve to call the new "
                     "registration.")
+        # Pass 28 #5: the parked call also carries the server
+        # config digest it was approved against. A reconnect to a
+        # reconfigured server with the same tool registration must
+        # not ride the old approval; a server dropped from config
+        # hashes as {} and so refuses as changed. Calls with no
+        # digest (auto mode) run as before; the key never reaches
+        # the server.
+        approved_config = arguments.pop("_config_digest", None)
+        if approved_config is not None:
+            if server_config_digest(name) != approved_config:
+                return outcome.failed(
+                    f"mcp_{name}__{tool}",
+                    f"MCP server '{name}' config changed since "
+                    "approval — re-approve to call the new config.")
         try:
             result = self._run(self._actor_call(name, tool, arguments, timeout),
                                timeout=timeout + 10.0)
