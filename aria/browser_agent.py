@@ -712,16 +712,43 @@ class _Runner:
         self._thread = None
         self.session = None
         self._factory = session_factory
+        # Jobs whose effect ran (or may have run) after their
+        # caller already gave up waiting (pass 27 #11): the
+        # caller can no longer know whether the action happened,
+        # so the outcome is recorded here instead of silently
+        # succeeding or vanishing. Dropped-before-start jobs
+        # are NOT uncertain — they provably never ran.
+        self.uncertain = []
 
     def _loop(self):
         while True:
-            fn, done, box = self._q.get()
+            fn, done, box, deadline, cancelled = self._q.get()
+            if cancelled.is_set() or time.monotonic() >= deadline:
+                # Expired before starting: never run it. The
+                # caller already received its TimeoutError, and
+                # a stale click/type must not execute after the
+                # caller has moved on.
+                box.append(("expired", TimeoutError(
+                    "browser action timed out")))
+                done.set()
+                continue
             try:
-                box.append(("ok", fn(self)))
+                result = fn(self)
             except Exception as exc:
                 box.append(("err", exc))
+            else:
+                box.append(("ok", result))
             finally:
                 done.set()
+            if cancelled.is_set():
+                # Ran after its caller timed out: the effect may
+                # have happened, unobserved. Record it so a
+                # later retry can see the uncertainty instead of
+                # assuming the action never happened.
+                self.uncertain.append({
+                    "at": time.time(),
+                    "fn": getattr(fn, "__name__", repr(fn)),
+                })
 
     def call(self, fn, timeout=90):
         if self._thread is None:
@@ -729,12 +756,20 @@ class _Runner:
                 target=self._loop, daemon=True, name="aria-browser-agent")
             self._thread.start()
         done = threading.Event()
+        cancelled = threading.Event()
         box = []
-        self._q.put((fn, done, box))
+        deadline = time.monotonic() + timeout
+        self._q.put((fn, done, box, deadline, cancelled))
         if not done.wait(timeout):
-            raise TimeoutError("browser action timed out")
+            if done.is_set():
+                pass  # completed in the gap; fall through
+            else:
+                cancelled.set()
+                raise TimeoutError("browser action timed out")
         kind, value = box[0]
         if kind == "err":
+            raise value
+        if kind == "expired":
             raise value
         return value
 
