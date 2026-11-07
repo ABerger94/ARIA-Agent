@@ -492,12 +492,33 @@ def _run_routine_impl_body(name: str, params=None, start_at: int = 1) -> str:
                 f"automatically; resume_routine('{sname}') retries the "
                 f"paused step later.\n"
                 + "\n".join(lines))
-        return (_outcome_mod.ask(
+        ask_text = (_outcome_mod.ask(
                     "run_routine",
                     f"Routine '{sname}' paused at step {paused_at} "
                     f"awaiting approval",
                     routine=sname, step=paused_at)
                 + "\n" + body)
+        # Pass 27 #24: propagate the parked token through the
+        # wrapper. The paused return used to start with the ASK
+        # line, so a mission running this routine took the ASK
+        # branch (step 'uncertain', mission 'blocked_input', no
+        # token stored) and was stranded when the inner approval
+        # resolved — the routine resumed, the mission never
+        # settled. The marker first makes the mission park the
+        # step on the inner token; the ASK line stays, so
+        # normalize() still reads ASK for every other consumer.
+        # No token in the step's result (a handler-side re-park
+        # returned a plain message) means no marker — the return
+        # stays exactly as before.
+        token_m = re.search(r"token=([0-9a-f]{8})", str(result))
+        if token_m:
+            marker = (f"[AWAITING_APPROVAL token={token_m.group(1)}] "
+                      f"Routine '{sname}' paused at step {paused_at} "
+                      f"awaiting approval. Tell the user what you "
+                      f"are about to do and wait for them to tap "
+                      f"Confirm (or Deny) on the approval banner.\n")
+            return marker + ask_text
+        return ask_text
     _clear_paused_for_name(sname)
     if failed_at is not None:
         from aria import outcome as _outcome_mod
