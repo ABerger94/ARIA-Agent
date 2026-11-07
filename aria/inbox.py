@@ -40,7 +40,7 @@ TEXT_EXTS = {".txt", ".md", ".csv", ".json", ".log", ".py", ".js", ".html", ".xm
 
 _MIME_BY_EXT = {
     ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
-    "webp": "image/webp", ".gif": "image/gif", ".bmp": "image/bmp",
+    ".webp": "image/webp", ".gif": "image/gif", ".bmp": "image/bmp",
 }
 
 
