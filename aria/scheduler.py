@@ -272,6 +272,20 @@ def sched_list() -> List[Tuple[Any, ...]]:
     return rows
 
 
+def sched_list_with_policy() -> List[Tuple[Any, Any]]:
+    """(id, policy-JSON) pairs for every scheduled task (pass 28
+    #24): mission cancel revokes the schedules a mission owns,
+    and sched_list does not carry the policy column."""
+    ensure_policy_columns()
+    with DB_LOCK:
+        conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
+        cur = conn.cursor()
+        cur.execute("SELECT id, policy FROM scheduled_tasks ORDER BY next_run")
+        rows = cur.fetchall()
+        conn.close()
+    return rows
+
+
 def sched_cancel(task_id: int) -> bool:
     with DB_LOCK:
         conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))

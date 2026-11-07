@@ -1147,11 +1147,45 @@ def cancel_mission(mid: int) -> str:
             stopped = _queue.cancel_children_of_mission(mid)
     except Exception as e:
         _config.log_silent("missions.cancel_mission.children", e)
+    # Background jobs outlive the mission the same way (pass 28
+    # #24): a step that started a job carries its child_handle —
+    # kill the job in the handle's project, or it runs on after
+    # the mission is dead.
+    stopped_jobs = 0
+    try:
+        from aria.agent import workers as _workers_mod
+        for s in steps:
+            try:
+                handle = json.loads(s.get("child_handle") or "{}")
+            except Exception:
+                handle = {}
+            if handle.get("kind") != "background_job":
+                continue
+            jid = handle.get("job_id")
+            if not jid:
+                continue
+            project = handle.get("project")
+            use = workspaces.use(project) if project \
+                else contextlib.nullcontext()
+            try:
+                with use:
+                    if _workers_mod.cancel_background_job(int(jid)):
+                        stopped_jobs += 1
+            except Exception as e:
+                _config.log_silent("missions.cancel_mission.job", e)
+    except Exception as e:
+        _config.log_silent("missions.cancel_mission.jobs", e)
+    # Deferred work created under the mission's origin policy
+    # (pass 28 #24): schedules, triggers and autonomous goals
+    # whose stored policy names this mission would otherwise
+    # keep firing under the dead mission's envelope and cap.
+    revoked = _revoke_deferred_for_mission(mid)
     _finish(mid, "cancelled",
             note="Cancelled by Alek — remaining steps will "
                  "not run.")
     for s in steps:
-        if s["status"] in ("pending", "running", "waiting", "uncertain"):
+        if s["status"] in ("pending", "running", "waiting",
+                           "uncertain", "waiting_child"):
             _set_step(s["id"], status="cancelled",
                       approval_token=None)
     # Clear any parked approval from every surface (the
@@ -1165,7 +1199,64 @@ def cancel_mission(mid: int) -> str:
         except Exception as e:
             _config.log_silent("missions.cancel_mission", e)
     return (f"Mission #{mid} cancelled: '{m['goal']}'. "
-            f"Stopped {stopped} delegated child task(s).")
+            f"Stopped {stopped} delegated child task(s), "
+            f"{stopped_jobs} background job(s); revoked "
+            f"{revoked['schedules']} schedule(s), "
+            f"{revoked['triggers']} trigger(s), "
+            f"{revoked['goals']} autonomous goal(s).")
+
+
+def _policy_mission_id(policy) -> Optional[int]:
+    """The mission_id a stored origin policy names, or None.
+    Policies arrive as dicts (triggers) or JSON text (schedules,
+    goals); a legacy record with no policy names no mission."""
+    if isinstance(policy, str):
+        try:
+            policy = json.loads(policy)
+        except Exception:
+            return None
+    if not isinstance(policy, dict):
+        return None
+    try:
+        mid = policy.get("mission_id")
+        return int(mid) if mid is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _revoke_deferred_for_mission(mid: int) -> Dict[str, int]:
+    """Revoke the schedules, triggers and autonomous goals a
+    mission created under its origin policy (pass 28 #24).
+    Returns the revoked counts per store. Never raises: a
+    failed sweep must not break the cancel itself."""
+    revoked = {"schedules": 0, "triggers": 0, "goals": 0}
+    try:
+        from aria import scheduler as _sched_mod
+        for tid, policy in _sched_mod.sched_list_with_policy():
+            if _policy_mission_id(policy) == mid:
+                if _sched_mod.sched_cancel(tid):
+                    revoked["schedules"] += 1
+    except Exception as e:
+        _config.log_silent("missions.cancel_mission.schedules", e)
+    try:
+        from aria import triggers as _trig_mod
+        for trig in _trig_mod.load_triggers():
+            if _policy_mission_id(trig.get("policy")) == mid:
+                if _trig_mod.delete_trigger(trig.get("id")):
+                    revoked["triggers"] += 1
+    except Exception as e:
+        _config.log_silent("missions.cancel_mission.triggers", e)
+    try:
+        from aria.agent import proactive as _pro_mod
+        for goal in _pro_mod.goal_list():
+            if goal.get("status") == "completed":
+                continue
+            if _policy_mission_id(goal.get("policy")) == mid:
+                if _pro_mod.goal_cancel(goal.get("id")):
+                    revoked["goals"] += 1
+    except Exception as e:
+        _config.log_silent("missions.cancel_mission.goals", e)
+    return revoked
 
 
 def mission_summaries(limit: int = 10) -> List[Dict[str, Any]]:
