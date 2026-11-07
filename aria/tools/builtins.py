@@ -10,10 +10,12 @@ from datetime import datetime, timedelta
 import email
 import html as html_lib
 import imaplib
+import ipaddress
 import json
 import os
 import re
 import smtplib
+import socket
 from email.message import EmailMessage
 import sqlite3
 import time
@@ -65,14 +67,66 @@ def tool_web_search(query: str) -> str:
         return f"Search error: {e}"
 
 
-def _is_http_url(url: str) -> bool:
-    """True only for absolute http(s) URLs. Everything else — file://,
-    ftp://, data:, javascript:, schemeless strings — is not a web fetch,
-    and must never reach a URL opener (urllib speaks file:// too)."""
+def _resolved_ips(host: str):
+    """Every IP a hostname resolves to. A literal IP passes
+    through with no DNS lookup; anything else goes through
+    getaddrinfo (both A and AAAA answers are returned)."""
     try:
-        return urllib.parse.urlparse(url).scheme.lower() in ("http", "https")
+        return [ipaddress.ip_address(host)]
+    except ValueError:
+        pass
+    ips = []
+    for info in socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP):
+        sockaddr = info[4]
+        if sockaddr:
+            try:
+                ips.append(ipaddress.ip_address(sockaddr[0]))
+            except ValueError:
+                continue
+    return ips
+
+
+def _is_public_url(url: str) -> bool:
+    """True only for absolute http(s) URLs whose destination is a
+    globally-routable address (pass 28 #35).
+
+    The scheme gate alone let http://127.0.0.1/, http://192.168.x/
+    and http://[::1]/ through — the fetch would reach private
+    services (a router admin page, a LAN device, a local dev
+    server, a cloud metadata endpoint). Every resolved IP must be
+    global; a hostname that does not resolve, or resolves to
+    nothing, is not public. Residual race: DNS rebinding between
+    this check and the connect could swap the answer — the check
+    still closes the direct case (literal private IPs and stable
+    private hostnames), which is the hole.
+    """
+    try:
+        parts = urllib.parse.urlparse(url)
     except Exception:
         return False
+    if parts.scheme.lower() not in ("http", "https"):
+        return False
+    host = (parts.hostname or "").strip()
+    if not host:
+        return False
+    try:
+        ips = _resolved_ips(host)
+    except Exception:
+        return False
+    return bool(ips) and all(ip.is_global for ip in ips)
+
+
+class _PublicOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follows redirects only to public http(s) destinations
+    (pass 28 #35): a public URL redirecting to
+    http://127.0.0.1/ must not reach a private service — the
+    initial-URL gate never saw the redirect target."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _is_public_url(newurl):
+            raise urllib.error.URLError(
+                f"redirect to non-public URL refused: {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def _http_only_opener() -> urllib.request.OpenerDirector:
@@ -80,7 +134,8 @@ def _http_only_opener() -> urllib.request.OpenerDirector:
     FTPHandler, so even an http(s) response redirecting to file://
     cannot escape the scheme gate — the redirect re-enters this opener
     and hits UnknownHandler. ProxyHandler is kept so proxied hosts
-    behave exactly as they did under urlopen."""
+    behave exactly as they did under urlopen. Redirects go through
+    the public-destination gate, not the stock handler."""
     opener = urllib.request.OpenerDirector()
     for handler in (
         urllib.request.ProxyHandler(),
@@ -88,7 +143,7 @@ def _http_only_opener() -> urllib.request.OpenerDirector:
         urllib.request.HTTPHandler(),
         urllib.request.HTTPSHandler(),
         urllib.request.HTTPDefaultErrorHandler(),
-        urllib.request.HTTPRedirectHandler(),
+        _PublicOnlyRedirectHandler(),
         urllib.request.HTTPErrorProcessor(),
     ):
         opener.add_handler(handler)
@@ -106,7 +161,9 @@ _MAX_READ_FILE_BYTES = 2 * 1024 * 1024
 
 
 def _fetch_html(url: str) -> Optional[str]:
-    if not _is_http_url(url):
+    # Pass 28 #35: the public-destination gate (not just the scheme
+    # gate) — a private http(s) URL must never reach the opener.
+    if not _is_public_url(url):
         return None
     try:
         req = urllib.request.Request(

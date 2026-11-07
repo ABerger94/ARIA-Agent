@@ -18,6 +18,8 @@ import sys
 import tempfile
 import types
 
+import ipaddress
+
 import pytest
 
 _TMPHOME = tempfile.mkdtemp(prefix="aria_fetch_read_limits_")
@@ -77,7 +79,19 @@ def ws(tmp_path, monkeypatch):
     return tmp_path
 
 
+def _stub_public_resolution(monkeypatch):
+    # Pass 28 #35: the public-destination gate resolves the host;
+    # this sandbox's resolver maps example.com to a CGNAT address,
+    # so stub the resolution instead of depending on live DNS.
+    _real_resolved = builtins._resolved_ips
+    monkeypatch.setattr(
+        builtins, "_resolved_ips",
+        lambda host: ([ipaddress.ip_address("93.184.216.34")]
+                      if host == "example.com" else _real_resolved(host)))
+
+
 def test_huge_chunked_http_body_is_bounded(monkeypatch):
+    _stub_public_resolution(monkeypatch)
     resp = _ChunkedResponse()
     monkeypatch.setattr(builtins, "_HTTP_ONLY_OPENER", _StubOpener(resp))
     html = builtins._fetch_html("https://example.com/huge")
@@ -87,6 +101,7 @@ def test_huge_chunked_http_body_is_bounded(monkeypatch):
 
 
 def test_small_fetch_still_works(monkeypatch):
+    _stub_public_resolution(monkeypatch)
     resp = _ChunkedResponse(total=11)
     monkeypatch.setattr(builtins, "_HTTP_ONLY_OPENER", _StubOpener(resp))
     assert builtins.tool_fetch_url("https://example.com/page") == "x" * 11

@@ -28,6 +28,7 @@ import tempfile
 import types
 import urllib.error
 import urllib.request
+import ipaddress
 
 import pytest
 
@@ -168,6 +169,13 @@ def test_http_fetch_still_works(monkeypatch):
         b"<html><head><script>evil()</script></head>"
         b"<body><p>Hello world</p></body></html>")
     monkeypatch.setattr(builtins, "_HTTP_ONLY_OPENER", stub)
+    # Pass 28 #35: the public-destination gate resolves the host;
+    # stub the resolution so this test never depends on live DNS.
+    _real_resolved = builtins._resolved_ips
+    monkeypatch.setattr(
+        builtins, "_resolved_ips",
+        lambda host: ([ipaddress.ip_address("93.184.216.34")]
+                      if host == "example.com" else _real_resolved(host)))
     result = builtins.tool_fetch_url("https://example.com/page")
     assert result == "Hello world"
     assert stub.calls == ["https://example.com/page"]
@@ -176,8 +184,61 @@ def test_http_fetch_still_works(monkeypatch):
 def test_uppercase_http_scheme_allowed(monkeypatch):
     stub = _StubOpener(b"<p>Uppercase scheme</p>")
     monkeypatch.setattr(builtins, "_HTTP_ONLY_OPENER", stub)
+    _real_resolved = builtins._resolved_ips
+    monkeypatch.setattr(
+        builtins, "_resolved_ips",
+        lambda host: ([ipaddress.ip_address("93.184.216.34")]
+                      if host == "example.com" else _real_resolved(host)))
     result = builtins.tool_fetch_url("HTTP://example.com/page")
     assert result == "Uppercase scheme"
+
+
+def test_public_literal_ip_still_fetches(monkeypatch):
+    # A globally-routable literal IP needs no DNS to pass the gate.
+    stub = _StubOpener(b"<p>Public IP</p>")
+    monkeypatch.setattr(builtins, "_HTTP_ONLY_OPENER", stub)
+    result = builtins.tool_fetch_url("https://93.184.216.34/page")
+    assert result == "Public IP"
+
+
+PRIVATE_URLS = [
+    "http://127.0.0.1:8080/admin",
+    "http://127.0.0.1/",
+    "http://192.168.1.1/",
+    "http://10.0.0.5:8080/",
+    "http://172.16.0.1/",
+    "http://169.254.169.254/latest/meta-data/",
+    "http://[::1]/",
+    "http://[fe80::1]/",
+    "http://localhost:3003/",
+]
+
+
+@pytest.mark.parametrize("url", PRIVATE_URLS)
+def test_private_destinations_refused_before_opener(recording_opener, url):
+    # Pass 28 #35: the scheme gate alone let http://127.0.0.1/
+    # and LAN IPs through — the fetch would reach private services.
+    result = builtins.tool_fetch_url(url)
+    assert outcome.normalize(result).status == "failed", result
+    assert recording_opener.calls == []
+
+
+def test_redirect_to_private_is_refused(monkeypatch):
+    # Pass 28 #35: a public URL redirecting to a private address
+    # must not be followed — the redirect target is gated too.
+    _real_resolved = builtins._resolved_ips
+    monkeypatch.setattr(
+        builtins, "_resolved_ips",
+        lambda host: ([ipaddress.ip_address("93.184.216.34")]
+                      if host == "example.com" else _real_resolved(host)))
+    handler = builtins._PublicOnlyRedirectHandler()
+    req = urllib.request.Request("https://example.com/a")
+    with pytest.raises(urllib.error.URLError):
+        handler.redirect_request(
+            req, None, 302, "Found", {}, "http://127.0.0.1:8080/admin")
+    out = handler.redirect_request(
+        req, None, 302, "Found", {}, "https://example.com/b")
+    assert out is not None and out.full_url == "https://example.com/b"
 
 
 def test_browser_control_get_text_inherits_gate(
