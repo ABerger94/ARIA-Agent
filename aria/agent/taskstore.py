@@ -22,8 +22,13 @@ STORAGE
     WORKSPACE_DIR/delegated_tasks.json, written atomically: the
     temp file is staged in the destination's own directory
     before os.replace (the settings_save cross-device lesson,
-    2026-10-27). Every failure is swallowed to a log line — the
-    journal must never be able to break the queue it serves.
+    2026-10-27). Progress-write failures (checkpoint/finish)
+    are swallowed to a log line — the journal must never be able
+    to break the queue it serves. But the CREATE write is the
+    submission's durability itself: when it fails, create()
+    raises instead of returning an unwritten record (pass 28
+    #17), so a submission is never acknowledged as durable when
+    it is not.
 """
 
 from __future__ import annotations
@@ -54,7 +59,13 @@ def _load() -> Dict[str, Any]:
         return {}
 
 
-def _save(data: Dict[str, Any]) -> None:
+def _save(data: Dict[str, Any]) -> bool:
+    """Atomically write the journal. Returns True on success,
+    False on failure (still logged, never raised) — the CALLER
+    decides what a failed write means: create() refuses to
+    acknowledge an unwritten record (pass 28 #17), while
+    checkpoint()/finish() keep the old swallow-to-log behaviour
+    for progress writes, since the submission itself stands."""
     try:
         dest = _path()
         os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -69,8 +80,10 @@ def _save(data: Dict[str, Any]) -> None:
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)
+        return True
     except Exception as e:
         _config.log_silent("taskstore_save", e)
+        return False
 
 
 def _jsonable(value):
@@ -102,6 +115,11 @@ def create(task_id: str, goal: str, resumed_from: str = "", execution_scope: str
     record instead of vanishing. _run_task_bound flips a pending
     record to 'running' when the worker starts it; the default
     status='running' keeps the direct-create path unchanged.
+
+    Pass 28 #17: the write is the durability — when it fails,
+    raise RuntimeError instead of returning the record. A
+    returned record the journal never saw would let submit()
+    acknowledge a submission a restart cannot recover.
     """
     rec = {
         "task_id": task_id, "goal": goal, "status": status,
@@ -117,7 +135,10 @@ def create(task_id: str, goal: str, resumed_from: str = "", execution_scope: str
     with _LOCK:
         data = _load()
         data[task_id] = rec
-        _save(data)
+        if not _save(data):
+            raise RuntimeError(
+                f"task journal write failed for {task_id} — the "
+                "submission was not acknowledged")
     return rec
 
 
