@@ -571,12 +571,16 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
             pre_ok = _env.get("pre_approved_irreversible") or []
             try:
                 from aria import missions as _missions_mod
-                _irrev = _missions_mod._is_irreversible(fn_name)
+                _irrev = _missions_mod._is_irreversible(fn_name, args)
             except Exception:
                 try:
                     _irrev = (fn_name in _approval_mod.DESTRUCTIVE_TOOLS
                               or fn_name == "run_shell_command"
-                              or _config_mod.is_discovered_mcp_tool(fn_name))
+                              or _config_mod.is_discovered_mcp_tool(fn_name)
+                              or (fn_name == "browser_agent"
+                                  and str((args or {}).get("action")
+                                          or "").strip().lower()
+                                  in ("click", "press")))
                 except Exception:
                     _irrev = False
             if fn_name not in allowed or (_irrev and fn_name not in pre_ok):

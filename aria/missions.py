@@ -183,11 +183,24 @@ def _set_step(step_id: int, **fields) -> None:
 # Policy helpers
 # ------------------------------------------------------------------
 
-def _is_irreversible(tool: str) -> bool:
+def _is_irreversible(tool: str, args=None) -> bool:
     from aria import approval as _approval
     if tool in _approval.DESTRUCTIVE_TOOLS or \
             tool in _EXTRA_IRREVERSIBLE:
         return True
+    # Pass 27 #6: browser_agent is action-aware — a click or a
+    # press can activate an irreversible control, so those actions
+    # need the mission's irreversible grant even though the tool
+    # name alone is not destructive. Without this, an auto-mode
+    # envelope allowing browser_agent executed a "Delete account"
+    # click with an empty pre_approved_irreversible. Reads,
+    # navigation, typing, scrolling and screenshots stay
+    # non-irreversible, and an action-less call is treated as a
+    # read (fail-open would be the click; the guard itself still
+    # classifies the live label).
+    if tool == "browser_agent":
+        action = str((args or {}).get("action") or "").strip().lower()
+        return action in ("click", "press")
     # User-defined tools run arbitrary Python in ARIA's process
     # (pass 26 B3#2): approval.needs_approval and
     # config.is_safe_mode_blocked already treat them as
@@ -293,8 +306,8 @@ def _plan_text(m: Dict[str, Any], steps: List[Dict[str, Any]]) -> str:
         lines.append(f"Deadline: {m['deadline']}")
     lines.append("Plan:")
     for s in steps:
-        mark = " [irreversible]" if _is_irreversible(s["tool"]) \
-            else ""
+        mark = " [irreversible]" if _is_irreversible(
+            s["tool"], s.get("args")) else ""
         lines.append(f"  {s['idx'] + 1}. {s['tool']}{mark} "
                      f"{json.dumps(s['args'])[:160]}")
     lines.append(
@@ -650,7 +663,7 @@ def _run_mission(mid: int) -> None:
         allowed = tool in (env.get("allowed_tools") or [])
         pre_ok = tool in (env.get("pre_approved_irreversible")
                           or [])
-        may_run = allowed and (not _is_irreversible(tool)
+        may_run = allowed and (not _is_irreversible(tool, args)
                                or pre_ok)
         mode = _approval.get_mode()
         # One logical action id survives restarts and approval replay. Only
