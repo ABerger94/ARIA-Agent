@@ -440,6 +440,32 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
                 f"arguments that could not be parsed — nothing was "
                 f"executed. Call it again with valid arguments.]",
                 False)
+    # Pass 27 #7: a model-supplied mission_create carrying the
+    # private plan-gate keys (_mission_id / _approve_plan) must
+    # never reach generic parking. In confirm-all the dispatcher
+    # would park it as "execute tool 'mission_create'", and the
+    # user's confirm would replay the exact args — the handler's
+    # in_approve_replay check would then honour them, unlocking
+    # an existing mission whose detailed plan approval is still
+    # pending. The only legitimate carrier is _park_plan's
+    # stashed replay, which approve_token marks on the thread
+    # before re-entering dispatch. Refuse before any parking
+    # path runs (envelope or mode gate).
+    if fn_name == "mission_create" and isinstance(args, dict) and \
+            ("_approve_plan" in args or "_mission_id" in args):
+        try:
+            from aria import approval as _approval_mod
+            _is_replay = _approval_mod.in_approve_replay(
+                "mission_create", args)
+        except Exception:
+            _is_replay = False
+        if not _is_replay:
+            return ("[Mission error: plan approval is only "
+                    "honoured on the user's approval tap — a "
+                    "mission_create call carrying _approve_plan "
+                    "or _mission_id outside an approve-token "
+                    "replay is refused, and nothing was "
+                    "approved or created.]", False)
     for key in FILE_ARGUMENTS.get(fn_name, ()):
         path = (args or {}).get(key)
         if path is None:
