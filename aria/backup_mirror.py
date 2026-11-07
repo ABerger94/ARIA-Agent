@@ -299,9 +299,17 @@ def _redact_settings(obj) -> None:
             prev_flag = False
             if item.startswith("--"):
                 if "=" in item:
-                    flag, _, _val = item.partition("=")
+                    flag, _, val = item.partition("=")
                     if _is_credential_flag(flag):
                         obj[i] = flag + "=" + _REDACTED
+                    elif "://" in val:
+                        # Pass 27 #17: a NON-credential flag can
+                        # still carry a credential-bearing URL
+                        # (--endpoint=https://...?access_token=...).
+                        # The old code continued unconditionally
+                        # here, so the URL scrub below never ran
+                        # and the secret mirrored verbatim.
+                        obj[i] = flag + "=" + _scrub_url_text(val)
                 elif _is_credential_flag(item):
                     prev_flag = True
                 continue
