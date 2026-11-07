@@ -92,3 +92,90 @@ def test_run_python_code_shows_more_than_first_line():
         'code': '# harmless comment\nimport os\nos.system("rm -rf /")\n'})
     assert 'import os' in desc
     assert 'os.system' in desc
+
+
+def _stub_mcp_servers(monkeypatch, servers):
+    # Pass 28 #37: _describe_tool lazily imports aria.mcp for the
+    # connect description; stub it so the test never touches the
+    # real settings store.
+    fake = types.ModuleType('aria.mcp')
+    fake.get_servers = lambda: servers
+    monkeypatch.setitem(sys.modules, 'aria.mcp', fake)
+
+
+def test_mcp_connect_names_server_and_command(monkeypatch):
+    _stub_mcp_servers(monkeypatch, {
+        'robinhood': {'transport': 'stdio', 'command': 'python',
+                      'args': ['-m', 'robinhood_mcp'], 'enabled': True}})
+    desc = approval._describe_tool('mcp_connect', {
+        'name': 'robinhood', '_config_digest': 'abc123deadbeef'})
+    assert 'robinhood' in desc and 'stdio' in desc
+    assert 'python' in desc and '-m' in desc
+    # The frozen digest binds the approval — it is not what the
+    # tap does, and must never show as noise in the banner.
+    assert 'abc123deadbeef' not in desc
+    assert desc != "execute tool 'mcp_connect'"
+
+
+def test_mcp_connect_all_names_the_set_not_the_digest(monkeypatch):
+    _stub_mcp_servers(monkeypatch, {
+        'robinhood': {'transport': 'stdio', 'command': 'python',
+                      'enabled': True},
+        'github': {'transport': 'http', 'url': 'https://mcp.example/x',
+                   'enabled': True},
+        'old': {'transport': 'stdio', 'command': 'old-server',
+                'enabled': False}})
+    desc = approval._describe_tool('mcp_connect', {
+        'name': '', '_servers_digest': 'deadbeef00'})
+    assert 'ALL' in desc
+    assert 'robinhood' in desc and 'github' in desc
+    assert 'old' not in desc  # disabled servers are not connected
+    assert 'deadbeef00' not in desc
+
+
+def test_mcp_connect_unknown_server_says_so(monkeypatch):
+    _stub_mcp_servers(monkeypatch, {})
+    desc = approval._describe_tool('mcp_connect', {'name': 'nope'})
+    assert 'nope' in desc and 'not in configuration' in desc
+
+
+def test_face_tracking_names_direction():
+    on = approval._describe_tool('face_tracking', {'on': True})
+    assert 'ON' in on and 'face' in on and 'servo' in on
+    off = approval._describe_tool('face_tracking', {'on': False})
+    assert 'OFF' in off and 'face' in off
+
+
+def test_reload_user_tools_names_code_execution():
+    desc = approval._describe_tool('reload_user_tools', {})
+    assert 'reload' in desc and 'user' in desc
+    assert 'executes' in desc
+    assert desc != "execute tool 'reload_user_tools'"
+
+
+def test_trust_routine_names_the_grant():
+    desc = approval._describe_tool('trust_routine', {'name': 'morning'})
+    assert 'morning' in desc
+    assert 'WITHOUT' in desc and 'asking' in desc
+
+
+def test_skill_activate_names_the_grant():
+    desc = approval._describe_tool('skill_activate',
+                                   {'name': 'deep-research'})
+    assert 'deep-research' in desc
+    assert 'prompt catalog' in desc
+
+
+def test_manage_background_job_start_names_command():
+    desc = approval._describe_tool('manage_background_job', {
+        'action': 'start', 'command': 'python train.py',
+        'name': 'train'})
+    assert 'start' in desc and 'train.py' in desc and 'train' in desc
+    assert not desc.startswith("execute tool")
+
+
+def test_manage_background_job_cancel_names_target():
+    desc = approval._describe_tool('manage_background_job', {
+        'action': 'cancel', 'job_id': 7})
+    assert 'cancel' in desc and '7' in desc
+    assert not desc.startswith("execute tool")

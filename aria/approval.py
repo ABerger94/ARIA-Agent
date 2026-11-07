@@ -701,6 +701,23 @@ def _payload_preview(value, limit=_PAYLOAD_PREVIEW_LIMIT):
     return text
 
 
+def _describe_mcp_server(cfg) -> str:
+    """Short 'what the connect spawns' for one MCP server config:
+    transport + command/URL + args. Env VALUES are never shown
+    (mirrors the mcp_setup branch); env names are not shown here
+    either — the command is the execution target."""
+    cfg = cfg or {}
+    transport = str(cfg.get("transport", "") or "stdio").strip().lower()
+    target = str(cfg.get("command", "") or cfg.get("url", "") or "").strip()
+    parts = [f"({transport})"]
+    if target:
+        parts.append(f"— {_payload_preview(target)}")
+    args = cfg.get("args")
+    if args:
+        parts.append(f"args {_payload_preview(args)}")
+    return " ".join(parts)
+
+
 def _describe_tool(tool: str, args) -> str:
     """One-line human description of what the held call would do."""
     a = args or {}
@@ -790,6 +807,33 @@ def _describe_tool(tool: str, args) -> str:
             return (f"set up MCP server '{name}' "
                     f"({transport or 'stdio'})"
                     f"{' — ' + _payload_preview(target) if target else ''}{extra}")
+        if tool == "mcp_connect":
+            # No dedicated branch before: the fallback showed the
+            # frozen digests (hex noise) and an empty name for
+            # connect-all, so the approver never saw WHICH server(s)
+            # would be connected or what command/URL the connect
+            # spawns. Never show the digests — they bind the
+            # approval, they are not what it does.
+            name = str(a.get("name", "") or "").strip()
+            try:
+                from aria import mcp as _mcp_mod
+                servers = _mcp_mod.get_servers() or {}
+            except Exception:
+                servers = {}
+            if name:
+                cfg = servers.get(name.strip().lower()) or {}
+                if not cfg:
+                    return (f"connect to MCP server '{name}' "
+                            f"(not in configuration — the connect "
+                            f"will fail)")
+                return (f"connect to MCP server '{name}' "
+                        f"{_describe_mcp_server(cfg)}")
+            enabled = sorted(n for n, c in servers.items()
+                             if (c or {}).get("enabled", True))
+            if not enabled:
+                return "connect to MCP servers (none configured)"
+            return (f"connect to ALL enabled MCP servers: "
+                    f"{', '.join(enabled)}")
         if tool == "edit_own_code":
             content = str(a.get("content", ""))
             return (f"rewrite ARIA's own file '{a.get('path', '')}' "
@@ -801,6 +845,13 @@ def _describe_tool(tool: str, args) -> str:
             return (f"patch ARIA's own file '{a.get('path', '')}': "
                     f"replace '{_payload_preview(old)}' "
                     f"with '{_payload_preview(new)}'")
+        if tool == "reload_user_tools":
+            # Code execution: the reload exec_module()s every
+            # module in aria/tools/user_tools/ — the tap runs
+            # arbitrary Python in ARIA's process, not a rescan.
+            return ("reload user-defined tools from "
+                    "aria/tools/user_tools/ (their code executes "
+                    "on load)")
         if tool == "desktop_control":
             return (f"run desktop action '{a.get('action', '')}' "
                     f"on node '{a.get('node', '')}' with arguments "
@@ -856,6 +907,48 @@ def _describe_tool(tool: str, args) -> str:
                     f"and on every later store write")
         if tool == "move_head_servos":
             return f"move head servos (pan={a.get('pan', 90)} tilt={a.get('tilt', 45)})"
+        if tool == "face_tracking":
+            # Physical actuation like move_head_servos: the
+            # approver decides whether the head starts following
+            # faces, not just that a flag flips.
+            if _as_bool(a.get("on"), default=True):
+                return ("turn camera face-tracking ON — the neck "
+                        "servos will follow the user's face around "
+                        "the room")
+            return "turn camera face-tracking OFF"
+        if tool == "trust_routine":
+            # An authorization grant, not an action: after this
+            # tap the routine's destructive steps replay WITHOUT
+            # per-step approval. The name alone hid the grant.
+            return (f"trust routine '{a.get('name', '')}' — its "
+                    f"destructive steps will replay WITHOUT "
+                    f"asking again")
+        if tool == "skill_activate":
+            # Same shape as trust_routine: an authorization grant.
+            # From this tap on, the skill's instructions ride the
+            # prompt catalog.
+            return (f"activate skill '{a.get('name', '')}' — its "
+                    f"instructions will ride the prompt catalog "
+                    f"from now on")
+        if tool == "manage_background_job":
+            # Only start runs a command — the shell command is the
+            # material payload. The other actions name their
+            # target instead of falling back to a bare tool name.
+            action = str(a.get("action", "list") or "list").strip().lower()
+            name = str(a.get("name", "") or "").strip()
+            job_id = a.get("job_id", 0)
+            target = f"job '{name}'" if name else (
+                f"job #{job_id}" if job_id else "background job")
+            if action == "start":
+                return (f"start {target} running shell command: "
+                        f"'{_payload_preview(str(a.get('command', '')))}'")
+            if action == "cancel":
+                return f"cancel {target}"
+            if action == "logs":
+                return f"show logs for {target}"
+            if action == "list":
+                return "list background jobs"
+            return f"manage background job ({action})"
         if config.is_user_tool(tool):
             # A user tool runs arbitrary code from
             # aria/tools/user_tools/ — the banner names the file's
