@@ -254,12 +254,19 @@ def _ancestor_label(el) -> str:
     but sits in a labelled container. Walk up to two ancestors
     for an aria-label or title only — never inner_text, whose
     descendant text would misclassify the control. Returns ""
-    when nothing labels it.
+    when nothing labels it. Works on locators (xpath=..) and on
+    bound handles (evaluate parentElement) alike.
     """
     parent = el
     for _ in range(2):
         try:
-            parent = parent.locator("xpath=..")
+            locator_fn = getattr(parent, "locator", None)
+            if callable(locator_fn):
+                parent = locator_fn("xpath=..")
+            else:
+                parent = parent.evaluate("e => e.parentElement")
+                if parent is None:
+                    return ""
         except Exception:
             return ""
         for attr in ("aria-label", "title"):
@@ -306,6 +313,30 @@ def _element_label(el) -> str:
             # through. Truncation lives only in _display_label.
             return str(candidate).strip()
     return _ancestor_label(el)
+
+
+def _bind_element(el):
+    """Bind a locator to the single DOM node it matches right now.
+
+    Pass 28 #2: a Locator re-resolves its selector on every call,
+    so a label read from it and a later element_handle() can name
+    two different nodes — a DOM swap between validation and click
+    clicked the replacement under the old label. _resolve binds
+    the handle FIRST and reads the label from that handle, so the
+    click acts on the exact node that was classified. Returns None
+    for locators without a handle API (test doubles), in which case
+    the caller keeps the locator and click_resolved falls back to
+    clicking it directly; a handle that cannot be obtained (no
+    match, bad selector) also returns None, and the later click
+    still fails loudly instead of clicking a replacement.
+    """
+    element_handle = getattr(el, "element_handle", None)
+    if not callable(element_handle):
+        return None
+    try:
+        return element_handle()
+    except Exception:
+        return None
 
 
 # ---------------- the session (Playwright, one thread) ----------------
@@ -518,6 +549,20 @@ class BrowserSession:
                     raise ValueError(
                         f"browser_agent: index:{idx} is stale — its "
                         "element is no longer visible.")
+            except ValueError:
+                raise
+            except Exception as exc:
+                raise ValueError(
+                    f"browser_agent: index:{idx} is stale — its "
+                    f"element could not be re-read ({exc}).")
+            # Pass 28 #2: bind the node first and read the label
+            # from the bound handle, so the click acts on the node
+            # that was classified — never on a replacement the
+            # selector matches later.
+            handle = _bind_element(el)
+            if handle is not None:
+                return handle, _element_label(handle) or _ancestor_label(handle)
+            try:
                 label = (el.inner_text(timeout=400)
                          or el.get_attribute("value")
                          or el.get_attribute("aria-label")
@@ -545,6 +590,13 @@ class BrowserSession:
             # chain as read()/index:, truncated the same way. An
             # unreadable or missing element falls back to the
             # query (a missing element fails the click itself).
+            # Pass 28 #2: bind the node first and read the label
+            # from the bound handle (see the index: branch).
+            handle = _bind_element(loc)
+            if handle is not None:
+                return (handle,
+                        _element_label(handle) or _ancestor_label(handle)
+                        or query)
             try:
                 label = (loc.inner_text(timeout=800)
                          or loc.get_attribute("value")
@@ -563,17 +615,25 @@ class BrowserSession:
         # an empty label and _guarded_click waved it through.
         # Same extraction chain as read()/index:/text= now.
         el = self.page.locator(target).first
+        # Pass 28 #2: bind the node first and read the label from
+        # the bound handle (see the index: branch).
+        handle = _bind_element(el)
+        if handle is not None:
+            return handle, _element_label(handle) or _ancestor_label(handle)
         return el, _element_label(el)
 
     def click_resolved(self, loc, label):
-        """Click a locator _guarded_click already resolved + validated.
+        """Click the element _resolve already bound + validated.
 
         Pass 27 #8: clicking via click(target) re-resolved the
         target after validation, so a DOM swap between the two
-        resolves could substitute a different control. An element
-        handle is bound to the exact DOM node the label was read
-        from — a detached or replaced node fails here instead of
-        clicking its replacement.
+        resolves could substitute a different control.
+        Pass 28 #2: _resolve now returns the element handle it
+        read the label from — click that same handle, never a
+        fresh resolution. A detached handle refuses instead of
+        clicking whatever the selector matches now; locators
+        without a handle API (test doubles) keep clicking
+        directly, as before.
         """
         element_handle = getattr(loc, "element_handle", None)
         if callable(element_handle):
@@ -584,9 +644,23 @@ class BrowserSession:
                     "the click — refusing to re-resolve it.")
             handle.click()
         else:
-            # Locators without a handle API (test doubles): click
-            # the already-resolved locator — still no second
-            # resolution of the target.
+            # Already a bound handle: refuse a detached node
+            # before clicking. evaluate() is best-effort here —
+            # a double without it, or a check that cannot run,
+            # still falls through to the click, which itself
+            # fails loudly on a detached node.
+            evaluate = getattr(loc, "evaluate", None)
+            if callable(evaluate):
+                try:
+                    if evaluate("e => e.isConnected") is False:
+                        raise ValueError(
+                            "browser_agent: the control disappeared "
+                            "before the click — refusing to click "
+                            "its replacement.")
+                except ValueError:
+                    raise
+                except Exception:
+                    pass
             loc.click()
         self.page.wait_for_timeout(600)
         self._assert_current_url_public()
