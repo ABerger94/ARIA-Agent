@@ -133,9 +133,13 @@ def test_description_names_server_and_remote_tool():
     _fresh()
     approval.tool_set_approval_mode('confirm-risky')
     assert approval.needs_approval(TOOL, {'query': 'x'})
-    assert approval._describe_tool(TOOL, {'query': 'x'}) == (
+    # Pass 27 #15: the description now carries the call's args
+    # (redacted, bounded) instead of stopping at the tool name.
+    desc = approval._describe_tool(TOOL, {'query': 'x'})
+    assert desc.startswith(
         "call MCP tool 'do_thing' on server 'probe' "
-        "(tool 'mcp_probe__do_thing')")
+        "(tool 'mcp_probe__do_thing') with args "), desc
+    assert "'query': 'x'" in desc or '"query": "x"' in desc, desc
 
 
 def test_safe_mode_blocks_discovered_tool():
@@ -156,9 +160,11 @@ def test_confirm_risky_holds_and_approve_replay_executes_exactly():
     assert _CALLS == [], 'held discovered tool executed without approval'
     held = [e for e in approval._PENDING.values() if e['tool'] == TOOL]
     assert held and held[0]['args'] == args, held
+    # Pass 27 #15: the held description carries the args.
     assert held[0]['desc'] == (
         "call MCP tool 'do_thing' on server 'probe' "
-        "(tool 'mcp_probe__do_thing')"), held[0]
+        "(tool 'mcp_probe__do_thing') with args "
+        '{"query": "exact thing"}'), held[0]
     token = re.search(r'token=(\S+)\]', res).group(1)
     out = approval.approve_token(token)
     assert _CALLS == [args], _CALLS

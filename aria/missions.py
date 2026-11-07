@@ -308,8 +308,16 @@ def _plan_text(m: Dict[str, Any], steps: List[Dict[str, Any]]) -> str:
     for s in steps:
         mark = " [irreversible]" if _is_irreversible(
             s["tool"], s.get("args")) else ""
-        lines.append(f"  {s['idx'] + 1}. {s['tool']}{mark} "
-                     f"{json.dumps(s['args'])[:160]}")
+        # Pass 27 #15: step args used to stop at 160 chars with
+        # no indicator — a material argument could hide past the
+        # cut. Show the redacted args whole up to the bound, with
+        # an explicit indicator when they do not fit.
+        rendered = json.dumps(
+            _config.redact_data(s.get("args") or {}), default=str)
+        if len(rendered) > 2000:
+            rendered = (rendered[:2000] +
+                        f" … [truncated: {len(rendered) - 2000} more chars]")
+        lines.append(f"  {s['idx'] + 1}. {s['tool']}{mark} {rendered}")
     lines.append(
         f"Envelope: tools [{', '.join(env.get('allowed_tools') or [])}]; "
         f"model spend cap ${env.get('spend_cap', 0):g}; pre-approved "

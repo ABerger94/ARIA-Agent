@@ -44,10 +44,14 @@ approval = importlib.import_module('aria.approval')
 def test_mcp_setup_names_server_and_secrets():
     desc = approval._describe_tool('mcp_setup', {
         'name': 'github', 'transport': 'stdio', 'command': 'npx',
+        'args': ['run', 'server'],
         'env': {'GITHUB_TOKEN': 'ghp_secret'},
         'headers': {'Authorization': 'Bearer secret'}})
     assert 'github' in desc and 'stdio' in desc and 'npx' in desc
-    assert '1 env vars' in desc and '1 headers' in desc
+    # Pass 27 #15: the command args are shown whole, and env/header
+    # VALUES never appear — only their names.
+    assert 'run' in desc and 'server' in desc
+    assert 'GITHUB_TOKEN' in desc and 'Authorization' in desc
     assert 'ghp_secret' not in desc and 'Bearer secret' not in desc
 
 

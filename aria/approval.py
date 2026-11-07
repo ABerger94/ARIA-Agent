@@ -653,6 +653,37 @@ def needs_approval(tool: str, args=None) -> bool:
     return True
 
 
+_PAYLOAD_PREVIEW_LIMIT = 2000
+
+
+def _payload_preview(value, limit=_PAYLOAD_PREVIEW_LIMIT):
+    """Render a payload for an approval description: redacted,
+    complete up to the bound, with an explicit truncation
+    indicator when it does not fit.
+
+    Pass 27 #15: approval previews showed summaries (char
+    counts, first lines) while the material payload stayed
+    invisible — a benign subject could carry any email body, a
+    discovered MCP call hid its arguments entirely. Descriptions
+    now carry the redacted payload itself; the indicator says
+    when the bound cut it, so a truncated preview can never
+    pass for the whole payload. Credential fields are scrubbed
+    by name (config.redact_data) as well as by known value.
+    """
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(config.redact_data(value), default=str)
+        except Exception:
+            text = str(value)
+    text = config.redact(text)
+    if len(text) > limit:
+        return (text[:limit] +
+                f" … [truncated: {len(text) - limit} more chars]")
+    return text
+
+
 def _describe_tool(tool: str, args) -> str:
     """One-line human description of what the held call would do."""
     a = args or {}
@@ -661,25 +692,29 @@ def _describe_tool(tool: str, args) -> str:
         if _mcp:
             _server, _remote_tool = _mcp
             return (f"call MCP tool '{_remote_tool}' on server "
-                    f"'{_server}' (tool '{tool}')")
+                    f"'{_server}' (tool '{tool}') with args "
+                    f"{_payload_preview(a)}")
         if tool == "run_shell_command":
-            return f"run shell command '{a.get('command', '')}' in '{a.get('cwd', '')}'"
+            return (f"run shell command "
+                    f"'{_payload_preview(str(a.get('command', '')))}' "
+                    f"in '{a.get('cwd', '')}'")
         if tool == "run_python_code":
             code = str(a.get("code", ""))
-            # The first line alone can hide the payload (a comment
-            # or a blank line) — show the first three non-blank
-            # lines, capped, so the approver sees what runs.
-            lines = [ln.strip() for ln in code.strip().splitlines()
-                     if ln.strip()][:3]
-            preview = " / ".join(lines)[:300]
-            return f"run Python code ({len(code)} chars): {preview}"
+            # The whole payload, bounded with an indicator — the
+            # old first-three-lines preview hid everything after
+            # a comment or blank head.
+            return (f"run Python code ({len(code)} chars): "
+                    f"{_payload_preview(code)}")
         if tool == "write_file":
+            content = str(a.get("content", ""))
             return (f"write file '{a.get('filename', 'file.txt')}' "
-                    f"({len(str(a.get('content', '')))} chars)")
+                    f"({len(content)} chars): "
+                    f"{_payload_preview(content)}")
         if tool == "gui_click":
             return f"click at screen coordinates ({a.get('x', 0)}, {a.get('y', 0)})"
         if tool == "gui_type":
-            return f"type text ({len(str(a.get('text', '')))} chars)"
+            return (f"type text: "
+                    f"'{_payload_preview(str(a.get('text', '')))}'")
         if tool == "phone_tap":
             # The tap target is what the approver is deciding on —
             # a ref names the screen element, coordinates name the
@@ -694,12 +729,12 @@ def _describe_tool(tool: str, args) -> str:
                     f"→ ({a.get('x2', '?')}, {a.get('y2', '?')})")
         if tool == "phone_type":
             # The text is what gets typed into whatever field is
-            # focused — show it, capped, like send_email's body.
+            # focused — show it, bounded with an indicator.
             text = str(a.get("text", "") or "").replace("\n", " ").strip()
             ref = str(a.get("ref", "") or "").strip()
             where = f" into phone element '{ref}'" if ref else ""
-            return (f"type on phone{where} "
-                    f"({len(text)} chars): '{text[:200]}'")
+            return (f"type on phone{where}: "
+                    f"'{_payload_preview(text)}'")
         if tool == "phone_key":
             return f"press phone key '{a.get('key', '')}'"
         if tool == "close_window":
@@ -707,48 +742,52 @@ def _describe_tool(tool: str, args) -> str:
         if tool == "send_email":
             # The body is what actually gets sent — the old banner
             # showed only to + subject, so a benign subject could
-            # carry any text at all.
+            # carry any text at all. The whole body, bounded with
+            # an explicit indicator.
             body = str(a.get("body", "")).replace("\n", " ").strip()
-            preview = body[:200]
             desc = (f"send email to '{a.get('to', '')}' "
                     f"re: '{a.get('subject', '')}'")
-            if preview:
-                desc += f" — body: '{preview}'"
+            if body:
+                desc += f" — body: '{_payload_preview(body)}'"
             return desc
         if tool == "mcp_setup":
             # A server setup can carry credentials (env/headers)
             # and a command to execute — never a bare tool name.
+            # The command and its args are shown whole (bounded);
+            # env/header VALUES are never shown, only their names.
             name = str(a.get("name", "") or "").strip()
             transport = str(a.get("transport", "") or "").strip().lower()
             target = str(a.get("command", "") or a.get("url", "") or "").strip()
             extras = []
+            cmd_args = a.get("args")
+            if cmd_args:
+                extras.append(f"args {_payload_preview(cmd_args)}")
             for key, label in (("env", "env vars"), ("headers", "headers")):
                 val = a.get(key)
-                if val:
+                if isinstance(val, dict) and val:
                     extras.append(
-                        f"{len(val)} {label}" if isinstance(val, dict)
-                        else label)
-            extra = f" ({', '.join(extras)})" if extras else ""
+                        f"{label}: {', '.join(sorted(str(k) for k in val))}")
+                elif val:
+                    extras.append(label)
+            extra = f" ({'; '.join(extras)})" if extras else ""
             return (f"set up MCP server '{name}' "
                     f"({transport or 'stdio'})"
-                    f"{' — ' + target if target else ''}{extra}")
+                    f"{' — ' + _payload_preview(target) if target else ''}{extra}")
         if tool == "edit_own_code":
+            content = str(a.get("content", ""))
             return (f"rewrite ARIA's own file '{a.get('path', '')}' "
-                    f"({len(str(a.get('content', '')))} chars)")
+                    f"({len(content)} chars): "
+                    f"{_payload_preview(content)}")
         if tool == "patch_own_code":
-            old = str(a.get("old_text", "")).strip().splitlines()
-            new = str(a.get("new_text", "")).strip().splitlines()
-            old1 = old[0][:80] if old else ""
-            new1 = new[0][:80] if new else ""
+            old = str(a.get("old_text", "")).strip()
+            new = str(a.get("new_text", "")).strip()
             return (f"patch ARIA's own file '{a.get('path', '')}': "
-                    f"replace '{old1}' with '{new1}'")
+                    f"replace '{_payload_preview(old)}' "
+                    f"with '{_payload_preview(new)}'")
         if tool == "desktop_control":
-            args = a.get("arguments") or {}
-            keys = ", ".join(str(k) for k in args) \
-                if isinstance(args, dict) else ""
             return (f"run desktop action '{a.get('action', '')}' "
-                    f"on node '{a.get('node', '')}'"
-                    + (f" (args: {keys})" if keys else ""))
+                    f"on node '{a.get('node', '')}' with arguments "
+                    f"{_payload_preview(a.get('arguments') or {})}")
         if tool == "github_push_file":
             return f"push file '{a.get('filepath', '')}' to repo '{a.get('repo', '')}'"
         if tool == "github_create_repo":
@@ -804,7 +843,8 @@ def _describe_tool(tool: str, args) -> str:
             # A user tool runs arbitrary code from
             # aria/tools/user_tools/ — the banner names the file's
             # own description, so the approver sees what the code
-            # claims to do, never a bare tool name.
+            # claims to do, never a bare tool name — plus the
+            # actual arguments it will run with.
             desc = ""
             try:
                 from aria.tools import usertools as _ut
@@ -813,11 +853,16 @@ def _describe_tool(tool: str, args) -> str:
             except Exception:
                 desc = ""
             if desc:
-                return f"run user-defined tool '{tool}' — {desc}"
+                return (f"run user-defined tool '{tool}' — {desc} "
+                        f"with args {_payload_preview(a)}")
             return (f"run user-defined tool '{tool}' (arbitrary code "
-                    f"from aria/tools/user_tools/)")
+                    f"from aria/tools/user_tools/) "
+                    f"with args {_payload_preview(a)}")
     except Exception as _e_silent:
         config.log_silent("_describe_tool", _e_silent)
+    # Fallback: never a bare tool name — show the redacted args.
+    if a:
+        return f"execute tool '{tool}' with args {_payload_preview(a)}"
     return f"execute tool '{tool}'"
 
 
