@@ -303,7 +303,24 @@ class HTTPMCPClient:
         h["Content-Type"] = "application/json"
         if self.session_id:
             h["Mcp-Session-Id"] = self.session_id
-        r = s.post(self.url, headers=h, json=payload, timeout=30)
+        try:
+            r = s.post(self.url, headers=h, json=payload, timeout=30)
+        except Exception as e:
+            # Pass 28 #10: requests.ReadTimeout is an OSError, NOT
+            # builtin TimeoutError, so MCPBridge.call_tool's
+            # `except TimeoutError` (pass 27 #30) missed it and the
+            # generic handler reported a DEFINITE failure. But a
+            # read timeout is ambiguous — the request was sent and
+            # the server may have acted; only the reply was lost.
+            # Translate it at this transport boundary so callers
+            # report UNVERIFIED instead. ConnectTimeout is
+            # deliberately left alone: the request was never sent,
+            # so a definite failure is correct there.
+            import requests as _requests
+            if isinstance(e, _requests.ReadTimeout):
+                raise TimeoutError(
+                    f"MCP HTTP read timed out after 30s: {e}") from e
+            raise
         r.raise_for_status()
         if "mcp-session-id" in r.headers:
             self.session_id = r.headers["mcp-session-id"]
