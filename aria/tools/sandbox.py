@@ -12,7 +12,7 @@ import sys
 import subprocess
 from typing import Dict, List, Optional, Set, Tuple, Callable, Any
 
-from aria.config import WORKSPACE_DIR, MAX_TOOL_OUTPUT, GITHUB_USERNAME
+from aria.config import MAX_TOOL_OUTPUT, GITHUB_USERNAME
 from aria.tools.schemas import get_tool_decls_by_name
 from aria.outcome import ResultText, FAILED, UNVERIFIED
 
@@ -145,17 +145,27 @@ def _python_command(temp_script: str):
 
 
 def tool_run_python(code: str,
-                    workspace_dir: str = WORKSPACE_DIR,
+                    workspace_dir: Optional[str] = None,
                     timeout: int = 15,
                     busy_callback: Optional[Callable[[bool], None]] = None,
                     log_callback: Optional[Callable[[str], None]] = None) -> str:
     """Execute Python code in an isolated subprocess inside the workspace directory.
 
     NOTE: this is process isolation only — the code runs with the same
-    interpreter, user, and filesystem access as ARIA itself. Treat it as
+    interpreter, user, and filesystem access as ARIA herself. Treat it as
     ARIA acting, not as an untrusted sandbox.
+
+    Pass 28 #25: with no workspace_dir given, the directory is the
+    CURRENT project's root, resolved at call time — the old
+    import-time default (WORKSPACE_DIR) ran every script in the
+    default workspace even inside a named project. An explicit
+    workspace_dir still wins.
     """
     import tempfile
+    if workspace_dir is None:
+        from aria import config as _cfg_mod
+        from aria import workspaces as _ws_mod
+        workspace_dir = _ws_mod.path('', _cfg_mod.WORKSPACE_DIR)
     if busy_callback:
         busy_callback(True)
     temp_script = None
