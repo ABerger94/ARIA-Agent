@@ -68,6 +68,47 @@ def foreground_window():
         return None
 
 
+def window_at_point(x: int, y: int):
+    """The top-level window under screen point (x, y), or None.
+
+    Pass 27 #13: a coordinate click can land on a different
+    visible window even when the foreground window is unchanged
+    (an always-on-top overlay over the approved window). Same
+    {"hwnd", "title", "process"} shape as foreground_window;
+    the hit window is walked up to its top-level ancestor, so a
+    child control/dialog still identifies its owning window.
+    Windows only; None elsewhere or when unreadable. Never raises.
+    """
+    if not _is_windows():
+        return None
+    w = _win32()
+    if w is None:
+        return None
+    win32gui, win32con = w
+    try:
+        hwnd = win32gui.WindowFromPoint((int(x), int(y)))
+        if not hwnd:
+            return None
+        try:
+            hwnd = win32gui.GetAncestor(hwnd, win32con.GA_ROOT)
+        except Exception:
+            pass
+        if not hwnd:
+            return None
+        title = win32gui.GetWindowText(hwnd) or ""
+        process = ""
+        try:
+            _tid, pid = win32gui.GetWindowThreadProcessId(hwnd)
+            import psutil
+            process = psutil.Process(pid).name()
+        except Exception:
+            process = ""
+        return {"hwnd": int(hwnd), "title": title, "process": process}
+    except Exception as _e_silent:
+        _config_silent.log_silent("window_at_point", _e_silent)
+        return None
+
+
 def _find_hwnd(win32gui, title: str) -> Optional[int]:
     """Find the first visible top-level window whose title contains `title`
     (case-insensitive)."""

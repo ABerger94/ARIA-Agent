@@ -422,6 +422,27 @@ def _freeze_park_args(fn_name: str, args: dict) -> dict:
     return gate_args
 
 
+def _recheck_gui_binding(fn_name, args):
+    """Re-validate a carried GUI approval binding, or None.
+
+    Pass 27 #13: approve_token checks the foreground window
+    before the replay reaches dispatch, and the handler then
+    waits for DESKTOP_LOCK — focus can change while queued.
+    Called under the lock immediately before the handler runs;
+    a refusal string means the input must not be sent. Only
+    approved replays carry a binding; anything else returns
+    None and proceeds as before. Fail-open on import/read
+    errors here — the approve_token check already ran, and a
+    broken re-check must not wedge ordinary GUI tools.
+    """
+    try:
+        from aria import approval as _approval_mod
+        return _approval_mod.recheck_replay_gui_binding(
+            fn_name, args or {})
+    except Exception:
+        return None
+
+
 def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple[str, bool]:
     """Dispatch one tool with full validation, sandboxing, and audit logging.
     Returns (result_text, False); approval may park the request before its
@@ -716,7 +737,16 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
             lock = runtime.DESKTOP_LOCK if fn_name in DESKTOP else contextlib.nullcontext()
             with lock:
                 runtime.check_cancelled()
-                r = handler(args or {})
+                # Pass 27 #13: re-validate the carried GUI
+                # approval binding under the desktop lock,
+                # immediately before input — focus can change
+                # while queued for the lock, and the pre-lock
+                # check in approve_token cannot see that.
+                _gui_refusal = _recheck_gui_binding(fn_name, args or {})
+                if _gui_refusal is not None:
+                    r = _gui_refusal
+                else:
+                    r = handler(args or {})
         else:
             # Unknown tool name: NEVER execute a fuzzy match directly.
             # Argument validation, safe mode, and approval above all ran

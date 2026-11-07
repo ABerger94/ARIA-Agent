@@ -457,6 +457,61 @@ def _gui_binding_matches(bound, current) -> bool:
             and bound.get("hwnd") == current.get("hwnd"))
 
 
+def recheck_replay_gui_binding(tool, args=None):
+    """Re-validate the carried GUI binding at input time.
+
+    Pass 27 #13: approve_token checks the foreground window
+    BEFORE the replay reaches dispatch, and the handler then
+    waits for DESKTOP_LOCK — focus can change while queued, and
+    the handler sent input without revalidation. Dispatch calls
+    this under DESKTOP_LOCK immediately before a GUI handler
+    runs. Returns None when there is no carried binding (not an
+    approved replay — ordinary and auto-mode calls proceed as
+    before) or it still matches; otherwise the refusal string
+    and the input must not be sent. A gui_click also verifies
+    the window under the click point: a different visible window
+    there refuses even when the foreground window is unchanged.
+    """
+    bound = getattr(_replay_local, "gui_binding", None)
+    if not bound:
+        return None
+    current = _gui_binding()
+    if not _gui_binding_matches(bound, current):
+        if current is None:
+            why = ("the foreground window could not be read at "
+                   "input time")
+        else:
+            why = (f"the foreground window changed since this was "
+                   f"approved — it was "
+                   f"'{bound.get('title') or bound.get('process') or 'untitled'}' "
+                   f"and is now "
+                   f"'{current.get('title') or current.get('process') or 'untitled'}'")
+        return (f"[Approval refused: {why}, so the {tool} was NOT "
+                f"executed. Ask again with the current screen.]")
+    if tool == "gui_click" and bound.get("hwnd") is not None:
+        try:
+            x = int((args or {}).get("x"))
+            y = int((args or {}).get("y"))
+        except (TypeError, ValueError):
+            return None
+        try:
+            from aria.tools import winctl as _winctl
+            at_point = _winctl.window_at_point(x, y)
+        except Exception:
+            at_point = None
+        if (at_point is not None and at_point.get("hwnd") is not None
+                and at_point.get("hwnd") != bound.get("hwnd")):
+            return (f"[Approval refused: the click point ({x}, {y}) "
+                    f"is over a different window than the approved "
+                    f"one — it is over "
+                    f"'{at_point.get('title') or at_point.get('process') or 'untitled'}' "
+                    f"and the approval covered "
+                    f"'{bound.get('title') or bound.get('process') or 'untitled'}' — "
+                    f"so the {tool} was NOT executed. Ask again with "
+                    f"the current screen.]")
+    return None
+
+
 # Approval-control names must never gate. Since 2026-10-28 the
 # resolvers (approve / deny / set_approval_mode) are not model
 # tools at all — see aria/tools/dispatch.py — so this set now
@@ -1122,6 +1177,12 @@ def approve_token(token: str) -> str:
             _record_resolution(entry["tool"], entry["desc"], "refused",
                                reason, project=_entry_project(entry))
             return reason
+    # Pass 27 #13: carry the parked binding into the replay so
+    # dispatch re-validates it under DESKTOP_LOCK immediately
+    # before input — the check above runs before the lock wait,
+    # and focus can change while queued.
+    if entry["tool"] in _GUI_BINDING_TOOLS and bound:
+        _replay_local.gui_binding = bound
     # A phone approval is bound to the phone it was parked
     # against (pass 26 B2#2): inject the bound node into the
     # replayed args BEFORE the replay marker is set, so the
@@ -1259,6 +1320,7 @@ def approve_token(token: str) -> str:
         return f"[Approval error: failed to execute approved call: {e}]"
     finally:
         _replay_local.current = None
+        _replay_local.gui_binding = None
 
 
 def deny_token(token: str) -> str:
