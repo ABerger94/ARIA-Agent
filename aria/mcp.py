@@ -723,6 +723,20 @@ class MCPBridge:
         try:
             result = self._run(self._actor_call(name, tool, arguments, timeout),
                                timeout=timeout + 10.0)
+        except TimeoutError:
+            # Pass 27 #30: a timeout is NOT a definite failure —
+            # the call was queued to the actor and the server may
+            # have acted before the reply was lost (the orphan is
+            # cancelled, but a call already executing on the server
+            # is not recalled). Report UNVERIFIED with the operation
+            # identity, never FAILED: a FAILED here invites a blind
+            # retry that could double-execute.
+            return outcome.unverified(
+                f"mcp_{name}__{tool}",
+                f"MCP call to '{tool}' on server '{name}' timed out "
+                f"after {timeout:g}s — the request was sent and the "
+                f"server may have acted; check the server's state "
+                f"before retrying")
         except Exception as e:
             # A failed call is a failure, not a result: the old
             # "[MCP call failed ...]" string had no status= prefix,

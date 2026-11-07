@@ -53,6 +53,13 @@ FAILURE SHAPE
     rest as failures; nothing here returns a half-result dressed as
     success — a command the node answered ok=false raises with the
     node's own error text.
+
+    Pass 27 #30: `delivered` says whether the command frame
+    reached the node before the failure. A timeout or disconnect
+    happens AFTER delivery — the phone may have acted and the
+    reply was lost — so those are uncertainties, not definite
+    failures. A send() rejection or no_node means nothing was
+    delivered, so the failure is definite.
 """
 
 from __future__ import annotations
@@ -72,11 +79,17 @@ class NodeHubError(Exception):
 
     `code` says which kind of failure, so callers can tell "there is
     no phone" (guidance) from "the phone said no" (a real failure)
-    without parsing the message."""
+    without parsing the message. `delivered` says whether the
+    command frame reached the node before the failure (pass 27
+    #30): True for timeout / disconnect / a wait that broke after
+    delivery — the node may have acted — False for a send
+    rejection or no_node, where nothing was delivered.
+    """
 
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, delivered: bool = False):
         super().__init__(message)
         self.code = code
+        self.delivered = delivered
 
 
 @dataclass
@@ -153,12 +166,15 @@ class NodeHub:
             del self._nodes[name]
             for cid in [c for c, p in self._pending.items()
                         if p.node == name]:
-                stranded.append(self._pending.pop(cid).future)
-        for fut in stranded:
+                stranded.append((cid, self._pending.pop(cid).future))
+        for cid, fut in stranded:
             if not fut.done():
                 fut.set_exception(NodeHubError(
                     "disconnected",
-                    f"phone node '{name}' disconnected before answering"))
+                    f"phone node '{name}' disconnected before answering "
+                    f"command {cid} — it was delivered and the phone may "
+                    f"have acted; check the phone's state before retrying",
+                    delivered=True))
         return True
 
     # ── result routing (endpoint side) ────────────────────────────────
@@ -283,11 +299,17 @@ class NodeHub:
             raise NodeHubError(
                 "timeout",
                 f"phone node '{target.name}' did not answer "
-                f"'{action}' within {timeout:g}s")
+                f"'{action}' within {timeout:g}s (command {cid} was "
+                f"delivered and the phone may have acted — check the "
+                f"phone's state before retrying)",
+                delivered=True)
         except NodeHubError:
             raise
         except Exception as e:  # a future cancelled under us, etc.
-            raise NodeHubError("node_error", str(e))
+            # The frame was delivered before the wait broke, so
+            # this is post-send uncertainty, not a definite
+            # failure (pass 27 #30).
+            raise NodeHubError("node_error", str(e), delivered=True)
 
 
 # The process-wide hub the bridge endpoint registers into and the

@@ -49,7 +49,13 @@ def _send(tool: str, action: str, args: dict, node: str = None):
     (the most recently connected node).
 
     Every failure path returns outcome.failed(...) so normalize
-    yields FAILED instead of reading a failure as DONE.
+    yields FAILED instead of reading a failure as DONE — EXCEPT
+    a failure AFTER the command was delivered (pass 27 #30): a
+    timeout or disconnect means the phone may have acted and the
+    reply was lost, so that returns outcome.unverified(...) with
+    the operation identity, never a definite failure. A blind
+    retry after a FAILED would be safe; after an UNVERIFIED it
+    could double-execute, so the text says to check first.
     """
     try:
         return node_hub.HUB.send_command(node, action, args), None
@@ -61,6 +67,9 @@ def _send(tool: str, action: str, args: dict, node: str = None):
                     f"no phone node named '{node}' is connected — "
                     "nothing was sent to any phone")
             return None, outcome.failed(tool, NO_NODE)
+        if e.code in ("timeout", "disconnected") or getattr(
+                e, "delivered", False):
+            return None, outcome.unverified(tool, str(e))
         return None, outcome.failed(tool, str(e))
     except Exception as e:
         return None, outcome.failed(
