@@ -60,6 +60,118 @@ def _group_kwargs() -> dict:
     return {"start_new_session": True}
 
 
+# Sentinel poll() result for a re-adopted job that ended while
+# unsupervised (pass 28 #22): the exit code of a reparented
+# process is unknowable, so the poll loop marks it failed with
+# exit_code NULL instead of inventing one.
+_ADOPTED_EXIT_UNKNOWN = -999
+
+
+class _AdoptedHandle:
+    """A psutil-backed stand-in for a Popen lost across a restart.
+
+    Exposes the .pid / .poll() / .kill() / .terminate() surface
+    the supervisor and cancel paths use, so a re-adopted job
+    rejoins the normal tracking. poll() returns None while the
+    recorded command still runs under the stored PID, and
+    _ADOPTED_EXIT_UNKNOWN once it does not — the command-line
+    check runs on every poll, so a PID reassigned to an
+    unrelated process after adoption is treated as gone, never
+    as the job still running.
+    """
+
+    def __init__(self, pid: int, command: str):
+        self.pid = pid
+        self._command = command or ""
+
+    def _live_proc(self):
+        try:
+            proc = psutil.Process(self.pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied,
+                ValueError):
+            return None
+        try:
+            if proc.status() == psutil.STATUS_ZOMBIE:
+                return None
+            cmdline = " ".join(proc.cmdline())
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return None
+        if self._command and self._command not in cmdline:
+            return None
+        return proc
+
+    def poll(self):
+        return None if self._live_proc() is not None \
+            else _ADOPTED_EXIT_UNKNOWN
+
+    def kill(self):
+        proc = self._live_proc()
+        if proc is not None:
+            proc.kill()
+
+    def terminate(self):
+        proc = self._live_proc()
+        if proc is not None:
+            proc.terminate()
+
+
+def _readopt_orphaned_jobs() -> None:
+    """Recover background jobs whose handles were lost (pass 28
+    #22): after a restart _ACTIVE_JOBS is empty while the DB
+    still says 'running' and the processes still live. For every
+    project, a still-running process whose command line matches
+    the recorded command is re-adopted into _ACTIVE_JOBS; a job
+    whose PID is gone — or now belongs to something else — is
+    settled as failed (never touched, never invented an exit
+    code). Never raises: recovery must not break the supervisor
+    it serves."""
+    try:
+        projects = workspaces.list_projects()
+    except Exception as e:
+        _config_silent.log_silent('readopt_orphaned_jobs', e)
+        return
+    for project in projects:
+        try:
+            with workspaces.use(project["id"]):
+                _readopt_orphaned_jobs_for_project(project["id"])
+        except Exception as e:
+            _config_silent.log_silent('readopt_orphaned_jobs', e)
+
+
+def _readopt_orphaned_jobs_for_project(project: str) -> None:
+    try:
+        jobs = job_db_list(1000)
+    except Exception as e:
+        _config_silent.log_silent('readopt_orphaned_jobs', e)
+        return
+    for job in jobs:
+        if job.get("status") != "running":
+            continue
+        key = (project, job["id"])
+        with _JOBS_LOCK:
+            if key in _ACTIVE_JOBS:
+                continue
+        pid = job.get("pid")
+        handle = _AdoptedHandle(pid, job.get("command") or "") \
+            if isinstance(pid, int) else None
+        if handle is not None and handle.poll() is None:
+            with _JOBS_LOCK:
+                _ACTIVE_JOBS[key] = (
+                    handle, job.get("log_file") or "",
+                    job.get("name") or "",
+                    job.get("started_at") or time.time())
+            add_log(f"Worker: Re-adopted job #{job['id']} "
+                    f"'{job.get('name')}' (PID: {pid}) after restart.")
+        else:
+            # Process gone, or the PID now belongs to something
+            # else: settle the row instead of leaving it
+            # 'running' forever. Never signal the PID.
+            job_db_update(job["id"], "failed", exit_code=None)
+            add_log(f"Worker: Job #{job['id']} "
+                    f"'{job.get('name')}' ended while ARIA was down "
+                    f"(exit code unknown) — marked failed.")
+
+
 def _kill_job_tree(proc, sig=signal.SIGTERM) -> None:
     """Signal a job's whole process group, falling back to the
     leader alone (a fake/stub Popen in tests has no real group).
@@ -187,12 +299,22 @@ def _poll_background_jobs():
                 code = proc.poll()
                 if code is not None:
                     dur = round(time.time() - start_t, 1)
-                    status = "completed" if code == 0 else "failed"
+                    if code == _ADOPTED_EXIT_UNKNOWN:
+                        # Re-adopted job ended while unsupervised:
+                        # its exit code died with its original
+                        # parent — fail-closed with no invented code.
+                        status, exit_code = "failed", None
+                        msg = (f"Job #{jid} '{name}' ended while "
+                               f"ARIA was down (exit code unknown).")
+                    else:
+                        status = "completed" if code == 0 else "failed"
+                        exit_code = code
+                        msg = (f"Job #{jid} '{name}' {status} with "
+                               f"code {code} ({dur}s).")
                     with workspaces.use(project):
-                        job_db_update(jid, status, exit_code=code)
+                        job_db_update(jid, status, exit_code=exit_code)
                         spine_append("job_complete", {
-                            "job_id": jid, "name": name, "exit_code": code, "duration_s": dur})
-                    msg = f"Job #{jid} '{name}' {status} with code {code} ({dur}s)."
+                            "job_id": jid, "name": name, "exit_code": exit_code, "duration_s": dur})
                     add_log(f"Worker: {msg}")
                     with _QUEUES_LOCK:
                         _PENDING_JOB_NOTICES.append(msg)
@@ -203,6 +325,9 @@ def _poll_background_jobs():
 
 def _job_supervisor_loop():
     """Background supervisor monitoring running child processes."""
+    # Pass 28 #22: reclaim jobs orphaned by a restart before the
+    # first poll — otherwise their rows lie 'running' forever.
+    _readopt_orphaned_jobs()
     while True:
         time.sleep(2)
         _poll_background_jobs()
