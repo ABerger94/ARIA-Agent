@@ -873,6 +873,11 @@ def _execute_step(dispatch, tool: str, args: dict, *,
 
 _CHILD_HANDLE_RE = {
     "delegate_task": (r"task_id=([A-Za-z0-9_-]+)", "task_id"),
+    # Pass 28 #19: task_resume starts the same kind of child (a
+    # delegated task under a new id) — a mission step that resumes
+    # a blocked child must wait on it, not certify the submission
+    # or strand the step as uncertain.
+    "task_resume": (r"task_id=([A-Za-z0-9_-]+)", "task_id"),
     "manage_background_job": (r"job_id=(\d+)", "job_id"),
 }
 
@@ -894,7 +899,8 @@ def _parse_child_handle(tool: str, result: str):
     if not m:
         return None, None
     p = re.search(r"project=([A-Za-z0-9_-]+)", str(result or ""))
-    handle = {"kind": ("delegated_task" if tool == "delegate_task"
+    handle = {"kind": ("delegated_task" if tool in ("delegate_task",
+                                                    "task_resume")
                        else "background_job"),
               key: (int(m.group(1)) if key == "job_id"
                     else m.group(1)),

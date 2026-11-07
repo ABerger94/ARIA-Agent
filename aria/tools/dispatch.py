@@ -987,21 +987,36 @@ def _tool_task_resume(args: dict) -> str:
     """Resume a blocked/failed delegated task from its journal
     checkpoint (Gap fill 3): finished steps are skipped, the
     current step re-runs. The journal is the source of truth —
-    a task that finished (or never existed) cannot resume."""
+    a task that finished (or never existed) cannot resume.
+
+    Pass 28 #19: a successful resume returns a typed STARTED
+    outcome, not a plain string — the plain string normalized as
+    DONE, certifying the resumed task complete when it had only
+    been queued. The STARTED carries the child handle (new task
+    id + project) so a parent settles from the child's terminal
+    outcome, mirroring delegate_task (pass 27 #25); the
+    skipped-step count rides as a fact. A missing record / a
+    refused resume returns typed FAILED, not a plain string."""
     from aria.agent import taskqueue, taskstore
+    from aria import outcome as _outcome_mod
+    from aria import workspaces as _ws_mod
     tid = str((args or {}).get("task_id", "") or "").strip()
     rec = taskstore.get(tid) if tid else None
     if rec is None:
-        return (f"No journal record for task '{tid}' — only tasks "
-                "that were journaled can resume.")
+        return _outcome_mod.failed(
+            "task_resume",
+            f"No journal record for task '{tid}' — only tasks "
+            "that were journaled can resume.")
     try:
         new_id = taskqueue.get_queue().submit(
             rec.get("goal", ""), resume_from=tid)
     except ValueError as e:
-        return f"Can't resume task {tid}: {e}"
+        return _outcome_mod.failed(
+            "task_resume", f"Can't resume task {tid}: {e}")
     done = len(rec.get("completed") or [])
-    return (f"Resumed task {tid} as new task {new_id} — "
-            f"{done} completed step(s) will be skipped.")
+    return _outcome_mod.started(
+        "task_resume", task_id=new_id, resumed_from=tid,
+        project=_ws_mod.current(), skipped=done)
 
 
 def _tool_task_cancel(args: dict) -> str:
