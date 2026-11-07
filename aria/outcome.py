@@ -100,7 +100,8 @@ class ToolResult:
     def __str__(self):
         legacy = self.text.startswith(('[AWAITING_APPROVAL', 'NEED_INPUT:', '[Tool Error',
                                        '[Argument error', 'Unknown tool:', '[Safe mode',
-                                       '[Approval error', '[Duplicate call blocked'))
+                                       '[Approval error', '[Approval refused',
+                                       '[Duplicate call blocked'))
         if self.status != DONE and not legacy and kind_of(self.text) != self.status:
             return f'status={self.status} {self.text}'
         return self.text
@@ -124,7 +125,8 @@ def normalize(value):
         if text.startswith('[AWAITING_APPROVAL') or text.startswith('NEED_INPUT:'):
             status = ASK
         elif (text.startswith(('[Tool Error', '[Argument error', 'Unknown tool:',
-                               '[Safe mode', '[Approval error', '[Duplicate call blocked'))
+                               '[Safe mode', '[Approval error', '[Approval refused',
+                               '[Duplicate call blocked'))
               or 'Traceback (most recent call last)' in text):
             status = FAILED
         else:

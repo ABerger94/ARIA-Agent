@@ -131,3 +131,139 @@ def test_done_replay_still_resumes_routine(state, monkeypatch):
     assert str(token) not in routines._PAUSED
     (rec,) = approval.recent_resolutions()
     assert rec["verdict"] == "executed", rec
+
+
+def _pause_routine_returning(token, monkeypatch, resume_text):
+    """Like _pause_routine_on, but the resumed routine returns
+    `resume_text` — the continuation's own outcome, which the
+    token's return must carry instead of hiding behind the first
+    step's success (pass 28 #7)."""
+    calls = []
+    monkeypatch.setattr(routines, "_check_resume", lambda record: "")
+    monkeypatch.setattr(routines, "run_routine_impl",
+                        lambda name, params, start_at=1: (
+                            calls.append((name, start_at)),
+                            resume_text)[1])
+    routines._load_paused()
+    routines._PAUSED[str(token)] = {
+        "name": "probe_routine", "revision": "test",
+        "next_step": 2, "project": "default", "params": {},
+        "token": str(token)}
+    routines._save_paused()
+    return calls
+
+
+def test_unverified_replay_does_not_resume_routine(state, monkeypatch):
+    # Pass 28 #6: an UNVERIFIED replay (e.g. a timeout — the call
+    # may have acted) is not a completion. The routine must stay
+    # paused, and the token's return must keep the uncertain
+    # status instead of reading as done.
+    monkeypatch.setitem(
+        dispatch._REGISTRY, "probe_step",
+        lambda args: outcome.unverified(
+            "probe_step", "timed out — the server may have acted"))
+    proj = workspaces.create("Project A")
+    with workspaces.use(proj):
+        approval.request_approval("probe_step", {"x": 1},
+                                  desc="probe step")
+    (token,) = list(approval._PENDING)
+    calls = _pause_routine_on(token, monkeypatch)
+
+    out = approval.approve_token(token)
+    assert outcome.normalize(out).status == "unverified", out
+    assert calls == [], calls
+    assert str(token) in routines._PAUSED
+    (rec,) = approval.recent_resolutions()
+    assert rec["verdict"] == "uncertain", rec
+
+
+def test_started_replay_does_not_resume_routine(state, monkeypatch):
+    # Pass 28 #6: a STARTED replay (work under way, no result
+    # yet) is not a completion either.
+    monkeypatch.setitem(
+        dispatch._REGISTRY, "probe_step",
+        lambda args: outcome.started("probe_step"))
+    proj = workspaces.create("Project A")
+    with workspaces.use(proj):
+        approval.request_approval("probe_step", {"x": 1},
+                                  desc="probe step")
+    (token,) = list(approval._PENDING)
+    calls = _pause_routine_on(token, monkeypatch)
+
+    out = approval.approve_token(token)
+    assert outcome.normalize(out).status == "started", out
+    assert calls == [], calls
+    assert str(token) in routines._PAUSED
+    (rec,) = approval.recent_resolutions()
+    assert rec["verdict"] == "uncertain", rec
+
+
+def test_refused_replay_normalizes_failed_and_does_not_resume(state, monkeypatch):
+    # Pass 28 #8: an approval-refusal result ("[Approval
+    # refused: ...]") used to normalize as DONE — the prefix
+    # classifier had no refusal branch, so the replay journalled
+    # "executed" and resumed the routine that paused on it.
+    monkeypatch.setitem(
+        dispatch._REGISTRY, "probe_step",
+        lambda args: ("[Approval refused: the foreground window "
+                      "changed since this was approved — it was "
+                      "'Notepad' and is now 'Chrome', so the "
+                      "probe_step was NOT executed. Ask again with "
+                      "the current screen.]"))
+    proj = workspaces.create("Project A")
+    with workspaces.use(proj):
+        approval.request_approval("probe_step", {"x": 1},
+                                  desc="probe step")
+    (token,) = list(approval._PENDING)
+    calls = _pause_routine_on(token, monkeypatch)
+
+    out = approval.approve_token(token)
+    assert outcome.normalize(out).status == "failed", out
+    assert calls == [], calls
+    assert str(token) in routines._PAUSED
+    (rec,) = approval.recent_resolutions()
+    assert rec["verdict"] == "refused", rec
+
+
+def test_resumed_routine_failure_surfaces_in_token_status(state, monkeypatch):
+    # Pass 28 #7: the first step succeeded, but the resumed
+    # routine failed — the token's return must carry the
+    # continuation's FAILED status, not read as a success with
+    # the failure buried in appended text.
+    monkeypatch.setitem(
+        dispatch._REGISTRY, "probe_step",
+        lambda args: outcome.done("probe_step"))
+    proj = workspaces.create("Project A")
+    with workspaces.use(proj):
+        approval.request_approval("probe_step", {"x": 1},
+                                  desc="probe step")
+    (token,) = list(approval._PENDING)
+    calls = _pause_routine_returning(
+        token, monkeypatch, "[Tool Error: resume step failed]")
+    out = approval.approve_token(token)
+    assert calls == [("probe_routine", 2)], calls
+    assert "resume step failed" in out, out
+    assert outcome.normalize(out).status == "failed", out
+    (rec,) = approval.recent_resolutions()
+    assert rec["verdict"] == "executed", rec
+
+
+def test_resumed_routine_repark_surfaces_as_ask(state, monkeypatch):
+    # Pass 28 #7, second face: the resumed routine re-parked
+    # behind a fresh approval — the token's return must read as
+    # ASK (a new token is waiting), not as the first step's
+    # success.
+    monkeypatch.setitem(
+        dispatch._REGISTRY, "probe_step",
+        lambda args: outcome.done("probe_step"))
+    proj = workspaces.create("Project A")
+    with workspaces.use(proj):
+        approval.request_approval("probe_step", {"x": 1},
+                                  desc="probe step")
+    (token,) = list(approval._PENDING)
+    calls = _pause_routine_returning(
+        token, monkeypatch,
+        "[AWAITING_APPROVAL token=12345678] next step needs approval")
+    out = approval.approve_token(token)
+    assert calls == [("probe_routine", 2)], calls
+    assert outcome.normalize(out).status == "ask", out

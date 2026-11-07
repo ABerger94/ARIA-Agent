@@ -1166,23 +1166,6 @@ def purge_expired() -> int:
     return len(expired)
 
 
-def _is_typed_failure(result) -> bool:
-    """True when the replay result is a typed `status=failed`
-    outcome (aria.outcome.is_failure), as opposed to a
-    bracket-marked error string. outcome is imported lazily:
-    approval never imports it at module level (import-cycle
-    convention). The re-parked / duplicate / safe-mode results
-    can never be typed failures (their bracket text carries no
-    status= prefix), so this check only refines the errored
-    branch — a typed failure must never reach the "executed"
-    branch and resume a routine (pass 26 B2#4)."""
-    try:
-        from aria import outcome as _outcome_mod
-        return _outcome_mod.is_failure(result)
-    except Exception:
-        return False
-
-
 def approve_token(token: str) -> str:
     """Execute the stashed call with preauthorized=True. Returns its result.
 
@@ -1291,7 +1274,8 @@ def approve_token(token: str) -> str:
                 # recording's project check sees the right one.
                 if not (str(result).startswith("[AWAITING_APPROVAL") or
                         str(result).startswith("[Duplicate call blocked") or
-                        str(result).startswith("[Safe mode")):
+                        str(result).startswith("[Safe mode") or
+                        str(result).startswith("[Approval refused")):
                     try:
                         from aria import routines as _routines_mod
                         _routines_mod.maybe_capture(
@@ -1312,7 +1296,16 @@ def approve_token(token: str) -> str:
         # refused — and logging that as "executed" made a dead
         # Confirm indistinguishable from a worked one (Alek,
         # 2026-10-31). The OPS verdict names what happened.
-        if result.startswith("[AWAITING_APPROVAL"):
+        # Pass 28 #6/#7/#8: the outcome is normalized ONCE and
+        # the branches read its status. The old prefix chain
+        # classified by wording, so an approval refusal (no
+        # failure prefix) and an unverified/started replay (no
+        # error prefix) both fell through to "executed" and
+        # resumed the routine that paused on the step.
+        from aria import outcome as _outcome_mod  # lazy: no import cycle
+        replay_status = _outcome_mod.normalize(result).status
+        if result.startswith("[AWAITING_APPROVAL") or \
+                replay_status == _outcome_mod.ASK:
             # The replay parked again behind a handler-side gate
             # (e.g. run_shell_command's own confirm): this token is
             # spent, but the call is not dead — a NEW token is now
@@ -1342,8 +1335,19 @@ def approve_token(token: str) -> str:
             _record_resolution(entry["tool"], entry["desc"],
                                "did NOT execute", result,
                                project=_entry_project(entry))
-        elif result.startswith("[Tool Error:") or \
-                result.startswith("[Error:") or _is_typed_failure(result):
+        elif result.startswith("[Approval refused"):
+            # Pass 28 #8: the replay was refused (a GUI binding
+            # recheck, a freeze refusal) — it never executed, so
+            # it must not journal "executed" or resume a routine.
+            # The refusal string normalizes as FAILED
+            # (outcome.normalize), but the verdict names the
+            # refusal, matching the pre-replay refusal path above.
+            config.add_log(
+                f"[approval] token={t} refused: {result[:200]}")
+            _record_resolution(entry["tool"], entry["desc"],
+                               "refused", result,
+                               project=_entry_project(entry))
+        elif replay_status == _outcome_mod.FAILED:
             # The handler ran and reported failure (dispatch turns
             # a handler exception into "[Tool Error: ...]", and a
             # typed `status=failed` outcome reports it the same
@@ -1357,6 +1361,17 @@ def approve_token(token: str) -> str:
                 f"[approval] token={t} executed: {result[:200]}")
             _record_resolution(entry["tool"], entry["desc"],
                                "errored", result,
+                               project=_entry_project(entry))
+        elif replay_status in (_outcome_mod.UNVERIFIED,
+                               _outcome_mod.STARTED):
+            # Pass 28 #6: the replay finished without a result —
+            # a timeout that may have acted, work still under way.
+            # Neither is a completion: the routine stays paused
+            # and the pause is not consumed.
+            config.add_log(
+                f"[approval] token={t} uncertain: {result[:200]}")
+            _record_resolution(entry["tool"], entry["desc"],
+                               "uncertain", result,
                                project=_entry_project(entry))
         else:
             config.add_log(
@@ -1375,7 +1390,22 @@ def approve_token(token: str) -> str:
                     config.add_log(
                         f"[approval] token={t} resumed routine: "
                         f"{resume_text[:200]}")
-                    result = result + "\n" + resume_text
+                    # Pass 28 #7: the continuation has its own
+                    # outcome — a failure or a fresh re-park must
+                    # not hide behind the first step's success in
+                    # appended text. When it is not DONE, the
+                    # token's return carries the continuation's
+                    # status as a structured outcome (the text
+                    # keeps both parts); a DONE continuation
+                    # appends as before.
+                    resume_status = _outcome_mod.normalize(
+                        resume_text).status
+                    combined = result + "\n" + resume_text
+                    if resume_status == _outcome_mod.DONE:
+                        result = combined
+                    else:
+                        result = _outcome_mod.ResultText(
+                            combined, resume_status)
             except Exception:
                 pass
         _notify_resolution(t, entry, True, result)
