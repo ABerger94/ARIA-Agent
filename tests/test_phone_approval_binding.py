@@ -59,6 +59,15 @@ class _FakeHub:
     def nodes(self):
         return [dict(n) for n in NODES]
 
+    def current_phone_name(self):
+        # Pass 27 #23: the binding and the dispatch share the
+        # hub's phone selection — desktops never count.
+        phones = [n for n in NODES if n.get("kind") != "desktop"]
+        if not phones:
+            return None
+        return max(phones,
+                   key=lambda n: n.get("connected_at") or 0)["name"]
+
     def send_command(self, node, action, args):
         if node is not None:
             if not any(n["name"] == node for n in NODES):

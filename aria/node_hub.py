@@ -211,6 +211,16 @@ class NodeHub:
                     for n in sorted(self._nodes.values(),
                                     key=lambda n: n.connected_at)]
 
+    def current_phone_name(self) -> Optional[str]:
+        """Name of the phone _pick(None) would target (pass 27
+        #23): the most recently connected non-desktop node, or
+        None. The approval binding (phone_node.current_node_name)
+        and the dispatch (send_command via _pick) share this one
+        selection, so a binding can never name a desktop
+        companion that connected most recently."""
+        target = self._pick(None)
+        return target.name if target is not None else None
+
     def _pick(self, node: Optional[str]) -> Optional[_Node]:
         with self._lock:
             if node:

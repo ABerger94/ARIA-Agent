@@ -71,18 +71,17 @@ def current_node_name():
     """Name of the most recently connected phone node, or None.
 
     The node a live phone call would reach today (NodeHub._pick
-    semantics). Approval bindings capture this at park time so a
-    confirmed phone action cannot drift onto a phone that
-    connected later (pass 26 B2#2)."""
+    semantics): the binding and the dispatch share the hub's
+    current_phone_name selection (pass 27 #23). The old code took
+    the max over ALL nodes, so a desktop companion that
+    connected most recently was named — and the approval replay
+    then targeted it by name. Desktop companions are never
+    phones; when only one is connected this returns None.
+    """
     try:
-        nodes = node_hub.HUB.nodes()
+        return node_hub.HUB.current_phone_name()
     except Exception:
         return None
-    if not nodes:
-        return None
-    newest = max(nodes, key=lambda n: n.get("connected_at") or 0)
-    name = str(newest.get("name") or "").strip()
-    return name or None
 
 
 def _cap(text: str, limit: int = LIST_LIMIT) -> str:
