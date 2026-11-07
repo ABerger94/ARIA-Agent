@@ -241,7 +241,11 @@ class TaskQueue:
             # not only in the in-memory Task.
             plan=(resume_state or {}).get("plan"),
             completed=(resume_state or {}).get("completed"),
-            results=(resume_state or {}).get("results"))
+            results=(resume_state or {}).get("results"),
+            # Pass 28 #15: claim the previous task in the same
+            # write as this record — a second resume must find it
+            # already claimed, not build a second executor.
+            claim_from=resume_from)
         with self._condition:
             self._queue.append(task)
             self._queue.sort(key=lambda t: (t.priority, t.created_at))

@@ -103,7 +103,8 @@ def create(task_id: str, goal: str, resumed_from: str = "", execution_scope: str
            spend_cap=None, budget_scope: str = "", envelope=None,
            mission_id=None, parent_execution_id: str = "",
            status: str = "running",
-           plan=None, completed=None, results=None) -> Dict[str, Any]:
+           plan=None, completed=None, results=None,
+           claim_from: str = "") -> Dict[str, Any]:
     """Open a journal record for a task about to run. The submitting
     execution's policy (spend cap, budget scope, envelope) and
     parent identity ride along, so a resume restores the ORIGINAL
@@ -128,13 +129,23 @@ def create(task_id: str, goal: str, resumed_from: str = "", execution_scope: str
     in-memory Task, or a restart before the worker starts it
     recovers a record with no checkpoint and repeats finished
     steps.
+
+    Pass 28 #15: claim_from atomically claims the previous task
+    being resumed: under the same lock hold and the same write as
+    the new record's creation, the old record is verified still
+    resumable and marked status='resumed' (resumed_by=new id).
+    A second resume then finds it already claimed instead of
+    building a second executor for the same remaining steps; a
+    failed write leaves the old record untouched — no stranded
+    claim, no ghost task.
     """
     rec = {
         "task_id": task_id, "goal": goal, "status": status,
         "plan": plan, "completed": list(completed or []),
         "results": {str(k): v for k, v in (results or {}).items()},
         "blocked_reason": "", "result": "", "error": "",
-        "resumed_from": resumed_from, "execution_scope": execution_scope or f"task:{task_id}",
+        "resumed_from": resumed_from, "resumed_by": "",
+        "execution_scope": execution_scope or f"task:{task_id}",
         "spend_cap": spend_cap, "budget_scope": budget_scope or "",
         "envelope": _jsonable(envelope), "mission_id": mission_id,
         "parent_execution_id": parent_execution_id or "",
@@ -144,6 +155,18 @@ def create(task_id: str, goal: str, resumed_from: str = "", execution_scope: str
     }
     with _LOCK:
         data = _load()
+        if claim_from:
+            old = data.get(claim_from)
+            if old is None:
+                raise ValueError(
+                    f"no journal record for task {claim_from}")
+            if old.get("status") not in RESUMABLE_STATUSES:
+                raise ValueError(
+                    f"task {claim_from} is {old.get('status')}, "
+                    "not resumable")
+            old["status"] = "resumed"
+            old["resumed_by"] = task_id
+            old["updated_at"] = time.time()
         data[task_id] = rec
         if not _save(data):
             raise RuntimeError(
