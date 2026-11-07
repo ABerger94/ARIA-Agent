@@ -226,6 +226,38 @@ def _is_irreversible(label: str) -> bool:
     return bool(label and _IRREVERSIBLE.search(label))
 
 
+def _ancestor_label(el) -> str:
+    """Deliberate label from an actionable ancestor, if any.
+
+    Pass 27 #9: an icon button often carries no text of its own
+    but sits in a labelled container. Walk up to two ancestors
+    for an aria-label or title only — never inner_text, whose
+    descendant text would misclassify the control. Returns ""
+    when nothing labels it.
+    """
+    parent = el
+    for _ in range(2):
+        try:
+            parent = parent.locator("xpath=..")
+        except Exception:
+            return ""
+        for attr in ("aria-label", "title"):
+            try:
+                value = parent.get_attribute(attr)
+            except Exception:
+                value = ""
+            if value and str(value).strip():
+                return str(value).strip()
+    return ""
+
+
+def _display_label(label: str) -> str:
+    """Short label for user-facing strings only; classification
+    and approval binding always use the full label."""
+    text = (label or "unlabelled control").strip()
+    return text if len(text) <= 60 else text[:57] + "..."
+
+
 def _element_label(el) -> str:
     """Best-effort label for one element, same chain as read().
 
@@ -247,8 +279,12 @@ def _element_label(el) -> str:
             pass
     for candidate in candidates:
         if candidate and str(candidate).strip():
-            return str(candidate).strip()[:60]
-    return ""
+            # Pass 27 #9: the label is returned WHOLE — it used
+            # to be truncated to 60 chars before classification,
+            # so a destructive phrase past character 60 waved
+            # through. Truncation lives only in _display_label.
+            return str(candidate).strip()
+    return _ancestor_label(el)
 
 
 # ---------------- the session (Playwright, one thread) ----------------
@@ -420,7 +456,9 @@ class BrowserSession:
                 raise ValueError(
                     f"browser_agent: index:{idx} is stale — its "
                     f"element could not be re-read ({exc}).")
-            return el, label[:60]
+            # Pass 27 #9: whole label, plus the actionable-ancestor
+            # fallback — never truncate before classification.
+            return el, label or _ancestor_label(el)
         if target.startswith("text="):
             query = target[5:]
             loc = self.page.get_by_text(query, exact=False).first
@@ -442,7 +480,10 @@ class BrowserSession:
                          or "").strip()
             except Exception:
                 label = ""
-            return loc, (label or query)[:60]
+            # Pass 27 #9: whole label, plus the actionable-ancestor
+            # fallback, before the query fallback — never truncate
+            # before classification.
+            return loc, label or _ancestor_label(loc) or query
         # CSS branch (pass 20 fix): this used to read inner_text()
         # only, so a submit input whose label lives in its value
         # attribute — <input value="Delete account"> — produced
@@ -738,24 +779,28 @@ def _guarded_click(target: str, *, approve_fn=None) -> str:
         _loc, label = session._resolve(target)
         return label, session.context()
     label, ctx = _RUNNER.call(_probe)
-    if not _is_irreversible(label):
+    # Pass 27 #9: an actionable control with no usable label is
+    # NOT benign — it fails closed into the approval section
+    # below (the raw "" rides in approval_args so a confirmed
+    # replay still matches; only the desc names it unlabelled).
+    if label and not _is_irreversible(label):
         # Benign probe: re-resolve + re-check INSIDE the same
         # session-thread call as the click (pass 25 — the narrow
         # probe→click gap: the control could swap to an
         # irreversible one between the probe and a plain click).
-        # A control that turned irreversible parks for a fresh
-        # confirmation under the LIVE label/context instead of
-        # executing.
+        # A control that turned irreversible — or unlabelled —
+        # parks for a fresh confirmation under the LIVE
+        # label/context instead of executing.
         def _do(runner):
             session = runner.ensure_session()
             _loc, live_label = session._resolve(target)
-            if _is_irreversible(live_label):
+            if _is_irreversible(live_label) or not live_label:
                 return ("stale", live_label, session.context())
             clicked = _click_validated(session, target, _loc, live_label)
             return ("clicked", clicked, session.read())
         kind, a, b = _RUNNER.call(_do)
         if kind == "clicked":
-            return f"Clicked '{a or target}'. " + b
+            return f"Clicked '{_display_label(a)}'. " + b
         label, ctx = a, b
     from aria import approval as _approval
     # Approve replay (2026-10-28): approve_token() stashes
@@ -793,14 +838,16 @@ def _guarded_click(target: str, *, approve_fn=None) -> str:
         request = approve_fn or _approval.request_approval
         return request(
             "browser_agent", approval_args,
-            desc=f"Browser agent is about to click '{label}' "
+            desc=f"Browser agent is about to click "
+                 f"'{_display_label(label)}' "
                  f"({target}) on {ctx['url'] or 'the current page'} — "
                  "this looks irreversible.")
     if not in_replay:
         def _do(runner):
             session = runner.ensure_session()
             clicked = session.click(target)
-            return f"Clicked '{clicked or target}'. " + session.read()
+            return (f"Clicked '{_display_label(clicked)}'. "
+                    + session.read())
         return _RUNNER.call(_do)
     # Approved replay: validate the live context and click in
     # one session-thread call (see the docstring).
@@ -811,11 +858,18 @@ def _guarded_click(target: str, *, approve_fn=None) -> str:
         if _is_irreversible(live_label) and (
                 live_label != label or live_ctx != ctx):
             return ("stale", live_label, live_ctx)
+        if not live_label and label:
+            # Pass 27 #9: the confirmed control lost its label —
+            # the benign path parks unlabelled controls now, so a
+            # confirmed click must not execute against an
+            # unidentified control either. (A control confirmed
+            # while unlabelled and still unlabelled still clicks.)
+            return ("stale", live_label, live_ctx)
         clicked = _click_validated(session, target, _loc, live_label)
         return ("clicked", clicked, session.read())
     kind, a, b = _RUNNER.call(_do_checked)
     if kind == "clicked":
-        return f"Clicked '{a or target}'. " + b
+        return f"Clicked '{_display_label(a)}'. " + b
     # The confirmed page moved: park again under the live page
     # for a fresh review — never execute the old confirmation
     # against the new page.
@@ -824,7 +878,8 @@ def _guarded_click(target: str, *, approve_fn=None) -> str:
     request = approve_fn or _approval.request_approval
     return request(
         "browser_agent", fresh_args,
-        desc=f"Browser agent is about to click '{a}' ({target}) on "
+        desc=f"Browser agent is about to click '{_display_label(a)}' "
+             f"({target}) on "
              f"{b['url'] or 'the current page'} — this looks "
              "irreversible.")
 
