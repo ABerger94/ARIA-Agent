@@ -244,19 +244,35 @@ def tool_list_files() -> str:
 
 
 def tool_find_file(name: str, ext: str = "") -> str:
-    """Search user directories and E: drive for a file by name substring."""
+    """Search for a file by name substring.
+
+    Pass 28 #34: when the project configures file_roots, ONLY
+    those roots are searched — the old code always walked the
+    user's Desktop/Documents/Downloads and the E: drive, ignoring
+    the configured roots entirely (so it searched everywhere
+    except the project, and leaked names of files outside it).
+    With no roots configured the legacy search stands.
+    """
     name = str(name).lower()
     ext = str(ext).lower().lstrip(".")
     roots = []
-    for var in ("USERPROFILE", "HOME"):
-        home = os.environ.get(var)
-        if home:
-            for sub in ("Desktop", "Documents", "Downloads"):
-                p = os.path.join(home, sub)
-                if os.path.isdir(p):
-                    roots.append(p)
-    if os.path.isdir("E:\\"):
-        roots.append("E:\\")
+    try:
+        configured = (workspaces.get().get('settings', {})
+                      .get('file_roots') or [])
+    except Exception:
+        configured = []
+    if configured:
+        roots = [os.path.expanduser(str(r)) for r in configured]
+    else:
+        for var in ("USERPROFILE", "HOME"):
+            home = os.environ.get(var)
+            if home:
+                for sub in ("Desktop", "Documents", "Downloads"):
+                    p = os.path.join(home, sub)
+                    if os.path.isdir(p):
+                        roots.append(p)
+        if os.path.isdir("E:\\"):
+            roots.append("E:\\")
     skip = {"appdata", "node_modules", ".git", "__pycache__", "site-packages"}
     hits = []
     for root in roots:

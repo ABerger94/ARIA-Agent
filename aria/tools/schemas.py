@@ -245,7 +245,7 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
                        'Use for "what do I look like?" and anything about the camera view.',
         'name': 'describe_camera',
         'parameters': {'properties': {'question': {'type': 'STRING'}}, 'type': 'OBJECT'}},
-    {   'description': 'Searches Desktop, Documents, Downloads (and the E: drive) for a file by name fragment, with an '
+    {   'description': 'Searches the project\'s configured file roots (or Desktop, Documents, Downloads and the E: drive when none are configured) for a file by name fragment, with an '
                        'optional extension filter.',
         'name': 'find_file',
         'parameters': {   'properties': {'ext': {'type': 'STRING'}, 'name': {'type': 'STRING'}},
