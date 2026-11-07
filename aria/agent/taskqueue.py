@@ -235,7 +235,13 @@ class TaskQueue:
             spend_cap=task.spend_cap, budget_scope=task.budget_scope,
             envelope=task.envelope, mission_id=task.mission_id,
             parent_execution_id=task.parent_execution_id,
-            status="pending")
+            status="pending",
+            # Pass 28 #14: seed the resumed checkpoint in the same
+            # write as the record — it must be durable from birth,
+            # not only in the in-memory Task.
+            plan=(resume_state or {}).get("plan"),
+            completed=(resume_state or {}).get("completed"),
+            results=(resume_state or {}).get("results"))
         with self._condition:
             self._queue.append(task)
             self._queue.sort(key=lambda t: (t.priority, t.created_at))
