@@ -678,11 +678,27 @@ def _executor_tick() -> bool:
     with _worker_lock:
         if _worker_alive:
             return False
+        # Pass 28 #21: pick the oldest mission with work to do —
+        # a mission whose steps are all waiting on a child must
+        # not consume the pick-and-start cycle while a later
+        # mission starves. Only when NO mission has work does
+        # the pick fall back to the oldest runnable mission even
+        # if it is waiting: its worker pass is what settles a
+        # finished child (reconciliation lives in _run_mission),
+        # so a waiting mission with a settled child is never
+        # stranded by the skip.
         rows = _query(
             "SELECT id FROM missions WHERE plan_approved = 1 AND "
             "status IN ('planned', 'running', 'verifying', "
-            "'waiting_child') "
+            "'waiting_child') AND NOT EXISTS (SELECT 1 FROM "
+            "mission_steps s WHERE s.mission_id = missions.id "
+            "AND s.status = 'waiting_child') "
             "ORDER BY id LIMIT 1")
+        if not rows:
+            rows = _query(
+                "SELECT id FROM missions WHERE plan_approved = 1 "
+                "AND status IN ('planned', 'running', 'verifying', "
+                "'waiting_child') ORDER BY id LIMIT 1")
         if not rows:
             return False
         _worker_alive = True
