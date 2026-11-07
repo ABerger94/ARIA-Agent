@@ -707,52 +707,6 @@ def _run_mission_guarded(mid: int) -> None:
             _worker_alive = False
 
 
-def _freeze_trust_park_args(args):
-    """Freeze a trust_routine park (pass 26 B1#3): returns
-    (frozen_args, error). The routine must exist — its current
-    revision is what the approval binds to. A missing routine
-    refuses to park: an approval with no revision to freeze
-    would let a later-created same-name routine ride the token.
-    Existence is checked here via the routines data load."""
-    try:
-        from aria import routines as _routines_mod
-    except Exception as e:
-        return args, (f"trust_routine cannot be parked: routines "
-                      f"could not be loaded ({e})")
-    name = _routines_mod.sanitize_name((args or {}).get("name", ""))
-    if not name:
-        return args, ("trust_routine cannot be parked: no routine "
-                      "name was given, so there is no revision to "
-                      "freeze.")
-    data, err = _routines_mod._load_routine(name)
-    if err or not data:
-        return args, (f"Routine '{name}' does not exist — a "
-                      f"trust_routine step for it cannot be parked "
-                      f"without a revision to freeze.")
-    return _routines_mod.freeze_trust_args(args), None
-
-
-def _freeze_activation_park_args(args):
-    """Same shape for skill_activate (pass 26 B1#3): the skill
-    draft must exist for its revision to be frozen into the
-    parked approval."""
-    try:
-        from aria.tools import skill_gate as _gate_mod
-    except Exception as e:
-        return args, (f"skill_activate cannot be parked: the skill "
-                      f"gate could not be loaded ({e})")
-    name = _gate_mod.store.normalize_name((args or {}).get("name"))
-    if not name:
-        return args, ("skill_activate cannot be parked: no skill "
-                      "name was given, so there is no revision to "
-                      "freeze.")
-    if _gate_mod.store.find_skill(name) is None:
-        return args, (f"Skill '{name}' does not exist — a "
-                      f"skill_activate step for it cannot be parked "
-                      f"without a revision to freeze.")
-    return _gate_mod.freeze_activation_args(args), None
-
-
 def _run_mission(mid: int) -> None:
     from aria import approval as _approval
     from aria.tools import dispatch as _dispatch
@@ -851,17 +805,21 @@ def _run_mission(mid: int) -> None:
                 # Outside the envelope (or an irreversible action
                 # not named in it): park in the shared store in
                 # EVERY mode — the envelope fork Alek approved.
-                # Trust/activation parks freeze first (pass 26
-                # B1#3): a revisionless park would let a changed
-                # routine or re-proposed draft ride the token; a
-                # missing routine/skill refuses instead of parking.
+                # Pass 28 #4: park through the COMMON revision
+                # freezer (dispatch._freeze_park_args), not local
+                # per-tool helpers — the local path froze only
+                # trust_routine and skill_activate, so an export,
+                # user tool, mcp_connect, or discovered MCP tool
+                # parked UNFROZEN and its replacement rode the
+                # token. A freeze failure refuses to park at all:
+                # a revisionless approval must never be stashed.
                 park_args = args
                 park_error = None
-                if tool == "trust_routine":
-                    park_args, park_error = _freeze_trust_park_args(args)
-                elif tool == "skill_activate":
-                    park_args, park_error = \
-                        _freeze_activation_park_args(args)
+                try:
+                    park_args = _dispatch._freeze_park_args(tool, args)
+                except Exception as e:
+                    park_error = (f"{tool} cannot be parked: "
+                                  f"{e}")
                 if park_error:
                     _set_step(step["id"], status="failed",
                               output=park_error)

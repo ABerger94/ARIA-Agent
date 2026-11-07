@@ -51,6 +51,7 @@ data_dir = importlib.import_module("aria.data_dir")
 approval = importlib.import_module("aria.approval")
 dispatch = importlib.import_module("aria.tools.dispatch")
 missions = importlib.import_module("aria.missions")
+usertools = importlib.import_module("aria.tools.usertools")
 
 CALLS = []
 
@@ -60,13 +61,7 @@ def _fake_note(a):
     return f"noted {a.get('text', '')}"
 
 
-def _fake_user_tool(a):
-    CALLS.append(("my_user_tool", dict(a)))
-    return "user tool ran"
-
-
 dispatch.register_tool("fake_note", _fake_note)
-dispatch.register_tool("my_user_tool", _fake_user_tool)
 dispatch.set_spine_hook(lambda *a, **k: None)
 dispatch.set_log_hook(lambda *a, **k: None)
 
@@ -131,7 +126,24 @@ def _pump(mid, want, timeout=15):
 
 
 def test_user_tool_step_parks_and_marks_irreversible(env):
-    config.register_user_tool("my_user_tool")
+    # Pass 28 #4: the tool is loaded through the REAL user-tools
+    # scan, so it has a known source file — the production shape.
+    # (A config-registered tool with no file cannot be frozen, and
+    # the dispatch gate refuses to park one revisionless; the old
+    # fixture registered the tool directly in dispatch, which no
+    # longer parks.) The parked approval must carry the frozen
+    # source digest.
+    scan = env.tmp / "user_tools"
+    scan.mkdir(exist_ok=True)
+    (scan / "my_user_tool.py").write_text(
+        'TOOL_NAME = "my_user_tool"\n'
+        'TOOL_DESCRIPTION = "Probe user tool"\n'
+        'TOOL_PARAMETERS = {"type": "OBJECT", "properties": {}, '
+        '"required": []}\n'
+        'def run(args):\n'
+        '    return "user tool ran"\n')
+    added = usertools.load_user_tools_into_registry(str(scan))
+    assert added == ["my_user_tool"], added
     try:
         mid, out = _create("user tool proof",
                            [("my_user_tool", {"x": "1"})])
@@ -142,8 +154,17 @@ def test_user_tool_step_parks_and_marks_irreversible(env):
         assert [c for c in CALLS if c[0] == "my_user_tool"] == []
         steps = missions._step_rows(mid)
         assert steps[0]["status"] == "waiting", steps
+        parked = [e for e in approval._PENDING.values()
+                  if e["tool"] == "my_user_tool"]
+        assert len(parked) == 1, approval._PENDING
+        assert "_source_digest" in parked[0]["args"], parked[0]
     finally:
         config.unregister_user_tool("my_user_tool")
+        usertools._USER_TOOLS.pop("my_user_tool", None)
+        usertools._USER_TOOL_PATHS.pop("my_user_tool", None)
+        reg = getattr(dispatch, "_REGISTRY", None)
+        if isinstance(reg, dict):
+            reg.pop("my_user_tool", None)
     print("ok user_tool_step_parks_and_marks_irreversible")
 
 
