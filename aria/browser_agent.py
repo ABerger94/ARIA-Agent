@@ -222,6 +222,27 @@ def _url_blocked(url: str) -> str:
     return ""
 
 
+def _request_is_private(url: str) -> bool:
+    """True when an http(s) URL points at a private/loopback host
+    and LAN browsing is not explicitly allowed.
+
+    Pass 27 #10: the request guard's per-request decision.
+    Non-web schemes (data:/blob:/about:) and public hosts are
+    never private. A hostname DNS cannot answer fails closed
+    via _is_private_host; a DNS transport error fails open the
+    same way it does there (the browser cannot navigate without
+    DNS either)."""
+    try:
+        parsed = urllib.parse.urlparse(url or "")
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = parsed.hostname or ""
+    return bool(_is_private_host(host)) and not get_setting(
+        "browser_agent_allow_lan", False)
+
+
 def _is_irreversible(label: str) -> bool:
     return bool(label and _IRREVERSIBLE.search(label))
 
@@ -331,6 +352,54 @@ class BrowserSession:
         self.page = self._ctx.pages[0] if self._ctx.pages \
             else self._ctx.new_page()
         self.page.set_default_timeout(15000)
+        self._install_request_guard()
+
+    def _install_request_guard(self):
+        """Intercept every request the context makes and abort
+        private-host http(s) traffic before it leaves.
+
+        Pass 27 #10: the LAN check used to run only AFTER a
+        navigation landed (and never for subresources), so a
+        redirect or a page subrequest could reach a private host
+        first — going back cannot undo a request already made.
+        A context-level route sees navigations, redirects,
+        subresources and service-worker fetches before any of
+        them is sent. Non-web schemes and public hosts continue
+        untouched; with browser_agent_allow_lan on, private
+        hosts continue too. A context without route() (an old
+        or test-double context) leaves the post-request
+        _assert_current_url_public check as the backstop instead
+        of failing the start, and a route that errors mid-guard
+        never stalls the request — it continues.
+        """
+        ctx = self._ctx
+        if ctx is None:
+            return
+        route_fn = getattr(ctx, "route", None)
+        if not callable(route_fn):
+            return
+
+        def _guard(route):
+            try:
+                url = route.request.url
+            except Exception:
+                url = ""
+            try:
+                abort = _request_is_private(url)
+            except Exception:
+                abort = False
+            try:
+                if abort:
+                    route.abort()
+                else:
+                    route.continue_()
+            except Exception:
+                pass
+
+        try:
+            route_fn("**/*", _guard)
+        except Exception:
+            pass
 
     def close(self):
         try:
@@ -386,6 +455,10 @@ class BrowserSession:
         return self.read()
 
     def read(self):
+        # Pass 27 #10: read() used to report any page without
+        # enforcing the current-page restriction — a redirect
+        # that landed on a private host could be read unchecked.
+        self._assert_current_url_public()
         title = self.page.title()
         url = self.page.url
         text = ""
