@@ -150,6 +150,27 @@ def _runtime():
         return None
 
 
+class _TurnCancelSink:
+    """Holder for the active turn's cancellation event.
+
+    Pass 27 #12: run_session installs a fresh threading.Event
+    per turn (wired into that turn's execution context) and
+    clears it when the turn ends. The manager sets the current
+    one before cancelling the session task, so a tool worker
+    released after cancellation fails its check_cancelled()
+    instead of performing its effect. set() is thread-safe
+    (threading.Event) and a no-op with no active turn.
+    """
+
+    def __init__(self):
+        self.current = None
+
+    def set(self):
+        event = self.current
+        if event is not None:
+            event.set()
+
+
 async def _execute_tool_call(tool_runner, fc) -> Dict[str, Any]:
     """Run one Live function call through the shared dispatcher
     (in an executor — dispatch is synchronous and may wait on a
@@ -191,7 +212,8 @@ async def run_session(session, *, tool_runner,
                       on_assistant_text: Optional[Callable] = None,
                       on_audio: Optional[Callable] = None,
                       on_turn: Optional[Callable] = None,
-                      on_resumption: Optional[Callable] = None) -> None:
+                      on_resumption: Optional[Callable] = None,
+                      cancel_sink=None) -> None:
     """Drive one connected Live session across ALL its turns.
 
     The google-genai SDK's ``session.receive()`` yields exactly
@@ -246,55 +268,79 @@ async def run_session(session, *, tool_runner,
         # alike — so no turn's duplicate-call cache, project, or
         # cancellation can leak into the next one.
         _rt = _runtime()
-        _turn = (_rt.execution('live-turn')
+        # Pass 27 #12: one cancellation event per turn,
+        # wired into the execution context so a tool worker
+        # running in the executor can be cancelled with the
+        # session — cancelling the session task alone only
+        # cancelled the async waiter, and a worker released
+        # after that still passed runtime.check_cancelled()
+        # and performed its effect. The manager sets the
+        # current event before cancelling the task; this
+        # except sets it for any other cancellation too.
+        _turn_cancel = threading.Event()
+        _turn = (_rt.execution('live-turn', cancel=_turn_cancel)
                  if _rt is not None else contextlib.nullcontext())
-        with _turn:
-            async for response in session.receive():
-                got_any = True
-                if on_resumption is not None:
-                    try:
-                        _sru = getattr(response, "session_resumption_update", None)
-                        if _sru is not None:
-                            _new_handle = getattr(_sru, "new_handle", None)
-                            if getattr(_sru, "resumable", False) and _new_handle:
-                                try:
-                                    on_resumption(_new_handle)
-                                except Exception:
-                                    pass
-                    except Exception:
-                        pass
-                content = getattr(response, "server_content", None)
-                if content is not None:
-                    model_turn = getattr(content, "model_turn", None)
-                    if model_turn is not None:
-                        for part in getattr(model_turn, "parts", None) or []:
-                            inline = getattr(part, "inline_data", None)
-                            data = getattr(inline, "data", None) if inline else None
-                            if data and on_audio is not None:
-                                on_audio(data)
-                    it = getattr(content, "input_transcription", None)
-                    if it is not None and getattr(it, "text", None):
-                        in_buf.append(it.text)
-                    ot = getattr(content, "output_transcription", None)
-                    if ot is not None and getattr(ot, "text", None):
-                        out_buf.append(ot.text)
-                    if getattr(content, "turn_complete", False):
-                        if in_buf and on_user_text is not None:
-                            on_user_text("".join(in_buf).strip())
-                        if out_buf and on_assistant_text is not None:
-                            on_assistant_text("".join(out_buf).strip())
-                        in_buf, out_buf = [], []
-                        if on_turn is not None:
-                            on_turn()
-                tool_call = getattr(response, "tool_call", None)
-                if tool_call is not None:
-                    responses = []
-                    for fc in getattr(tool_call, "function_calls", None) or []:
-                        responses.append(
-                            await _execute_tool_call(tool_runner, fc))
-                    if responses:
-                        await session.send_tool_response(
-                            function_responses=responses)
+        if cancel_sink is not None:
+            cancel_sink.current = _turn_cancel
+        try:
+            with _turn:
+                async for response in session.receive():
+                    got_any = True
+                    if on_resumption is not None:
+                        try:
+                            _sru = getattr(response, "session_resumption_update", None)
+                            if _sru is not None:
+                                _new_handle = getattr(_sru, "new_handle", None)
+                                if getattr(_sru, "resumable", False) and _new_handle:
+                                    try:
+                                        on_resumption(_new_handle)
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+                    content = getattr(response, "server_content", None)
+                    if content is not None:
+                        model_turn = getattr(content, "model_turn", None)
+                        if model_turn is not None:
+                            for part in getattr(model_turn, "parts", None) or []:
+                                inline = getattr(part, "inline_data", None)
+                                data = getattr(inline, "data", None) if inline else None
+                                if data and on_audio is not None:
+                                    on_audio(data)
+                        it = getattr(content, "input_transcription", None)
+                        if it is not None and getattr(it, "text", None):
+                            in_buf.append(it.text)
+                        ot = getattr(content, "output_transcription", None)
+                        if ot is not None and getattr(ot, "text", None):
+                            out_buf.append(ot.text)
+                        if getattr(content, "turn_complete", False):
+                            if in_buf and on_user_text is not None:
+                                on_user_text("".join(in_buf).strip())
+                            if out_buf and on_assistant_text is not None:
+                                on_assistant_text("".join(out_buf).strip())
+                            in_buf, out_buf = [], []
+                            if on_turn is not None:
+                                on_turn()
+                    tool_call = getattr(response, "tool_call", None)
+                    if tool_call is not None:
+                        responses = []
+                        for fc in getattr(tool_call, "function_calls", None) or []:
+                            responses.append(
+                                await _execute_tool_call(tool_runner, fc))
+                        if responses:
+                            await session.send_tool_response(
+                                function_responses=responses)
+        except asyncio.CancelledError:
+            # The session task was cancelled while a tool call
+            # may still be running in the executor: set the
+            # turn's event so the worker's next
+            # runtime.check_cancelled() fails instead of
+            # performing its effect after cancellation.
+            _turn_cancel.set()
+            raise
+        finally:
+            if cancel_sink is not None:
+                cancel_sink.current = None
         if not got_any:
             # An empty pass = the stream is over. Never re-enter
             # receive() in a hot loop waiting for a turn that is
@@ -341,6 +387,24 @@ class LiveManager:
         # stop() can cancel the receive loop from another thread.
         self._session_task = None
         self._loop = None
+        # Pass 27 #12: the active turn's cancellation event —
+        # set before any session-task cancellation so an in-flight
+        # tool worker fails its check_cancelled() instead of
+        # acting after the session was cancelled.
+        self._turn_cancel = _TurnCancelSink()
+
+    def _cancel_turn_tools(self) -> None:
+        """Set the active turn's cancellation event, if any.
+
+        Every path that cancels the session task calls this
+        first: cancelling the async waiter alone left the
+        executor worker's event unset, so a worker released
+        after cancellation still passed check_cancelled().
+        """
+        try:
+            self._turn_cancel.set()
+        except Exception:
+            pass
 
     # -- session resumption ---------------------------------------
     @property
@@ -468,6 +532,7 @@ class LiveManager:
                 if _app_locked():
                     self._log("App locked — shutting Gemini Live down")
                     self._stop.set()
+                    self._cancel_turn_tools()
                     session_task.cancel()
                     return
                 await asyncio.sleep(0.5)
@@ -526,7 +591,8 @@ class LiveManager:
                             on_user_text=self._on_user_text,
                             on_assistant_text=self._on_assistant_text,
                             on_audio=sink,
-                            on_resumption=self._store_resumption))
+                            on_resumption=self._store_resumption,
+                            cancel_sink=self._turn_cancel))
                         lock_task = asyncio.create_task(
                             self._lock_watch(session_task))
                         # Pass 25 (P2#10): supervise the mic task.
@@ -598,6 +664,7 @@ class LiveManager:
                                 else:
                                     self._log(f"Gemini Live mic failed "
                                               f"({err}) — ending session")
+                                self._cancel_turn_tools()
                                 session_task.cancel()
                                 try:
                                     await session_task
@@ -610,6 +677,7 @@ class LiveManager:
                             # cancellation propagates (after stopping
                             # the receive loop too — a cancelled wait
                             # does not cancel its children).
+                            self._cancel_turn_tools()
                             if not session_task.done():
                                 session_task.cancel()
                             if not self._stop.is_set():
@@ -701,6 +769,7 @@ class LiveManager:
         re-entering receive()), so the session never ended — now
         the live session task is cancelled on its own loop too."""
         self._stop.set()
+        self._cancel_turn_tools()
         loop = getattr(self, "_loop", None)
         task = getattr(self, "_session_task", None)
         if loop is not None and task is not None and not task.done():
