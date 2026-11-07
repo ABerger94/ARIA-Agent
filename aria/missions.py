@@ -555,6 +555,7 @@ def _settle_delegated_child(mid, step, handle, project) -> None:
     task's terminal status, or leave it waiting while the task
     runs. A missing task record marks the step uncertain."""
     from aria.agent import taskqueue
+    from aria.agent import taskstore
     from aria import outcome as _outcome_mod
     tid = handle.get("task_id")
     if not tid:
@@ -562,6 +563,28 @@ def _settle_delegated_child(mid, step, handle, project) -> None:
                   output="Delegated task handle has no task id — its "
                          "outcome cannot be verified.")
         return
+    # Pass 28 #13: a task that blocked and was resumed runs on
+    # under a NEW id — the step's handle still names the old
+    # (blocked) id, and settling from it would wait forever while
+    # the resumed task completes elsewhere. Follow the journal's
+    # resumed_by chain to the live id and re-point the stored
+    # handle, so the step settles from the task that is actually
+    # running. A blocked task with no resume keeps waiting, as
+    # before; the visited guard follows multi-hop chains without
+    # looping on a corrupt record.
+    seen = set()
+    while tid and tid not in seen:
+        seen.add(tid)
+        rec = taskstore.get(tid)
+        if rec is None or rec.get("status") != "resumed":
+            break
+        nxt = rec.get("resumed_by") or ""
+        if not nxt:
+            break
+        tid = nxt
+    if tid != handle.get("task_id"):
+        handle = dict(handle, task_id=tid)
+        _set_step(step["id"], child_handle=json.dumps(handle))
     use = workspaces.use(project) if project else contextlib.nullcontext()
     with use:
         st = taskqueue.get_queue().get_status(tid)
