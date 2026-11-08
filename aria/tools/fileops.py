@@ -8,6 +8,7 @@ import fnmatch
 import hashlib
 import os
 import shutil
+import tempfile
 import time
 from typing import Dict, List, Optional
 
@@ -154,6 +155,72 @@ def _unique_dest(dest_dir: str, name: str, reserved=None) -> str:
     return cand
 
 
+def _move_atomic(src: str, dest: str) -> None:
+    """Move src to dest without ever overwriting an existing dest
+    (pass 29 #51). The shipped plan-time reservation + move-time
+    re-check left a microsecond window between the `exists` check
+    and shutil.move in which a destination created by another
+    writer was still overwritten (POSIX rename / shutil.move
+    copy overwrites). Same filesystem: os.link claims the
+    destination atomically (EEXIST when something is already
+    there) and the source link is then removed. Cross-device
+    (link raises EXDEV, or a filesystem without hard links):
+    claim the name with an exclusive-create placeholder, copy
+    the source to a temp file beside dest, and os.replace the
+    temp over our own placeholder, then remove the source.
+    Raises FileExistsError when the destination is already
+    taken — the caller skips the source instead of destroying
+    what is there. A failed copy leaves no empty placeholder
+    behind."""
+    try:
+        os.link(src, dest)
+    except FileExistsError:
+        raise
+    except OSError:
+        pass  # cross-device or no hard links: copy fallback below
+    else:
+        os.unlink(src)
+        return
+    # Cross-device fallback: claim the name first, so no other
+    # writer can take it while the copy runs.
+    try:
+        fd = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except FileExistsError:
+        raise
+    tmp = None
+    replaced = False
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=".organize-",
+                                   dir=os.path.dirname(dest))
+        os.close(fd)
+        with open(src, "rb") as fsrc, open(tmp, "wb") as fdst:
+            shutil.copyfileobj(fsrc, fdst)
+            fdst.flush()
+            os.fsync(fdst.fileno())
+        try:
+            shutil.copystat(src, tmp)
+        except OSError:
+            pass
+        os.replace(tmp, dest)
+        tmp = None
+        replaced = True
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        if not replaced:
+            # The placeholder is still ours and empty: remove it
+            # so a failed move leaves no empty dest behind.
+            try:
+                os.unlink(dest)
+            except OSError:
+                pass
+    os.unlink(src)
+
+
 def tool_file_organize(directory: str, dry_run: bool = True) -> str:
     """Sort files in a directory into subfolders (Images/Documents/Videos/Audio/Archives/Code/Other).
 
@@ -255,17 +322,18 @@ def tool_file_organize(directory: str, dry_run: bool = True) -> str:
     for src, dest in plan:
         try:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
-            # Re-check at move time (B1#7): a destination that
-            # appeared since planning (another move, a race, a
-            # stale plan) must never be overwritten — skip the
-            # source instead of destroying what is there.
-            if os.path.exists(dest) and os.path.realpath(dest) != os.path.realpath(src):
-                errors.append(
-                    f"{os.path.basename(src)}: skipped, destination "
-                    f"already exists: {dest}")
-                continue
-            shutil.move(src, dest)
+            # Atomic claim (pass 29 #51): _move_atomic refuses
+            # (FileExistsError) when the destination is already
+            # taken instead of checking-then-moving — a destination
+            # created after planning, even in the microsecond
+            # before the move, is never overwritten; the source
+            # is skipped instead.
+            _move_atomic(src, dest)
             moved += 1
+        except FileExistsError:
+            errors.append(
+                f"{os.path.basename(src)}: skipped, destination "
+                f"already exists: {dest}")
         except Exception as e:
             errors.append(f"{os.path.basename(src)}: {e}")
     result = [f"Organized {moved}/{len(plan)} files in {d}."]
