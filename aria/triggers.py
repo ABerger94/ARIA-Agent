@@ -306,6 +306,20 @@ class TriggerEngine:
 
             return (f"new file in {path}: "
                     f"{', '.join(sorted(new_names)[:3])}", _commit)
+        # Pass 29 #37: no new names, but files may have been
+        # deleted. A deletion-only scan must still record the
+        # removal — otherwise the deleted name stays in the
+        # snapshot and a later file recreated under the same name
+        # fails `n not in previous` and never fires. Record
+        # removals in place (like the first-sight baseline above):
+        # only names absent from `current` leave the snapshot, so
+        # an addition that arrived inside the cooldown stays
+        # unconsumed — it is in `current` but was never in
+        # `previous`, so this step neither adds nor drops it.
+        removed = [n for n in previous if n not in current]
+        if removed:
+            snaps[key] = {n: m for n, m in previous.items()
+                          if n in current}
         return None, None
 
     def _check_presence(self, trigger, state):
