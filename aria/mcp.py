@@ -68,24 +68,94 @@ def sanitize_tool_name(raw: str, limit: int = 64) -> str:
     return _NAME_RE.sub("_", raw or "unnamed")[:limit]
 
 
-def convert_schema(node: Any) -> Dict[str, Any]:
-    """Convert an MCP JSON Schema node to a function-declaration schema."""
+_REF_PREFIXES = ("#/$defs/", "#/definitions/")
+# Pass 29 #55: bound on $ref hops so a cyclic reference
+# ("#/definitions/A" -> "#/definitions/A", or "$ref": "#")
+# fails loudly instead of recursing forever.
+_MAX_REF_DEPTH = 10
+
+
+def _resolve_local_ref(ref: str, root: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Resolve a bounded local JSON Schema $ref ("#/$defs/<name>"
+    or "#/definitions/<name>") against the root schema. Anything
+    else — external refs, nested paths, missing definitions —
+    returns None so the caller can reject it explicitly."""
+    for prefix in _REF_PREFIXES:
+        if ref.startswith(prefix):
+            name = ref[len(prefix):]
+            if not name or "/" in name or name in (".", ".."):
+                return None
+            defs = root.get("$defs")
+            if not isinstance(defs, dict):
+                defs = root.get("definitions")
+            if not isinstance(defs, dict):
+                return None
+            target = defs.get(name)
+            return target if isinstance(target, dict) else None
+    if ref == "#":
+        return root
+    return None
+
+
+def convert_schema(node: Any, _root: Optional[Dict[str, Any]] = None,
+                   _depth: int = 0) -> Dict[str, Any]:
+    """Convert an MCP JSON Schema node to a function-declaration schema.
+
+    Pass 29 #55: a `type` list (e.g. ["string", "null"]) normalizes
+    to its single non-null member; a bounded local $ref resolves
+    against the root schema; and a shape the converter cannot
+    represent (unresolvable $ref, a type list with zero or several
+    non-null members, a lone "null", an unknown type) raises
+    ValueError instead of silently emitting an empty OBJECT.
+    A non-dict node (no schema at all) still yields OBJECT, as
+    before — that is a missing schema, not an unsupported one.
+    """
     if not isinstance(node, dict):
         return {"type": "OBJECT"}
-    t = str(node.get("type", "object")).lower()
-    out: Dict[str, Any] = {"type": _SCHEMA_TYPES.get(t, "OBJECT")}
+    if _root is None:
+        _root = node
+    ref = node.get("$ref")
+    if isinstance(ref, str) and ref:
+        if _depth >= _MAX_REF_DEPTH:
+            raise ValueError(
+                f"unsupported MCP schema $ref {ref!r}: ref chain too deep")
+        target = _resolve_local_ref(ref, _root)
+        if target is None:
+            raise ValueError(
+                f"unsupported MCP schema $ref {ref!r}: cannot resolve locally")
+        resolved = convert_schema(target, _root=_root, _depth=_depth + 1)
+        desc = node.get("description")
+        if desc and "description" not in resolved:
+            resolved["description"] = str(desc)[:500]
+        return resolved
+    raw_type = node.get("type", "object")
+    if isinstance(raw_type, list):
+        non_null = [str(x).lower() for x in raw_type
+                    if str(x).lower() != "null"]
+        if len(non_null) != 1:
+            raise ValueError(
+                f"unsupported MCP schema type {raw_type!r}: expected "
+                "exactly one non-null member")
+        t = non_null[0]
+    else:
+        t = str(raw_type).lower()
+    if t not in _SCHEMA_TYPES:
+        raise ValueError(f"unsupported MCP schema type {t!r}")
+    out: Dict[str, Any] = {"type": _SCHEMA_TYPES[t]}
     desc = node.get("description")
     if desc:
         out["description"] = str(desc)[:500]
     if t == "object":
         props = node.get("properties") or {}
         if isinstance(props, dict):
-            out["properties"] = {k: convert_schema(v) for k, v in props.items()}
+            out["properties"] = {
+                k: convert_schema(v, _root=_root, _depth=_depth)
+                for k, v in props.items()}
         req = node.get("required") or []
         if req:
             out["required"] = [str(r) for r in req]
     elif t == "array" and "items" in node:
-        out["items"] = convert_schema(node["items"])
+        out["items"] = convert_schema(node["items"], _root=_root, _depth=_depth)
     if "enum" in node and isinstance(node["enum"], list):
         out["enum"] = node["enum"][:50]
     return out
@@ -952,10 +1022,25 @@ def _register_server_tools(server: str, tools: List[Any]) -> List[str]:
             seen.add(aria_name)
             schema = getattr(t, "inputSchema", None) or {}
             desc = getattr(t, "description", "") or remote_name
+            try:
+                parameters = convert_schema(schema)
+            except ValueError as e:
+                # Pass 29 #55: an unsupported schema shape is
+                # rejected here, never registered as a lying
+                # empty OBJECT — same per-tool refusal as an
+                # invalid remote name above; the server keeps its
+                # other tools.
+                seen.discard(aria_name)
+                config.log_silent(
+                    "_register_server_tools",
+                    ValueError(
+                        f"refused MCP tool {remote_name!r} from server "
+                        f"{server!r}: unsupported input schema: {e}"))
+                continue
             decl = {
                 "name": aria_name,
                 "description": f"[MCP:{server}] {desc}".strip()[:600],
-                "parameters": convert_schema(schema),
+                "parameters": parameters,
             }
             _schemas.register_dynamic_tool_declaration(aria_name, decl, toolkit="mcp")
             mcp_tool_name = remote_name
