@@ -3,8 +3,10 @@
 Deeper than `web_search`: the `research` tool searches, READS the
 top sources in full, synthesizes a cited brief through the provider
 chain, then runs an adversarial cross-check pass over its own brief
-before filing it. Briefs live in WORKSPACE_DIR/research/ as Markdown
-with an index (research_index.json); the dashboard's Briefing tab
+before filing it. Briefs live in the current project's research/
+as Markdown with an index (research_index.json) — the default
+project keeps the legacy WORKSPACE_DIR/research/ location, so
+existing briefs stay where they were; the dashboard's Briefing tab
 appends a Research section listing the newest ones, and the tool can
 list and re-read them.
 
@@ -19,12 +21,18 @@ synth, check.
 import json
 import os
 import re
+import threading
 from datetime import datetime
 
 from aria.config import WORKSPACE_DIR, add_log
 
 RESEARCH_DIR = os.path.join(WORKSPACE_DIR, "research")
 _INDEX_NAME = "research_index.json"
+
+# Project-scoped index lock (pass 29 #43): the brief id is allocated
+# from the project's own index, so the load → file → append → save
+# sequence must be atomic per project.
+_INDEX_LOCK = threading.Lock()
 
 _MAX_SOURCES = 4
 _SOURCE_CHARS = 6000
@@ -54,8 +62,16 @@ _CHECK_SYSTEM = (
 # ---------------- storage ----------------
 
 def _research_dir() -> str:
-    os.makedirs(RESEARCH_DIR, exist_ok=True)
-    return RESEARCH_DIR
+    # Pass 29 #43: briefs and the index are per-project. The
+    # default project's path is the legacy global dir (RESEARCH_DIR)
+    # passed as the legacy fallback, so existing global briefs stay
+    # with the default project — history is neither moved nor
+    # duplicated. A named project gets its own research/ under its
+    # project root.
+    from aria import workspaces
+    directory = workspaces.path("research", RESEARCH_DIR)
+    os.makedirs(directory, exist_ok=True)
+    return directory
 
 
 def _index_path() -> str:
@@ -176,28 +192,29 @@ def run_research(question: str, *, search=None, fetch=None,
         summary = next((ln.strip() for ln in brief.splitlines()
                         if ln.strip()), "")[:300]
 
-    entries = _load_index()
-    rid = (entries[-1]["id"] + 1) if entries else 1
-    fname = f"{_slug(question)}-{now.strftime('%Y%m%d-%H%M%S')}.md"
-    doc = (
-        f"# Research brief: {question}\n"
-        f"Filed {now.strftime('%Y-%m-%d %H:%M')} · {len(sources)} sources "
-        f"· brief #{rid}\n\n"
-        f"{brief.strip()}\n\n"
-        f"## Cross-check\n{verdict.strip()}\n\n"
-        f"## Sources\n"
-        + "\n".join(f"{i + 1}. {s['title']} — {s['url']}"
-                    for i, s in enumerate(sources))
-        + "\n"
-    )
-    with open(os.path.join(_research_dir(), fname), "w",
-              encoding="utf-8") as f:
-        f.write(doc)
-    entries.append({"id": rid, "question": question,
-                    "filed_at": now.isoformat(timespec="seconds"),
-                    "file": fname, "summary": summary,
-                    "sources": [s["url"] for s in sources]})
-    _save_index(entries)
+    with _INDEX_LOCK:
+        entries = _load_index()
+        rid = (entries[-1]["id"] + 1) if entries else 1
+        fname = f"{_slug(question)}-{now.strftime('%Y%m%d-%H%M%S')}.md"
+        doc = (
+            f"# Research brief: {question}\n"
+            f"Filed {now.strftime('%Y-%m-%d %H:%M')} · {len(sources)} sources "
+            f"· brief #{rid}\n\n"
+            f"{brief.strip()}\n\n"
+            f"## Cross-check\n{verdict.strip()}\n\n"
+            f"## Sources\n"
+            + "\n".join(f"{i + 1}. {s['title']} — {s['url']}"
+                        for i, s in enumerate(sources))
+            + "\n"
+        )
+        with open(os.path.join(_research_dir(), fname), "w",
+                  encoding="utf-8") as f:
+            f.write(doc)
+        entries.append({"id": rid, "question": question,
+                        "filed_at": now.isoformat(timespec="seconds"),
+                        "file": fname, "summary": summary,
+                        "sources": [s["url"] for s in sources]})
+        _save_index(entries)
     add_log(f"research: brief #{rid} filed ({fname})")
     return {"ok": True, "id": rid, "question": question,
             "summary": summary, "file": fname,
