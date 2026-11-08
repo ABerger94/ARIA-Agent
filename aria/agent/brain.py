@@ -828,7 +828,7 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                     elif stream_sents:
                         for s in stream_sents:
                             if not speech._SPEECH_STOP.is_set():
-                                speech._SPEECH_QUEUE.put(s)
+                                speech.enqueue_speech(s)
                     else:
                         say(final_text)
                 elif silent and reply_sink is not None:

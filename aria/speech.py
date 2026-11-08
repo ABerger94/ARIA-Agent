@@ -678,6 +678,12 @@ class SpeechManager:
             if self.speech_stop.is_set():
                 self.speech_queue.task_done()
                 continue
+            if not speech_allowed():
+                # Policy changed after enqueue (muted / locked
+                # mid-reply): drop instead of synthesizing (pass 29 #35).
+                self.log("Speech held: voice muted or app locked")
+                self.speech_queue.task_done()
+                continue
             if not self.edge_ready:
                 self.audio_play_queue.put((text, None, False))
                 self.speech_queue.task_done()
@@ -703,6 +709,12 @@ class SpeechManager:
             item = self.audio_play_queue.get()
             text, audio_buf, is_edge = item
             if self.speech_stop.is_set():
+                self.audio_play_queue.task_done()
+                continue
+            if not speech_allowed():
+                # Policy changed after enqueue: never play a
+                # sentence the current policy refuses (pass 29 #35).
+                self.log("Speech held: voice muted or app locked")
                 self.audio_play_queue.task_done()
                 continue
             try:
@@ -794,7 +806,12 @@ class SpeechManager:
         threading.Thread(target=_supervise, args=(self._play_worker, "aria-speech-play"), daemon=True).start()
 
     def speak(self, text: str, whisper_mode: Optional[bool] = None):
-        """Queue text to be spoken."""
+        """Queue text to be spoken. Returns False (nothing queued)
+        when voice is muted or the app is locked (pass 29 #35) —
+        the admission gate lives here as well as at the module
+        level, so no caller can queue past it."""
+        if not speech_allowed():
+            return False
         if whisper_mode is not None:
             self.whisper_mode = whisper_mode
         if self.whisper_mode:
@@ -804,11 +821,18 @@ class SpeechManager:
             self.on_conversation("A.R.I.A.", text)
         self.speech_stop.clear()
         self.speech_queue.put(text)
+        return True
 
     def queue_stream_chunk(self, chunk: str):
-        """Directly queue a streaming text sentence."""
+        """Directly queue a streaming text sentence. Gated like
+        speak() (pass 29 #35); returns True when queued, False
+        when refused or interrupted."""
+        if not speech_allowed():
+            return False
         if not self.speech_stop.is_set():
             self.speech_queue.put(chunk)
+            return True
+        return False
 
     def interrupt(self) -> int:
         """Interrupt and flush all queued speech immediately."""
@@ -1084,45 +1108,64 @@ def wait_for_voice_probe(timeout: Optional[float] = None) -> bool:
     return _DEFAULT_SPEECH_MANAGER.edge_probe_done.wait(timeout)
 
 
+def voice_enabled() -> bool:
+    """Live master voice on/off (pass 29 #35). The persisted
+    setting AND the module flag must both be on: the OPS toggle
+    flips the flag, Settings saves the setting. Fail-open on a
+    config error, like the old speak() gate."""
+    try:
+        if not _config_silent.get_setting("voice_enabled", True):
+            return False
+    except Exception:
+        pass
+    return bool(VOICE_ENABLED)
+
+
+def _app_locked() -> bool:
+    try:
+        from aria import applock as _applock_sp
+        return bool(_applock_sp.is_locked())
+    except Exception:
+        return False
+
+
+def speech_allowed() -> bool:
+    """One admission check for every speech enqueue (pass 29 #35):
+    voice on AND app unlocked. The phone bridge never calls this —
+    it synthesizes bytes directly via tts_bytes_for_bridge, so
+    phone audio is unaffected by the gate."""
+    return voice_enabled() and not _app_locked()
+
+
 def speak(text: str, whisper_mode: bool = False):
     """Queue text to be spoken. Returns True when the utterance was
     accepted for delivery, False when voice is muted or the app is
     locked (pass 29 #34) — a refusal is NOT a delivery, so callers
     (timed / on-return reminders) must not delete the reminder."""
-    if not VOICE_ENABLED:
+    if not speech_allowed():
         return False
-    # App lock (Alek, 2026-10-27): the laptop stays silent while
-    # locked — no proactive speech, no greetings. (The phone gets
-    # its replies as text from the bridge, never through here.)
-    try:
-        from aria import applock as _applock_sp
-        if _applock_sp.is_locked():
-            return False
-    except Exception:
-        pass
-    _DEFAULT_SPEECH_MANAGER.speak(text, whisper_mode)
-    return True
+    return bool(_DEFAULT_SPEECH_MANAGER.speak(text, whisper_mode))
 
 
 def enqueue_speech(text: str) -> bool:
-    """Direct-queue path for busy callers (pass 29 #34): the same
-    delivery-acceptance contract as speak() — True when queued,
-    False when refused. This is the single enqueue seam every
-    direct-queue site funnels through; admission gating
-    (mute / app lock) lands in pass 29 #35."""
+    """Direct-queue path for busy callers (pass 29 #34/#35): the
+    same admission gate as speak() — True when queued, False when
+    voice is muted or the app is locked. This is the single enqueue
+    seam every direct-queue site funnels through."""
+    if not speech_allowed():
+        return False
     _SPEECH_QUEUE.put(text)
     return True
 
 
 def queue_stream_chunk(chunk: str):
-    """Queue one completed sentence from a streaming LLM reply (A5)."""
-    try:
-        from aria import applock as _applock_sp
-        if _applock_sp.is_locked():
-            return None
-    except Exception:
-        pass
-    return _DEFAULT_SPEECH_MANAGER.queue_stream_chunk(chunk)
+    """Queue one completed sentence from a streaming LLM reply (A5).
+    Pass 29 #35: the old body checked the app lock but NOT
+    VOICE_ENABLED — a muted session still streamed sentences aloud.
+    Returns False when refused, True when queued."""
+    if not speech_allowed():
+        return False
+    return bool(_DEFAULT_SPEECH_MANAGER.queue_stream_chunk(chunk))
 
 def interrupt_speech() -> int:
     return _DEFAULT_SPEECH_MANAGER.interrupt()

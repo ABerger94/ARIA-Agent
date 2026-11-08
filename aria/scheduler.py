@@ -539,7 +539,7 @@ def _fire_brief(tid: int, interval_s: int, is_busy_fn: Optional[Callable[[], boo
     elif not busy:
         speech.speak(text)
     else:
-        speech._SPEECH_QUEUE.put(text)
+        speech.enqueue_speech(text)
 
 
 # OPS Controls tab: pause/resume the background scheduler without restarting.
