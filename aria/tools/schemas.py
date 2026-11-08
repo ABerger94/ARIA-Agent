@@ -708,14 +708,13 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
                           'required': [],
                           'type': 'OBJECT'}},
     {   'description': 'Plans and writes a complete single-file program for a description (default '
-                       'language python), saving it to output_path. With run=true a Python program is '
-                       'also executed once and its output reported — output shown is not proof the '
-                       'program is correct.',
+                       'language python), saving it to output_path. Save-only: it never executes '
+                       'generated code. To run a saved program, call run_python_code with the saved '
+                       "file's contents — output shown is not proof the program is correct.",
         'name': 'dev_agent',
         'parameters': {   'properties': {   'description': {'type': 'STRING'},
                                             'language': {'type': 'STRING'},
-                                            'output_path': {'type': 'STRING'},
-                                            'run': {'type': 'BOOLEAN'}},
+                                            'output_path': {'type': 'STRING'}},
                           'required': ['description'],
                           'type': 'OBJECT'}},
     {   'description': 'Relaunches your own program — same interpreter, same script — when the user says '

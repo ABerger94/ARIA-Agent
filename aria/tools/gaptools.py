@@ -1213,6 +1213,10 @@ def tool_dev_agent(args) -> str:
             f"{output_path}. Saved is not the same as working — it "
             f"has not been verified beyond this.")
     if args.get("run"):
+        # Pass 29 #56: the schema no longer advertises `run`
+        # (dev_agent is save-only), but the handler still accepts
+        # — and refuses — run=true, so stored routines that carry
+        # it get the clear saved-not-executed refusal, not a crash.
         # Security (2026-10-27): dev_agent NEVER executes generated
         # code itself. Its old run path called _run_python directly,
         # so a dev_agent(run=true) call executed arbitrary code while
