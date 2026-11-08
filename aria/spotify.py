@@ -102,8 +102,20 @@ def _find_playlist(name: str) -> Tuple[Optional[str], Optional[str]]:
              if w not in ("my", "playlist", "playlists")]
     if not words:
         return None, None
+    # Pass 29 #44: playlists are saved through memory.db_path()
+    # (project-aware), so the lookup must read the same DB. The old
+    # global DB_PATH read here could never find a playlist saved in
+    # a named project, and leaked default-project playlists into
+    # named projects. (The ImportError fallback keeps this working
+    # under the stubbed-memory test harness, which has no db_path.)
+    try:
+        from aria.memory import db_path as _project_db_path
+    except (ImportError, AttributeError):
+        db_file = DB_PATH
+    else:
+        db_file = _project_db_path()
     with DB_LOCK:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_file)
         cur = conn.cursor()
         cur.execute("SELECT key, value FROM memory WHERE category='playlist'")
         rows = cur.fetchall()
