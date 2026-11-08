@@ -272,18 +272,21 @@ class OrPool:
                 time.sleep(RETRY_DELAY)
         return None
 
-    def _call_with_fallback(self, pool: List[str], messages: List[dict],
-                            model: Optional[str] = None,
-                            max_tokens: int = DEFAULT_MAX_TOKENS,
-                            temperature: float = DEFAULT_TEMPERATURE,
-                            response_format: Optional[dict] = None) -> str:
+    def _walk(self, pool: List[str], messages: List[dict],
+              model: Optional[str] = None,
+              max_tokens: int = DEFAULT_MAX_TOKENS,
+              temperature: float = DEFAULT_TEMPERATURE,
+              response_format: Optional[dict] = None):
+        """The fallback walk, reporting WHICH model answered.
+        Returns (text, model). _call_with_fallback is the
+        text-only face existing callers use."""
         self._require_available()
         if model and not self._is_rate_limited(model) \
                 and not self._is_parked(model):
             result = self._call(model, messages, max_tokens, temperature,
                                 response_format)
             if result:
-                return result
+                return result, model
             logger.info("[orpool] Requested model failed, falling back "
                         "to pool: %s", model)
         for m in pool:
@@ -294,11 +297,20 @@ class OrPool:
                                 response_format)
             if result:
                 logger.info("[orpool] Success: %s", m)
-                return result
+                return result, m
         add_log("orpool: all models failed or are rate-limited")
         raise OrPoolError(
             "[orpool] All models failed or are rate-limited. "
             "Check the API key and network connection.")
+
+    def _call_with_fallback(self, pool: List[str], messages: List[dict],
+                            model: Optional[str] = None,
+                            max_tokens: int = DEFAULT_MAX_TOKENS,
+                            temperature: float = DEFAULT_TEMPERATURE,
+                            response_format: Optional[dict] = None) -> str:
+        text, _model = self._walk(pool, messages, model, max_tokens,
+                                  temperature, response_format)
+        return text
 
     # -- public API (his surface, ARIA's defaults) ----------------------
     def chat(self, prompt: str, system: str = (
@@ -313,6 +325,21 @@ class OrPool:
         ]
         return self._call_with_fallback(self._text_models, messages, model,
                                         max_tokens, temperature)
+
+    def chat_traced(self, prompt: str, system: str,
+                    model: Optional[str] = None,
+                    max_tokens: int = DEFAULT_MAX_TOKENS,
+                    temperature: float = DEFAULT_TEMPERATURE):
+        """chat() that also reports the model that actually
+        answered — the grader (aria.agent.grader) records it so a
+        verdict never claims a grader model the fallback walk did
+        not use. Returns (text, model_used)."""
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ]
+        return self._walk(self._text_models, messages, model,
+                          max_tokens, temperature)
 
     def chat_json(self, prompt: str,
                   system: str = ("Return ONLY valid JSON. "

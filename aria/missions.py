@@ -246,7 +246,8 @@ def create_mission(goal: str, steps: List[Dict[str, Any]], *,
                    pre_approved_irreversible:
                    Optional[List[str]] = None,
                    spend_cap: float = 0,
-                   deadline: Optional[str] = None) -> str:
+                   deadline: Optional[str] = None,
+                   task_type: Optional[str] = None) -> str:
     """Insert a mission + steps and park its plan for Alek's
     one-time OK. Returns the human-readable plan text (with the
     approval store's AWAITING line appended)."""
@@ -295,6 +296,19 @@ def create_mission(goal: str, steps: List[Dict[str, Any]], *,
             {str(t).strip() for t in
              (pre_approved_irreversible or []) if str(t).strip()}),
     }
+    # Outcomes grader (design 2026-11-08): an explicit task
+    # type, validated against the rubric registry, rides the
+    # envelope so _verify can select its rubric by it. Absent
+    # or unknown → the key stays out and the grader infers
+    # from the step tools instead.
+    if task_type:
+        try:
+            from aria.agent import rubrics as _rubrics
+            if str(task_type).strip() in \
+                    _rubrics.known_task_types():
+                envelope["task_type"] = str(task_type).strip()
+        except Exception:
+            pass
     mid = _exec(
         "INSERT INTO missions (goal, created, deadline, status, "
         "envelope, plan_approved) VALUES (?, ?, ?, 'planned', "
@@ -1001,6 +1015,64 @@ def _handle_step_result(mid: int, step: Dict[str, Any],
 # Verification + delivery summary
 # ------------------------------------------------------------------
 
+# The last outcome grade per mission (Outcomes/Grader upgrade,
+# design 2026-11-08), consumed by _build_summary at _finish
+# time. In-memory only: a grade is a rendering of the verify
+# that just ran in this process, not durable state.
+_LAST_GRADE: Dict[int, dict] = {}
+
+
+def _outcome_grade(mid: int, m: Dict[str, Any],
+                   steps: List[Dict[str, Any]]) -> Optional[dict]:
+    """The shared outcome grader's verdict for this mission,
+    or None when the grader is off or could not grade — the
+    caller then keeps the legacy verify outcome exactly.
+    Probes: the action-journal receipt of every non-replay-safe
+    step (its mission operation id is deterministic) plus the
+    grader's file probes."""
+    try:
+        from aria.agent import grader as _grader
+        if not _grader.outcomes_enabled():
+            return None
+        journal_ids = {}
+        for s in steps:
+            if not retry_safe(s["tool"]):
+                journal_ids[s["idx"] + 1] = \
+                    f"mission:{mid}:step:{s['id']}"
+        result = _grader.grade(
+            m["goal"], steps,
+            task_type=(m.get("envelope") or {}).get("task_type"),
+            probes=_grader.build_probes(
+                _grader.normalize_steps(steps),
+                journal_ids=journal_ids))
+        if result["verdict"] == "cannot_grade":
+            return None
+        return result
+    except Exception as e:
+        add_log(f"[mission] #{mid} outcome grader errored ({e}); "
+                f"legacy verify outcome kept")
+        return None
+
+
+def _grade_targets(result: dict,
+                   steps: List[Dict[str, Any]]) -> List[dict]:
+    """Repair targets from the grade's failed criteria /
+    present failure cases, mapped by rubric scope. Unmapped
+    ids contribute nothing — the caller keeps its legacy
+    targeting for those."""
+    try:
+        from aria.agent import rubrics as _rubrics
+        rubric = _rubrics.get_rubric(result.get("rubric_id"))
+        targets: List[dict] = []
+        for fid in result.get("failed_criteria") or []:
+            for s in _rubrics.steps_in_scope(rubric, fid, steps):
+                if s not in targets:
+                    targets.append(s)
+        return targets
+    except Exception:
+        return []
+
+
 def _verify(mid: int) -> bool:
     """Verify pass. Returns True when the mission reached a
     terminal state; False when a repair was queued and the
@@ -1039,6 +1111,23 @@ def _verify(mid: int) -> bool:
             # to done_unverified instead of a blind re-run.
             bad = bad + failed
             verdict = False
+    # Outcomes grader (design 2026-11-08): a rubric grade
+    # supplements — never replaces — the verdict above. A
+    # grader FAIL forces the repair path with criteria-mapped
+    # targets unioned into `bad`; a grader PASS changes
+    # nothing (the deterministic evidence check and any
+    # injected verifier still gate, so the pass-18 invariant
+    # stands: a confident grade cannot certify a step whose
+    # own output is a failure marker). cannot_grade / setting
+    # off → the legacy outcome is untouched.
+    grade_result = _outcome_grade(mid, m, steps)
+    if grade_result is not None:
+        _LAST_GRADE[mid] = grade_result
+        if grade_result["verdict"] == "fail":
+            verdict = False
+            for s in _grade_targets(grade_result, steps):
+                if s not in bad:
+                    bad.append(s)
     if verdict:
         _finish(mid, "done")
         return True
@@ -1080,6 +1169,28 @@ def _build_summary(m: Dict[str, Any],
         lines.append(f"  {s['idx'] + 1}. {s['tool']} "
                      f"[{s['status']}]"
                      f"{': ' + out[:200] if out else ''}")
+    grade = _LAST_GRADE.get(m["id"])
+    if grade:
+        # The graded report shape (design 2026-11-08): the
+        # grade line, then per-criterion verdicts with the
+        # grader's cited evidence, then the failure cases.
+        try:
+            from aria.agent import grader as _grader
+            lines.append(_grader.format_grade_note(grade))
+        except Exception:
+            lines.append(
+                f"Grade: {grade.get('rubric_id')} "
+                f"v{grade.get('rubric_version')} "
+                f"{grade.get('verdict')}")
+        for c in grade.get("criteria") or []:
+            ev = f" — {c['evidence']}" if c.get("evidence") else ""
+            lines.append(f"  criterion {c['id']}: "
+                         f"{c['verdict']}{ev}")
+        for fc in grade.get("failure_cases") or []:
+            ev = (f" — {fc['evidence']}"
+                  if fc.get("evidence") else "")
+            state = "PRESENT" if fc.get("present") else "absent"
+            lines.append(f"  failure case {fc['id']}: {state}{ev}")
     parked = [f"step {s['idx'] + 1} ({s['tool']}): {s['status']}"
               for s in steps
               if s["status"] in ("waiting", "denied", "failed",
@@ -1398,7 +1509,8 @@ def tool_mission_create(args: dict) -> str:
         a.get("goal", ""), raw_steps if isinstance(raw_steps, list)
         else [],
         allowed_tools=allowed, pre_approved_irreversible=pre,
-        spend_cap=spend, deadline=deadline)
+        spend_cap=spend, deadline=deadline,
+        task_type=a.get("task_type"))
 
 
 def tool_mission_list(args: dict) -> str:

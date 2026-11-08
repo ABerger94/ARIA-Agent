@@ -3,10 +3,13 @@ ARIA delegated-task planner (Merger Phase 3 — blueprint SS2.1, SS3.3).
 
 Pattern reimplemented from Mark-XXXIX-OR's agent/planner.py
 (FatihMakes, CC BY-NC 4.0) in ARIA's idiom: a plan is JSON —
-{"goal", "steps": [{"step", "tool", "description", "parameters",
-"critical"}]} — produced in one call, validated, clamped to
-PLAN_MAX_STEPS, with a deterministic single-step fallback when
-planning fails. Differences from his planner:
+{"goal", "task_type", "steps": [{"step", "tool", "description",
+"parameters", "critical"}]} — produced in one call, validated,
+clamped to PLAN_MAX_STEPS, with a deterministic single-step
+fallback when planning fails. task_type is optional, validated
+against the rubric registry (aria.agent.rubrics), and defaults
+to "general"; the outcome grader selects its rubric by it.
+Differences from his planner:
 
   * the model is ARIA's background pool (orpool, Phase 2), never
     the live conversation chain and never a direct Gemini call;
@@ -83,12 +86,18 @@ def _system_prompt() -> str:
         "contain {prev} (the previous step's result) or {stepN} "
         "(step N's result), which the executor substitutes.\n"
         "- Mark a step critical=true only when the task fails "
-        "without it.\n\n"
+        "without it.\n"
+        "- Set task_type by the goal's dominant work: "
+        "\"research\" (gathering and answering from sources), "
+        "\"code_change\" (editing code or files), or \"general\" "
+        "(anything else). The outcome grader selects its rubric "
+        "by it.\n\n"
         "AVAILABLE TOOLS:\n"
         f"{_tool_catalogue()}\n\n"
         "OUTPUT — return ONLY valid JSON, no markdown, no explanation:\n"
         "{\n"
         '  "goal": "...",\n'
+        '  "task_type": "general",\n'
         '  "steps": [\n'
         '    {"step": 1, "tool": "tool_name", "description": "what this step does",\n'
         '     "parameters": {}, "critical": true}\n'
@@ -102,10 +111,25 @@ def _default_llm(prompt: str, system: str) -> str:
                            temperature=0.2)
 
 
+def _valid_task_type(raw) -> str:
+    """A plan's task_type, validated against the rubric
+    registry (Outcomes/Grader upgrade): anything unknown or
+    missing is "general". Never raises."""
+    try:
+        from aria.agent import rubrics
+        value = str(raw or "").strip()
+        if value in rubrics.known_task_types():
+            return value
+    except Exception:
+        pass
+    return "general"
+
+
 def _fallback_plan(goal: str) -> dict:
     """His deterministic fallback: one critical web_search step."""
     return {
         "goal": goal,
+        "task_type": "general",
         "steps": [{
             "step": 1,
             "tool": "web_search",
@@ -160,6 +184,7 @@ def _sanitize(plan: dict, goal: str) -> Optional[dict]:
     if not steps:
         return None
     return {"goal": plan.get("goal") or goal, "steps": steps,
+            "task_type": _valid_task_type(plan.get("task_type")),
             "warnings": warnings}
 
 

@@ -52,6 +52,14 @@ Mark-LVI core/delegation.py, CC BY-NC 4.0):
     unparseable or erroring verdict never blocks (fail-open,
     logged) — a dead verifier makes a result unverified, not a
     task immortal.
+  * an outcome grader (2026-11-08, setting
+    outcomes_grader_enabled, default OFF) — when on, the
+    one-line verifier is superseded by aria.agent.grader: a
+    rubric grade over the evidence bundle plus read-only
+    destination probes (journal receipts, file probes). A FAIL
+    parks with the failed criteria and cited evidence; a PASS
+    is decisive; cannot_grade falls back to the one-line
+    verifier above, unchanged.
 """
 
 from __future__ import annotations
@@ -166,10 +174,60 @@ class AgentExecutor:
         self._summarizer = summarizer or _default_summarizer
         self._sleep = sleep_fn or time.sleep
         self._verifier = verifier
+        # Outcomes grader state (design 2026-11-08): the action
+        # journal operation ids of the steps this execute() ran
+        # (destination probes look receipts up by them) and the
+        # last grade, for the summary note. Reset per execute().
+        self._op_ids: Dict[int, str] = {}
+        self._last_grade: Optional[dict] = None
 
     # -- skeptical verifier (Gap fill 3) --------------------------
+    def _grader_chat(self):
+        """The grader's chat callable for this executor: None
+        lets the grader use its pool-backed default (which
+        reports the grading model); an injected executor LLM
+        grades through the same callable the work was planned
+        with, labelled as such."""
+        if self._llm is None:
+            return None
+        llm = self._llm
+
+        def _chat(prompt, system, model=None):
+            return llm(prompt, system), "injected-llm"
+        return _chat
+
+    def _journal_ids(self, completed: List[dict],
+                     results: Dict[int, str],
+                     resume: Optional[Dict[str, Any]] = None
+                     ) -> Dict[int, str]:
+        """Step number → action-journal operation id, for the
+        grader's receipt probes. Ids recorded during this run
+        win; steps a resume skipped are recomputed from the
+        stable execution scope exactly as the attempt loop
+        built them (pass 26 B1#5)."""
+        ids = dict(self._op_ids)
+        try:
+            from aria.action_journal import signature
+            scope = (resume or {}).get("execution_scope") \
+                or runtime.current().id
+            for s in completed:
+                n = s.get("step")
+                if n in ids:
+                    continue
+                params = _substitute(s.get("parameters") or {},
+                                     results)
+                ids[n] = (f"{scope}:step:{n}:"
+                          f"{signature(s.get('tool', ''), params)}")
+        except Exception as e:
+            add_log(f"taskexec: journal id rebuild failed ({e}); "
+                    f"receipt probes partial")
+        return ids
+
     def _verify(self, goal: str, completed: List[dict],
-                results: Dict[int, str]) -> Optional[str]:
+                results: Dict[int, str], *,
+                plan: Optional[Dict[str, Any]] = None,
+                journal_ids: Optional[Dict[int, str]] = None
+                ) -> Optional[str]:
         """Return a rejection reason, or None when the work
         passes (or cannot be judged — fail-open). The verifier
         sees ONLY the goal and the recorded step results: it
@@ -180,6 +238,34 @@ class AgentExecutor:
             except Exception as e:
                 add_log(f"taskexec: verifier errored ({e}); outcome unverified")
                 return "Verification unavailable; recorded work needs review"
+        # Outcomes grader (design 2026-11-08): with the setting
+        # on, a rubric grade over the evidence bundle plus
+        # destination probes replaces the one-line verdict — a
+        # FAIL parks with the failed criteria and the grader's
+        # cited evidence; a PASS is decisive; cannot_grade falls
+        # through to the legacy path below, unchanged. With the
+        # setting off this block never runs.
+        try:
+            from aria.agent import grader as _grader
+            if _grader.outcomes_enabled():
+                steps = [dict(s) for s in completed]
+                probes = _grader.build_probes(
+                    _grader.normalize_steps(steps, results),
+                    journal_ids=journal_ids)
+                g = _grader.grade(
+                    goal, steps, results,
+                    task_type=(plan or {}).get("task_type"),
+                    chat=self._grader_chat(), probes=probes)
+                self._last_grade = g
+                if g["verdict"] == "fail":
+                    return _grader.format_failure_reason(g)
+                if g["verdict"] == "pass":
+                    return None
+                add_log("taskexec: outcome grader could not "
+                        "grade; legacy verifier path")
+        except Exception as e:
+            add_log(f"taskexec: outcome grader errored ({e}); "
+                    f"legacy verifier path")
         llm = self._llm or planner._default_llm
         evidence = "\n".join(
             f"- step {s.get('step')} ({s.get('tool', '?')}): "
@@ -267,6 +353,8 @@ class AgentExecutor:
                     add_log(f"taskexec: checkpoint callback failed ({e})")
 
         add_log(f"taskexec: starting delegated task '{goal[:60]}'")
+        self._op_ids = {}
+        self._last_grade = None
         # Pass 28 #20: a pending child survives in the checkpoint
         # state across parks; a fresh run has none.
         pending_child = (resume or {}).get("pending_child")
@@ -409,6 +497,7 @@ class AgentExecutor:
                             or runtime.current().id
                         op = (f"{_scope}:step:{step.get('step')}:"
                               f"{signature(tool, params)}")
+                        self._op_ids[step.get("step")] = op
                         with runtime.operation(op):
                             out = self._tool_runner(tool, params)
                     except runtime.Cancelled:
@@ -505,13 +594,22 @@ class AgentExecutor:
 
             if failed_step is None:
                 if verify:
-                    rejection = self._verify(goal, completed, results)
+                    rejection = self._verify(
+                        goal, completed, results, plan=plan,
+                        journal_ids=self._journal_ids(
+                            completed, results, resume))
                     if rejection:
                         add_log("taskexec: verifier parked the task — "
                                 f"{rejection[:80]}")
                         raise TaskBlocked(
                             f"verifier: {rejection}", _state())
                 summary = self._summarizer(goal, completed)
+                if self._last_grade and \
+                        self._last_grade.get("verdict") == "pass":
+                    from aria.agent import grader as _grader
+                    summary = (summary + " (" + _grader
+                               .format_grade_note(self._last_grade)
+                               + ")")
                 add_log(f"taskexec: task complete — {summary[:80]}")
                 return _finish_outcome(summary, status="done")
 

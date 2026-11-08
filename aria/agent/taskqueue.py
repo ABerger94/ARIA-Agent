@@ -347,7 +347,16 @@ class TaskQueue:
         with self._lock:
             return [
                 {"task_id": t.task_id, "goal": t.goal[:50],
-                 "status": t.status.value}
+                 "status": t.status.value,
+                 # Fleet has always rendered error/result when
+                 # present; the rows never carried them, so a
+                 # blocked task's reason (including the outcome
+                 # grader's structured rejection, design
+                 # 2026-11-08) and a completed task's result
+                 # (including its grade note) were invisible
+                 # there. Additive: existing keys unchanged.
+                 "error": str(t.error or "")[:300],
+                 "result": str(t.result or "")[:300]}
                 for t in self._tasks.values() if t.project == workspaces.current()
             ]
 
