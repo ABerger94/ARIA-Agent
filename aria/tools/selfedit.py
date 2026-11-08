@@ -22,11 +22,18 @@ the watched set:
 
 Everything else is refused: traversal, absolute paths outside the
 repo, non-.py targets other than SOUL, repo-root files other than
-the launcher. Writes are atomic-ish (temp file + os.replace in
-the same directory). The tools deliberately do NOT restart
-anything themselves — the post-turn watcher owns that, and the
-return text says so, so the brain can tell the user what happens
-next.
+the launcher. Writes are atomic (a unique temp file + os.replace in the same
+directory, pass 29 #49 — the old fixed `.tmp-selfedit` name was
+shared by every concurrent writer of the same target, so two
+writers interleaved content in one temp file and the loser got
+FileNotFoundError on its own replace). Each target also has a
+per-target lock held across read-validate-write, and the file is
+re-read just before writing: a patch/edit prepared against a
+revision that changed meanwhile is refused as a stale-edit
+conflict instead of silently overwriting the newer content.
+The tools deliberately do NOT restart anything themselves — the
+post-turn watcher owns that, and the return text says so, so
+the brain can tell the user what happens next.
 
 Pre-write validation (2026-10-27 hardening — Alek asked ARIA to
 change her pet's name colour herself; the edit corrupted a file
@@ -60,6 +67,8 @@ from __future__ import annotations
 
 import ast
 import os
+import tempfile
+import threading
 from typing import Optional, Tuple
 
 from aria import config as _config
@@ -104,13 +113,59 @@ def _resolve_target(path: str) -> Tuple[Optional[str], Optional[str]]:
 
 
 def _atomic_write(path: str, content: str) -> None:
+    """Write content to path via a UNIQUE temp file in the same
+    directory + os.replace (pass 29 #49). The old fixed
+    `.tmp-selfedit` name was shared by every concurrent writer
+    of the same target: two writers interleaved content in one
+    temp file, and the writer whose temp had already been
+    replaced away got FileNotFoundError on its own replace.
+    mkstemp gives each writer its own temp, so a concurrent
+    write can only ever replace a complete file."""
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    tmp = f"{path}.tmp-selfedit"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(content)
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(prefix=".selfedit-", dir=parent or ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+# Per-target locks (pass 29 #49): one threading.Lock per
+# resolved target path, held across a whole read-validate-write
+# so two in-process writers of the same file serialize instead
+# of interleaving. Keyed by the resolved (real) path, which is
+# what _resolve_target returns.
+_TARGET_LOCKS: dict = {}
+_TARGET_LOCKS_GUARD = threading.Lock()
+
+
+def _target_lock(path: str) -> threading.Lock:
+    with _TARGET_LOCKS_GUARD:
+        lock = _TARGET_LOCKS.get(path)
+        if lock is None:
+            lock = threading.Lock()
+            _TARGET_LOCKS[path] = lock
+        return lock
+
+
+def _stale_conflict(target: str, what: str) -> str:
+    """Refusal text when the file changed between being read and
+    being written (pass 29 #49): the change was prepared against
+    a different source revision, so applying it would silently
+    discard the newer content. Nothing was written."""
+    return (f"[Self-edit failed: {_rel(target)} changed while this "
+            f"{what} was being prepared — refusing to apply it "
+            f"against a stale revision. No change made.]")
 
 
 def _rel(path: str) -> str:
@@ -171,38 +226,46 @@ def tool_edit_own_code(path: str, content: str) -> str:
     if refusal:
         return f"[Self-edit refused: {refusal}.]"
     content = content or ""
-    if target.endswith(".py"):
+    # The whole read-validate-write runs under the target's lock
+    # (pass 29 #49): two in-process writers of the same file
+    # serialize instead of interleaving, and the re-read just
+    # before writing catches a change that landed while
+    # validation ran.
+    with _target_lock(target):
         current = _read_current(target)
-        if current is None:
-            # New file (pass 29 #48): there is nothing to shrink
-            # or drop, but the proposed source must still compile
-            # — _validate_new_source against an empty current
-            # runs exactly the compile check and nothing else.
-            problem = _validate_new_source(target, "", content)
-            if problem:
-                return f"[Self-edit refused: {problem}.]"
-        else:
-            # The truncated-regeneration guard: a "rewrite" that
-            # comes back far smaller than the file it replaces
-            # is almost never a deliberate rewrite — it is a
-            # generation that trailed off, and writing it would
-            # corrupt the file. Steer to the patch tool.
-            if len(current) > 1500 and len(content) < 0.6 * len(current):
-                return ("[Self-edit refused: the new content is "
-                        f"{len(content)} characters against the "
-                        f"file's current {len(current)} — a full "
-                        "rewrite that much smaller would gut the "
-                        "file. For a change smaller than the whole "
-                        "file use patch_own_code with exact "
-                        "old_text/new_text instead. The file was "
-                        "NOT changed.]")
-            problem = _validate_new_source(target, current, content)
-            if problem:
-                return f"[Self-edit refused: {problem}.]"
-    try:
-        _atomic_write(target, content)
-    except Exception as e:
-        return f"[Self-edit failed: {type(e).__name__}: {e}]"
+        if target.endswith(".py"):
+            if current is None:
+                # New file (pass 29 #48): there is nothing to shrink
+                # or drop, but the proposed source must still compile
+                # — _validate_new_source against an empty current
+                # runs exactly the compile check and nothing else.
+                problem = _validate_new_source(target, "", content)
+                if problem:
+                    return f"[Self-edit refused: {problem}.]"
+            else:
+                # The truncated-regeneration guard: a "rewrite" that
+                # comes back far smaller than the file it replaces
+                # is almost never a deliberate rewrite — it is a
+                # generation that trailed off, and writing it would
+                # corrupt the file. Steer to the patch tool.
+                if len(current) > 1500 and len(content) < 0.6 * len(current):
+                    return ("[Self-edit refused: the new content is "
+                            f"{len(content)} characters against the "
+                            f"file's current {len(current)} — a full "
+                            "rewrite that much smaller would gut the "
+                            "file. For a change smaller than the whole "
+                            "file use patch_own_code with exact "
+                            "old_text/new_text instead. The file was "
+                            "NOT changed.]")
+                problem = _validate_new_source(target, current, content)
+                if problem:
+                    return f"[Self-edit refused: {problem}.]"
+        if _read_current(target) != current:
+            return _stale_conflict(target, "edit")
+        try:
+            _atomic_write(target, content)
+        except Exception as e:
+            return f"[Self-edit failed: {type(e).__name__}: {e}]"
     add_log(f"Self-edit: rewrote {_rel(target)} "
             f"({len(content or '')} chars)")
     return (f"Rewrote {_rel(target)} "
@@ -220,31 +283,39 @@ def tool_patch_own_code(path: str, old_text: str, new_text: str) -> str:
         return f"[Self-edit refused: {refusal}.]"
     if not old_text:
         return "[Self-edit failed: old_text is empty — nothing to match.]"
-    try:
-        with open(target, "r", encoding="utf-8") as f:
-            current = f.read()
-    except FileNotFoundError:
-        return (f"[Self-edit failed: {_rel(target)} does not exist — "
-                f"use edit_own_code to create it.]")
-    except Exception as e:
-        return f"[Self-edit failed: {type(e).__name__}: {e}]"
-    n = current.count(old_text)
-    if n == 0:
-        return ("[Self-edit failed: old_text not found in "
-                f"{_rel(target)} — no change made.]")
-    if n > 1:
-        return (f"[Self-edit failed: old_text matches {n} places in "
-                f"{_rel(target)} — include more surrounding context "
-                f"so it matches exactly one. No change made.]")
-    new_content = current.replace(old_text, new_text, 1)
-    if target.endswith(".py"):
-        problem = _validate_new_source(target, current, new_content)
-        if problem:
-            return f"[Self-edit refused: {problem}.]"
-    try:
-        _atomic_write(target, new_content)
-    except Exception as e:
-        return f"[Self-edit failed: {type(e).__name__}: {e}]"
+    # Read-validate-write under the target's lock (pass 29 #49),
+    # with a re-read just before writing: a patch prepared
+    # against a revision that changed meanwhile is refused as a
+    # stale-edit conflict instead of silently overwriting the
+    # newer content.
+    with _target_lock(target):
+        try:
+            with open(target, "r", encoding="utf-8") as f:
+                current = f.read()
+        except FileNotFoundError:
+            return (f"[Self-edit failed: {_rel(target)} does not exist — "
+                    f"use edit_own_code to create it.]")
+        except Exception as e:
+            return f"[Self-edit failed: {type(e).__name__}: {e}]"
+        n = current.count(old_text)
+        if n == 0:
+            return ("[Self-edit failed: old_text not found in "
+                    f"{_rel(target)} — no change made.]")
+        if n > 1:
+            return (f"[Self-edit failed: old_text matches {n} places in "
+                    f"{_rel(target)} — include more surrounding context "
+                    f"so it matches exactly one. No change made.]")
+        new_content = current.replace(old_text, new_text, 1)
+        if target.endswith(".py"):
+            problem = _validate_new_source(target, current, new_content)
+            if problem:
+                return f"[Self-edit refused: {problem}.]"
+        if _read_current(target) != current:
+            return _stale_conflict(target, "patch")
+        try:
+            _atomic_write(target, new_content)
+        except Exception as e:
+            return f"[Self-edit failed: {type(e).__name__}: {e}]"
     add_log(f"Self-edit: patched {_rel(target)} "
             f"({len(old_text)} -> {len(new_text or '')} chars)")
     return (f"Patched {_rel(target)}: replaced {len(old_text)} "
