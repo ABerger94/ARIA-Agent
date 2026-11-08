@@ -318,12 +318,27 @@ class TriggerEngine:
         if not present:
             self._away_since.setdefault(key, now)
             return None, None
-        since = self._away_since.pop(key, None)
+        # Pass 29 #36: peek, don't pop. The cooldown gate lives in
+        # tick() and discards a qualifying return that arrives
+        # inside the cooldown — popping here would consume the
+        # return so it fires never, not late. The away timestamp
+        # is consumed only by the commit tick() applies after a
+        # successful firing. A return too short to qualify is
+        # different: the absence is over, so clear it at once —
+        # otherwise a brief return followed by staying present
+        # would eventually fire as a long absence.
+        since = self._away_since.get(key)
         if since is not None:
             away_for = now - since
-            if away_for >= min_away:
-                return (f"your return after {int(away_for // 60)} min away",
-                        None)
+            if away_for < min_away:
+                self._away_since.pop(key, None)
+                return None, None
+
+            def _commit(st, _key=key):
+                self._away_since.pop(_key, None)
+
+            return (f"your return after {int(away_for // 60)} min away",
+                    _commit)
         return None, None
 
     def tick(self) -> list:
