@@ -181,6 +181,30 @@ def is_reserved_control_file(abs_path, workspace_root=None) -> bool:
             and parent.parent.parent == root)
 
 
+def is_reserved_projects_path(abs_path) -> bool:
+    """True when abs_path lies under the reserved projects/ subtree
+    of the default workspace — the storage home of named projects.
+
+    Pass 29 #42: the default project's root is WORKSPACE_DIR and
+    named projects live beneath it at projects/<id>, so without
+    this guard a default-project file tool could read or write
+    another project's private files. Only the default project can
+    even address that subtree through the generic file tools (a
+    named project's root is its own directory, and project-owned
+    storage goes through workspaces.path(), not the file tools),
+    so this is a default-project-only guard.
+    """
+    from aria import config
+    if current() != 'default':
+        return False
+    try:
+        target = Path(str(abs_path)).resolve()
+    except Exception:
+        return False
+    projects = (Path(config.WORKSPACE_DIR) / 'projects').resolve()
+    return target == projects or target.is_relative_to(projects)
+
+
 def file_allowed(filename):
     """Optional project roots restrict file tools; an empty list keeps legacy access."""
     roots = get().get('settings', {}).get('file_roots') or []
@@ -206,6 +230,13 @@ def resolve_workspace_file(filename, legacy=None):
     destination = (root / relative).resolve()
     if destination == root or not destination.is_relative_to(root):
         raise ValueError('File is outside the project workspace')
+    # Pass 29 #42: the reserved projects/ subtree is named-project
+    # storage, not default-project files — generic file tools in
+    # the default project must not reach into it.
+    if is_reserved_projects_path(destination):
+        raise ValueError('File is inside the reserved projects/ '
+                         'storage — named projects are not reachable '
+                         'through the default project’s file tools')
     if not file_allowed(destination):
         raise ValueError('File is outside this project’s configured roots')
     return str(destination)

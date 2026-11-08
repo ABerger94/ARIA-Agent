@@ -984,6 +984,13 @@ def _read_code_arg(args):
         from aria import workspaces
         if not workspaces.file_allowed(path.resolve()):
             return None, "file is outside this project’s configured roots"
+        # Pass 29 #42: the reserved projects/ subtree is named-
+        # project storage — the default project's code_helper must
+        # not read another project's private files through it.
+        if workspaces.is_reserved_projects_path(path.resolve()):
+            return None, ("file is inside the reserved projects/ "
+                          "storage — named projects are not reachable "
+                          "through the default project’s file tools")
     except Exception:
         pass
     try:
