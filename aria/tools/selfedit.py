@@ -44,6 +44,13 @@ tools now refuse a bad write BEFORE the file on disk changes:
     of its current size — the truncated-regeneration class, and
     the refusal steers to patch_own_code, which is the right
     tool for almost every real change anyway.
+  * a NEW .py file must compile too (pass 29 #48): validation
+    used to be gated on the target already existing, so a new
+    file with invalid syntax was written with a success
+    message — and the watcher cannot restore an untracked file
+    from git. The shrink/dropped-definition checks still apply
+    to existing files only (a new file has nothing to shrink
+    or drop).
 
 The watcher remains as the second net (import smoke + git
 restore), unchanged.
@@ -166,7 +173,15 @@ def tool_edit_own_code(path: str, content: str) -> str:
     content = content or ""
     if target.endswith(".py"):
         current = _read_current(target)
-        if current is not None:
+        if current is None:
+            # New file (pass 29 #48): there is nothing to shrink
+            # or drop, but the proposed source must still compile
+            # — _validate_new_source against an empty current
+            # runs exactly the compile check and nothing else.
+            problem = _validate_new_source(target, "", content)
+            if problem:
+                return f"[Self-edit refused: {problem}.]"
+        else:
             # The truncated-regeneration guard: a "rewrite" that
             # comes back far smaller than the file it replaces
             # is almost never a deliberate rewrite — it is a
