@@ -1085,18 +1085,33 @@ def wait_for_voice_probe(timeout: Optional[float] = None) -> bool:
 
 
 def speak(text: str, whisper_mode: bool = False):
+    """Queue text to be spoken. Returns True when the utterance was
+    accepted for delivery, False when voice is muted or the app is
+    locked (pass 29 #34) — a refusal is NOT a delivery, so callers
+    (timed / on-return reminders) must not delete the reminder."""
     if not VOICE_ENABLED:
-        return None
+        return False
     # App lock (Alek, 2026-10-27): the laptop stays silent while
     # locked — no proactive speech, no greetings. (The phone gets
     # its replies as text from the bridge, never through here.)
     try:
         from aria import applock as _applock_sp
         if _applock_sp.is_locked():
-            return None
+            return False
     except Exception:
         pass
-    return _DEFAULT_SPEECH_MANAGER.speak(text, whisper_mode)
+    _DEFAULT_SPEECH_MANAGER.speak(text, whisper_mode)
+    return True
+
+
+def enqueue_speech(text: str) -> bool:
+    """Direct-queue path for busy callers (pass 29 #34): the same
+    delivery-acceptance contract as speak() — True when queued,
+    False when refused. This is the single enqueue seam every
+    direct-queue site funnels through; admission gating
+    (mute / app lock) lands in pass 29 #35."""
+    _SPEECH_QUEUE.put(text)
+    return True
 
 
 def queue_stream_chunk(chunk: str):

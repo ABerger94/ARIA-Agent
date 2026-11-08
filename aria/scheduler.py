@@ -414,12 +414,47 @@ def _reminder_gate_tick(is_busy_fn=None):
         rows=sched_on_return_rows(),
         is_busy=busy,
         speak=speech.speak,
-        queue_speech=lambda t: speech._SPEECH_QUEUE.put(t),
+        queue_speech=speech.enqueue_speech,
         delete_row=lambda tid: sched_cancel(tid),
         write_card=_write_card,
         card_exists=_card_exists)
     for tid in done:
         add_log(f"On-return reminder #{tid} delivered")
+
+
+def _deliver_timed_reminder(tid: int, prompt: str,
+                            is_busy_fn: Optional[Callable[[], bool]] = None) -> bool:
+    """Deliver one due timed ('once') reminder (pass 29 #34).
+
+    The row is deleted ONLY after speech was accepted (spoken or
+    queued). The old loop deleted first and then spoke — a muted
+    or locked refusal deleted the reminder with zero delivery.
+    The scheduled_tasks row itself is the durable outbox record:
+    while delivery is refused the row stays due (keyed by its
+    stable tid) and the next tick retries it. Returns True only
+    when the reminder was accepted AND its row deleted."""
+    try:  # Module 5 event bus: never break scheduling
+        from aria.events import emit_reminder_fired
+        emit_reminder_fired(tid, prompt)
+    except Exception as _e_silent:
+        _config_silent.log_silent("scheduler_loop", _e_silent)
+    add_log(f"Reminder #{tid} firing")
+    busy = is_busy_fn() if is_busy_fn else False
+    try:
+        accepted = (speech.enqueue_speech(prompt) if busy
+                    else speech.speak(prompt))
+    except Exception as e:
+        add_log(f"Reminder #{tid} delivery failed: {e}")
+        return False
+    # A delivery call that reports nothing (None — a legacy
+    # speech.speak) counts as accepted; only an explicit False
+    # (muted / locked) refuses delivery and keeps the row.
+    if accepted is False:
+        add_log(f"Reminder #{tid} held: speech refused "
+                f"(muted or locked)")
+        return False
+    sched_cancel(tid)
+    return True
 
 
 def tool_set_recurring(interval_seconds: int, prompt: str) -> str:
@@ -560,23 +595,10 @@ def scheduler_loop(is_busy_fn: Optional[Callable[[], bool]] = None,
                                     continue
                             except Exception:
                                 pass
-                            with DB_LOCK:
-                                conn = sqlite3.connect(workspaces.path("aria_memory.db", DB_PATH))
-                                conn.execute("DELETE FROM scheduled_tasks WHERE id = ?", (tid,))
-                                conn.commit()
-                                conn.close()
-                            _bump_sched_count(-1)
-                            add_log(f"Reminder #{tid} firing")
-                            try:  # Module 5 event bus: never break scheduling
-                                from aria.events import emit_reminder_fired
-                                emit_reminder_fired(tid, prompt)
-                            except Exception as _e_silent:
-                                _config_silent.log_silent("scheduler_loop", _e_silent)
-                            busy = is_busy_fn() if is_busy_fn else False
-                            if not busy:
-                                speech.speak(prompt)
-                            else:
-                                speech._SPEECH_QUEUE.put(prompt)
+                            # Pass 29 #34: delivery first, delete
+                            # only on acceptance — see
+                            # _deliver_timed_reminder.
+                            _deliver_timed_reminder(tid, prompt, is_busy_fn)
                         elif kind == "brief" or _BRIEF_PROMPT_RE.search(prompt or ""):
                             _fire_brief(tid, interval_s, is_busy_fn)
                         elif kind == "screenwatch":

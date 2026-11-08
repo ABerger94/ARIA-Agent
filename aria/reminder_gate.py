@@ -169,17 +169,39 @@ def tick(*, now: datetime, present: bool, store: GateStore,
         for tid, message, created in rows:
             if not watcher.due(created):
                 continue
-            delete_row(tid)
+            # Pass 29 #34: delete LAST, not first. The old order
+            # deleted the row, then spoke, then wrote the card — a
+            # muted/locked refusal or a card-write failure lost the
+            # reminder with no record. Order now: card (the durable
+            # delivery record) -> speech -> delete only when both
+            # succeeded. A failed card write skips the row this tick;
+            # a refused speech keeps the row for a retry while the
+            # written card still records the delivery.
+            try:
+                fname = write_card(tid, message)
+            except Exception:
+                continue
             text = f"Reminder from earlier: {message}"
             if is_busy:
-                queue_speech(text)
+                accepted = queue_speech(text)
             else:
-                speak(text)
-            fname = write_card(tid, message)
-            delivered.append({
-                "tid": tid, "file": fname, "message": message,
-                "delivered_at": now.isoformat(timespec="seconds"),
-            })
+                accepted = speak(text)
+            # A delivery callable that reports nothing (None — e.g.
+            # a list.append fake, or a legacy speech.speak) counts
+            # as accepted; only an explicit False refuses delivery.
+            if accepted is False:
+                if not any(d.get("tid") == tid for d in delivered):
+                    delivered.append({
+                        "tid": tid, "file": fname, "message": message,
+                        "delivered_at": now.isoformat(timespec="seconds"),
+                    })
+                continue
+            if not any(d.get("tid") == tid for d in delivered):
+                delivered.append({
+                    "tid": tid, "file": fname, "message": message,
+                    "delivered_at": now.isoformat(timespec="seconds"),
+                })
+            delete_row(tid)
             done.append(tid)
 
     data["watcher"] = watcher.to_state()
