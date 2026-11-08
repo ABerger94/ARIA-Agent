@@ -966,11 +966,16 @@ def _read_code_arg(args):
     file_path = str(args.get("file_path") or "").strip()
     if not file_path:
         return None, "give either 'code' or 'file_path'"
+    # Pass 29 #41: a relative path is workspace-relative, resolved
+    # once here — the old cwd-exists() preference let a same-named
+    # file in the process cwd shadow the workspace copy while
+    # dispatch root-checked the workspace copy, so the check and
+    # the read could disagree about which file they meant.
+    # Absolute paths pass through unchanged (and are root-checked
+    # below, as before).
     path = Path(file_path)
-    if not path.is_absolute() and not path.exists():
-        alt = _workspace_dir() / file_path
-        if alt.exists():
-            path = alt
+    if not path.is_absolute():
+        path = _workspace_dir() / file_path
     if not path.exists():
         return None, f"file not found: {file_path}"
     # Pass 25: the dispatcher root-checks file_path, but the
