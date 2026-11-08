@@ -141,7 +141,11 @@ def run_research(question: str, *, search=None, fetch=None,
     """Run one research pass and file the brief.
 
     Returns {"ok": True, "id", "question", "summary", "file",
-    "sources"} or {"ok": False, "error"}.
+    "sources", "verification"} or {"ok": False, "error"}.
+    "verification" is "verified" when the cross-check ran and
+    "unverified" when the checker was unavailable (the brief is
+    still filed — an unverified draft is useful, but it must never
+    be reported as cross-checked).
     """
     question = (question or "").strip()
     if not question:
@@ -179,8 +183,16 @@ def run_research(question: str, *, search=None, fetch=None,
     verdict = check(_CHECK_SYSTEM,
                     f"Question: {question}\n\nBrief:\n{brief}\n\n"
                     f"Sources:\n{numbered}")
+    # Pass 29 #47: a missing/bracketed checker reply means the
+    # cross-check never ran — record that as unverified, never as
+    # a successful cross-check. The brief is still filed (an
+    # unverified draft is useful), but everything downstream must
+    # say so.
+    verified = True
     if not verdict or verdict.startswith("["):
         verdict = "(cross-check unavailable — treat the brief as unverified)"
+        verified = False
+    verification = "verified" if verified else "unverified"
 
     now = datetime.now()
     summary = ""
@@ -199,7 +211,7 @@ def run_research(question: str, *, search=None, fetch=None,
         doc = (
             f"# Research brief: {question}\n"
             f"Filed {now.strftime('%Y-%m-%d %H:%M')} · {len(sources)} sources "
-            f"· brief #{rid}\n\n"
+            f"· brief #{rid} · {verification}\n\n"
             f"{brief.strip()}\n\n"
             f"## Cross-check\n{verdict.strip()}\n\n"
             f"## Sources\n"
@@ -213,11 +225,13 @@ def run_research(question: str, *, search=None, fetch=None,
         entries.append({"id": rid, "question": question,
                         "filed_at": now.isoformat(timespec="seconds"),
                         "file": fname, "summary": summary,
+                        "verification": verification,
                         "sources": [s["url"] for s in sources]})
         _save_index(entries)
     add_log(f"research: brief #{rid} filed ({fname})")
     return {"ok": True, "id": rid, "question": question,
             "summary": summary, "file": fname,
+            "verification": verification,
             "sources": len(sources)}
 
 
@@ -270,7 +284,10 @@ def tool_research(args) -> str:
             return "No research briefs filed yet."
         return "Research briefs (newest first):\n" + "\n".join(
             f"#{e['id']} [{str(e['filed_at'])[:10]}] {e['question']} — "
-            f"{e['summary']}" for e in entries)
+            f"{e['summary']}"
+            + (" (unverified)" if e.get("verification") == "unverified"
+               else "")
+            for e in entries)
     if action == "read":
         return read_research(args.get("id"))
     if action != "run":
@@ -281,8 +298,16 @@ def tool_research(args) -> str:
         # Pass 28 #31: "Research failed: ..." normalized as DONE.
         from aria.outcome import failed
         return failed("research", result["error"])
+    # Pass 29 #47: never report "cross-checked" when the checker
+    # was unavailable — the status comes from run_research.
+    if result.get("verification") == "unverified":
+        status = (f"Based on {result['sources']} sources — unverified: "
+                  "the cross-check was unavailable, so treat this "
+                  "brief as unverified. ")
+    else:
+        status = f"Based on {result['sources']} sources, cross-checked. "
     return (f"Research brief #{result['id']} filed: {result['question']}\n"
             f"Short answer: {result['summary']}\n"
-            f"Based on {result['sources']} sources, cross-checked. "
+            f"{status}"
             f"Full brief is in the Briefing tab's Research section "
             f"({result['file']}).")
