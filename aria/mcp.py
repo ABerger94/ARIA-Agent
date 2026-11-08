@@ -277,6 +277,28 @@ def remove_server(name: str) -> str:
 # HTTP / Streamable-HTTP MCP Client (Pure Python, no mcp package required)
 # ---------------------------------------------------------------------------
 
+# Pass 29 #31: bound on SSE events scanned for the matching
+# response frame. The body is already fully received, so this
+# bounds work, not wall time.
+_SSE_MAX_EVENTS = 200
+
+
+def _sse_frame(data_lines: List[str], want_id: Any) -> Optional[Dict[str, Any]]:
+    """Parse one SSE event's joined `data:` lines; return the frame
+    only when its JSON-RPC `id` matches the request (or the request
+    carried no id). Notifications (no `id`) and other requests'
+    frames return None so the caller keeps scanning."""
+    try:
+        parsed = json.loads("\n".join(data_lines))
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    if want_id is not None and parsed.get("id") != want_id:
+        return None
+    return parsed
+
+
 class HTTPMCPClient:
     """Lightweight pure-Python MCP client for streamable-HTTP and JSON-RPC servers."""
 
@@ -344,17 +366,33 @@ class HTTPMCPClient:
                   or text.startswith("event:")
                   or text.startswith("data:"))
         if is_sse:
+            # Pass 29 #31: the old branch took the FIRST `data:`
+            # line and stopped — an SSE notification (no JSON-RPC
+            # `id`) or a frame for another request arriving first
+            # discarded the real result, so call_tool read an
+            # empty result as a silent success. Scan every event,
+            # join multiline `data:` lines per event, and take
+            # only the frame whose `id` matches this request.
+            want_id = payload.get("id")
+            event_data: List[str] = []
+            events_seen = 0
             for line in text.split("\n"):
                 line = line.strip()
+                if line == "":
+                    if event_data:
+                        events_seen += 1
+                        data = _sse_frame(event_data, want_id)
+                        event_data = []
+                        if data is not None:
+                            break
+                        if events_seen >= _SSE_MAX_EVENTS:
+                            break
+                    continue
                 if line.startswith("data:"):
-                    try:
-                        data = json.loads(line[5:].strip())
-                    except Exception:
-                        # Malformed data: line — fall through to
-                        # the JSON fallback below instead of
-                        # raising out of _post unhandled.
-                        data = None
-                    break
+                    event_data.append(line[5:].strip())
+            if data is None and event_data \
+                    and events_seen < _SSE_MAX_EVENTS:
+                data = _sse_frame(event_data, want_id)
             if data is None:
                 try:
                     data = r.json()

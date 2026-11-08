@@ -85,8 +85,12 @@ def test_post_returns_json_payload_directly():
 
 
 def test_genuine_sse_still_parses():
-    payload = {"result": {"content": [
-        {"type": "text", "text": "hello via sse"}]}}
+    # Pass 29 #31: a response frame must carry the request's
+    # JSON-RPC id (call_tool's first request is id 1) — a frame
+    # without a matching id is a notification and is skipped.
+    payload = {"jsonrpc": "2.0", "id": 1,
+               "result": {"content": [
+                   {"type": "text", "text": "hello via sse"}]}}
     sse_text = "event: message\ndata: " + json.dumps(payload) + "\n\n"
     client = _client_with(FakeResponse(
         sse_text, "text/event-stream", payload=None))
