@@ -128,9 +128,16 @@ def test_mirror_failure_never_raises(monkeypatch, tmp_path):
 # ── backup_slots / snapshot_and_mirror ─────────────────────────────
 
 def test_backup_slots_are_the_stores_that_hurt_and_never_secrets():
+    # Pass 29 #33: the slots now also carry the project registry,
+    # the delegated-task journal, triggers + gate state, and every
+    # routine — the stores whose loss strands the rest.
     slots = bm.backup_slots()
     names = [p.name for p in slots]
-    assert names == ['aria_memory.db', 'settings.json', 'chat_history.md']
+    assert names[:3] == ['aria_memory.db', 'settings.json', 'chat_history.md']
+    for required in ('workspaces.json', 'delegated_tasks.json',
+                     'triggers.json', 'triggers_state.json',
+                     'reminder_gate.json'):
+        assert required in names, names
     assert not any('aria_keys' in str(p) for p in slots)
 
 

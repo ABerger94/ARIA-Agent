@@ -22,7 +22,16 @@ WHY THIS EXISTS
 
 THE STORES THAT MIRROR (backup_slots())
     workspace/aria_memory.db, workspace/settings.json, and
-    workspace/chat_history.md. ROOT_DIR/aria_keys.json is
+    workspace/chat_history.md — plus the project and workflow
+    metadata whose loss strands the rest (pass 29 #33): the
+    project registry (workspaces.json), the delegated-task
+    journal (delegated_tasks.json), event triggers and their
+    state (triggers.json, triggers_state.json), the reminder
+    gate (reminder_gate.json), and every routine
+    (routines/*.json). A versioned recovery manifest
+    (recovery_manifest.json) lists exactly those entries, by
+    name and kind only — never file contents — so a restore
+    can be checked against it. ROOT_DIR/aria_keys.json is
     EXCLUDED — secrets never mirror: a synced folder is exactly
     the wrong place for the key file, and no convenience here is
     worth copying credentials off the machine implicitly. The
@@ -30,6 +39,13 @@ THE STORES THAT MIRROR (backup_slots())
     headers (API keys, auth headers) live there verbatim, so the
     mirrored copy is redacted — the local file is untouched, the
     mirror gets markers where values were.
+
+RESTORE IS METADATA ONLY. A mirrored delegated task, trigger,
+or routine is a record to copy back by hand, never an
+instruction to run: nothing restored from the mirror executes
+automatically, a task left running resumes only as blocked,
+and a pending approval needs fresh approval before anything
+runs.
 
 THE RULES
     * NEVER BREAK THE PRIMARY PATH. Mirroring runs after the
@@ -345,7 +361,9 @@ def mirror_backups(slots) -> bool:
     directory, by basename, verifying sizes after the copy.
     True when the mirror is unset (nothing to do — not a
     failure) or every copy landed and verified; False when a
-    copy failed. Never raises."""
+    copy failed. Never raises. A recovery manifest
+    (recovery_manifest.json) is written alongside the copies,
+    listing the mirrored entries by name and kind only."""
     global _failed
     dest_dir = mirror_dir()
     if not dest_dir:
@@ -397,6 +415,7 @@ def mirror_backups(slots) -> bool:
                 finally:
                     if os.path.exists(temp):
                         os.unlink(temp)
+            _write_recovery_manifest(dest, slots)
         return True
     except Exception as e:
         if not _failed:
@@ -411,16 +430,137 @@ def mirror_backups(slots) -> bool:
 def backup_slots():
     """The files whose loss hurts, as Paths (existing or not):
     the memory DB, the settings file, and the chat history —
-    all under WORKSPACE_DIR. ROOT_DIR/aria_keys.json is
-    deliberately NOT in this list: secrets never mirror. The
-    settings file mirrors with its secrets redacted (see
-    _mirror_redacted_settings), never verbatim."""
+    all under WORKSPACE_DIR — plus the project and workflow
+    metadata (pass 29 #33): the project registry, the
+    delegated-task journal, triggers + gate state, and every
+    routine. ROOT_DIR/aria_keys.json is deliberately NOT in
+    this list: secrets never mirror. The settings file mirrors
+    with its secrets redacted (see _mirror_redacted_settings),
+    never verbatim."""
     from aria import config, memory, workspaces
-    return [
+    slots = [
         Path(memory.db_path()),
         Path(config.SETTINGS_FILE),
         Path(workspaces.path('chat_history.md', memory.CHAT_LOG_FILE)),
     ]
+    seen = {p.resolve() for p in slots}
+    for _kind, path in _recovery_paths():
+        if path.resolve() not in seen:
+            seen.add(path.resolve())
+            slots.append(path)
+    return slots
+
+
+# ── Recovery manifest (pass 29 #33) ───────────────────────────────
+
+RECOVERY_MANIFEST_VERSION = 1
+RECOVERY_MANIFEST_NAME = "recovery_manifest.json"
+
+# Allowlisted recovery entries, by basename: (kind, required).
+# Anything not listed here mirrors only as a plain "store"
+# entry in the manifest — the manifest never invents a kind,
+# and it never carries file contents (no secret can leak
+# through it, and aria_keys.json is excluded by name).
+_RECOVERY_KINDS = {
+    "workspaces.json": ("project_registry", True),
+    "delegated_tasks.json": ("delegated_tasks", True),
+    "triggers.json": ("triggers", False),
+    "triggers_state.json": ("triggers_state", False),
+    "reminder_gate.json": ("reminder_gate", False),
+}
+
+_RESTORE_POLICY = (
+    "Restore is metadata only: copy files back by hand. "
+    "Never automatically execute restored approvals or "
+    "uncertain tasks — a restored delegated task resumes "
+    "only as blocked, and a pending approval requires fresh "
+    "approval before anything runs.")
+
+
+def _recovery_paths():
+    """(kind, Path) for the project and workflow stores the
+    mirror must carry, resolved through the same seams their
+    owners use (data_dir for install-root state, workspaces
+    for project-owned files). Missing files are still listed
+    — backup_slots() returns existing-or-not paths — so a
+    restore can tell 'never existed' from 'lost'."""
+    from aria import config, data_dir, workspaces
+    entries = [
+        ("project_registry",
+         Path(data_dir.path("workspaces.json"))),
+        ("delegated_tasks",
+         Path(workspaces.path(
+             "delegated_tasks.json",
+             os.path.join(config.WORKSPACE_DIR,
+                          "delegated_tasks.json")))),
+        ("triggers",
+         Path(workspaces.path(
+             "triggers.json",
+             os.path.join(config.WORKSPACE_DIR, "triggers.json")))),
+        ("triggers_state",
+         Path(workspaces.path(
+             "triggers_state.json",
+             os.path.join(config.WORKSPACE_DIR,
+                          "triggers_state.json")))),
+        ("reminder_gate",
+         Path(data_dir.path("reminder_gate.json"))),
+    ]
+    routines_dir = Path(data_dir.subdir("routines"))
+    try:
+        routine_files = (sorted(routines_dir.glob("*.json"),
+                                key=lambda p: p.name)
+                         if routines_dir.is_dir() else [])
+    except Exception:
+        routine_files = []
+    for routine in routine_files:
+        entries.append(("routine", routine))
+    return entries
+
+
+def recovery_manifest(slots=None) -> dict:
+    """The versioned, allowlisted manifest for `slots`
+    (default: backup_slots()). Each entry carries name, kind,
+    whether it is required, and whether the source file
+    existed — never contents, so no secret can leak through
+    it. aria_keys.json is listed under `excluded`, never as
+    an entry."""
+    if slots is None:
+        slots = backup_slots()
+    entries = []
+    for slot in slots or []:
+        slot = Path(slot)
+        if slot.name in _RECOVERY_KINDS:
+            kind, required = _RECOVERY_KINDS[slot.name]
+        elif slot.parent.name == "routines":
+            kind, required = "routine", False
+        else:
+            kind, required = "store", False
+        entries.append({"name": slot.name, "kind": kind,
+                        "required": required,
+                        "present": slot.is_file()})
+    return {"version": RECOVERY_MANIFEST_VERSION,
+            "entries": entries,
+            "excluded": ["aria_keys.json"],
+            "restore_policy": _RESTORE_POLICY}
+
+
+def _write_recovery_manifest(dest, slots) -> None:
+    """Write recovery_manifest.json into the mirror directory
+    (temp file in the same dir + os.replace, so a failed write
+    never leaves a torn manifest). Raises on failure — the
+    caller treats a manifest that could not be written as a
+    failed mirror, not a silent omission."""
+    import json
+    fd, temp = tempfile.mkstemp(prefix=".aria-manifest-", dir=dest)
+    os.close(fd)
+    try:
+        Path(temp).write_text(
+            json.dumps(recovery_manifest(slots), indent=2,
+                       sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temp, Path(dest) / RECOVERY_MANIFEST_NAME)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
 
 
 def snapshot_and_mirror() -> bool:
