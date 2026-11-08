@@ -697,6 +697,60 @@ def tool_volume(action: str = "status", level: int = 50) -> str:
 
 
 # ---------------- Comms (Gmail) ----------------
+_MISSING_KEY = object()
+
+
+def _keys_file_values(keys):
+    """Fresh re-read of aria_keys.json for `keys`, or None when
+    the file cannot be read or parsed. Values are compared in
+    memory only and never logged."""
+    try:
+        from aria.config import KEYS_FILE
+        with open(KEYS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return None
+        return {k: data.get(k) for k in keys}
+    except Exception:
+        return None
+
+
+def _persist_key_updates(updates):
+    """Persist `updates` ({key: new value}) to aria_keys.json
+    and verify the durable state before the caller claims
+    success.
+
+    Returns True only when save_keys() succeeds AND a fresh
+    read of the keys file shows every updated value. On any
+    failure the in-memory _KEYS entries are rolled back to
+    their previous values (the ui_panels precedent), so memory
+    never claims a persistence the disk lacks — and nothing
+    about the values is logged. Environment variables still
+    take precedence at read time (key_get checks env first),
+    so a credential supplied via env remains available even
+    when the file save fails; the caller reports that, not a
+    save."""
+    previous = {k: _KEYS.get(k, _MISSING_KEY) for k in updates}
+    _KEYS.update(updates)
+    saved = False
+    try:
+        saved = bool(save_keys())
+    except Exception:
+        saved = False
+    if saved:
+        stored = _keys_file_values(updates.keys())
+        saved = (stored is not None
+                 and all(stored.get(k) == v
+                         for k, v in updates.items()))
+    if not saved:
+        for key, value in previous.items():
+            if value is _MISSING_KEY:
+                _KEYS.pop(key, None)
+            else:
+                _KEYS[key] = value
+    return saved
+
+
 def _gmail_creds() -> Tuple[str, str]:
     # key_get returns (value, source); we only need the value.
     return (key_get("GMAIL_USER")[0] or "").strip(), \
@@ -705,10 +759,35 @@ def _gmail_creds() -> Tuple[str, str]:
 
 def tool_gmail_setup(gmail_user: str, app_password: str) -> str:
     """Store Gmail credentials in aria_keys.json."""
-    _KEYS["GMAIL_USER"] = (gmail_user or "").strip()
-    _KEYS["GMAIL_APP_PASSWORD"] = (app_password or "").replace(" ", "").strip()
-    save_keys()
-    return f"Gmail saved for {_KEYS['GMAIL_USER']}. You can now send email with send_email and read it with read_email."
+    user = (gmail_user or "").strip()
+    password = (app_password or "").replace(" ", "").strip()
+    if _persist_key_updates({"GMAIL_USER": user,
+                             "GMAIL_APP_PASSWORD": password}):
+        return f"Gmail saved for {user}. You can now send email with send_email and read it with read_email."
+    # The save failed and _KEYS was rolled back: the new
+    # credentials are NOT stored. What, if anything, is still
+    # available comes from the environment (key_get checks env
+    # first) or from the previously stored values.
+    env_user = (os.environ.get("GMAIL_USER") or "").strip()
+    env_pw = (os.environ.get("GMAIL_APP_PASSWORD") or ""
+              ).replace(" ", "").strip()
+    if env_user and env_pw:
+        return ("Gmail credentials were NOT stored — aria_keys.json "
+                "could not be written. They are available for this "
+                "session only from environment variables, and will "
+                "not survive a restart. Fix the keys file, then call "
+                "gmail_setup again with the credentials.")
+    current_user, current_pw = _gmail_creds()
+    if current_user and current_pw and current_pw != "INSERT":
+        return ("Gmail credentials were NOT stored — aria_keys.json "
+                "could not be written. The new credentials are not "
+                "in use; the previously stored credentials remain "
+                "in place. Fix the keys file, then call gmail_setup "
+                "again with the credentials.")
+    return ("Gmail credentials were NOT stored — aria_keys.json "
+            "could not be written, so Gmail is not set up. Fix the "
+            "keys file, then call gmail_setup again with the "
+            "credentials.")
 
 
 def tool_send_email(to: str, subject: str, body: str) -> str:
@@ -913,10 +992,28 @@ def tool_calendar_setup(ical_url: str) -> str:
     if not url.startswith(("http://", "https://")) or "ics" not in url.lower():
         return ("That doesn't look like an iCal URL. In Google Calendar go to Settings > "
                 "your calendar > 'Secret address in iCal format', copy it, and pass it here.")
-    _KEYS["ICAL_URL"] = url
-    save_keys()
-    return ("Calendar connected. I'll read your live schedule from now on - "
-            "check it anytime with check_calendar.")
+    if _persist_key_updates({"ICAL_URL": url}):
+        return ("Calendar connected. I'll read your live schedule from now on - "
+                "check it anytime with check_calendar.")
+    # The save failed and _KEYS was rolled back: the new URL is
+    # NOT stored. What, if anything, is still available comes
+    # from the environment or from the previously stored value.
+    env_url = (os.environ.get("ICAL_URL") or "").strip()
+    if env_url and env_url != "INSERT":
+        return ("Calendar URL was NOT stored — aria_keys.json could "
+                "not be written. It is available for this session "
+                "only from the environment variable, and will not "
+                "survive a restart. Fix the keys file, then call "
+                "calendar_setup again with the URL.")
+    if _ical_url():
+        return ("Calendar URL was NOT stored — aria_keys.json could "
+                "not be written. The new URL is not in use; the "
+                "previously stored URL remains in place. Fix the "
+                "keys file, then call calendar_setup again with "
+                "the URL.")
+    return ("Calendar URL was NOT stored — aria_keys.json could not "
+            "be written, so no calendar is connected. Fix the keys "
+            "file, then call calendar_setup again with the URL.")
 
 
 def tool_check_calendar(days: int = 1) -> str:
