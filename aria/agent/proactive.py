@@ -24,7 +24,7 @@ from aria.memory import (
 )
 import aria.agent.workers as workers
 from aria.agent.providers import provider_text
-from aria.scheduler import BREAK_REMINDERS
+from aria import scheduler as _scheduler_mod
 from aria import config as _config_silent
 
 _HEARTBEAT_MEM_FILE = os.path.join(WORKSPACE_DIR, "heartbeat_memory.json")
@@ -303,6 +303,17 @@ def evaluate_autonomous_goals(action_fn: Optional[Callable[..., str]] = None,
         break  # Process at most one goal per heartbeat cycle
 
 
+def _break_due(now: float, session_start: float,
+               last_activity: float) -> bool:
+    """Break-nudge decision (pass 29 #54): reads the LIVE preference
+    through the scheduler accessor, so a toggle after import takes
+    effect immediately. The 1.5 h session / 90 min activity windows
+    are unchanged."""
+    return bool(_scheduler_mod.break_reminders_enabled()
+                and (now - session_start) / 3600 >= 1.5
+                and (now - last_activity) < 5400)
+
+
 def proactive_heartbeat_loop(speak_fn: Callable[[str], None],
                              is_busy_fn: Callable[[], bool],
                              is_whisper_fn: Callable[[], bool],
@@ -333,11 +344,10 @@ def proactive_heartbeat_loop(speak_fn: Callable[[str], None],
                 last_battery_alert = False
 
             # 2. Ergonomic Break Reminders
-            if BREAK_REMINDERS and (now - session_start) / 3600 >= 1.5:
+            if _break_due(now, session_start, get_last_activity_fn()):
                 session_start = now
-                if (now - get_last_activity_fn()) < 5400:
-                    proactive_say("break", "You have been at it a while, stretch and get some water.",
-                                  speak_fn, is_busy_fn, is_whisper_fn)
+                proactive_say("break", "You have been at it a while, stretch and get some water.",
+                              speak_fn, is_busy_fn, is_whisper_fn)
 
             # 3. Persistent Worker: Download Completions
             new_downloads = workers.pop_pending_downloads()

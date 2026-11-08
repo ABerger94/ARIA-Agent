@@ -510,9 +510,30 @@ def tool_set_timer(duration_text: str, label: str = "timer") -> str:
     return f"Timer set: {label}, {duration_text} from now."
 
 
+def break_reminders_enabled() -> bool:
+    """Live break-reminder preference (pass 29 #54). The persisted
+    setting wins — it survives restarts; without one, the module
+    default applies. Consumers must call this, never bind the
+    BREAK_REMINDERS global by value: the tool rebinds the global,
+    so a by-value copy goes stale on the first toggle."""
+    try:
+        saved = _config_silent.get_setting("break_reminders", None)
+    except Exception:
+        saved = None
+    if saved is None:
+        return bool(BREAK_REMINDERS)
+    return bool(saved)
+
+
 def tool_break_reminders(enabled: Any = True) -> str:
     global BREAK_REMINDERS
     BREAK_REMINDERS = bool(enabled) if isinstance(enabled, bool) else str(enabled).lower() in ("1", "true", "on", "yes")
+    # Persist the preference so a restart keeps it (pass 29 #54) —
+    # the in-memory global alone dies with the process.
+    try:
+        _config_silent.set_setting("break_reminders", BREAK_REMINDERS)
+    except Exception as _e_silent:
+        _config_silent.log_silent("tool_break_reminders", _e_silent)
     return f"Break reminders {'enabled' if BREAK_REMINDERS else 'disabled'}."
 
 
