@@ -472,6 +472,19 @@ class MCPBridge:
         # name -> {"config": dict, "cm": ctx manager, "session": ClientSession,
         #           "tools": [Tool], "aria_names": [str]}
         self._sessions: Dict[str, Dict[str, Any]] = {}
+        # Pass 29 #32: one lock per server serializing its
+        # lifecycle (connect / disconnect); see _connect_lock.
+        self._connect_locks: Dict[str, threading.Lock] = {}
+
+    def _connect_lock(self, key: str) -> threading.Lock:
+        """The lock serializing one server's connect/disconnect
+        sequence, created once per key under self._lock."""
+        with self._lock:
+            lock = self._connect_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._connect_locks[key] = lock
+            return lock
 
     # -- loop management ----------------------------------------------------
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
@@ -711,47 +724,73 @@ class MCPBridge:
                            "the new configuration.")
         if cfg.get("transport") != "http" and not _mcp_available():
             return False, _missing_dep_message()
-        if key in self._sessions:
-            entry = self._sessions[key]
-            task = entry.get("task")
-            if task is not None and task.done():
-                # Pass 26 B4#2: a dead entry is not a connection.
-                # Drop it (unregistering its tools) and reconnect
-                # below instead of reporting "already connected".
-                stale = self._sessions.pop(key, None)
-                if stale is not None:
-                    _unregister_server_tools(
-                        key, stale.get("aria_names") or [])
-            else:
-                return True, f"MCP server '{key}' is already connected."
-        try:
-            task, queue, tools = self._run(self._spawn_actor(key, cfg), timeout=35.0)
-        except Exception as e:
-            return False, f"Could not connect to MCP server '{key}': {e}"
-        entry = {"config": cfg, "task": task, "queue": queue,
-                 "tools": tools, "aria_names": []}
-        self._sessions[key] = entry
-        aria_names = _register_server_tools(key, tools)
-        entry["aria_names"] = aria_names
-        # Pass 27 #19: the registration revision the discovered
-        # tools were approved against (see _registration_digest).
-        entry["registration_digest"] = _registration_digest(tools)
-        return True, (f"Connected to MCP server '{key}' "
-                      f"({cfg.get('transport')}); loaded {len(aria_names)} tools: "
-                      f"{', '.join(aria_names[:8])}"
-                      f"{'...' if len(aria_names) > 8 else ''}.")
+        # Pass 29 #32: the existence check, the spawn, and the
+        # store used to run unsynchronized — two concurrent
+        # connects both spawned an actor and the second overwrote
+        # _sessions[key], leaking the first actor with no entry
+        # able to stop it. The whole check -> spawn -> store ->
+        # register sequence runs under this server's lock; a
+        # concurrent connect waits, then sees the live session
+        # and reports "already connected".
+        with self._connect_lock(key):
+            if key in self._sessions:
+                entry = self._sessions[key]
+                task = entry.get("task")
+                if task is not None and task.done():
+                    # Pass 26 B4#2: a dead entry is not a connection.
+                    # Drop it (unregistering its tools) and reconnect
+                    # below instead of reporting "already connected".
+                    stale = self._sessions.pop(key, None)
+                    if stale is not None:
+                        _unregister_server_tools(
+                            key, stale.get("aria_names") or [])
+                else:
+                    return True, f"MCP server '{key}' is already connected."
+            try:
+                task, queue, tools = self._run(self._spawn_actor(key, cfg), timeout=35.0)
+            except Exception as e:
+                return False, f"Could not connect to MCP server '{key}': {e}"
+            entry = {"config": cfg, "task": task, "queue": queue,
+                     "tools": tools, "aria_names": []}
+            self._sessions[key] = entry
+            try:
+                aria_names = _register_server_tools(key, tools)
+            except Exception as e:
+                # Registration failed after the actor spawned:
+                # stop the actor and drop the entry instead of
+                # leaking an unreachable actor.
+                self._sessions.pop(key, None)
+                try:
+                    self._run(self._stop_actor(entry), timeout=20.0)
+                except Exception as _e_silent:
+                    config.log_silent("connect", _e_silent)
+                return False, (f"Could not register tools for MCP "
+                               f"server '{key}': {e}")
+            entry["aria_names"] = aria_names
+            # Pass 27 #19: the registration revision the discovered
+            # tools were approved against (see _registration_digest).
+            entry["registration_digest"] = _registration_digest(tools)
+            return True, (f"Connected to MCP server '{key}' "
+                          f"({cfg.get('transport')}); loaded {len(aria_names)} tools: "
+                          f"{', '.join(aria_names[:8])}"
+                          f"{'...' if len(aria_names) > 8 else ''}.")
 
     def disconnect(self, name: str) -> Tuple[bool, str]:
         key = (name or "").strip().lower()
-        entry = self._sessions.pop(key, None)
-        if entry is None:
-            return False, f"MCP server '{key}' is not connected."
-        try:
-            self._run(self._stop_actor(entry), timeout=20.0)
-        except Exception as _e_silent:
-            config.log_silent("disconnect", _e_silent)
-        _unregister_server_tools(key, entry.get("aria_names") or [])
-        return True, f"Disconnected MCP server '{key}'."
+        # Pass 29 #32: disconnect takes the same per-server lock
+        # so it cannot pop an entry a concurrent connect is
+        # about to store, or stop an actor a concurrent connect
+        # just registered.
+        with self._connect_lock(key):
+            entry = self._sessions.pop(key, None)
+            if entry is None:
+                return False, f"MCP server '{key}' is not connected."
+            try:
+                self._run(self._stop_actor(entry), timeout=20.0)
+            except Exception as _e_silent:
+                config.log_silent("disconnect", _e_silent)
+            _unregister_server_tools(key, entry.get("aria_names") or [])
+            return True, f"Disconnected MCP server '{key}'."
 
     def disconnect_all(self) -> str:
         names = list(self._sessions.keys())
@@ -891,41 +930,48 @@ def _register_server_tools(server: str, tools: List[Any]) -> List[str]:
     bridge = get_bridge()
     aria_names: List[str] = []
     seen = set()
-    for t in tools:
-        # Pass 27 #4: an empty (or otherwise unclassifiable)
-        # remote name used to register as mcp_<server>__, which
-        # the policy regex — requiring a non-empty tool part —
-        # does not classify as a discovered tool, so the handler
-        # ran ungated in safe mode. Reject such names here and
-        # never register them; the server keeps its other tools.
-        remote_name = getattr(t, "name", "")
-        if (not isinstance(remote_name, str)
-                or not re.fullmatch(r"[A-Za-z0-9_.-]+", remote_name)):
-            config.log_silent(
-                "_register_server_tools",
-                ValueError(
-                    f"refused MCP tool with invalid remote name "
-                    f"{remote_name!r} from server {server!r}"))
-            continue
-        base = f"mcp_{server}__{remote_name}"
-        aria_name = _unique_tool_name(base, seen)
-        seen.add(aria_name)
-        schema = getattr(t, "inputSchema", None) or {}
-        desc = getattr(t, "description", "") or remote_name
-        decl = {
-            "name": aria_name,
-            "description": f"[MCP:{server}] {desc}".strip()[:600],
-            "parameters": convert_schema(schema),
-        }
-        _schemas.register_dynamic_tool_declaration(aria_name, decl, toolkit="mcp")
-        mcp_tool_name = remote_name
-        server_key = server
+    try:
+        for t in tools:
+            # Pass 27 #4: an empty (or otherwise unclassifiable)
+            # remote name used to register as mcp_<server>__, which
+            # the policy regex — requiring a non-empty tool part —
+            # does not classify as a discovered tool, so the handler
+            # ran ungated in safe mode. Reject such names here and
+            # never register them; the server keeps its other tools.
+            remote_name = getattr(t, "name", "")
+            if (not isinstance(remote_name, str)
+                    or not re.fullmatch(r"[A-Za-z0-9_.-]+", remote_name)):
+                config.log_silent(
+                    "_register_server_tools",
+                    ValueError(
+                        f"refused MCP tool with invalid remote name "
+                        f"{remote_name!r} from server {server!r}"))
+                continue
+            base = f"mcp_{server}__{remote_name}"
+            aria_name = _unique_tool_name(base, seen)
+            seen.add(aria_name)
+            schema = getattr(t, "inputSchema", None) or {}
+            desc = getattr(t, "description", "") or remote_name
+            decl = {
+                "name": aria_name,
+                "description": f"[MCP:{server}] {desc}".strip()[:600],
+                "parameters": convert_schema(schema),
+            }
+            _schemas.register_dynamic_tool_declaration(aria_name, decl, toolkit="mcp")
+            mcp_tool_name = remote_name
+            server_key = server
 
-        def _handler(a, _s=server_key, _t=mcp_tool_name, _b=bridge):
-            return _b.call_tool(_s, _t, a or {})
+            def _handler(a, _s=server_key, _t=mcp_tool_name, _b=bridge):
+                return _b.call_tool(_s, _t, a or {})
 
-        register_tool(aria_name, _handler)
-        aria_names.append(aria_name)
+            register_tool(aria_name, _handler)
+            aria_names.append(aria_name)
+    except Exception:
+        # Pass 29 #32: a mid-registration failure must not leave
+        # a half-registered tool set behind — connect() drops the
+        # actor on this path, so the tools must go too.
+        _unregister_server_tools(server, aria_names)
+        raise
     return aria_names
 
 
