@@ -55,6 +55,12 @@ def _state_path() -> str:
     return workspaces.path('triggers_state.json', os.path.join(STORE_DIR, 'triggers_state.json'))
 
 
+def _counter_path() -> str:
+    # Pass 29 #38: the last issued trigger id, persisted apart
+    # from the definitions so ids are never reused.
+    return workspaces.path('triggers_counter.json', os.path.join(STORE_DIR, 'triggers_counter.json'))
+
+
 def _load_json(path, default):
     try:
         with open(path, encoding="utf-8") as f:
@@ -114,12 +120,20 @@ def create_trigger(name: str, source: str, task: str, rule=None,
     triggers = load_triggers()
     if any(t["name"].lower() == name.lower() for t in triggers):
         return {"ok": False, "error": f"a trigger named '{name}' exists."}
-    tid = (triggers[-1]["id"] + 1) if triggers else 1
+    # Pass 29 #38: ids are monotonic, never reused. The counter
+    # persists the last issued id separately; taking the max
+    # against the live definitions keeps legacy installs (no
+    # counter file yet, ids already issued) from colliding.
+    last_issued = _load_json(_counter_path(), 0)
+    if not isinstance(last_issued, int):
+        last_issued = 0
+    tid = max([t["id"] for t in triggers] + [last_issued]) + 1
     entry = {"id": tid, "name": name, "source": source, "rule": rule,
              "task": task, "mode": mode, "enabled": True,
              "policy": policy}
     triggers.append(entry)
     _save_triggers(triggers)
+    _save_json(_counter_path(), tid)
     add_log(f"[trigger] created #{tid} '{name}' ({source}, {mode}): {task}")
     return {"ok": True, "trigger": entry}
 
@@ -130,6 +144,26 @@ def delete_trigger(tid) -> bool:
     if len(kept) == len(triggers):
         return False
     _save_triggers(kept)
+    # Pass 29 #38: delete the definition-owned state together
+    # with the definition, so a later trigger can never inherit
+    # the predecessor's folder snapshot, cooldown, or seen mail.
+    # (The two files are written with separate atomic writes —
+    # the store has no cross-file transaction — but both happen
+    # inside this one delete.) The shared legacy 'seen_mail'
+    # list is not per-trigger and stays.
+    key = str(tid)
+    state = _load_json(_state_path(),
+                       {"seen_mail": [], "folder_snaps": {},
+                        "last_fired": {}})
+    changed = False
+    for section in ("folder_snaps", "last_fired",
+                    "seen_mail_by_trigger"):
+        bucket = state.get(section)
+        if isinstance(bucket, dict) and key in bucket:
+            del bucket[key]
+            changed = True
+    if changed:
+        _save_json(_state_path(), state)
     add_log(f"[trigger] deleted #{tid}")
     return True
 
