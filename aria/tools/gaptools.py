@@ -761,14 +761,25 @@ def build_notify_script(message, os_name) -> str:
 
 
 def _parse_when(args):
-    """(target datetime | None, error reason | None)."""
+    """(target datetime | None, error reason | None).
+
+    The returned datetime is always naive local time: a
+    timezone-aware input is normalized to local time (the OS
+    schedulers run in local time), so an aware input can never
+    reach the naive comparison in tool_os_reminder and raise
+    TypeError. A 'Z' suffix is accepted as UTC."""
     at_raw = str(args.get("at") or "").strip()
     if at_raw:
         try:
-            return datetime.fromisoformat(at_raw), None
+            parsed = datetime.fromisoformat(
+                at_raw[:-1] + "+00:00"
+                if at_raw.endswith(("Z", "z")) else at_raw)
         except ValueError:
             return None, (f"could not parse the time '{at_raw}' — use "
                           "ISO format YYYY-MM-DDTHH:MM")
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        return parsed, None
     delay = args.get("delay_minutes")
     if delay is not None:
         try:
@@ -778,6 +789,20 @@ def _parse_when(args):
         return datetime.now() + timedelta(minutes=minutes), None
     return None, ("give either 'at' (YYYY-MM-DDTHH:MM local time) or "
                   "'delay_minutes'")
+
+
+def _round_up_to_minute(when):
+    """The next whole minute at or after `when` (unchanged when
+    already on a minute boundary). The minute-precision OS
+    schedulers (schtasks /ST, `at`) only see HH:MM, so the exact
+    timestamp sent to them must be this rounded value — a
+    requested second-precision time can already be past by the
+    time its minute arrives (23:59:30 rounds to 00:00 the next
+    day)."""
+    if when.second == 0 and when.microsecond == 0:
+        return when
+    return (when.replace(second=0, microsecond=0)
+            + timedelta(minutes=1))
 
 
 def tool_os_reminder(args) -> str:
@@ -794,6 +819,17 @@ def tool_os_reminder(args) -> str:
             f"that time has passed ({when:%Y-%m-%d %H:%M}) — pick a "
             "future time")
     os_name = _os_name()
+    # Minute-precision schedulers see only HH:MM: validate the
+    # exact timestamp sent to the OS, rounded forward to the next
+    # whole minute, so a request seconds ahead can never be
+    # registered in the past. The systemd-run path keeps second
+    # precision and uses `when` unchanged.
+    minute_when = _round_up_to_minute(when)
+    if os_name == "win32" and minute_when <= datetime.now():
+        return _failed(
+            "os_reminder",
+            f"that time has passed ({minute_when:%Y-%m-%d %H:%M}) "
+            "— pick a future time")
     name = task_name_for(message, when)
     script = build_notify_script(message, os_name)
     folder = _workspace_dir() / "os_reminders"
@@ -814,9 +850,11 @@ def tool_os_reminder(args) -> str:
                            f"could not write the reminder script: {exc}")
         tr = (f'powershell -NoProfile -ExecutionPolicy Bypass -File '
               f'"{script_path}"')
+        # schtasks /ST is minute precision: send the rounded-forward
+        # time, never the raw requested seconds.
         rc, out = _run(["schtasks", "/Create", "/TN", name, "/TR", tr,
-                        "/SC", "ONCE", "/SD", f"{when:%m/%d/%Y}",
-                        "/ST", f"{when:%H:%M}", "/F"])
+                        "/SC", "ONCE", "/SD", f"{minute_when:%m/%d/%Y}",
+                        "/ST", f"{minute_when:%H:%M}", "/F"])
         if rc != 0:
             tail = (out or "").strip()[-300:]
             return _failed(
@@ -824,10 +862,11 @@ def tool_os_reminder(args) -> str:
                 f"schtasks refused to register the reminder "
                 f"(rc={rc})" + (f": {tail}" if tail else ""),
                 task=name)
-        return _done("os_reminder", task=name, at=at_iso,
+        at_min = f"{minute_when:%Y-%m-%d %H:%M}"
+        return _done("os_reminder", task=name, at=at_min,
                      scheduler="schtasks") + (
                          f"\nOS reminder registered with Task "
-                         f"Scheduler: '{name}' fires {at_iso} even "
+                         f"Scheduler: '{name}' fires {at_min} even "
                          f"if ARIA is closed.")
 
     # linux / darwin: a shell script + systemd-run, else `at`.
@@ -851,13 +890,16 @@ def tool_os_reminder(args) -> str:
                              f"systemd: '{name}' fires {at_iso} even "
                              f"if ARIA is closed.")
     if shutil.which("at"):
+        # `at` is minute precision like schtasks: send the
+        # rounded-forward time.
+        at_min = f"{minute_when:%Y-%m-%d %H:%M}"
         rc, out = _run(["at", "-f", str(script_path),
-                        f"{when:%H:%M}", f"{when:%Y-%m-%d}"])
+                        f"{minute_when:%H:%M}", f"{minute_when:%Y-%m-%d}"])
         if rc == 0:
-            return _done("os_reminder", task=name, at=at_iso,
+            return _done("os_reminder", task=name, at=at_min,
                          scheduler="at") + (
                              f"\nOS reminder registered with at: "
-                             f"'{name}' fires {at_iso} even if ARIA "
+                             f"'{name}' fires {at_min} even if ARIA "
                              f"is closed.")
     return _failed(
         "os_reminder",
