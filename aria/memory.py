@@ -369,6 +369,67 @@ def memory_save(category: str, key: str, value: str, *, source="conversation", c
     _queue_backup()
 
 
+def memory_save_if_value(category: str, key: str, value: str,
+                         expected_value, *, source="conversation",
+                         confidence=1.0) -> bool:
+    """Conditional save (pass 29 #50): replace the row only when
+    its current value equals `expected_value`, or insert when no
+    row exists and `expected_value` is None. Returns True when
+    the save landed, False when a different live value (or a row
+    that appeared since the caller looked) blocked it — nothing
+    is written, nothing is archived, the caller keeps the
+    contradiction pending instead of overwriting the newer
+    value. The embedding is computed BEFORE DB_LOCK is taken, so
+    the lock is never held across the provider call; the compare
+    and the upsert run in one transaction under the lock, so no
+    writer can slip between them."""
+    vec = _embed(f"{key}: {value}")
+    packed = _pack_embedding(vec)
+    clamped = max(0.0, min(1.0, float(confidence)))
+    model = EMBED_MODEL if vec else None
+    landed = False
+    with DB_LOCK:
+        conn = sqlite3.connect(db_path())
+        try:
+            cur = conn.cursor()
+            if expected_value is None:
+                row = cur.execute(
+                    "SELECT value FROM memory WHERE key = ?",
+                    (key,)).fetchone()
+                if row is None:
+                    cur.execute(
+                        """INSERT INTO memory (category, key, value,
+                           embedding, source, confidence,
+                           embedding_model, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?,
+                           CURRENT_TIMESTAMP)""",
+                        (category, key, value, packed, source,
+                         clamped, model))
+                    landed = True
+            else:
+                cur.execute(
+                    """UPDATE memory SET category=?, value=?,
+                       embedding=?, source=?, confidence=?,
+                       embedding_model=?, updated_at=CURRENT_TIMESTAMP
+                       WHERE key=? AND value=?""",
+                    (category, value, packed, source, clamped,
+                     model, key, expected_value))
+                landed = cur.rowcount > 0
+            if landed:
+                conn.commit()
+        finally:
+            conn.close()
+    if not landed:
+        return False
+    # Same bookkeeping as memory_save, but only on a landed save.
+    spine_append("memory_save", {"category": category, "key": key,
+                                 "value": value})
+    _SPINE_BOOT_KEYS.append(key)
+    add_log(f"Memory saved: [{key}]")
+    _queue_backup()
+    return True
+
+
 def memory_get(category: str, key: str) -> str:
     """Read a single memory value by category+key. Returns "" when absent."""
     try:

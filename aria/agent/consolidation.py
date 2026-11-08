@@ -107,6 +107,17 @@ def _save(category: str, key: str, value: str) -> None:
     memory_save(category, key, value)
 
 
+def _cas_save(category: str, key: str, value: str,
+              expected_value) -> bool:
+    """Atomic compare-and-swap save via aria.memory (pass 29
+    #50): the compare and the upsert run in one transaction, so
+    a correction saved between the resolution's comparison read
+    and the upsert cannot be silently overwritten. Returns False
+    when a different live value blocked the save."""
+    from aria.memory import memory_save_if_value
+    return memory_save_if_value(category, key, value, expected_value)
+
+
 # ------------------------------------------------------------ reconcile
 def _norm(value: str) -> str:
     return " ".join(str(value).split()).casefold()
@@ -175,25 +186,38 @@ def retire(key: str, value: str, category: str, reason: str, *,
 def resolve_contradiction(cid: str, keep: str, *,
                           save: Callable = _save,
                           delete: Callable = _delete,
-                          existing: Callable = _existing) -> Optional[dict]:
+                          existing: Callable = _existing,
+                          cas_save: Callable = None) -> Optional[dict]:
     """Settle a queued contradiction. keep='new': archive the
     stored value and save the distilled claim. keep='old':
     archive the rejected claim, stored fact untouched. Returns
     the settled entry, or None when the id is unknown.
 
-    keep='new' is compare-and-swap (pass 26 B3#6): the live
-    value is read first and the resolution REFUSES (raising
-    ValueError, entry stays queued) when a live value exists
-    that no longer matches the queued old_value — resolving
-    against a stale old_value would delete the CURRENT value
-    without archiving it. The replacement is saved FIRST and
+    keep='new' is compare-and-swap (pass 26 B3#6, hardened pass
+    29 #50): the live value is read first and the resolution
+    REFUSES (raising ValueError, entry stays queued) when a live
+    value exists that no longer matches the queued old_value —
+    resolving against a stale old_value would delete the CURRENT
+    value without archiving it. The replacement is then saved by
+    an ATOMIC conditional update (memory_save_if_value: UPDATE
+    ... WHERE key=? AND value=?) — the old two-step
+    compare-then-upsert let a correction saved between the
+    comparison and the upsert be silently overwritten, with the
+    archive retaining the original old value instead of the lost
+    correction. A failed comparison leaves the entry queued and
+    overwrites nothing. The replacement is saved FIRST and
     verified to read back before the old value is retired, so a
     failing save leaves the live key intact. The live row is
     deleted only if it still holds the old value after the save
     (the upsert save already replaced it, so deleting
     unconditionally would destroy the replacement just saved).
     A missing live row means there is nothing to protect: the
-    resolution proceeds and saves the claim."""
+    resolution proceeds and saves the claim. `cas_save` (category,
+    key, value, expected_value) -> bool overrides the atomic
+    save; when it is None and the caller injected a non-default
+    `save`, the CAS is emulated from the injected `existing` +
+    `save` (re-read, save only while the live value still
+    matches) so the injectable test seam keeps working."""
     rows = _read_json_list(_queue_path())
     entry = next((r for r in rows if r.get("id") == cid), None)
     if entry is None:
@@ -205,7 +229,32 @@ def resolve_contradiction(cid: str, keep: str, *,
                 f"live value of '{entry['key']}' changed since this "
                 f"contradiction was queued — re-review it instead; "
                 f"nothing was changed and the entry stays queued")
-        save("consolidated", entry["key"], entry["new_value"])
+        expected = cur[1] if cur is not None else None
+        if cas_save is not None:
+            landed = cas_save("consolidated", entry["key"],
+                              entry["new_value"], expected)
+        elif save is _save:
+            landed = _cas_save("consolidated", entry["key"],
+                               entry["new_value"], expected)
+        else:
+            # Injected save/existing seam (tests): no SQL to be
+            # atomic over, so emulate the CAS — re-read and save
+            # only while the live value still matches exactly
+            # (or is still absent, when nothing was there).
+            live = existing(entry["key"])
+            if live is None and expected is None:
+                save("consolidated", entry["key"], entry["new_value"])
+                landed = True
+            elif live is not None and live[1] == expected:
+                save("consolidated", entry["key"], entry["new_value"])
+                landed = True
+            else:
+                landed = False
+        if not landed:
+            raise ValueError(
+                f"live value of '{entry['key']}' changed while "
+                f"resolving — re-review it instead; nothing was "
+                f"changed and the entry stays queued")
         after = existing(entry["key"])
         if after is not None and _norm(after[1]) != _norm(entry["new_value"]):
             # The save reported success but did not land: try to
