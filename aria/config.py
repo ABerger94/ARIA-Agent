@@ -169,6 +169,38 @@ OLLAMA_MODEL, _ = key_get("OLLAMA_MODEL", "qwen2.5:7b")
 # interactive deadline just for prompt prefill, so the local leg
 # gets its own floor (see LocalOllamaProvider._call_timeout).
 OLLAMA_LOCAL_TIMEOUT_S, _ = key_get("OLLAMA_LOCAL_TIMEOUT_S", "180")
+# Local vision model (PROVIDER_MODE=local_only): in local-only mode
+# the vision role is served on-machine by this model on the local
+# Ollama server instead of an Ollama Cloud tag (see
+# resolve_role_model). Vision inference on CPU is the slowest call
+# ARIA makes, so the vision model gets its own timeout floor (see
+# LocalOllamaProvider._call_timeout). Empty string disables the
+# local vision override (vision falls back to OLLAMA_MODEL).
+OLLAMA_LOCAL_VISION_MODEL, _ = key_get("OLLAMA_LOCAL_VISION_MODEL", "qwen2.5vl:7b")
+OLLAMA_LOCAL_VISION_TIMEOUT_S, _ = key_get("OLLAMA_LOCAL_VISION_TIMEOUT_S", "300")
+
+
+def _normalize_provider_mode(raw) -> str:
+    """PROVIDER_MODE is a two-state switch: "auto" (the configured
+    provider chain serves, cloud legs included) or "local_only"
+    (the local Ollama leg serves everything and no API-keyed
+    provider is ever called). Anything else is a typo, not a
+    third mode — fall back to "auto"."""
+    mode = str(raw or "").strip().lower()
+    return mode if mode in ("auto", "local_only") else "auto"
+
+
+# Strict local-only switch (Alek, 2026-11-10): PROVIDER_MODE=
+# "local_only" collapses the effective chain to exactly the
+# ollama_local leg — the API keys stay configured and untouched,
+# their providers are simply never walked. Set in aria_keys.json
+# (or the PROVIDER_MODE env var); takes effect on restart like
+# every other config value.
+_PROVIDER_MODE_RAW, _ = key_get("PROVIDER_MODE", "auto")
+PROVIDER_MODE = _normalize_provider_mode(_PROVIDER_MODE_RAW)
+if str(_PROVIDER_MODE_RAW or "").strip().lower() not in ("auto", "local_only"):
+    print(f"[ARIA] Config: PROVIDER_MODE={_PROVIDER_MODE_RAW!r} is not "
+          f"'auto' or 'local_only' — using 'auto'.", flush=True)
 
 # Chain: gemini -> groq -> openrouter -> mistral -> ollama_local
 # (Gemini promoted to primary 2026-10-27, Alek's call — the old

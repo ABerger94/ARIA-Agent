@@ -773,7 +773,19 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                 chain_start=_turn_chain_start,
             )
 
-            _primary = PROVIDER_CHAIN[0] if PROVIDER_CHAIN else "ollama_cloud"
+            # Primary = head of the EFFECTIVE chain (PROVIDER_MODE-
+            # gated): in local_only mode that is ollama_local, so a
+            # local answer is not misreported as a "fallback". The
+            # import is lazy, like provider_failure_message below —
+            # brain must stay importable against a providers surface
+            # that predates the helper, with the configured chain as
+            # the fallback.
+            try:
+                from aria.agent.providers import effective_chain_names
+                _eff_names = effective_chain_names()
+            except Exception:
+                _eff_names = PROVIDER_CHAIN
+            _primary = _eff_names[0] if _eff_names else "ollama_cloud"
             if get_active_provider() != _primary:
                 hud.set_hud_subtitle(f"Running on {get_active_provider()} (fallback)")
 

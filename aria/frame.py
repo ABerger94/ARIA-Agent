@@ -331,7 +331,7 @@ def strip_data() -> Dict[str, Any]:
         "volume_device": 0.0, "volume_player": 0.0,
         "muted_device": False, "muted_player": False,
         "player_app": "", "player_present": False,
-        "active_provider": "", "providers": [],
+        "active_provider": "", "providers": [], "provider_mode": "auto",
         "voice_ready": False, "voice_enabled": True,
         "subsystems": [], "jobs_running": 0, "jobs_total": 0,
         "scheduled": 0, "task_pending": 0, "task_active": 0,
@@ -376,6 +376,11 @@ def strip_data() -> Dict[str, Any]:
     except Exception:
         pass
     d["active_provider"], d["providers"] = _provider_rows()
+    try:
+        from aria import config as _cfg_mode
+        d["provider_mode"] = _cfg_mode.PROVIDER_MODE
+    except Exception:
+        pass
     try:
         from aria.agent import workers as _workers
         jobs = _workers.list_background_jobs(limit=25)

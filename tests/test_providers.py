@@ -409,6 +409,146 @@ def test_payload_fingerprint():
     print("ok payload_fingerprint", fp)
 
 
+def test_provider_mode_local_only_chain():
+    # PROVIDER_MODE=local_only (Alek, 2026-11-10): the effective
+    # chain is exactly [ollama_local], whatever PROVIDER_CHAIN says
+    # — every API-keyed leg is bypassed, never walked.
+    import aria.agent.providers as _prov
+    saved_mode, saved_chain = _prov.PROVIDER_MODE, _prov.PROVIDER_CHAIN
+    _prov.PROVIDER_MODE = "local_only"
+    _prov.PROVIDER_CHAIN = ["gemini", "groq", "openrouter",
+                            "mistral", "ollama_cloud"]
+    try:
+        assert _prov.effective_chain_names() == ["ollama_local"]
+        names = [p.name for p in _build_chain()]
+        assert names == ["ollama_local"], names
+    finally:
+        _prov.PROVIDER_MODE, _prov.PROVIDER_CHAIN = saved_mode, saved_chain
+    print("ok provider_mode_local_only_chain")
+
+
+def test_provider_mode_auto_chain_unchanged():
+    # Auto mode is the pre-switch behavior, byte for byte: the
+    # configured chain, in order.
+    import aria.agent.providers as _prov
+    saved_mode = _prov.PROVIDER_MODE
+    _prov.PROVIDER_MODE = "auto"
+    try:
+        assert _prov.effective_chain_names() == list(_prov.PROVIDER_CHAIN)
+        names = [p.name for p in _build_chain()]
+    finally:
+        _prov.PROVIDER_MODE = saved_mode
+    assert names == ["gemini", "groq", "openrouter",
+                     "mistral", "ollama_local"], names
+    print("ok provider_mode_auto_chain_unchanged")
+
+
+def test_provider_mode_invalid_value_behaves_auto():
+    # Config normalization: only "auto" / "local_only" survive;
+    # anything else (typos, wrong case is fine) becomes "auto".
+    from aria import config as cfg_mod
+    assert cfg_mod._normalize_provider_mode("bogus") == "auto"
+    assert cfg_mod._normalize_provider_mode("") == "auto"
+    assert cfg_mod._normalize_provider_mode(None) == "auto"
+    assert cfg_mod._normalize_provider_mode("auto") == "auto"
+    assert cfg_mod._normalize_provider_mode("LOCAL_ONLY") == "local_only"
+    assert cfg_mod._normalize_provider_mode(" Local_Only ") == "local_only"
+    # And the providers gate treats an unrecognized value as auto
+    # too (second line of defence): the full chain still builds.
+    import aria.agent.providers as _prov
+    saved_mode = _prov.PROVIDER_MODE
+    _prov.PROVIDER_MODE = "bogus"
+    try:
+        names = [p.name for p in _build_chain()]
+    finally:
+        _prov.PROVIDER_MODE = saved_mode
+    assert names == ["gemini", "groq", "openrouter",
+                     "mistral", "ollama_local"], names
+    print("ok provider_mode_invalid_value_behaves_auto")
+
+
+def test_role_routing_local_only_never_cloud():
+    # In local_only, vision resolves to the LOCAL vision model and
+    # every other role to None — never an Ollama Cloud tag, even
+    # though the cloud tags are still configured.
+    import aria.agent.providers as _prov
+    saved_mode = _prov.PROVIDER_MODE
+    saved_vision = _prov.OLLAMA_LOCAL_VISION_MODEL
+    _prov.PROVIDER_MODE = "local_only"
+    _prov.OLLAMA_LOCAL_VISION_MODEL = "qwen2.5vl:7b"
+    _prov.clear_role_model_cooldown()
+    try:
+        assert _prov.resolve_role_model("vision") == "qwen2.5vl:7b"
+        assert _prov.resolve_role_model("code") is None
+        assert _prov.resolve_role_model("default") is None
+        assert _prov.resolve_role_model("bogus") is None
+        for role in ("vision", "code", "default"):
+            tag = _prov.resolve_role_model(role)
+            assert tag is None or "-cloud" not in tag, (role, tag)
+    finally:
+        _prov.PROVIDER_MODE = saved_mode
+        _prov.OLLAMA_LOCAL_VISION_MODEL = saved_vision
+    print("ok role_routing_local_only_never_cloud")
+
+
+def test_role_routing_auto_unchanged():
+    # Auto mode keeps the cloud role map exactly as before.
+    import aria.agent.providers as _prov
+    saved_mode = _prov.PROVIDER_MODE
+    _prov.PROVIDER_MODE = "auto"
+    _prov.clear_role_model_cooldown()
+    try:
+        assert _prov.resolve_role_model("vision") == _prov.OLLAMA_VISION_MODEL
+        assert _prov.resolve_role_model("code") == _prov.OLLAMA_CODE_MODEL
+        assert _prov.resolve_role_model("default") is None
+    finally:
+        _prov.PROVIDER_MODE = saved_mode
+    print("ok role_routing_auto_unchanged")
+
+
+def test_local_vision_timeout_floor():
+    # A call on the local leg serving the vision model gets the
+    # vision timeout floor (max of the chat floor and
+    # OLLAMA_LOCAL_VISION_TIMEOUT_S); the chat model keeps the
+    # plain local floor.
+    from aria.agent.providers import LocalOllamaProvider
+    import aria.agent.providers as _prov
+    chat = LocalOllamaProvider("ollama_local", "http://localhost:11434/v1",
+                               "qwen2.5:7b")
+    vision = LocalOllamaProvider("ollama_local", "http://localhost:11434/v1",
+                                 _prov.OLLAMA_LOCAL_VISION_MODEL)
+    local_floor = float(_prov.OLLAMA_LOCAL_TIMEOUT_S)
+    vision_floor = max(local_floor, float(_prov.OLLAMA_LOCAL_VISION_TIMEOUT_S))
+    assert chat._call_timeout() >= local_floor, chat._call_timeout()
+    assert vision._call_timeout() >= vision_floor, vision._call_timeout()
+    if float(_prov.OLLAMA_LOCAL_VISION_TIMEOUT_S) > local_floor:
+        assert vision._call_timeout() > chat._call_timeout(), (
+            vision._call_timeout(), chat._call_timeout())
+    print("ok local_vision_timeout_floor", vision._call_timeout())
+
+
+def test_local_only_failure_message_names_mode():
+    # Strict honesty: when the single local leg is down, the
+    # all-down message names local-only mode instead of suggesting
+    # an API key or a cloud retry that will never happen.
+    import aria.agent.providers as _prov
+    from aria import runtime
+    saved_mode = _prov.PROVIDER_MODE
+    _prov.PROVIDER_MODE = "local_only"
+    try:
+        with runtime.execution():
+            ctx = runtime.current()
+            ctx.provider_failures = [{
+                "provider": "ollama_local", "kind": "network",
+                "summary": "network connection failed or timed out"}]
+            msg = _prov.provider_failure_message()
+    finally:
+        _prov.PROVIDER_MODE = saved_mode
+    assert "Local-only mode is on" in msg, msg
+    assert "No cloud provider was tried" in msg, msg
+    print("ok local_only_failure_message_names_mode")
+
+
 if __name__ == "__main__":
     test_system_and_user_text()
     test_model_function_call_roundtrip()
@@ -423,6 +563,13 @@ if __name__ == "__main__":
     test_uppercase_schema_types_lowercased()
     test_assistant_no_text_content_not_null()
     test_payload_fingerprint()
+    test_provider_mode_local_only_chain()
+    test_provider_mode_auto_chain_unchanged()
+    test_provider_mode_invalid_value_behaves_auto()
+    test_role_routing_local_only_never_cloud()
+    test_role_routing_auto_unchanged()
+    test_local_vision_timeout_floor()
+    test_local_only_failure_message_names_mode()
     print("ALL PROVIDER TESTS PASSED")
 
 

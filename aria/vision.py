@@ -232,8 +232,14 @@ def _ollama_native_vision_call(sys_prompt: str, contents: Any) -> Optional[str]:
     _NATIVE_LAST_ERROR = None
     try:
         from aria.agent.providers import (
-            OLLAMA_CLOUD_API_KEY, OLLAMA_CLOUD_MODEL, resolve_role_model)
+            OLLAMA_CLOUD_API_KEY, OLLAMA_CLOUD_MODEL, PROVIDER_MODE,
+            resolve_role_model)
     except Exception:
+        return None
+    if PROVIDER_MODE == "local_only":
+        # Strict local-only: this path is an ollama.com call by
+        # construction — never make it. Local vision is served by
+        # _default_vision_call via the ollama_local leg instead.
         return None
     if not OLLAMA_CLOUD_API_KEY:
         return None
@@ -300,7 +306,34 @@ def _default_vision_call(sys_prompt: str, contents: Any) -> str:
     Order: (1) Ollama native /api/chat (documented image format),
     (2) OpenAI-compatible image_url via the provider chain (ollama_cloud
     only). If both paths are down, returns a bracketed unavailable message.
+
+    PROVIDER_MODE=local_only replaces both paths with a single local
+    one: the ollama_local leg running the local vision model. No
+    ollama.com call is attempted — if the local model does not
+    answer, the message says so instead of falling back to cloud.
     """
+    try:
+        from aria.agent.providers import PROVIDER_MODE as _provider_mode
+    except Exception:
+        _provider_mode = "auto"
+    if _provider_mode == "local_only":
+        data = None
+        try:
+            from aria.agent.providers import provider_call, resolve_role_model
+            data = provider_call(sys_prompt, contents, tool_decls=None,
+                                 model_override=resolve_role_model("vision"),
+                                 only_provider="ollama_local")
+        except Exception as e:
+            add_log(f"local vision call failed: {e}")
+        if data and data.get("candidates"):
+            parts = data["candidates"][0].get("content", {}).get("parts", [])
+            text = "".join(p.get("text", "") for p in parts
+                           if isinstance(p.get("text"), str)).strip()
+            if text:
+                return text
+            return "[Vision returned no description.]"
+        return ("[Vision unavailable: local-only mode is on and the "
+                "local vision model did not respond.]")
     try:
         text = _ollama_native_vision_call(sys_prompt, contents)
         if text:

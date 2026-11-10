@@ -36,14 +36,34 @@ from aria.config import (
     FREELLMAPI_API_KEY, FREELLMAPI_MODEL, FREELLMAPI_BASE_URL,
     OLLAMA_VISION_MODEL, OLLAMA_CODE_MODEL,
     OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_LOCAL_TIMEOUT_S,
-    PROVIDER_CHAIN, KEY_QUARANTINE_DURATION_S,
+    OLLAMA_LOCAL_VISION_MODEL, OLLAMA_LOCAL_VISION_TIMEOUT_S,
+    PROVIDER_CHAIN, PROVIDER_MODE, KEY_QUARANTINE_DURATION_S,
     quarantine_key, key_is_quarantined, key_mask, add_log,
 )
 from aria import config as _config_silent
 from aria.agent.cooldown import CooldownRegistry
 from aria import runtime, usage
 
-ACTIVE_PROVIDER = PROVIDER_CHAIN[0] if PROVIDER_CHAIN else "ollama_cloud"
+def effective_chain_names() -> List[str]:
+    """PROVIDER_CHAIN as PROVIDER_MODE gates it.
+
+    auto: the configured chain, untouched. local_only: exactly
+    ["ollama_local"] — every API-keyed leg is bypassed (the keys
+    themselves are never modified, just never walked), so a
+    local-only turn cannot reach the cloud no matter what
+    PROVIDER_CHAIN contains. Any value other than the literal
+    "local_only" behaves as auto; config already normalizes the
+    stored value, this is the second line of defence. Every chain
+    consumer — the walk, resolve_role_model, brain's primary
+    readout, the frame status — goes through here so they can
+    never disagree about which legs may serve.
+    """
+    if PROVIDER_MODE == "local_only":
+        return ["ollama_local"]
+    return list(PROVIDER_CHAIN)
+
+
+ACTIVE_PROVIDER = (effective_chain_names() or ["ollama_cloud"])[0]
 
 
 # Session stats for the OPS dashboard: failover count, per-provider call
@@ -108,6 +128,15 @@ def provider_failure_message() -> str:
     ctx = runtime.current()
     if ctx.budget_error:
         return ctx.budget_error
+    if PROVIDER_MODE == "local_only":
+        # Strict local-only: the walk had exactly one leg and it did
+        # not answer. Say so plainly — the generic messages below
+        # ("add an API key", "no provider responded") would mislead:
+        # no cloud provider was tried, by design, and none will be
+        # as a silent fallback.
+        return ("Local-only mode is on and the local model is unavailable. "
+                "No cloud provider was tried. Check that Ollama is running "
+                "on this machine, or set PROVIDER_MODE back to auto.")
     failures = ctx.provider_failures
     configured = [f for f in failures if f['kind'] != 'unconfigured']
     if failures and not configured:
@@ -124,6 +153,7 @@ def connection_report() -> str:
     health = provider_health()
     mode = 'ON' if usage.project_budget_enabled() else 'OFF (usage tracking only)'
     lines = ['ARIA model connections', 'Project spending limits: ' + mode]
+    lines.append(f'Provider mode: {PROVIDER_MODE}')
     chain = _build_chain()
     for provider in chain:
         state = health.get(provider.name, {}).get('summary')
@@ -719,6 +749,9 @@ class LocalOllamaProvider(OpenAICompatProvider):
       CPU-only machine, prefill of ARIA's system prompt + tool
       schemas alone takes far longer than 8s, so under the cloud
       deadline this leg could never produce a first token.
+      Calls serving the local vision model (PROVIDER_MODE=
+      local_only) get the higher OLLAMA_LOCAL_VISION_TIMEOUT_S
+      floor instead — see _call_timeout.
     """
 
     def __init__(self, name: str, base_url: str, model: str):
@@ -732,7 +765,18 @@ class LocalOllamaProvider(OpenAICompatProvider):
             local = float(OLLAMA_LOCAL_TIMEOUT_S)
         except (TypeError, ValueError):
             local = 180.0
-        return max(float(_provider_timeout()), local)
+        floor = local
+        # Vision on the local VL model is the slowest call ARIA
+        # makes (image prefill on CPU). When THIS leg is serving
+        # the vision model — _attempt_provider_call's override swap
+        # sets .model before call() runs — the floor rises to
+        # OLLAMA_LOCAL_VISION_TIMEOUT_S (default 300s).
+        if self.model and self.model == OLLAMA_LOCAL_VISION_MODEL:
+            try:
+                floor = max(floor, float(OLLAMA_LOCAL_VISION_TIMEOUT_S))
+            except (TypeError, ValueError):
+                floor = max(floor, 300.0)
+        return max(float(_provider_timeout()), floor)
 
 
 def _ollama_local_base_url() -> str:
@@ -816,10 +860,15 @@ def _providers_by_name(name: Optional[str]) -> List[Provider]:
 
 
 def _build_chain() -> List[Provider]:
-    """Providers in configured order. Phase 2/3 entries plug in here."""
+    """Providers in configured order. Phase 2/3 entries plug in here.
+
+    The names come from effective_chain_names() — PROVIDER_CHAIN as
+    PROVIDER_MODE gates it — so in local_only mode every caller of
+    this function (the chain walk, provider_ping, the frame/OPS
+    readouts) sees exactly the one local leg."""
     registry = _provider_registry()
     chain: List[Provider] = []
-    for n in PROVIDER_CHAIN:
+    for n in effective_chain_names():
         if n == "gemini":
             chain.extend(_gemini_providers())
         elif n in registry:
@@ -840,8 +889,32 @@ def resolve_role_model(role: str) -> Optional[str]:
     and when the role's override is empty/disabled — or when the tag is in
     failure cooldown (a broken role model falls back silently instead of
     being hammered every turn).
+
+    PROVIDER_MODE=local_only changes the map entirely: a role must
+    never resolve to a cloud tag (or a settings override naming
+    one), because the override is applied to a leg and would send
+    the turn off-machine. Vision resolves to the LOCAL vision
+    model, served by the ollama_local leg (in this mode the
+    override applies to that leg — see _attempt_provider_call);
+    every other role returns None, so the local provider's
+    configured model (OLLAMA_MODEL) handles the turn.
     """
     r = (role or "default").strip().lower()
+    # PROVIDER_MODE / OLLAMA_LOCAL_VISION_MODEL are read through
+    # globals() on purpose: tests/test_ultimate_e.py AST-extracts
+    # this function with a fixed namespace that predates both
+    # names, and globals().get() keeps that contract — an extracted
+    # copy sees "auto" and the default vision tag, not a NameError.
+    if globals().get("PROVIDER_MODE", "auto") == "local_only":
+        if r != "vision":
+            return None
+        tag = globals().get(
+            "OLLAMA_LOCAL_VISION_MODEL", "qwen2.5vl:7b") or None
+        if tag and _ROLE_MODEL_COOLDOWN.get(tag, 0) > time.time():
+            add_log(f"role 'vision': local model '{tag}' in failure "
+                    f"cooldown, using default")
+            return None
+        return tag
     override = usage.settings().get("role_models", {}).get(r)
     if override:
         return override
@@ -1112,6 +1185,18 @@ def chain_all_quarantined() -> bool:
         return False
 
 
+def _role_override_leg(provider_name: str) -> bool:
+    """The leg a role model_override may run on. Auto mode: the
+    ollama_cloud leg only — an override must never retag a keyed
+    cloud leg or the local leg. Local-only mode: the ollama_local
+    leg, the only leg there is; resolve_role_model guarantees the
+    override in that mode is the local vision tag, never a cloud
+    model."""
+    if PROVIDER_MODE == "local_only":
+        return provider_name == "ollama_local"
+    return provider_name == "ollama_cloud"
+
+
 def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
                            on_text_chunk, model_override: Optional[str]):
     """Call one provider, optionally on a role-specific model.
@@ -1122,7 +1207,7 @@ def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
     payload was bad). The provider's configured model is always restored.
     Returns (data, used_fallback).
     """
-    use_override = bool(model_override) and provider.name == "ollama_cloud"
+    use_override = bool(model_override) and _role_override_leg(provider.name)
     saved = provider.model if use_override else None
     try:
         if use_override:
@@ -1176,12 +1261,14 @@ def provider_call(
     candidates wins. Quarantined/unconfigured providers are skipped
     without network traffic, so recovery is automatic on quarantine expiry.
 
-    model_override: temporarily run the ollama_cloud leg on a different
-    model tag (see resolve_role_model). Prefer passing role= to
-    provider_text; the main agent loop leaves this unset.
+    model_override: temporarily run the role-override leg on a different
+    model tag (see resolve_role_model) — the ollama_cloud leg in auto
+    mode, the ollama_local leg in local_only mode. Prefer passing role=
+    to provider_text; the main agent loop leaves this unset.
     only_provider: restrict the walk to a single named provider (used for
-    vision, where only ollama_cloud can serve the image payload — walking
-    the other providers would 400/404/403 and quarantine THEIR keys).
+    vision, where only ollama_cloud can serve the image payload in auto
+    mode — walking the other providers would 400/404/403 and quarantine
+    THEIR keys; in local_only mode vision names ollama_local instead).
     chain_start: begin the walk at this provider instead of the head of
     the chain (turn-tier routing, see classify_turn_tier); the remaining
     providers wrap around as fallbacks in their configured order.
@@ -1201,7 +1288,11 @@ def provider_call(
             # Keep explicit project ordering authoritative. Otherwise a working
             # fallback gets the next turn instead of paying the slow leg again.
             chain.sort(key=lambda provider: provider.name != recent[0])
-    if chain_start:
+    # Local-only: the walk is the single local leg, full stop. A tier
+    # chain_start must not rotate it or — worse — prepend an opt-in
+    # leg via _providers_by_name below: that would put a cloud
+    # provider back on a strict local-only turn.
+    if chain_start and PROVIDER_MODE != "local_only":
         rotated = _rotate_chain(chain, chain_start)
         if rotated is not chain and rotated and rotated[0].name == chain_start:
             add_log(f"tier routing: chain starts at '{chain_start}'")
@@ -1234,9 +1325,9 @@ def provider_call(
 
     def _eff_model(p) -> Optional[str]:
         # The model this walk would actually attempt on p: the
-        # role override applies to ollama_cloud only (mirrors
-        # _attempt_provider_call).
-        if model_override and p.name == "ollama_cloud":
+        # role override applies to one leg only (mirrors
+        # _attempt_provider_call; see _role_override_leg).
+        if model_override and _role_override_leg(p.name):
             return model_override
         return getattr(p, "model", None)
 
