@@ -148,7 +148,7 @@ def test_images_dropped():
 def test_chain_order():
     chain = _build_chain()
     names = [p.name for p in chain]
-    assert names == ["gemini", "ollama_cloud", "groq", "openrouter",
+    assert names == ["gemini", "groq", "openrouter",
                      "mistral", "ollama_local"], names
     print("ok chain_order", names)
 
@@ -232,7 +232,15 @@ def test_ollama_local_tool_call_roundtrip():
 
 
 def test_ollama_cloud_skips_without_key():
-    chain = _build_chain()
+    # ollama_cloud left the default chain 2026-11-10 (pay-as-you-go);
+    # it stays registered, so name it explicitly via the module chain.
+    import aria.agent.providers as _prov
+    saved = _prov.PROVIDER_CHAIN
+    _prov.PROVIDER_CHAIN = ["ollama_cloud"]
+    try:
+        chain = _build_chain()
+    finally:
+        _prov.PROVIDER_CHAIN = saved
     oc = [p for p in chain if p.name == "ollama_cloud"][0]
     assert oc.base_url == "https://ollama.com/v1", oc.base_url
     assert oc.model == "gpt-oss:120b", oc.model

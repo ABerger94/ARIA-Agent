@@ -52,10 +52,10 @@ def test_config_defaults():
 def test_default_chain_excludes_freellmapi():
     assert "freellmapi" not in config.PROVIDER_CHAIN
     # ollama_local joined the default chain (last, 2026-11-09);
+    # ollama_cloud left it 2026-11-10 (cloud went pay-as-you-go);
     # freellmapi stays opt-in only.
     assert config.PROVIDER_CHAIN == [
-        "gemini", "ollama_cloud", "groq", "openrouter", "mistral",
-        "ollama_local"]
+        "gemini", "groq", "openrouter", "mistral", "ollama_local"]
     assert "freellmapi" not in _names(providers._build_chain())
     print("ok default_chain_excludes_freellmapi")
 
