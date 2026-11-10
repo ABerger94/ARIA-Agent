@@ -234,9 +234,14 @@ def _ollama_native_vision_call(sys_prompt: str, contents: Any) -> Optional[str]:
         from aria.agent.providers import (
             OLLAMA_CLOUD_API_KEY, OLLAMA_CLOUD_MODEL, PROVIDER_MODE,
             resolve_role_model)
+        try:
+            from aria.agent.providers import provider_mode as _pm
+            _mode_now = _pm()
+        except Exception:
+            _mode_now = PROVIDER_MODE
     except Exception:
         return None
-    if PROVIDER_MODE == "local_only":
+    if _mode_now == "local_only":
         # Strict local-only: this path is an ollama.com call by
         # construction — never make it. Local vision is served by
         # _default_vision_call via the ollama_local leg instead.
@@ -313,9 +318,13 @@ def _default_vision_call(sys_prompt: str, contents: Any) -> str:
     answer, the message says so instead of falling back to cloud.
     """
     try:
-        from aria.agent.providers import PROVIDER_MODE as _provider_mode
+        from aria.agent.providers import provider_mode as _pm2
+        _provider_mode = _pm2()
     except Exception:
-        _provider_mode = "auto"
+        try:
+            from aria.agent.providers import PROVIDER_MODE as _provider_mode
+        except Exception:
+            _provider_mode = "auto"
     if _provider_mode == "local_only":
         data = None
         try:

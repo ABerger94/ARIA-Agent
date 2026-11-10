@@ -549,6 +549,52 @@ def test_local_only_failure_message_names_mode():
     print("ok local_only_failure_message_names_mode")
 
 
+def test_provider_mode_setter_flips_live():
+    # The Settings → Providers "Local only" toggle's backend
+    # (Alek, 2026-11-10): set_provider_mode flips the LIVE mode —
+    # provider_mode(), the effective chain, and the role map all
+    # follow with no restart — normalizes junk to auto, restores
+    # cleanly, and keeps this module's PROVIDER_MODE global (the
+    # name resolve_role_model reads) in step.
+    import aria.agent.providers as _prov
+    saved_mode = _prov.PROVIDER_MODE
+    saved_cfg = _prov._config_silent.PROVIDER_MODE
+    try:
+        assert _prov.set_provider_mode("local_only") == "local_only"
+        assert _prov.provider_mode() == "local_only"
+        assert _prov.PROVIDER_MODE == "local_only"
+        assert _prov.effective_chain_names() == ["ollama_local"]
+        assert _prov.resolve_role_model("vision") == \
+            _prov.OLLAMA_LOCAL_VISION_MODEL
+        assert _prov.set_provider_mode("bogus") == "auto"
+        assert _prov.provider_mode() == "auto"
+        assert _prov.effective_chain_names() == list(_prov.PROVIDER_CHAIN)
+        assert _prov.set_provider_mode("auto") == "auto"
+    finally:
+        _prov.PROVIDER_MODE = saved_mode
+        try:
+            _prov._config_silent.PROVIDER_MODE = saved_cfg
+        except Exception:
+            pass
+    print("ok provider_mode_setter_flips_live")
+
+
+def test_config_set_provider_mode_normalizes():
+    # config.set_provider_mode is the persistence half of the
+    # toggle: it normalizes exactly like the startup read and
+    # updates config's own global, which the next start reads.
+    from aria import config as cfg_mod
+    saved = cfg_mod.PROVIDER_MODE
+    try:
+        assert cfg_mod.set_provider_mode("LOCAL_ONLY") == "local_only"
+        assert cfg_mod.PROVIDER_MODE == "local_only"
+        assert cfg_mod.set_provider_mode("junk") == "auto"
+        assert cfg_mod.PROVIDER_MODE == "auto"
+    finally:
+        cfg_mod.PROVIDER_MODE = saved
+    print("ok config_set_provider_mode_normalizes")
+
+
 if __name__ == "__main__":
     test_system_and_user_text()
     test_model_function_call_roundtrip()
@@ -570,6 +616,8 @@ if __name__ == "__main__":
     test_role_routing_auto_unchanged()
     test_local_vision_timeout_floor()
     test_local_only_failure_message_names_mode()
+    test_provider_mode_setter_flips_live()
+    test_config_set_provider_mode_normalizes()
     print("ALL PROVIDER TESTS PASSED")
 
 

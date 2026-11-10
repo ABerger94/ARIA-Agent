@@ -276,7 +276,7 @@ def create_settings_dialog(parent, callbacks):
     except Exception:
         dialog.audio_widget = None
     prov_lay = vpage('Providers')
-    prov_note = QLabel('Read-only: the live provider chain, each provider’s state and model, and failover stats. Keys live on the Connections tab; chain order lives in config.'); prov_note.setWordWrap(True); prov_lay.addWidget(prov_note)
+    prov_note = QLabel('The live provider chain, each provider’s state and model, and failover stats — plus the Local only toggle, which flips PROVIDER_MODE live and saves it. Keys live on the Connections tab; chain order lives in config.'); prov_note.setWordWrap(True); prov_lay.addWidget(prov_note)
     try:
         from aria.providers_panel import build_providers_widget
         dialog.providers_widget = build_providers_widget(dialog)

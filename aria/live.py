@@ -155,6 +155,16 @@ def _provider_mode() -> str:
         return str(getattr(_cfg_lv, "PROVIDER_MODE", "auto")
                    or "auto").strip().lower()
     except Exception:
+        pass
+    try:
+        # Fallback only: the providers module's live mode. The
+        # Settings toggle's setter (providers.set_provider_mode)
+        # updates config's global too, so the config read above
+        # already reflects a flip; this covers a config surface
+        # that predates PROVIDER_MODE.
+        from aria.agent.providers import provider_mode as _pm_lv
+        return str(_pm_lv() or "auto").strip().lower()
+    except Exception:
         return "auto"
 
 

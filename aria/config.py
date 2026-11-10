@@ -202,6 +202,29 @@ if str(_PROVIDER_MODE_RAW or "").strip().lower() not in ("auto", "local_only"):
     print(f"[ARIA] Config: PROVIDER_MODE={_PROVIDER_MODE_RAW!r} is not "
           f"'auto' or 'local_only' — using 'auto'.", flush=True)
 
+
+def set_provider_mode(mode) -> str:
+    """Switch PROVIDER_MODE at runtime (Settings → Providers
+    "Local only" toggle). Normalizes like the startup read —
+    anything that is not exactly "local_only" becomes "auto" —
+    persists the choice to aria_keys.json via save_keys() so a
+    restart keeps it, and returns the effective mode. Consumers
+    read the mode through aria.agent.providers.provider_mode()
+    (live module state), NOT this module global: rebinding here
+    does not update names already imported elsewhere, so the
+    providers module owns the live value and this function keeps
+    it — and the persisted file — in step. Never raises; a broken
+    keys file refuses the write inside save_keys() and the
+    in-memory mode still applies for the session."""
+    global PROVIDER_MODE
+    PROVIDER_MODE = _normalize_provider_mode(mode)
+    try:
+        _KEYS["PROVIDER_MODE"] = PROVIDER_MODE
+        save_keys()
+    except Exception:
+        pass
+    return PROVIDER_MODE
+
 # Chain: gemini -> groq -> openrouter -> mistral -> ollama_local
 # (Gemini promoted to primary 2026-10-27, Alek's call — the old
 # fallbacks were the weak path; ollama_local added 2026-11-09 as the

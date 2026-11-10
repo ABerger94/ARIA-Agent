@@ -37,12 +37,46 @@ from aria.config import (
     OLLAMA_VISION_MODEL, OLLAMA_CODE_MODEL,
     OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_LOCAL_TIMEOUT_S,
     OLLAMA_LOCAL_VISION_MODEL, OLLAMA_LOCAL_VISION_TIMEOUT_S,
-    PROVIDER_CHAIN, PROVIDER_MODE, KEY_QUARANTINE_DURATION_S,
+    PROVIDER_CHAIN, PROVIDER_MODE, KEY_QUARANTINE_DURATION_S,  # noqa: F401 — PROVIDER_MODE is this module's live mode global: read via provider_mode(), rebound by set_provider_mode(), patched directly by tests
     quarantine_key, key_is_quarantined, key_mask, add_log,
 )
 from aria import config as _config_silent
 from aria.agent.cooldown import CooldownRegistry
 from aria import runtime, usage
+
+# Live PROVIDER_MODE. The Settings → Providers "Local only"
+# toggle (aria/providers_panel.py) flips the mode WITHOUT a
+# restart, so every gate in this module reads provider_mode() —
+# this module's PROVIDER_MODE global, read fresh at call time —
+# rather than a value captured at import. set_provider_mode() is
+# the single entry point that keeps the live global, config's
+# global, and the keys file in step: it persists through
+# config.set_provider_mode() and rebinds this module's global,
+# which is also the name the existing tests patch directly.
+def provider_mode() -> str:
+    """The live PROVIDER_MODE: exactly "auto" or "local_only"
+    (any other stored value behaves as auto, matching config's
+    normalization)."""
+    raw = str(globals().get("PROVIDER_MODE", "auto") or "auto")
+    return "local_only" if raw.strip().lower() == "local_only" else "auto"
+
+
+def set_provider_mode(mode) -> str:
+    """Flip PROVIDER_MODE live and persist it (the Settings
+    toggle's backend). Takes effect on the next provider call —
+    the chain walk, role routing, failure wording, the Live gate,
+    and vision all read the live value. Returns the effective
+    mode."""
+    global PROVIDER_MODE
+    try:
+        effective = _config_silent.set_provider_mode(mode)
+    except Exception:
+        effective = ("local_only" if str(mode or "").strip().lower()
+                     == "local_only" else "auto")
+    PROVIDER_MODE = effective
+    add_log(f"provider mode set to '{effective}' from the Settings toggle")
+    return effective
+
 
 def effective_chain_names() -> List[str]:
     """PROVIDER_CHAIN as PROVIDER_MODE gates it.
@@ -58,7 +92,7 @@ def effective_chain_names() -> List[str]:
     readout, the frame status — goes through here so they can
     never disagree about which legs may serve.
     """
-    if PROVIDER_MODE == "local_only":
+    if provider_mode() == "local_only":
         return ["ollama_local"]
     return list(PROVIDER_CHAIN)
 
@@ -128,7 +162,7 @@ def provider_failure_message() -> str:
     ctx = runtime.current()
     if ctx.budget_error:
         return ctx.budget_error
-    if PROVIDER_MODE == "local_only":
+    if provider_mode() == "local_only":
         # Strict local-only: the walk had exactly one leg and it did
         # not answer. Say so plainly — the generic messages below
         # ("add an API key", "no provider responded") would mislead:
@@ -153,7 +187,7 @@ def connection_report() -> str:
     health = provider_health()
     mode = 'ON' if usage.project_budget_enabled() else 'OFF (usage tracking only)'
     lines = ['ARIA model connections', 'Project spending limits: ' + mode]
-    lines.append(f'Provider mode: {PROVIDER_MODE}')
+    lines.append(f'Provider mode: {provider_mode()}')
     chain = _build_chain()
     for provider in chain:
         state = health.get(provider.name, {}).get('summary')
@@ -905,6 +939,9 @@ def resolve_role_model(role: str) -> Optional[str]:
     # this function with a fixed namespace that predates both
     # names, and globals().get() keeps that contract — an extracted
     # copy sees "auto" and the default vision tag, not a NameError.
+    # The name read IS the live value: set_provider_mode() rebinds
+    # this module's PROVIDER_MODE global, so a Settings-toggle flip
+    # is visible here on the next call.
     if globals().get("PROVIDER_MODE", "auto") == "local_only":
         if r != "vision":
             return None
@@ -1192,7 +1229,7 @@ def _role_override_leg(provider_name: str) -> bool:
     leg, the only leg there is; resolve_role_model guarantees the
     override in that mode is the local vision tag, never a cloud
     model."""
-    if PROVIDER_MODE == "local_only":
+    if provider_mode() == "local_only":
         return provider_name == "ollama_local"
     return provider_name == "ollama_cloud"
 
@@ -1292,7 +1329,7 @@ def provider_call(
     # chain_start must not rotate it or — worse — prepend an opt-in
     # leg via _providers_by_name below: that would put a cloud
     # provider back on a strict local-only turn.
-    if chain_start and PROVIDER_MODE != "local_only":
+    if chain_start and provider_mode() != "local_only":
         rotated = _rotate_chain(chain, chain_start)
         if rotated is not chain and rotated and rotated[0].name == chain_start:
             add_log(f"tier routing: chain starts at '{chain_start}'")

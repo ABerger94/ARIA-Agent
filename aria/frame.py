@@ -377,10 +377,17 @@ def strip_data() -> Dict[str, Any]:
         pass
     d["active_provider"], d["providers"] = _provider_rows()
     try:
-        from aria import config as _cfg_mode
-        d["provider_mode"] = _cfg_mode.PROVIDER_MODE
+        # The LIVE mode (the Settings toggle flips it without a
+        # restart); config's startup global is the fallback for a
+        # providers surface that predates provider_mode().
+        from aria.agent.providers import provider_mode as _live_mode
+        d["provider_mode"] = _live_mode()
     except Exception:
-        pass
+        try:
+            from aria import config as _cfg_mode
+            d["provider_mode"] = _cfg_mode.PROVIDER_MODE
+        except Exception:
+            pass
     try:
         from aria.agent import workers as _workers
         jobs = _workers.list_background_jobs(limit=25)
