@@ -353,3 +353,75 @@ def test_mic_failure_ends_session(monkeypatch):
     assert mgr.active is False
     assert any('mic failed' in m for m in logs), logs
     assert live.MIC_RATE == 16000 and live.OUT_RATE == 24000
+
+
+# -- PROVIDER_MODE gate: local_only refuses Live -------------------
+# Strict local-only mode (Alek, 2026-11-10) forbids API-keyed
+# calls, and a Gemini Live session is one. The gate sits at the
+# top of start(), ahead of every other refusal, so in local_only
+# no client is created, no thread spawns, and no connection is
+# attempted — the refusal is the mode message in the log, and
+# main.py's caller falls back to the pipeline as usual.
+
+def test_provider_mode_helper_reads_config_live(monkeypatch):
+    """The gate reads aria.config.PROVIDER_MODE at call time,
+    not an import-time copy, so the value the keys file produced
+    at startup is the value start() obeys."""
+    from aria import config as _cfg
+    monkeypatch.setattr(_cfg, 'PROVIDER_MODE', 'local_only')
+    assert live._provider_mode() == 'local_only'
+    assert live._local_only() is True
+    monkeypatch.setattr(_cfg, 'PROVIDER_MODE', 'auto')
+    assert live._provider_mode() == 'auto'
+    assert live._local_only() is False
+
+
+def test_start_refused_in_local_only_mode(monkeypatch):
+    logs = []
+    factory_calls = []
+
+    def _spy_factory(key):
+        factory_calls.append(key)
+        return _FakeClient(_BlockingSession())
+
+    monkeypatch.setattr(live, 'HAVE_GENAI', True)
+    monkeypatch.setattr(live, '_genai', types.SimpleNamespace())
+    monkeypatch.setattr(live, '_genai_types', _FakeTypes)
+    monkeypatch.setattr(live, '_voice_enabled', lambda: True)
+    monkeypatch.setattr(live, '_provider_mode', lambda: 'local_only')
+    mgr = live.LiveManager(
+        api_key='fake-key', tool_runner=lambda n, a: ('', True),
+        client_factory=_spy_factory, log=logs.append)
+    assert mgr.start() is False
+    # Refused BEFORE any connection machinery: the client
+    # factory never fired, no session thread exists, and the
+    # manager never became active.
+    assert factory_calls == [], factory_calls
+    assert mgr._thread is None
+    assert mgr.active is False
+    assert any('local-only mode is on' in m and 'Gemini cloud' in m
+               for m in logs), logs
+
+
+def test_start_allowed_in_auto_mode(monkeypatch):
+    """PROVIDER_MODE=auto: the mode gate does not fire — with the
+    usual fakes, start() proceeds exactly as before and the
+    session comes up through the client factory."""
+    import time
+    logs = []
+    session = _BlockingSession()
+    mgr = _make_manager(monkeypatch, logs, session, _pump_forever)
+    monkeypatch.setattr(live, 'HAVE_GENAI', True)
+    monkeypatch.setattr(live, '_genai', types.SimpleNamespace())
+    monkeypatch.setattr(live, '_provider_mode', lambda: 'auto')
+    assert mgr.start() is True
+    assert mgr._thread is not None and mgr._thread.is_alive()
+    for _ in range(100):
+        if mgr.active:
+            break
+        time.sleep(0.05)
+    assert mgr.active, 'session never became live in auto mode'
+    assert not any('local-only' in m for m in logs), logs
+    mgr.stop()
+    mgr._thread.join(timeout=5)
+    assert not mgr._thread.is_alive()

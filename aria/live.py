@@ -137,6 +137,35 @@ def _voice_enabled() -> bool:
         return True
 
 
+def _provider_mode() -> str:
+    """Current PROVIDER_MODE (aria/config.py), read live like
+    _voice_enabled: a mode set in the keys file must gate the
+    next start() call, not the value frozen when this module was
+    imported. Lazy import for the same reason as _voice_enabled
+    — the standalone test harness loads this file without the
+    package. On any error return "auto" (config's own default):
+    in a real run config is imported long before Live is
+    constructed, so the fallback is reachable only in the
+    harness, never as a silent cloud pass in production.
+    config.PROVIDER_MODE is already normalized there (exactly
+    "auto" or "local_only"); the strip/lower here is belt and
+    braces for a value patched in by hand."""
+    try:
+        from aria import config as _cfg_lv
+        return str(getattr(_cfg_lv, "PROVIDER_MODE", "auto")
+                   or "auto").strip().lower()
+    except Exception:
+        return "auto"
+
+
+def _local_only() -> bool:
+    """True in strict local-only mode (PROVIDER_MODE=local_only,
+    Alek 2026-11-10): no API-keyed provider may be called. Gemini
+    Live is an API-keyed cloud session, so the mode covers it —
+    see the gate in LiveManager.start()."""
+    return _provider_mode() == "local_only"
+
+
 def _runtime():
     """The execution-context module (aria/runtime.py), lazy-imported
     like _app_locked: the standalone test harness loads this file
@@ -832,9 +861,22 @@ class LiveManager:
 
     # -- surface --------------------------------------------------
     def start(self) -> bool:
-        """False = Live cannot run here (no package, no key, no
-        tool runner); the caller falls back to the pipeline and
-        nothing else changes."""
+        """False = Live cannot run here (local-only mode, no
+        package, no key, no tool runner); the caller falls back
+        to the pipeline and nothing else changes."""
+        if _local_only():
+            # PROVIDER_MODE=local_only (Alek, 2026-11-10): Live
+            # is a Gemini cloud session and the strict mode
+            # forbids API-keyed calls. There is no local
+            # equivalent of the realtime Live protocol, so the
+            # correct strict behaviour is refusal — here, before
+            # any client, thread, or network call exists — never
+            # a silent reroute. The pipeline carries voice
+            # instead; it routes through the gated chain.
+            self._log("Gemini Live unavailable: local-only mode "
+                      "is on — Live voice needs the Gemini cloud, "
+                      "so it is unavailable in this mode")
+            return False
         if not HAVE_GENAI or _genai is None:
             self._log("Gemini Live unavailable: google-genai not installed")
             return False
