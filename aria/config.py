@@ -164,16 +164,24 @@ OLLAMA_VISION_MODEL, _ = key_get("OLLAMA_VISION_MODEL", "gemma4:31b-cloud")
 OLLAMA_CODE_MODEL, _ = key_get("OLLAMA_CODE_MODEL", "qwen3-coder:480b-cloud")
 OLLAMA_HOST, _ = key_get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL, _ = key_get("OLLAMA_MODEL", "qwen2.5:7b")
+# Local Ollama fallback leg (ollama_local): per-attempt timeout in
+# seconds. A CPU-only 7B needs far longer than the cloud legs'
+# interactive deadline just for prompt prefill, so the local leg
+# gets its own floor (see LocalOllamaProvider._call_timeout).
+OLLAMA_LOCAL_TIMEOUT_S, _ = key_get("OLLAMA_LOCAL_TIMEOUT_S", "180")
 
-# Chain: gemini -> ollama_cloud -> groq -> openrouter -> mistral (Gemini
-# promoted to primary 2026-10-27, Alek's call — the old fallbacks were
-# the weak path). Reorder any time via the PROVIDER_CHAIN override,
+# Chain: gemini -> ollama_cloud -> groq -> openrouter -> mistral ->
+# ollama_local (Gemini promoted to primary 2026-10-27, Alek's call —
+# the old fallbacks were the weak path; ollama_local added 2026-11-09
+# as the last-resort leg: the local Ollama server on OLLAMA_HOST
+# running OLLAMA_MODEL, there when every cloud leg is down). Reorder
+# any time via the PROVIDER_CHAIN override,
 # e.g. PROVIDER_CHAIN="groq,ollama_cloud,mistral,openrouter".
 _PROVIDER_CHAIN_RAW, _ = key_get("PROVIDER_CHAIN", "")
 if _PROVIDER_CHAIN_RAW and _PROVIDER_CHAIN_RAW != "INSERT":
     PROVIDER_CHAIN = [p.strip().lower() for p in _PROVIDER_CHAIN_RAW.split(",") if p.strip()]
 else:
-    PROVIDER_CHAIN = ["gemini", "ollama_cloud", "groq", "openrouter", "mistral"]
+    PROVIDER_CHAIN = ["gemini", "ollama_cloud", "groq", "openrouter", "mistral", "ollama_local"]
 
 # Ollama safe mode (Phase 3): local model gets read-only tools only.
 OLLAMA_SAFE_MODE = True

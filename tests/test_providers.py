@@ -148,8 +148,87 @@ def test_images_dropped():
 def test_chain_order():
     chain = _build_chain()
     names = [p.name for p in chain]
-    assert names == ["gemini", "ollama_cloud", "groq", "openrouter", "mistral"], names
+    assert names == ["gemini", "ollama_cloud", "groq", "openrouter",
+                     "mistral", "ollama_local"], names
     print("ok chain_order", names)
+
+
+def test_ollama_local_leg():
+    # The last-resort leg (Alek, 2026-11-09): local Ollama /v1,
+    # OLLAMA_MODEL (default qwen2.5:7b), LAST in the default chain,
+    # available with no API key configured — there is no key.
+    from aria.agent.providers import LocalOllamaProvider, _ollama_local_base_url
+    chain = _build_chain()
+    local = chain[-1]
+    assert local.name == "ollama_local", [p.name for p in chain]
+    assert isinstance(local, LocalOllamaProvider)
+    assert local.base_url == "http://localhost:11434/v1", local.base_url
+    assert local.model == "qwen2.5:7b", local.model
+    assert _ollama_local_base_url() == "http://localhost:11434/v1"
+    assert local.is_available() is True
+    print("ok ollama_local_leg", local.base_url, local.model)
+
+
+def test_ollama_local_timeout_floor():
+    # The cloud legs' interactive deadline (<=30s) can never serve a
+    # CPU prefill; the local leg's floor is OLLAMA_LOCAL_TIMEOUT_S
+    # (default 180s) in both foreground and delegated contexts.
+    from aria.agent.providers import LocalOllamaProvider, OpenAICompatProvider
+    local = LocalOllamaProvider("ollama_local", "http://localhost:11434/v1",
+                                "qwen2.5:7b")
+    assert local._call_timeout() >= 180, local._call_timeout()
+    cloud = OpenAICompatProvider("groq", "https://api.groq.com/openai/v1",
+                                 "k", "m")
+    assert cloud._call_timeout() <= 30, cloud._call_timeout()
+    print("ok ollama_local_timeout_floor", local._call_timeout())
+
+
+def test_ollama_local_tool_call_roundtrip():
+    # End-to-end through the leg (mocked HTTP): an Ollama /v1
+    # tool_calls response must come back as a functionCall part
+    # ARIA's dispatcher can execute.
+    import io, urllib.request
+    from aria.agent.providers import LocalOllamaProvider
+
+    body = json.dumps({"choices": [{"message": {
+        "content": "",
+        "tool_calls": [{"id": "call_1", "type": "function",
+                        "function": {"name": "get_time",
+                                     "arguments": '{"tz": "EST"}'}}],
+    }}], "usage": {"prompt_tokens": 10, "completion_tokens": 5}}).encode()
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return body
+
+    seen = {}
+    real_urlopen = urllib.request.urlopen
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        seen["timeout"] = timeout
+        return _Resp()
+
+    urllib.request.urlopen = fake_urlopen
+    try:
+        p = LocalOllamaProvider("ollama_local", "http://localhost:11434/v1",
+                                "qwen2.5:7b")
+        decls = [{"function_declarations": [
+            {"name": "get_time", "description": "now",
+             "parameters": {"type": "object",
+                            "properties": {"tz": {"type": "string"}}}}]}]
+        data = p.call("sys", [{"role": "user", "parts": [{"text": "time?"}]}],
+                      tool_decls=decls)
+    finally:
+        urllib.request.urlopen = real_urlopen
+    assert seen["url"] == "http://localhost:11434/v1/chat/completions", seen
+    assert seen["timeout"] >= 180, seen
+    parts = data["candidates"][0]["content"]["parts"]
+    fc = [pt["functionCall"] for pt in parts if "functionCall" in pt]
+    assert len(fc) == 1, parts
+    assert fc[0]["name"] == "get_time" and fc[0]["args"] == {"tz": "EST"}, fc
+    print("ok ollama_local_tool_call_roundtrip")
 
 
 def test_ollama_cloud_skips_without_key():

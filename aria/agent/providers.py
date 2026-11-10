@@ -1,6 +1,6 @@
 """
 ARIA provider fallback chain (default order: gemini -> ollama_cloud -> groq
--> openrouter -> mistral, configurable via PROVIDER_CHAIN).
+-> openrouter -> mistral -> ollama_local, configurable via PROVIDER_CHAIN).
 
 Every provider normalizes to the internal parts-dict shape:
     {"candidates": [{"content": {"parts": [...]}}]}
@@ -35,6 +35,7 @@ from aria.config import (
     GEMINI_API_KEY, GEMINI_API_KEYS, GEMINI_MODEL,
     FREELLMAPI_API_KEY, FREELLMAPI_MODEL, FREELLMAPI_BASE_URL,
     OLLAMA_VISION_MODEL, OLLAMA_CODE_MODEL,
+    OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_LOCAL_TIMEOUT_S,
     PROVIDER_CHAIN, KEY_QUARANTINE_DURATION_S,
     quarantine_key, key_is_quarantined, key_mask, add_log,
 )
@@ -482,6 +483,12 @@ class OpenAICompatProvider(Provider):
         return bool(self.base_url and self.model and self.api_key
                     and self.api_key != 'INSERT') and not key_is_quarantined(self.api_key)
 
+    def _call_timeout(self) -> float:
+        """Per-attempt timeout (socket + first-output deadline) for
+        this leg. Cloud legs fail over fast; a leg that needs longer
+        (the local CPU leg) overrides this — see LocalOllamaProvider."""
+        return _provider_timeout()
+
     def _headers(self) -> Dict[str, str]:
         # Groq sits behind Cloudflare, which 403s (error 1010) Python's
         # default urllib User-Agent before the API key is even read.
@@ -604,7 +611,7 @@ class OpenAICompatProvider(Provider):
 
         ticket = usage.reserve(self.name, self.model, payload)
         t0, usage_data, request_ok = time.time(), None, False
-        timeout = _provider_timeout()
+        timeout = self._call_timeout()
         first_output_deadline = (time.monotonic() + timeout
                                  if runtime.current().kind == 'foreground' else None)
         try:
@@ -694,6 +701,47 @@ class OpenAICompatProvider(Provider):
                          status='ok' if request_ok else 'error')
 
 
+class LocalOllamaProvider(OpenAICompatProvider):
+    """The local Ollama server (OLLAMA_HOST, default
+    http://localhost:11434) speaking its OpenAI-compatible /v1 —
+    the chain's last-resort leg, there when every cloud leg is down.
+
+    Two deliberate differences from a cloud leg:
+
+    - No API key exists to configure or quarantine, so availability
+      is just "a model tag is configured". The placeholder key is
+      sent as a Bearer header Ollama ignores. A dead endpoint fails
+      fast inside call() (connection refused) and the walk moves on,
+      exactly like any other provider's network drop; provider/model
+      failure cooldowns still apply by name.
+    - The timeout floor is OLLAMA_LOCAL_TIMEOUT_S (default 180s),
+      not the cloud legs' interactive deadline (8s foreground): on a
+      CPU-only machine, prefill of ARIA's system prompt + tool
+      schemas alone takes far longer than 8s, so under the cloud
+      deadline this leg could never produce a first token.
+    """
+
+    def __init__(self, name: str, base_url: str, model: str):
+        super().__init__(name, base_url, "ollama-local", model)
+
+    def is_available(self) -> bool:
+        return bool(self.base_url and self.model)
+
+    def _call_timeout(self) -> float:
+        try:
+            local = float(OLLAMA_LOCAL_TIMEOUT_S)
+        except (TypeError, ValueError):
+            local = 180.0
+        return max(float(_provider_timeout()), local)
+
+
+def _ollama_local_base_url() -> str:
+    """OLLAMA_HOST + /v1 (the OpenAI-compatible surface). A host
+    already ending in /v1 is used as-is."""
+    host = (OLLAMA_HOST or "http://localhost:11434").rstrip("/")
+    return host if host.endswith("/v1") else host + "/v1"
+
+
 def _gemini_providers() -> List[Provider]:
     """One provider per pooled Gemini key (Alek, 2026-10-27).
     The first keeps the name 'gemini'; the rest are 'gemini_2',
@@ -743,6 +791,14 @@ def _provider_registry() -> Dict[str, Provider]:
         "freellmapi": OpenAICompatProvider(
             "freellmapi", FREELLMAPI_BASE_URL,
             FREELLMAPI_API_KEY, FREELLMAPI_MODEL),
+        # Local Ollama (Alek, 2026-11-09): the machine's own Ollama
+        # server running OLLAMA_MODEL (default qwen2.5:7b). It IS in
+        # the default PROVIDER_CHAIN, last — the fallback when every
+        # cloud leg is down. It needs no key; if Ollama is not
+        # running the connection is refused instantly and the walk
+        # ends, the same end state as before this leg existed.
+        "ollama_local": LocalOllamaProvider(
+            "ollama_local", _ollama_local_base_url(), OLLAMA_MODEL),
     }
 
 
@@ -1249,10 +1305,16 @@ def provider_call(
                     'checked_at': time.time(),
                     'latency_ms': int((time.monotonic() - attempt_started) * 1000),
                 }
-                if ctx.kind == 'foreground' and not chain_start:
+                if ctx.kind == 'foreground' and not chain_start \
+                        and provider.name != 'ollama_local':
                     # A tier-routed success says nothing about which
                     # provider a standard turn should prefer — don't let
                     # a light turn's cheap leg become the sticky head.
+                    # Same for the local leg (2026-11-09): an emergency
+                    # success while the cloud is down must not promote
+                    # the slowest leg to the head of the chain — the
+                    # cloud legs get first shot again on the next turn
+                    # and recovery stays automatic.
                     _RECENT_FOREGROUND_PROVIDER[ctx.project] = (provider.name, time.monotonic())
             _note_provider_ok(provider.name)
             _note_model_ok(provider.name, _eff_model(provider))
