@@ -386,7 +386,7 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
         pass
     try:
         with runtime.operation(op):
-            with ctx.lock if not retry_safe(fn_name) else contextlib.nullcontext():
+            with ctx.lock if not retry_safe(fn_name, args) else contextlib.nullcontext():
                 result = _execute_tool(fn_name, args, preauthorized=preauthorized)
                 return result
     finally:
@@ -821,7 +821,7 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
         raise
     except Exception as e:
         try:
-            if not retry_safe(fn_name):
+            if not retry_safe(fn_name, args):
                 raise RuntimeError('Automatic retry is disabled for tools with effects')
             from aria.agent.self_healing import attempt_auto_heal
             healed, healed_res, heal_msg = attempt_auto_heal(fn_name, args or {}, e, handler)
@@ -852,7 +852,7 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
     # (The old send_email carve-out is subsumed: a sent email
     # normalizes DONE, so the gate stays shut for it too.)
     _healable_output = (
-        retry_safe(fn_name)
+        retry_safe(fn_name, args)
         and isinstance(r, str)
         and "[Autonomous Self-Healing:" not in r
         and normalize(r).status == "failed"
