@@ -523,6 +523,112 @@ def test_grader_pass_needs_cited_evidence_pass36_22():
     assert out["verdict"] == "pass", out
 
 
+# -- pass 36 #25 ------------------------------------------------------
+
+def test_journal_ids_use_prefix_results_for_prev():
+    # {prev} in step 2 means step 1's result, not the final
+    # result map's — the recomputed op id must hash the
+    # substituted params as they were at execution time.
+    from aria.action_journal import signature
+    ex = _executor(lambda p, s: "x")
+    completed = [
+        {"step": 1, "tool": "write_file",
+         "parameters": {"filename": "first.txt"}},
+        {"step": 2, "tool": "write_file",
+         "parameters": {"filename": "{prev}.txt"}},
+    ]
+    results = {1: "first", 2: "second"}
+    ids = ex._journal_ids(
+        completed, results,
+        resume={"execution_scope": "task:test25"})
+    assert ids[2] == ("task:test25:step:2:" + signature(
+        "write_file", {"filename": "first.txt"}))
+    assert ids[2] != ("task:test25:step:2:" + signature(
+        "write_file", {"filename": "second.txt"}))
+    assert ex._step_params[2] == {"filename": "first.txt"}
+
+
+def test_journal_ids_prefer_persisted_evidence(
+        tmp_path, monkeypatch):
+    from aria.agent import taskstore as _ts
+    monkeypatch.setattr(config, "WORKSPACE_DIR", str(tmp_path))
+    _ts.create("persist1", "goal")
+    _ts.merge_step_evidence("persist1", {1: {
+        "op_id": "persisted-op-1",
+        "params": {"filename": "saved.txt"}}})
+    ex = _executor(lambda p, s: "x")
+    completed = [{"step": 1, "tool": "write_file",
+                  "parameters": {"filename": "{prev}.txt"}}]
+    ids = ex._journal_ids(
+        completed, {1: "r"},
+        resume={"execution_scope": "task:persist1"})
+    assert ids[1] == "persisted-op-1"
+    assert ex._step_params[1] == {"filename": "saved.txt"}
+
+
+def test_probes_use_substituted_params_and_skip_explain(
+        tmp_path, monkeypatch):
+    from aria.tools import builtins
+    monkeypatch.setattr(builtins, "WORKSPACE_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "WORKSPACE_DIR", str(tmp_path))
+    (tmp_path / "real.txt").write_text("real", encoding="utf-8")
+    (tmp_path / "dev_agent_output.py").write_text(
+        "code", encoding="utf-8")
+    (tmp_path / "input.py").write_text("x = 1", encoding="utf-8")
+    steps = grader.normalize_steps([
+        {"step": 1, "tool": "write_file",
+         "parameters": {"filename": "{prev}.txt"}, "output": "ok"},
+        {"step": 2, "tool": "code_helper",
+         "parameters": {"action": "explain",
+                        "file_path": "input.py"},
+         "output": "it adds one"},
+        {"step": 3, "tool": "code_helper",
+         "parameters": {"action": "write",
+                        "output_path": "real.txt"},
+         "output": "wrote"},
+        {"step": 4, "tool": "dev_agent",
+         "parameters": {"language": "python"}, "output": "saved"},
+    ])
+    probes = grader.build_probes(
+        steps, step_params={1: {"filename": "real.txt"}})
+    by_step = {p["step"]: p for p in probes if p["kind"] == "file"}
+    # Step 1 probed the substituted destination, not the
+    # template path.
+    assert by_step[1]["path"].endswith("real.txt")
+    assert by_step[1]["exists"] is True
+    # Step 2 (explain) reads an input file — no file probe.
+    assert 2 not in by_step
+    # Step 3 (write) is probed.
+    assert by_step[3]["exists"] is True
+    # Step 4 (dev_agent, no output_path) probes the default.
+    assert by_step[4]["path"].endswith("dev_agent_output.py")
+    assert by_step[4]["exists"] is True
+
+
+def test_taskstore_step_evidence_merge_and_checkpoint(
+        tmp_path, monkeypatch):
+    from aria.agent import taskstore as _ts
+    monkeypatch.setattr(config, "WORKSPACE_DIR", str(tmp_path))
+    _ts.create("ev1", "goal")
+    assert _ts.merge_step_evidence("ev1", {1: {
+        "op_id": "op1", "params": {"a": 1},
+        "artifact_path": "/x"}}) is True
+    got = _ts.get("ev1")
+    assert got["step_evidence"]["1"]["op_id"] == "op1"
+    # A checkpoint without step_evidence leaves the merged
+    # record untouched.
+    _ts.checkpoint("ev1", {"plan": None, "completed": [],
+                           "results": {}})
+    assert _ts.get("ev1")["step_evidence"]["1"]["op_id"] == "op1"
+    # A checkpoint carrying step_evidence replaces it.
+    _ts.checkpoint("ev1", {"plan": None, "completed": [],
+                           "results": {},
+                           "step_evidence": {2: {"op_id": "op2"}}})
+    assert _ts.get("ev1")["step_evidence"] == {
+        "2": {"op_id": "op2"}}
+    assert _ts.merge_step_evidence("nope", {1: {}}) is False
+
+
 def test_grader_model_policies_and_self_graded():
     roster = grader._roster()
     assert len(roster) >= 2

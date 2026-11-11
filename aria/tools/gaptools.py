@@ -1159,6 +1159,15 @@ _EXT = {"python": "py", "javascript": "js", "typescript": "ts",
         "c++": "cpp", "cpp": "cpp"}
 
 
+def dev_agent_default_output(language: str = "python") -> str:
+    """The destination a dev_agent call writes when no
+    output_path is given (pass 36 #25). The handler and the
+    grader's file probe both use this one rule, so the probe
+    looks where the file actually landed."""
+    lang = str(language or "python").strip().lower()
+    return f"dev_agent_output.{_EXT.get(lang, 'txt')}"
+
+
 def tool_dev_agent(args) -> str:
     args = args or {}
     description = str(args.get("description") or "").strip()
@@ -1168,7 +1177,7 @@ def tool_dev_agent(args) -> str:
     language = str(args.get("language") or "python").strip().lower()
     output_path = str(args.get("output_path") or "").strip()
     if not output_path:
-        output_path = f"dev_agent_output.{_EXT.get(language, 'txt')}"
+        output_path = dev_agent_default_output(language)
     try:
         plan = str(_provider_text(
             _CODE_SYSTEM,

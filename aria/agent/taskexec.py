@@ -145,6 +145,47 @@ def _substitute(value: Any, results: Dict[int, str]) -> Any:
     return value
 
 
+def _resolved_artifact_path(tool: str, params: dict
+                            ) -> Optional[str]:
+    """The artifact a file-writing step actually wrote, resolved
+    against the current workspace (pass 36 #25): write_file /
+    code_helper write / dev_agent (with its default destination
+    when output_path is absent). code_helper explain/fix read
+    an input file and write nothing → no artifact. Returns
+    None when there is no artifact or the path does not resolve
+    under current policy. Never raises."""
+    params = params or {}
+    raw = None
+    if tool == "write_file":
+        raw = params.get("filename") or params.get("path")
+    elif tool == "code_helper":
+        if str(params.get("action") or "explain").strip().lower() \
+                != "write":
+            return None
+        raw = params.get("output_path")
+    elif tool == "dev_agent":
+        raw = params.get("output_path")
+        if not raw:
+            try:
+                from aria.tools.gaptools import (
+                    dev_agent_default_output)
+                raw = dev_agent_default_output(
+                    params.get("language"))
+            except Exception:
+                raw = "dev_agent_output.py"
+    else:
+        return None
+    if not raw:
+        return None
+    try:
+        from aria import workspaces
+        from aria.tools import builtins
+        return workspaces.resolve_workspace_file(
+            str(raw), builtins.WORKSPACE_DIR)
+    except Exception:
+        return None
+
+
 class TaskBlocked(Exception):
     """The task parked instead of failing: it needs something
     (user input, or a verifier concern resolved) before it can
@@ -178,8 +219,13 @@ class AgentExecutor:
         # journal operation ids of the steps this execute() ran
         # (destination probes look receipts up by them) and the
         # last grade, for the summary note. Reset per execute().
+        # _step_params (pass 36 #25) holds the SUBSTITUTED
+        # parameters each step actually executed, as computed by
+        # _journal_ids — probes are driven from these, never
+        # from the raw template parameters.
         self._op_ids: Dict[int, str] = {}
         self._last_grade: Optional[dict] = None
+        self._step_params: Dict[int, dict] = {}
 
     # -- skeptical verifier (Gap fill 3) --------------------------
     def _grader_chat(self):
@@ -202,26 +248,94 @@ class AgentExecutor:
                      ) -> Dict[int, str]:
         """Step number → action-journal operation id, for the
         grader's receipt probes. Ids recorded during this run
-        win; steps a resume skipped are recomputed from the
-        stable execution scope exactly as the attempt loop
-        built them (pass 26 B1#5)."""
+        win; steps a resume skipped come from the PERSISTED
+        per-step evidence in the task journal when it exists
+        (pass 36 #25 — the substituted params + op id + resolved
+        artifact path recorded at execution time), and are
+        otherwise recomputed from the stable execution scope
+        exactly as the attempt loop built them (pass 26 B1#5).
+        Substitution is computed against the results of the
+        steps completed BEFORE each step, in execution order —
+        never against the final result map, where {prev} would
+        mean the last step's result instead of the previous
+        one. Also records the substituted params per step in
+        self._step_params for the probes."""
         ids = dict(self._op_ids)
+        params_by_step: Dict[int, dict] = {}
         try:
             from aria.action_journal import signature
             scope = (resume or {}).get("execution_scope") \
                 or runtime.current().id
+            persisted: Dict[Any, dict] = {}
+            try:
+                from aria.agent import taskstore as _ts
+                orig = ""
+                if str(scope or "").startswith("task:"):
+                    orig = str(scope)[len("task:"):]
+                if orig:
+                    rec = _ts.get(orig)
+                    persisted = (rec or {}).get("step_evidence") \
+                        or {}
+            except Exception:
+                persisted = {}
+            seen: Dict[int, str] = {}
             for s in completed:
                 n = s.get("step")
-                if n in ids:
-                    continue
-                params = _substitute(s.get("parameters") or {},
-                                     results)
-                ids[n] = (f"{scope}:step:{n}:"
-                          f"{signature(s.get('tool', ''), params)}")
+                saved = persisted.get(n)
+                if saved is None:
+                    saved = persisted.get(str(n))
+                if isinstance(saved, dict) and saved.get("op_id"):
+                    ids[n] = str(saved["op_id"])
+                    if isinstance(saved.get("params"), dict):
+                        params_by_step[n] = saved["params"]
+                else:
+                    params = _substitute(
+                        s.get("parameters") or {}, seen)
+                    params_by_step[n] = params
+                    if n not in ids:
+                        ids[n] = (f"{scope}:step:{n}:"
+                                  f"{signature(s.get('tool', ''), params)}")
+                if n in results:
+                    seen[n] = results[n]
         except Exception as e:
             add_log(f"taskexec: journal id rebuild failed ({e}); "
                     f"receipt probes partial")
+        self._step_params = params_by_step
         return ids
+
+    def _persist_step_evidence(
+            self, completed: List[dict],
+            journal_ids: Optional[Dict[int, str]]) -> None:
+        """Persist the per-step evidence for this run into the
+        task journal (pass 36 #25): substituted params + op id
+        + resolved artifact path per completed step, merged into
+        the record's step_evidence without touching the
+        checkpoint. Best-effort and never raising: without a
+        task-scoped execution (a direct _verify call in tests,
+        a non-queue context) there is no journal record to
+        persist into, and grading proceeds without it."""
+        if not journal_ids:
+            return
+        try:
+            from aria.agent import taskstore as _ts
+            scope = str(runtime.current().id or "")
+            if not scope.startswith("task:"):
+                return
+            task_id = scope[len("task:"):]
+            params = getattr(self, "_step_params", {}) or {}
+            evidence: Dict[int, dict] = {}
+            for s in completed:
+                n = s.get("step")
+                rec = {"op_id": journal_ids.get(n),
+                       "params": params.get(n) or {}}
+                artifact = _resolved_artifact_path(
+                    s.get("tool") or "", rec["params"])
+                if artifact:
+                    rec["artifact_path"] = artifact
+                evidence[n] = rec
+            _ts.merge_step_evidence(task_id, evidence)
+        except Exception as e:
+            add_log(f"taskexec: step evidence persist failed ({e})")
 
     def _verify(self, goal: str, completed: List[dict],
                 results: Dict[int, str], *,
@@ -255,9 +369,16 @@ class AgentExecutor:
             from aria.agent import grader as _grader
             if _grader.outcomes_enabled():
                 steps = [dict(s) for s in completed]
+                # Pass 36 #25: the per-step evidence (substituted
+                # params + op id + resolved artifact path) is
+                # persisted before grading, so a resume probes
+                # from what actually ran.
+                self._persist_step_evidence(completed, journal_ids)
                 probes = _grader.build_probes(
                     _grader.normalize_steps(steps, results),
-                    journal_ids=journal_ids)
+                    journal_ids=journal_ids,
+                    step_params=getattr(self, "_step_params",
+                                        None))
                 # Pass 36 #29: the worker model is the model
                 # that planned this task (planner records it via
                 # chat_traced); an injected executor LLM grades

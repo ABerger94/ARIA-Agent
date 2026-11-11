@@ -263,7 +263,8 @@ def _recheck_resolved(path: str) -> str:
 
 
 def _file_probe(step: dict,
-                journal_artifacts=None) -> Optional[dict]:
+                journal_artifacts=None,
+                step_params=None) -> Optional[dict]:
     """Pass 36 #20: a destination workspace policy rejected is
     UNAVAILABLE evidence — the probe never falls back to the
     raw path and never reads it. When the action journal
@@ -272,11 +273,39 @@ def _file_probe(step: dict,
     claimed parameter; a claim with no attested artifact is
     still probed, but only after the current roots/reserved
     check passes, and its hash is never treated as verified
-    (pass 36 #24 compares the attested hash when one exists)."""
+    (pass 36 #24 compares the attested hash when one exists).
+    Pass 36 #25: the params probed are the SUBSTITUTED ones
+    the step actually executed (step_params, when the engine
+    supplies them), never the raw template; a code_helper
+    explain/fix reads an input file and produces no artifact,
+    so it gets no file probe at all; a dev_agent step with no
+    output_path probes its default destination."""
     tool = step["tool"]
-    args = step.get("parameters") or {}
+    args = None
+    if step_params is not None:
+        args = step_params.get(step.get("step"))
+        if args is None:
+            args = step_params.get(str(step.get("step")))
+    if not isinstance(args, dict):
+        args = step.get("parameters") or {}
+    if tool == "code_helper":
+        # explain/fix take file_path as INPUT — only a write
+        # produces an artifact worth probing.
+        action = str(args.get("action") or "explain").strip().lower()
+        if action != "write":
+            return None
     if tool == "write_file":
         path = args.get("filename") or args.get("path")
+    elif tool == "dev_agent":
+        path = args.get("output_path")
+        if not path:
+            try:
+                from aria.tools.gaptools import (
+                    dev_agent_default_output)
+                path = dev_agent_default_output(
+                    args.get("language"))
+            except Exception:
+                path = "dev_agent_output.py"
     else:
         path = args.get("output_path") or args.get("file_path")
     if not path:
@@ -365,13 +394,17 @@ def _file_probe(step: dict,
 
 
 def build_probes(steps: List[dict],
-                 journal_ids: Optional[Dict[Any, str]] = None
+                 journal_ids: Optional[Dict[Any, str]] = None,
+                 step_params: Optional[Dict[Any, dict]] = None
                  ) -> List[dict]:
     """Read-only destination probes for state-changing steps.
     journal_ids maps a step number → its action-journal
     operation id (each engine knows its own id scheme); steps
     without a supplied id simply get no journal probe. File
-    probes cover the file-writing tools. Never raises."""
+    probes cover the file-writing tools. step_params maps a
+    step number → the SUBSTITUTED parameters the step actually
+    executed (pass 36 #25): probes are driven from those, not
+    from the raw template parameters. Never raises."""
     from aria.tool_policy import retry_safe
     probes: List[dict] = []
     journal_ids = journal_ids or {}
@@ -395,7 +428,8 @@ def build_probes(steps: List[dict],
                 fp = _file_probe(
                     s,
                     journal_artifacts=(
-                        (journal_row or {}).get("artifacts") or []))
+                        (journal_row or {}).get("artifacts") or []),
+                    step_params=step_params)
                 if fp is not None:
                     probes.append(fp)
             if not retry_safe(tool):

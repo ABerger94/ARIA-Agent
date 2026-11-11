@@ -193,9 +193,39 @@ def checkpoint(task_id: str, state: Dict[str, Any]) -> None:
         rec["results"] = {str(k): v for k, v in
                           (state.get("results") or {}).items()}
         rec["pending_child"] = state.get("pending_child")
+        # Pass 36 #25: per-step evidence (substituted params +
+        # op id + resolved artifact path) rides the checkpoint
+        # when the executor supplies it; when it does not, a
+        # previously merged record is left untouched, never
+        # clobbered by a checkpoint that carries none.
+        if state.get("step_evidence") is not None:
+            rec["step_evidence"] = {
+                str(k): _jsonable(v) for k, v in
+                (state.get("step_evidence") or {}).items()}
         rec["checkpoint_at"] = time.time()
         rec["updated_at"] = time.time()
         _save(data)
+
+
+def merge_step_evidence(task_id: str,
+                        evidence: Dict[Any, Any]) -> bool:
+    """Merge per-step evidence records (pass 36 #25) into a
+    journal record without touching plan / completed /
+    results: {step: {op_id, params, artifact_path?}} keyed by
+    step number (stored as strings). A later run's records
+    overwrite only their own steps. Returns False when the
+    record does not exist or the write failed."""
+    with _LOCK:
+        data = _load()
+        rec = data.get(task_id)
+        if rec is None:
+            return False
+        merged = dict(rec.get("step_evidence") or {})
+        for k, v in (evidence or {}).items():
+            merged[str(k)] = _jsonable(v)
+        rec["step_evidence"] = merged
+        rec["updated_at"] = time.time()
+        return _save(data)
 
 
 def finish(task_id: str, status: str, result: str = "",
