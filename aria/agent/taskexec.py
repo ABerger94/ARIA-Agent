@@ -620,6 +620,66 @@ class AgentExecutor:
                     "the grader pass cannot be certified until "
                     "reviewed")
 
+    def _step_evidence(self, completed: List[dict]
+                       ) -> Optional[Dict[Any, dict]]:
+        """Per-step evidence for the checkpoint (pass 36 #23
+        (h)): substituted params + op id + resolved artifact
+        path per completed step, keyed by stable step id — the
+        same shape _persist_step_evidence merges at verify time,
+        so a resume probes from what actually ran even when the
+        process died mid-task. Returns None when no completed
+        step has evidence, so a checkpoint that carries none
+        leaves a previously merged record untouched instead of
+        clobbering it (taskstore semantics). Never raises."""
+        try:
+            evidence: Dict[Any, dict] = {}
+            for s in completed:
+                sid = s.get("id") or s.get("step")
+                if sid is None:
+                    continue
+                params = self._step_params.get(sid)
+                if params is None:
+                    params = self._step_params.get(str(sid)) or {}
+                rec: Dict[str, Any] = {
+                    "op_id": self._op_ids.get(sid),
+                    "params": params}
+                artifact = _resolved_artifact_path(
+                    s.get("tool") or "", rec["params"])
+                if artifact:
+                    rec["artifact_path"] = artifact
+                evidence[sid] = rec
+            return evidence or None
+        except Exception:
+            return None
+
+    def _seed_step_evidence(self, resume: Optional[Dict[str, Any]]
+                            ) -> None:
+        """Seed _op_ids / _step_params from the task journal's
+        persisted per-step evidence (pass 36 #23 (h)): a resume
+        must carry the earlier run's evidence into its own
+        checkpoints, or the checkpoint's wholesale replace would
+        drop it. The scope is the resume's execution_scope when
+        given, else the current execution id (the queue runs a
+        task under task:{id}). Best-effort; never raises."""
+        try:
+            scope = (resume or {}).get("execution_scope") \
+                or runtime.current().id
+            if not scope or not str(scope).startswith("task:"):
+                return
+            from aria.agent import taskstore as _ts
+            rec = _ts.get(str(scope)[len("task:"):])
+            persisted = (rec or {}).get("step_evidence") or {}
+            for key, saved in persisted.items():
+                if not isinstance(saved, dict):
+                    continue
+                if key not in self._op_ids and saved.get("op_id"):
+                    self._op_ids[key] = str(saved["op_id"])
+                if key not in self._step_params and \
+                        isinstance(saved.get("params"), dict):
+                    self._step_params[key] = saved["params"]
+        except Exception as e:
+            add_log(f"taskexec: step evidence seed failed ({e})")
+
     def _verify(self, goal: str, completed: List[dict],
                 results: Dict[int, str], *,
                 plan: Optional[Dict[str, Any]] = None,
@@ -810,7 +870,13 @@ class AgentExecutor:
                     # child parks with the child's id in the
                     # checkpoint, so a resume settles THAT child
                     # instead of submitting another one.
-                    "pending_child": pending_child}
+                    "pending_child": pending_child,
+                    # Pass 36 #23 (h): per-step evidence rides
+                    # the checkpoint so a resume probes from what
+                    # actually ran (None when nothing has run
+                    # yet — the store then leaves any previously
+                    # merged record untouched).
+                    "step_evidence": self._step_evidence(completed)}
 
         def _results_by_display() -> Dict[int, str]:
             """Display-number view of the id-keyed results, for
@@ -838,6 +904,11 @@ class AgentExecutor:
         add_log(f"taskexec: starting delegated task '{goal[:60]}'")
         self._op_ids = {}
         self._last_grade = None
+        # Pass 36 #23 (h): the per-step params map is per-run
+        # state (the queue reuses one executor across tasks) —
+        # a stale map would leak another task's params into
+        # this run's checkpoints.
+        self._step_params = {}
         # Pass 28 #20: a pending child survives in the checkpoint
         # state across parks; a fresh run has none.
         pending_child = (resume or {}).get("pending_child")
@@ -885,6 +956,9 @@ class AgentExecutor:
                            if s.get("id") in plan_ids}
             add_log(f"taskexec: resuming with {len(completed)} "
                     "step(s) already complete")
+            # Pass 36 #23 (h): carry the earlier run's
+            # per-step evidence into this run's checkpoints.
+            self._seed_step_evidence(resume)
         else:
             try:
                 plan = planner.create_plan(goal, llm=self._llm)
@@ -934,6 +1008,24 @@ class AgentExecutor:
                         str(pending_child.get("task_id") or ""))
                     _cstatus = (_child or {}).get("status")
                     if _cstatus == "completed":
+                        # Pass 36 #23 (h): record this step's
+                        # evidence too — it never reaches the
+                        # attempt loop this run, but its receipt
+                        # (the op id from the run that spawned
+                        # the child) belongs in the checkpoint.
+                        # The params are re-substituted from the
+                        # same prefix results the spawn run saw,
+                        # so the rebuilt op id matches it.
+                        from aria.action_journal import signature
+                        _sparams = _substitute(
+                            step.get("parameters") or {}, results,
+                            plan.get("steps"), completed)
+                        self._step_params[step.get("id")] = _sparams
+                        _sscope = (resume or {}).get(
+                            "execution_scope") or runtime.current().id
+                        self._op_ids[step.get("id")] = (
+                            f"{_sscope}:step:{step.get('id')}:"
+                            f"{signature(step.get('tool', ''), _sparams)}")
                         results[step.get("id")] = \
                             (_child or {}).get("result") or ""
                         completed.append(step)
@@ -1005,6 +1097,12 @@ class AgentExecutor:
                 params = _substitute(step.get("parameters") or {},
                                      results, plan.get("steps"),
                                      completed)
+                # Pass 36 #23 (h): the substituted params are
+                # recorded as the step runs, so mid-run
+                # checkpoints carry per-step evidence (the
+                # journal-id path only fills this in at verify
+                # time, which a crash never reaches).
+                self._step_params[step.get("id")] = params
                 attempt = 0
                 step_done = False
                 while attempt < max_attempts:

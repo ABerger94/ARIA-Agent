@@ -81,6 +81,7 @@ planner = importlib.import_module("aria.agent.planner")
 taskexec = importlib.import_module("aria.agent.taskexec")
 action_journal = importlib.import_module("aria.action_journal")
 runtime = importlib.import_module("aria.runtime")
+dispatch = importlib.import_module("aria.tools.dispatch")
 
 
 def _grade_json(rubric_id, fail_must=(), fail_advisory=(),
@@ -567,3 +568,106 @@ def test_citation_probe_kind_mention_still_counts():
             "code_change", {"change_landed":
                             "the file probe shows it landed"})))
     assert out["verdict"] == "pass", out
+
+
+# -- (h) checkpoint step evidence ----------------------------------
+
+def _register_fake_tool(name):
+    calls = []
+
+    def _fake(args):
+        calls.append(dict(args or {}))
+        return "out-" + str((args or {}).get("x", ""))
+
+    dispatch.register_tool(name, _fake, replay_safe=True)
+    return calls
+
+
+def _h_plan(tool):
+    return {"goal": "g", "plan_rev": "r1", "steps": [
+        {"id": "h1", "step": 1, "tool": tool,
+         "description": "one", "parameters": {"x": "1"},
+         "critical": True},
+        {"id": "h2", "step": 2, "tool": tool,
+         "description": "two", "parameters": {"x": "{prev}"},
+         "critical": True},
+    ]}
+
+
+def test_checkpoint_carries_step_evidence():
+    from aria.action_journal import signature
+    calls = _register_fake_tool("fake_h23")
+    plan = _h_plan("fake_h23")
+    states = []
+    ex = _executor(lambda p, s: "x",
+                   tool_runner=taskexec._default_tool_runner)
+    out = ex.execute("g", resume={"plan": plan, "completed": [],
+                                  "results": {}},
+                     on_checkpoint=states.append)
+    assert out == "SUMMARY-OK", out
+    assert len(calls) == 2, calls
+    assert calls[1]["x"] == "out-1"
+    # Planning checkpoint carries no evidence (nothing ran).
+    assert states[0]["step_evidence"] is None
+    ev = states[-1]["step_evidence"]
+    assert ev is not None
+    assert ev["h1"]["params"] == {"x": "1"}
+    assert ev["h2"]["params"] == {"x": "out-1"}
+    assert ev["h1"]["op_id"].endswith(
+        signature("fake_h23", {"x": "1"}))
+    assert ev["h2"]["op_id"].endswith(
+        signature("fake_h23", {"x": "out-1"}))
+    assert "step:h1:" in ev["h1"]["op_id"]
+    assert "step:h2:" in ev["h2"]["op_id"]
+
+
+def test_checkpoint_evidence_round_trips_through_resume(
+        tmp_path, monkeypatch):
+    from aria.action_journal import signature
+    from aria.agent import taskstore as _ts
+    monkeypatch.setattr(config, "WORKSPACE_DIR", str(tmp_path))
+    calls = _register_fake_tool("fake_h23b")
+    plan = _h_plan("fake_h23b")
+    states = []
+    ex = _executor(lambda p, s: "x",
+                   tool_runner=taskexec._default_tool_runner)
+    out = ex.execute("g", resume={"plan": plan, "completed": [],
+                                  "results": {}},
+                     on_checkpoint=states.append)
+    assert out == "SUMMARY-OK", out
+    final = states[-1]
+    _ts.create("rt23", "g")
+    _ts.checkpoint("rt23", final)
+    saved = _ts.get("rt23")["step_evidence"]
+    assert saved["h1"]["params"] == {"x": "1"}
+    assert saved["h2"]["params"] == {"x": "out-1"}
+    # Resume with a third step appended: the resumed run's
+    # checkpoints must still carry h1/h2 (seeded), plus h3.
+    plan2 = {"goal": "g", "plan_rev": "r2", "steps": [
+        plan["steps"][0], plan["steps"][1],
+        {"id": "h3", "step": 3, "tool": "fake_h23b",
+         "description": "three", "parameters": {"x": "done"},
+         "critical": True},
+    ]}
+    states2 = []
+    ex2 = _executor(lambda p, s: "x",
+                    tool_runner=taskexec._default_tool_runner)
+    out2 = ex2.execute("g", resume={
+        "plan": plan2,
+        "completed": final["completed"],
+        "results": final["results"],
+        "execution_scope": "task:rt23"},
+        on_checkpoint=states2.append)
+    assert out2 == "SUMMARY-OK", out2
+    assert len(calls) == 3, calls
+    ev2 = states2[-1]["step_evidence"]
+    assert ev2["h1"]["params"] == {"x": "1"}
+    assert ev2["h2"]["params"] == {"x": "out-1"}
+    assert ev2["h1"]["op_id"].endswith(
+        signature("fake_h23b", {"x": "1"}))
+    assert ev2["h3"]["params"] == {"x": "done"}
+    # ...and the journal record still holds all three after the
+    # resumed run's checkpoint (no clobber by a partial map).
+    _ts.checkpoint("rt23", states2[-1])
+    saved2 = _ts.get("rt23")["step_evidence"]
+    assert set(saved2) == {"h1", "h2", "h3"}
