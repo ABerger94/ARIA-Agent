@@ -1071,14 +1071,12 @@ def menv(tmp_path, monkeypatch):
     _SAFE["on"] = False
     missions.set_verifier(None)
     missions._worker_alive = False
-    missions._LAST_GRADE.clear()
     approval.set_mode("auto")
     dispatch.reset_turn_state()
     yield types.SimpleNamespace(tmp=tmp_path)
     approval._PENDING.clear()
     missions.set_verifier(None)
     missions._worker_alive = False
-    missions._LAST_GRADE.clear()
     dispatch.reset_turn_state()
 
 
@@ -1221,16 +1219,19 @@ def test_mission_grade_never_leaks_across_projects(
     assert "Grade:" not in (row2["summary"] or ""), row2["summary"]
 
 
-def test_build_summary_ignores_stale_last_grade(menv):
-    # Pass 36 #21: the summary is built from the grade passed
-    # in, never from the process-wide map — even a populated
-    # _LAST_GRADE must not render when this verify graded
-    # nothing.
-    missions._LAST_GRADE[1] = {
-        "rubric_id": "general", "rubric_version": 1,
-        "verdict": "pass", "criteria": [], "failure_cases": []}
+def test_build_summary_renders_only_passed_grade(menv):
+    # Pass 36 #23 (g): the process-wide grade maps are gone —
+    # the summary renders only the grade it is passed. With no
+    # grade passed, no "Grade:" line appears; with the current
+    # verify's grade passed, exactly that grade renders.
     m = {"id": 1, "goal": "g", "status": "done"}
     assert "Grade:" not in missions._build_summary(m, [])
+    grade = {"rubric_id": "general", "rubric_version": 1,
+             "verdict": "pass", "criteria": [], "failure_cases": [],
+             "failed_criteria": [], "grader_model": "m",
+             "self_graded": False, "worker_model": None}
+    assert "Grade: general v1 PASS" in missions._build_summary(
+        m, [], grade=grade)
 
 
 def test_mission_cannot_grade_falls_back_to_evidence_check(

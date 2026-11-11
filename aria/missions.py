@@ -1084,25 +1084,13 @@ def _handle_step_result(mid: int, step: Dict[str, Any],
 # Verification + delivery summary
 # ------------------------------------------------------------------
 
-# The last outcome grade per mission (Outcomes/Grader upgrade,
-# design 2026-11-08). Pass 36 #21: this used to be keyed by the
-# bare numeric mission id and read by _build_summary even when
-# the current grade was disabled or unavailable — a later
-# attempt, or another project with the same id, could publish
-# old criterion citations. It is now write-only legacy: _verify
-# still stores here (EXEC owns that line) but nothing reads it.
-# The live handoff is _CURRENT_GRADE below.
-_LAST_GRADE: Dict[int, dict] = {}
-
-# Same-call-stack handoff from _outcome_grade to _finish,
-# keyed by (database path, mission id) so a grade can never
-# leak across projects, and consumed (popped) by _finish when
-# it builds the terminal summary. _outcome_grade refreshes or
-# deletes the entry on every verify, so a cannot_grade / off
-# run leaves no stale grade behind. The direct path is the
-# grade= argument on _finish/_build_summary; this slot exists
-# only until _verify passes its grade_result through directly.
-_CURRENT_GRADE: Dict[tuple, dict] = {}
+# Pass 36 #23 (g): the process-wide grade maps are gone. _LAST_GRADE
+# was write-only legacy (nothing read it) and _CURRENT_GRADE was a
+# same-call-stack handoff that existed only until _verify passed
+# its grade_result through directly — it now does, via _finish's
+# grade= argument, so there is no map left for a stale grade to
+# leak through. _build_summary renders only the grade it is
+# passed, and _finish persists only the grade it is passed.
 
 
 def _settle_mission_delegates(mid: int,
@@ -1154,14 +1142,13 @@ def _outcome_grade(mid: int, m: Dict[str, Any],
     caller then keeps the legacy verify outcome exactly.
     Probes: the action-journal receipt of every non-replay-safe
     step (its mission operation id is deterministic) plus the
-    grader's file probes. A decisive grade is handed to
-    _finish via _CURRENT_GRADE (pass 36 #21); a None outcome
-    clears any earlier grade for this mission, so _finish can
-    never render a stale one."""
+    grader's file probes. The caller passes a decisive grade
+    to _finish via grade= (pass 36 #23 (g)); there is no
+    process-wide handoff left for a stale grade to leak
+    through, so a None outcome needs no clearing."""
     try:
         from aria.agent import grader as _grader
         if not _grader.outcomes_enabled():
-            _CURRENT_GRADE.pop((_memory.db_path(), mid), None)
             return None
         # Pass 36 #28: settle delegate receipts from their
         # children's terminal outcomes first, so the probes
@@ -1209,12 +1196,9 @@ def _outcome_grade(mid: int, m: Dict[str, Any],
                 _grader.normalize_steps(steps),
                 journal_ids=journal_ids))
         if result["verdict"] == "cannot_grade":
-            _CURRENT_GRADE.pop((_memory.db_path(), mid), None)
             return None
-        _CURRENT_GRADE[(_memory.db_path(), mid)] = result
         return result
     except Exception as e:
-        _CURRENT_GRADE.pop((_memory.db_path(), mid), None)
         add_log(f"[mission] #{mid} outcome grader errored ({e}); "
                 f"legacy verify outcome kept")
         return None
@@ -1294,7 +1278,6 @@ def _verify(mid: int) -> bool:
     # off → the legacy outcome is untouched.
     grade_result = _outcome_grade(mid, m, steps)
     if grade_result is not None:
-        _LAST_GRADE[mid] = grade_result
         if grade_result["verdict"] == "fail":
             verdict = False
             for s in _grade_targets(grade_result, steps):
@@ -1310,7 +1293,10 @@ def _verify(mid: int) -> bool:
     if m is None or m["status"] in TERMINAL or m["status"] == "paused":
         return True
     if verdict:
-        _finish(mid, "done", only_from={"verifying"})
+        # Pass 36 #23 (g): the current verify's grade rides
+        # straight into _finish — no process-wide map.
+        _finish(mid, "done", grade=grade_result,
+                only_from={"verifying"})
         return True
     attempts = int(m["verify_attempts"] or 0) + 1
     _set_mission(mid, verify_attempts=attempts)
@@ -1322,7 +1308,7 @@ def _verify(mid: int) -> bool:
         if any(not retry_safe(s['tool']) for s in targets):
             _finish(mid, 'done_unverified', note='Verification did not pass. '
                     'Actions with effects were preserved; check their receipts instead of repeating them.',
-                    only_from={"verifying"})
+                    grade=grade_result, only_from={"verifying"})
             return True
         # Atomic repair transition (pass 36 #30): reset the
         # targets and move back to running only while the
@@ -1340,7 +1326,7 @@ def _verify(mid: int) -> bool:
                  f"{MAX_VERIFY_ATTEMPTS} repair attempt(s) — "
                  "the recorded step outputs do not prove the "
                  "goal was accomplished.",
-            only_from={"verifying"})
+            grade=grade_result, only_from={"verifying"})
     return True
 
 
@@ -1398,11 +1384,9 @@ def _finish(mid: int, status: str, note: str = "",
             grade: Optional[dict] = None, *, only_from=None) -> None:
     """Pass 36 #21: the grade committed alongside the status
     is the current verification's result. Callers pass it
-    directly (grade=); until _verify does, a terminal
-    done/done_unverified finish consumes the _CURRENT_GRADE
-    handoff _outcome_grade just wrote for this mission — the
-    pop means no later finish can re-render it, and the
-    (database, mission) key means no other project's grade can
+    directly (grade=) — _verify passes its grade_result
+    through (pass 36 #23 (g)), so no process-wide map is read
+    here and no other project's or earlier attempt's grade can
     leak in. Any other status renders no grade. `only_from`
     is the pass 36 #30 compare-and-swap: when given, the
     finish lands only when the mission is currently in one of
@@ -1420,8 +1404,6 @@ def _finish(mid: int, status: str, note: str = "",
         add_log(f"[mission] #{mid} finish to {status} refused: "
                 f"status is {m['status']}, not in {sorted(only_from)}")
         return
-    if grade is None and status in ("done", "done_unverified"):
-        grade = _CURRENT_GRADE.pop((_memory.db_path(), mid), None)
     m["status"] = status
     steps = _step_rows(mid)
     fields: Dict[str, Any] = {
