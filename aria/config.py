@@ -160,15 +160,72 @@ FREELLMAPI_MODEL, _ = key_get("FREELLMAPI_MODEL", "auto")
 FREELLMAPI_BASE_URL, _ = key_get("FREELLMAPI_BASE_URL", "http://127.0.0.1:31415/v1")
 # Role-based model routing (Ollama Cloud tags). Empty string disables the
 # role (falls back to OLLAMA_CLOUD_MODEL) — retirement-proof overrides.
+# Pass 36 #16: aria_keys.json values arrive as raw JSON — a non-string
+# (number, list, object) used to crash _build_chain via .rstrip() and
+# kill Gemini with it. Coerce/validate every Ollama value at load so a
+# malformed local setting surfaces as a leg error, never a chain-wide
+# exception.
+def _coerce_model_tag(raw, fallback=""):
+    """A model tag must be a non-empty string; anything else is the fallback."""
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    if raw not in (None, "", "INSERT"):
+        print(f"[ARIA] Config: model tag {raw!r} is not a string — using {fallback!r}.", flush=True)
+    return fallback
+
+
+def _validate_ollama_host(raw):
+    """OLLAMA_HOST must be an http(s) URL string; anything else falls
+    back to the loopback default with a visible warning."""
+    default = "http://localhost:11434"
+    if not isinstance(raw, str) or not raw.strip():
+        if raw not in (None, "", "INSERT"):
+            print(f"[ARIA] Config: OLLAMA_HOST {raw!r} is not a string — using {default}.", flush=True)
+        return default
+    host = raw.strip().rstrip("/")
+    try:
+        from urllib.parse import urlparse
+        parts = urlparse(host)
+    except Exception:
+        parts = None
+    if not parts or parts.scheme not in ("http", "https") or not parts.netloc:
+        print(f"[ARIA] Config: OLLAMA_HOST {raw!r} is not an http(s) URL — using {default}.", flush=True)
+        return default
+    return host
+
+
+def _finite_timeout(raw, default, lo=10.0, hi=3600.0):
+    """A timeout must be a finite number inside [lo, hi]; inf/nan or
+    junk clamps to the bound with a visible warning, never crashes."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        print(f"[ARIA] Config: timeout {raw!r} is not a number — using {default}s.", flush=True)
+        return float(default)
+    import math as _math
+    if not _math.isfinite(value):
+        print(f"[ARIA] Config: timeout {raw!r} is not finite — using {default}s.", flush=True)
+        return float(default)
+    if value < lo or value > hi:
+        print(f"[ARIA] Config: timeout {value}s outside {lo}–{hi}s — clamped.", flush=True)
+        return min(max(value, lo), hi)
+    return value
+
+
 OLLAMA_VISION_MODEL, _ = key_get("OLLAMA_VISION_MODEL", "gemma4:31b-cloud")
+OLLAMA_VISION_MODEL = _coerce_model_tag(OLLAMA_VISION_MODEL)
 OLLAMA_CODE_MODEL, _ = key_get("OLLAMA_CODE_MODEL", "qwen3-coder:480b-cloud")
+OLLAMA_CODE_MODEL = _coerce_model_tag(OLLAMA_CODE_MODEL)
 OLLAMA_HOST, _ = key_get("OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_HOST = _validate_ollama_host(OLLAMA_HOST)
 OLLAMA_MODEL, _ = key_get("OLLAMA_MODEL", "qwen2.5:7b")
+OLLAMA_MODEL = _coerce_model_tag(OLLAMA_MODEL, "qwen2.5:7b")
 # Local Ollama fallback leg (ollama_local): per-attempt timeout in
 # seconds. A CPU-only 7B needs far longer than the cloud legs'
 # interactive deadline just for prompt prefill, so the local leg
 # gets its own floor (see LocalOllamaProvider._call_timeout).
 OLLAMA_LOCAL_TIMEOUT_S, _ = key_get("OLLAMA_LOCAL_TIMEOUT_S", "180")
+OLLAMA_LOCAL_TIMEOUT_S = _finite_timeout(OLLAMA_LOCAL_TIMEOUT_S, 180.0)
 # Local vision model (PROVIDER_MODE=local_only): in local-only mode
 # the vision role is served on-machine by this model on the local
 # Ollama server instead of an Ollama Cloud tag (see
@@ -177,7 +234,25 @@ OLLAMA_LOCAL_TIMEOUT_S, _ = key_get("OLLAMA_LOCAL_TIMEOUT_S", "180")
 # LocalOllamaProvider._call_timeout). Empty string disables the
 # local vision override (vision falls back to OLLAMA_MODEL).
 OLLAMA_LOCAL_VISION_MODEL, _ = key_get("OLLAMA_LOCAL_VISION_MODEL", "qwen2.5vl:7b")
+OLLAMA_LOCAL_VISION_MODEL = _coerce_model_tag(OLLAMA_LOCAL_VISION_MODEL)
 OLLAMA_LOCAL_VISION_TIMEOUT_S, _ = key_get("OLLAMA_LOCAL_VISION_TIMEOUT_S", "300")
+OLLAMA_LOCAL_VISION_TIMEOUT_S = _finite_timeout(OLLAMA_LOCAL_VISION_TIMEOUT_S, 300.0)
+# Pass 36 #17: local context size (num_ctx) for the local leg —
+# Ollama's default is far below ARIA's prompt size, so the leg sets
+# it explicitly (see LocalOllamaProvider._payload_options).
+OLLAMA_NUM_CTX, _ = key_get("OLLAMA_NUM_CTX", "4096")
+try:
+    OLLAMA_NUM_CTX = int(float(OLLAMA_NUM_CTX))
+except (TypeError, ValueError):
+    print(f"[ARIA] Config: OLLAMA_NUM_CTX {OLLAMA_NUM_CTX!r} is not a number — using 4096.", flush=True)
+    OLLAMA_NUM_CTX = 4096
+OLLAMA_NUM_CTX = min(max(OLLAMA_NUM_CTX, 512), 131072)
+# Pass 36 #05: strict local mode rejects a non-loopback OLLAMA_HOST
+# unless an explicit non-strict route is configured (OLLAMA_ALLOW_REMOTE=1
+# in aria_keys.json or the environment) — a LAN Ollama is a deliberate
+# choice, never an accident.
+OLLAMA_ALLOW_REMOTE, _ = key_get("OLLAMA_ALLOW_REMOTE", "")
+OLLAMA_ALLOW_REMOTE = str(OLLAMA_ALLOW_REMOTE or "").strip().lower() in ("1", "true", "yes")
 
 
 def _normalize_provider_mode(raw) -> str:
@@ -235,11 +310,24 @@ def set_provider_mode(mode) -> str:
 # explicit PROVIDER_CHAIN override can still name it). Reorder any
 # time via the PROVIDER_CHAIN override,
 # e.g. PROVIDER_CHAIN="groq,mistral,openrouter,ollama_local".
+# Pass 36 #16: chain names are validated at load — a non-string
+# PROVIDER_CHAIN or an unknown leg name is dropped with a warning,
+# never a chain-wide crash; an empty result falls back to the default.
+_KNOWN_PROVIDER_NAMES = frozenset({
+    "gemini", "groq", "openrouter", "mistral", "ollama_cloud",
+    "freellmapi", "ollama_local"})
+_DEFAULT_PROVIDER_CHAIN = ["gemini", "groq", "openrouter", "mistral", "ollama_local"]
 _PROVIDER_CHAIN_RAW, _ = key_get("PROVIDER_CHAIN", "")
-if _PROVIDER_CHAIN_RAW and _PROVIDER_CHAIN_RAW != "INSERT":
-    PROVIDER_CHAIN = [p.strip().lower() for p in _PROVIDER_CHAIN_RAW.split(",") if p.strip()]
+if isinstance(_PROVIDER_CHAIN_RAW, str) and _PROVIDER_CHAIN_RAW and _PROVIDER_CHAIN_RAW != "INSERT":
+    _chain_names = [p.strip().lower() for p in _PROVIDER_CHAIN_RAW.split(",") if p.strip()]
+    _unknown = [p for p in _chain_names if p not in _KNOWN_PROVIDER_NAMES]
+    if _unknown:
+        print(f"[ARIA] Config: unknown provider(s) in PROVIDER_CHAIN ignored: {_unknown}.", flush=True)
+    PROVIDER_CHAIN = [p for p in _chain_names if p in _KNOWN_PROVIDER_NAMES] or list(_DEFAULT_PROVIDER_CHAIN)
 else:
-    PROVIDER_CHAIN = ["gemini", "groq", "openrouter", "mistral", "ollama_local"]
+    if _PROVIDER_CHAIN_RAW not in (None, "", "INSERT"):
+        print(f"[ARIA] Config: PROVIDER_CHAIN {_PROVIDER_CHAIN_RAW!r} is not a string — using the default chain.", flush=True)
+    PROVIDER_CHAIN = list(_DEFAULT_PROVIDER_CHAIN)
 
 # Ollama safe mode (Phase 3): local model gets read-only tools only.
 OLLAMA_SAFE_MODE = True

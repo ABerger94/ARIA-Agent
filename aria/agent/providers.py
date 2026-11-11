@@ -815,8 +815,14 @@ class LocalOllamaProvider(OpenAICompatProvider):
 
 def _ollama_local_base_url() -> str:
     """OLLAMA_HOST + /v1 (the OpenAI-compatible surface). A host
-    already ending in /v1 is used as-is."""
-    host = (OLLAMA_HOST or "http://localhost:11434").rstrip("/")
+    already ending in /v1 is used as-is. Pass 36 #16: a non-string
+    host (raw JSON value) used to crash this .rstrip() and take
+    the whole chain down with it — coerce defensively, the config
+    validators above are the first line, this is the second."""
+    raw = OLLAMA_HOST  # module global: config-validated at import,
+    # rebindable by tests; a non-string is coerced, never crashed on.
+    host = raw if isinstance(raw, str) and raw.strip() else "http://localhost:11434"
+    host = host.strip().rstrip("/")
     return host if host.endswith("/v1") else host + "/v1"
 
 
@@ -845,39 +851,51 @@ def _provider_registry() -> Dict[str, Provider]:
     """Every named OpenAI-compatible leg, including opt-in ones
     not in the default PROVIDER_CHAIN. _build_chain picks from
     this by configured order; the tier opt-in path builds a named
-    leg from it on demand (pass 25)."""
-    return {
-        "groq": OpenAICompatProvider(
-            "groq", "https://api.groq.com/openai/v1", GROQ_API_KEY, GROQ_MODEL),
-        "openrouter": OpenAICompatProvider(
-            "openrouter", "https://openrouter.ai/api/v1",
-            OPENROUTER_API_KEY, OPENROUTER_MODEL,
-            extra_headers={"HTTP-Referer": "https://github.com/ABerger94/ARIA-Agent",
-                           "X-Title": "ARIA-Agent"}),
-        "mistral": OpenAICompatProvider(
-            "mistral", "https://api.mistral.ai/v1", MISTRAL_API_KEY, MISTRAL_MODEL),
-        "ollama_cloud": OpenAICompatProvider(
-            "ollama_cloud", "https://ollama.com/v1",
-            OLLAMA_CLOUD_API_KEY, OLLAMA_CLOUD_MODEL),
-        # FreeLLMAPI (opt-in, Alek 2026-11-04): a local router fronting
-        # many free tiers behind one OpenAI-compatible endpoint. It is
-        # NOT in the default PROVIDER_CHAIN — naming "freellmapi" in
-        # PROVIDER_CHAIN (or as a tier's light_provider) is the only
-        # way it serves. With no FREELLMAPI_API_KEY configured the leg
-        # reports unavailable and the walk moves on, exactly like any
-        # other unconfigured provider.
-        "freellmapi": OpenAICompatProvider(
-            "freellmapi", FREELLMAPI_BASE_URL,
-            FREELLMAPI_API_KEY, FREELLMAPI_MODEL),
-        # Local Ollama (Alek, 2026-11-09): the machine's own Ollama
-        # server running OLLAMA_MODEL (default qwen2.5:7b). It IS in
-        # the default PROVIDER_CHAIN, last — the fallback when every
-        # cloud leg is down. It needs no key; if Ollama is not
-        # running the connection is refused instantly and the walk
-        # ends, the same end state as before this leg existed.
-        "ollama_local": LocalOllamaProvider(
-            "ollama_local", _ollama_local_base_url(), OLLAMA_MODEL),
-    }
+    leg from it on demand (pass 25).
+
+    Pass 36 #16: each leg is constructed independently — one
+    malformed local setting used to raise inside _build_chain
+    and kill Gemini with it. A leg that fails to construct is
+    logged and skipped; the rest of the chain still serves."""
+    registry: Dict[str, Provider] = {}
+
+    def _add(name, build):
+        try:
+            registry[name] = build()
+        except Exception as e:
+            add_log(f"provider registry: leg '{name}' failed to construct ({e}); skipped")
+
+    _add("groq", lambda: OpenAICompatProvider(
+        "groq", "https://api.groq.com/openai/v1", GROQ_API_KEY, GROQ_MODEL))
+    _add("openrouter", lambda: OpenAICompatProvider(
+        "openrouter", "https://openrouter.ai/api/v1",
+        OPENROUTER_API_KEY, OPENROUTER_MODEL,
+        extra_headers={"HTTP-Referer": "https://github.com/ABerger94/ARIA-Agent",
+                       "X-Title": "ARIA-Agent"}))
+    _add("mistral", lambda: OpenAICompatProvider(
+        "mistral", "https://api.mistral.ai/v1", MISTRAL_API_KEY, MISTRAL_MODEL))
+    _add("ollama_cloud", lambda: OpenAICompatProvider(
+        "ollama_cloud", "https://ollama.com/v1",
+        OLLAMA_CLOUD_API_KEY, OLLAMA_CLOUD_MODEL))
+    # FreeLLMAPI (opt-in, Alek 2026-11-04): a local router fronting
+    # many free tiers behind one OpenAI-compatible endpoint. It is
+    # NOT in the default PROVIDER_CHAIN — naming "freellmapi" in
+    # PROVIDER_CHAIN (or as a tier's light_provider) is the only
+    # way it serves. With no FREELLMAPI_API_KEY configured the leg
+    # reports unavailable and the walk moves on, exactly like any
+    # other unconfigured provider.
+    _add("freellmapi", lambda: OpenAICompatProvider(
+        "freellmapi", FREELLMAPI_BASE_URL,
+        FREELLMAPI_API_KEY, FREELLMAPI_MODEL))
+    # Local Ollama (Alek, 2026-11-09): the machine's own Ollama
+    # server running OLLAMA_MODEL (default qwen2.5:7b). It IS in
+    # the default PROVIDER_CHAIN, last — the fallback when every
+    # cloud leg is down. It needs no key; if Ollama is not
+    # running the connection is refused instantly and the walk
+    # ends, the same end state as before this leg existed.
+    _add("ollama_local", lambda: LocalOllamaProvider(
+        "ollama_local", _ollama_local_base_url(), OLLAMA_MODEL))
+    return registry
 
 
 def _providers_by_name(name: Optional[str]) -> List[Provider]:
@@ -904,7 +922,11 @@ def _build_chain() -> List[Provider]:
     chain: List[Provider] = []
     for n in effective_chain_names():
         if n == "gemini":
-            chain.extend(_gemini_providers())
+            try:
+                chain.extend(_gemini_providers())
+            except Exception as e:
+                # Pass 36 #16: one bad leg never takes the chain down.
+                add_log(f"provider chain: gemini legs failed to construct ({e}); skipped")
         elif n in registry:
             chain.append(registry[n])
     return chain
