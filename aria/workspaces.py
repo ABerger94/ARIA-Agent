@@ -212,6 +212,41 @@ def file_allowed(filename):
     return not roots or any(target.is_relative_to(Path(r).expanduser().resolve()) for r in roots)
 
 
+def read_authorization_error(filename):
+    """None when a file read is authorized for the current project,
+    else the refusal reason. Pass 36 #39: the ONE shared
+    project-aware read check — resolve the effective path
+    (relative paths against the current project's root, not the
+    process cwd), refuse the reserved projects/ subtree, then
+    apply the configured file roots. file_allowed alone permits
+    ANY path when file_roots is empty, so it cannot carry the
+    reserved check — process_file and vision_look both used only
+    it, and the reserved subtree was readable through them."""
+    try:
+        raw = str(filename or "").strip()
+        if not raw:
+            return "No file given."
+        target = Path(os.path.expandvars(os.path.expanduser(raw)))
+        if not target.is_absolute():
+            from aria import config
+            target = Path(path("", config.WORKSPACE_DIR)) / target
+        target = target.resolve()
+    except Exception:
+        return "File path could not be resolved."
+    if is_reserved_projects_path(target):
+        return ("File is inside the reserved projects/ storage — "
+                "named projects are not reachable through the "
+                "default project's file tools")
+    if not file_allowed(target):
+        return "File is outside this project's configured roots"
+    return None
+
+
+def is_read_authorized(filename) -> bool:
+    """True when read_authorization_error finds no refusal."""
+    return read_authorization_error(filename) is None
+
+
 def resolve_workspace_file(filename, legacy=None):
     """Resolve a relative file name once, enforcing storage and project roots.
 

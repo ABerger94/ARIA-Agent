@@ -785,10 +785,14 @@ def _first_look_image(image_path: str = ""):
         # configured roots forbid. Resolve first (symlinks included),
         # then refuse with dispatch's own shape. Staging itself is
         # unchanged — receive_file() still stages any dropped file.
+        # Pass 36 #39: the shared project-aware check — the reserved
+        # projects/ subtree is refused too, which file_allowed alone
+        # (True for any path when file_roots is empty) never did.
         from aria import workspaces as _workspaces
-        if not _workspaces.file_allowed(os.path.realpath(path)):
+        _auth_err = _workspaces.read_authorization_error(path)
+        if _auth_err:
             return None, "image/jpeg", (
-                "status=failed reason=\"File is outside this project\u2019s configured roots\"")
+                f"status=failed reason=\"{_auth_err}\"")
         if not os.path.isfile(path):
             return None, "image/jpeg", f"[Image not found: {path}]"
         try:

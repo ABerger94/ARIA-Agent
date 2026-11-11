@@ -645,7 +645,22 @@ def process_file(path, question: str = "", *, pool=None,
     path (callers turn those into honest user-facing lines); every
     content-level problem degrades into detail notes instead.
     """
+    from aria import workspaces
     p = Path(os.path.expanduser(str(path)))
+    if not p.is_absolute():
+        # Relative paths are workspace-relative (the pass 29 #41
+        # code_helper rule): the authorization check and the open
+        # below must agree on which file they mean — resolving
+        # against the process cwd let the check and the read
+        # disagree.
+        p = Path(workspaces.path("", _config.WORKSPACE_DIR)) / p
+    err = workspaces.read_authorization_error(p)
+    if err:
+        # Pass 36 #39: the reserved projects/ subtree is refused
+        # here, not just by file_allowed — process_file is also
+        # reached from the drop-zone path, which never passes the
+        # dispatch gate.
+        raise ValueError(err)
     if not p.exists():
         raise FileNotFoundError(str(p))
     if not p.is_file():
@@ -785,9 +800,10 @@ def tool_process_file(path: str = "", question: str = "") -> str:
         return ResultText('[No file given and nothing is staged — drop a file on '
                           'the frame first, or name a path.]', ASK)
     from aria import workspaces
-    if not workspaces.file_allowed(p):
+    err = workspaces.read_authorization_error(p)
+    if err:
         from aria.outcome import failed
-        return failed('process_file', 'File is outside this project’s configured roots')
+        return failed('process_file', err)
     try:
         res = process_file(p, question)
     except FileNotFoundError:

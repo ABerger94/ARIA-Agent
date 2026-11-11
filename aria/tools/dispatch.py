@@ -548,7 +548,16 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
             if not _p.is_absolute():
                 _p = _Path(workspaces.path('', builtins.WORKSPACE_DIR)) / _p
             path = str(_p.resolve())
-        if not workspaces.file_allowed(path):
+        if fn_name in {'process_file', 'vision_look'}:
+            # Pass 36 #39: file_allowed alone is True for any path
+            # when file_roots is empty, so the reserved projects/
+            # subtree sailed through this gate — the shared
+            # project-aware check refuses it (and the roots).
+            if not workspaces.is_read_authorized(path):
+                return ('status=failed reason="File is inside the '
+                        'reserved projects/ storage or outside this '
+                        'project’s configured roots"', False)
+        elif not workspaces.file_allowed(path):
             return ('status=failed reason="File is outside this project’s configured roots"', False)
     # Auto-resolve parent toolkit if called directly
     if fn_name in TOOL_TO_TOOLKIT:
