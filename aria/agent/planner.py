@@ -285,7 +285,15 @@ def _sanitize(plan: dict, goal: str) -> Optional[dict]:
         if known and tool not in known:
             warnings.append(f"dropped step with unknown tool '{tool}'")
             continue
+        # Pass 36 #26: each step carries a stable id independent
+        # of its display number ("step"), which is rendering
+        # only. A replan renumbers from 1; the id is what resume
+        # skips, results, receipts, and substitution key by, so
+        # a replacement step is never confused with the step it
+        # replaced. A step that already carries an id (a plan
+        # re-sanitized, or a hand-built plan) keeps it.
         steps.append({
+            "id": str(raw_step.get("id") or _new_step_id()),
             "step": len(steps) + 1,
             "tool": tool,
             "description": str(raw_step.get("description") or ""),
@@ -301,15 +309,22 @@ def _sanitize(plan: dict, goal: str) -> Optional[dict]:
         steps = steps[:cap]
     if not steps:
         return None
+    # A plan revision id, fresh per sanitized plan: the replan
+    # path re-sanitizes, so each revision is distinguishable
+    # even when its steps renumber from 1.
     return {"goal": plan.get("goal") or goal, "steps": steps,
             "task_type": _valid_task_type(plan.get("task_type")),
+            "plan_rev": str(plan.get("plan_rev") or _new_plan_rev()),
             "warnings": warnings}
 
 
 def create_plan(goal: str, context: str = "",
                 llm: Optional[Callable] = None) -> dict:
-    """Plan a delegated task. Never raises: any failure (pool down,
-    bad JSON, empty plan) yields the deterministic fallback plan."""
+    """Plan a delegated task. A planning failure (pool down, bad
+    JSON, empty plan) yields the research-only fallback plan
+    when the goal is explicitly research-shaped; otherwise it
+    raises PlanningFailed — a private goal is never sent to a
+    search backend as a stand-in plan (pass 36 #33)."""
     llm = llm or _default_llm
     user_input = f"Goal: {goal}"
     if context:

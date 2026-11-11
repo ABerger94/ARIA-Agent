@@ -57,10 +57,13 @@ runtime = importlib.import_module("aria.runtime")
 action_journal = importlib.import_module("aria.action_journal")
 
 _PLAN = {"goal": "g", "steps": [
-    {"step": 1, "tool": "web_search", "description": "first",
-     "parameters": {}, "critical": False},
-    {"step": 2, "tool": "read_notes", "description": "second",
-     "parameters": {"x": "{prev}"}, "critical": False},
+    # Pass 36 #26: steps carry stable ids; the op id binds the
+    # id, not the display number.
+    {"id": "step-1", "step": 1, "tool": "web_search",
+     "description": "first", "parameters": {}, "critical": False},
+    {"id": "step-2", "step": 2, "tool": "read_notes",
+     "description": "second", "parameters": {"x": "{prev}"},
+     "critical": False},
 ]}
 
 
@@ -88,13 +91,16 @@ def test_same_step_same_operation_id_across_resume():
     assert out == "SUMMARY-OK", out
     first = dict(calls)
     assert set(first) == {"web_search", "read_notes"}, calls
-    assert first["read_notes"].startswith("task:orig123:step:2:"), first
+    # Pass 36 #26: the receipt binds the stable step id, not
+    # the display number — same scope, same step, same id.
+    assert first["read_notes"].startswith(
+        "task:orig123:step:step-2:"), first
     assert "mission:7" not in first["read_notes"], first
 
     calls.clear()
     ex2 = _executor(calls)
     resume = {"plan": _PLAN, "completed": [_PLAN["steps"][0]],
-              "results": {"1": "A-OUT"},
+              "results": {"step-1": "A-OUT"},
               "execution_scope": "task:orig123"}
     with runtime.execution("task", execution_id="task:new456",
                            budget_scope=""):

@@ -122,26 +122,73 @@ def _is_failure(out: Any) -> bool:
     return normalize(out).status == FAILED
 
 
-def _substitute(value: Any, results: Dict[int, str]) -> Any:
+def _substitute(value: Any, results: Dict[str, str],
+                plan_steps: Optional[List[dict]] = None,
+                completed: Optional[List[dict]] = None) -> Any:
     """Deterministic {prev} / {stepN} substitution in step
     parameters (string values only). NOT code evaluation — plain
-    text replacement of recorded step results."""
+    text replacement of recorded step results.
+
+    Pass 36 #26: results are keyed by stable step id, not by
+    display number. {stepN} resolves N through the current
+    plan's display numbers (a step's "step" field is rendering
+    only), falling back to a completed step with that number,
+    then to a legacy numeric results key. {prev} is the most
+    recently completed step's result. Callers that pass only
+    (value, results) — the journal-id path — get the legacy
+    numeric-key and last-inserted fallbacks."""
+    plan_steps = plan_steps or []
+    completed = completed or []
+
+    def _by_display(n: int) -> str:
+        for s in plan_steps:
+            if s.get("step") == n and s.get("id") in results:
+                return str(results[s["id"]])
+        for s in completed:
+            if s.get("step") == n and s.get("id") in results:
+                return str(results[s["id"]])
+        # Legacy numeric-keyed results (pre-stable-id
+        # checkpoints): the display number IS the key.
+        if str(n) in results:
+            return str(results[str(n)])
+        if n in results:  # type: ignore[comparison-overlap]
+            return str(results[n])  # type: ignore[index]
+        return ""
+
+    def _prev() -> str:
+        if completed:
+            last_id = completed[-1].get("id")
+            if last_id is not None and last_id in results:
+                return str(results[last_id])
+        if results:
+            # Legacy numeric keys: the highest step ran last.
+            try:
+                numeric = [int(k) for k in results]
+                if len(numeric) == len(results):
+                    return str(results[str(max(numeric))])
+            except Exception:
+                pass
+            # Id-keyed without a completed list: insertion
+            # order is completion order.
+            return str(next(reversed(list(results.values()))))
+        return ""
+
     if isinstance(value, str):
         def _repl(m):
             token = m.group(1)
             if token == "prev":
-                if not results:
-                    return ""
-                return str(results[max(results)])[:_SUBST_CAP]
+                return _prev()[:_SUBST_CAP]
             try:
-                return str(results.get(int(token[4:]), ""))[:_SUBST_CAP]
+                return _by_display(int(token[4:]))[:_SUBST_CAP]
             except Exception:
                 return ""
         return re.sub(r"\{(prev|step\d+)\}", _repl, value)
     if isinstance(value, dict):
-        return {k: _substitute(v, results) for k, v in value.items()}
+        return {k: _substitute(v, results, plan_steps, completed)
+                for k, v in value.items()}
     if isinstance(value, list):
-        return [_substitute(v, results) for v in value]
+        return [_substitute(v, results, plan_steps, completed)
+                for v in value]
     return value
 
 
@@ -186,6 +233,21 @@ def _resolved_artifact_path(tool: str, params: dict
         return None
 
 
+def _ensure_plan_ids(plan: Dict[str, Any]) -> Dict[str, Any]:
+    """Stamp a plan revision id and stable step ids onto a plan
+    that lacks them (pass 36 #26). Hand-built or monkeypatched
+    plans in tests, and plans written before stable ids existed,
+    arrive without them; stamping in place keeps the checkpoint
+    format uniform. A plan that already carries ids is untouched
+    — a resume must never re-issue ids, or its skip set breaks."""
+    if not plan.get("plan_rev"):
+        plan["plan_rev"] = planner._new_plan_rev()
+    for s in plan.get("steps") or []:
+        if isinstance(s, dict) and not s.get("id"):
+            s["id"] = planner._new_step_id()
+    return plan
+
+
 class TaskBlocked(Exception):
     """The task parked instead of failing: it needs something
     (user input, or a verifier concern resolved) before it can
@@ -223,7 +285,10 @@ class AgentExecutor:
         # parameters each step actually executed, as computed by
         # _journal_ids — probes are driven from these, never
         # from the raw template parameters.
-        self._op_ids: Dict[int, str] = {}
+        # Pass 36 #26: keyed by stable step id, not display
+        # number, so a replanned replacement step cannot
+        # overwrite the replaced step's receipt.
+        self._op_ids: Dict[str, str] = {}
         self._last_grade: Optional[dict] = None
         self._step_params: Dict[int, dict] = {}
 
@@ -560,6 +625,20 @@ class AgentExecutor:
                     # instead of submitting another one.
                     "pending_child": pending_child}
 
+        def _results_by_display() -> Dict[int, str]:
+            """Display-number view of the id-keyed results, for
+            the verifier and journal-id paths (both still key by
+            display number — GRAD owns those; pass 36 #26 notes
+            the residual collision when two completed steps
+            share a display number across plan revisions, where
+            the later one wins)."""
+            view: Dict[int, str] = {}
+            for s in completed:
+                sid = s.get("id")
+                if sid is not None and sid in results:
+                    view[s.get("step")] = results[sid]
+            return view
+
         def _checkpoint() -> None:
             if on_checkpoint is not None:
                 try:
@@ -575,16 +654,46 @@ class AgentExecutor:
         pending_child = (resume or {}).get("pending_child")
         if resume and resume.get("plan"):
             # Resume from a persisted checkpoint: reuse the plan,
-            # keep the finished steps and their results. skip_steps
-            # is the resume-only skip set: after a REPLAN the new
-            # plan's steps are fresh work even if their numbers
-            # collide with recorded results (results still feed
-            # {prev}/{stepN} substitution, they just stop skipping).
+            # keep the finished steps and their results. Results
+            # are keyed by stable step id (pass 36 #26): the skip
+            # set is the ids of current-plan steps with a
+            # recorded result, so a replacement step from a
+            # replan — fresh id, reused display number — is
+            # never skipped as if it had run.
             plan = resume["plan"]
             completed = list(resume.get("completed") or [])
-            results = {int(k): v for k, v in
+            results = {str(k): v for k, v in
                        (resume.get("results") or {}).items()}
-            skip_steps = set(results)
+            if any(not (s.get("id") if isinstance(s, dict) else None)
+                   for s in plan.get("steps") or []):
+                # Legacy checkpoint: the plan predates stable
+                # step ids, so its results are keyed by display
+                # number and a replan may have renumbered the
+                # steps underneath them. When nothing was ever
+                # recorded the plan is safe to adopt (stamp ids
+                # and carry on); when results or completed steps
+                # exist the mapping is ambiguous — park the task
+                # for review instead of skipping work that may
+                # never have run.
+                if results or completed:
+                    add_log("taskexec: legacy checkpoint with "
+                            "number-keyed results parked for review")
+                    raise TaskBlocked(
+                        "resume checkpoint predates stable step ids "
+                        "and its recorded results cannot be matched "
+                        "to the current plan steps — review before "
+                        "resuming (pass 36 #26)",
+                        {"goal": goal, "plan": plan,
+                         "completed": list(completed),
+                         "results": dict(results),
+                         "pending_child": pending_child})
+                _ensure_plan_ids(plan)
+            else:
+                _ensure_plan_ids(plan)
+            plan_ids = {s.get("id") for s in plan.get("steps") or []}
+            skip_steps = {k for k in results if k in plan_ids}
+            skip_steps |= {s.get("id") for s in completed
+                           if s.get("id") in plan_ids}
             add_log(f"taskexec: resuming with {len(completed)} "
                     "step(s) already complete")
         else:
@@ -598,6 +707,7 @@ class AgentExecutor:
                 return _finish_outcome(
                     "I couldn't make a plan for that task: "
                     f"{e.reason}.")
+            _ensure_plan_ids(plan)
             completed = []
             results = {}
             skip_steps = set()
@@ -613,10 +723,17 @@ class AgentExecutor:
             failed_error = ""
 
             for step in steps:
-                if step.get("step") in skip_steps:
+                if step.get("id") in skip_steps:
                     continue  # resume: this step already ran
-                if pending_child and pending_child.get("step") == \
-                        step.get("step"):
+                # Pass 28 #20, pass 36 #26: match the pending
+                # child by stable step id when the checkpoint
+                # carries one; the display number is only the
+                # legacy fallback (a replanned step can reuse it).
+                _pc_id = (pending_child or {}).get("step_id")
+                if pending_child and (
+                        _pc_id == step.get("id") if _pc_id
+                        else pending_child.get("step")
+                        == step.get("step")):
                     # Pass 28 #20: this step already spawned a
                     # child and parked waiting for it — settle the
                     # child from the durable journal instead of
@@ -628,7 +745,7 @@ class AgentExecutor:
                         str(pending_child.get("task_id") or ""))
                     _cstatus = (_child or {}).get("status")
                     if _cstatus == "completed":
-                        results[step.get("step")] = \
+                        results[step.get("id")] = \
                             (_child or {}).get("result") or ""
                         completed.append(step)
                         pending_child = None
@@ -696,7 +813,9 @@ class AgentExecutor:
                         "That plan named a tool I don't have, so I stopped."
                     return _finish_outcome(msg)
 
-                params = _substitute(step.get("parameters") or {}, results)
+                params = _substitute(step.get("parameters") or {},
+                                     results, plan.get("steps"),
+                                     completed)
                 attempt = 0
                 step_done = False
                 while attempt < max_attempts:
@@ -717,11 +836,16 @@ class AgentExecutor:
                         # First run: the current execution id IS
                         # the task's scope (task:{id}); a resume
                         # carries the original scope in resume[].
+                        # Pass 36 #26: the receipt also binds the
+                        # stable step id, not the display number —
+                        # a replanned replacement step must not
+                        # inherit the replaced step's receipt.
                         _scope = (resume or {}).get("execution_scope") \
                             or runtime.current().id
-                        op = (f"{_scope}:step:{step.get('step')}:"
+                        _sid = step.get("id")
+                        op = (f"{_scope}:step:{_sid}:"
                               f"{signature(tool, params)}")
-                        self._op_ids[step.get("step")] = op
+                        self._op_ids[_sid] = op
                         with runtime.operation(op):
                             out = self._tool_runner(tool, params)
                     except runtime.Cancelled:
@@ -744,6 +868,7 @@ class AgentExecutor:
                         if _m is not None:
                             pending_child = {
                                 "step": step.get("step"),
+                                "step_id": step.get("id"),
                                 "task_id": _m.group(1),
                                 "project": (_p.group(1) if _p
                                             else None)}
@@ -778,7 +903,7 @@ class AgentExecutor:
                                 or "a step needs user input"
                             add_log(f"taskexec: task blocked — {reason[:80]}")
                             raise TaskBlocked(reason, _state())
-                        results[step.get("step")] = out
+                        results[step.get("id")] = out
                         completed.append(step)
                         step_done = True
                         _checkpoint()
@@ -794,7 +919,7 @@ class AgentExecutor:
                         self._sleep(STEP_RETRY_DELAY_S)
                         continue
                     if decision == failures.SKIP:
-                        results[step.get("step")] = "[skipped]"
+                        results[step.get("id")] = "[skipped]"
                         completed.append(step)
                         step_done = True
                         _checkpoint()
@@ -825,10 +950,15 @@ class AgentExecutor:
                     _remaining = budget_s - (time.time() - t0)
                     _grade_deadline = time.monotonic() + max(
                         0.0, min(_remaining, 300.0))
+                    # The verifier and journal-id paths still
+                    # key by display number (GRAD owns them):
+                    # hand them the display-number view of the
+                    # id-keyed results (pass 36 #26).
+                    _view = _results_by_display()
                     rejection = self._verify(
-                        goal, completed, results, plan=plan,
+                        goal, completed, _view, plan=plan,
                         journal_ids=self._journal_ids(
-                            completed, results, resume),
+                            completed, _view, resume),
                         deadline=_grade_deadline)
                     if rejection:
                         add_log("taskexec: verifier parked the task — "
@@ -868,6 +998,7 @@ class AgentExecutor:
                 return _finish_outcome(
                     "I couldn't find another approach for that task: "
                     f"{e.reason}.")
+            _ensure_plan_ids(plan)
             skip_steps = set()  # replanned steps are fresh work
             _checkpoint()
 

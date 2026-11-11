@@ -91,9 +91,11 @@ def test_journal_roundtrip_and_recovery():
 
 # ------------------------------------------------------------- executor
 _PLAN = {"goal": "g", "steps": [
-    {"step": 1, "tool": "web_search", "description": "first",
+    # Pass 36 #26: steps carry stable ids; results are keyed by
+    # them, never by display number.
+    {"id": "s1", "step": 1, "tool": "web_search", "description": "first",
      "parameters": {}, "critical": False},
-    {"step": 2, "tool": "read_notes", "description": "second",
+    {"id": "s2", "step": 2, "tool": "read_notes", "description": "second",
      "parameters": {"x": "{prev}"}, "critical": False},
 ]}
 
@@ -113,7 +115,7 @@ def test_resume_skips_completed_steps():
     ex = _executor(calls, {"web_search": ["A-OUT"], "read_notes": ["B-OUT"]})
     resume = {"plan": _PLAN,
               "completed": [_PLAN["steps"][0]],
-              "results": {"1": "A-OUT"}}
+              "results": {"s1": "A-OUT"}}
     out = ex.execute("g", resume=resume)
     assert out == "SUMMARY-OK"
     assert [c[0] for c in calls] == ["read_notes"], calls  # step 1 skipped
@@ -133,8 +135,8 @@ def test_need_input_parks_with_checkpoint():
     except taskexec.TaskBlocked as b:
         assert "which account" in b.reason
         assert [s["step"] for s in b.state["completed"]] == [1]
-        assert b.state["results"][1] == "first-ok"
-    assert states and states[-1]["results"][1] == "first-ok"
+        assert b.state["results"]["s1"] == "first-ok"
+    assert states and states[-1]["results"]["s1"] == "first-ok"
     print("ok need_input_parks_with_checkpoint")
 
 

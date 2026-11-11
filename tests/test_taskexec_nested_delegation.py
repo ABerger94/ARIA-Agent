@@ -121,8 +121,13 @@ def test_nested_delegation_parks_with_pending_child():
         ex.execute("parent goal")
     assert len(runner.calls) == 1, runner.calls
     state = exc.value.state
+    # Pass 36 #26: the pending child also carries the stable
+    # step id, so a replanned step reusing display number 1
+    # cannot be mistaken for this one.
     assert state["pending_child"] == {
-        "step": 1, "task_id": "child1", "project": "default"}, state
+        "step": 1,
+        "step_id": state["plan"]["steps"][0]["id"],
+        "task_id": "child1", "project": "default"}, state
     assert state["completed"] == [], state
 
 
