@@ -188,6 +188,12 @@ def normalize_steps(steps: List[dict],
                   else {}),
             "output": _step_output(s, results),
         }
+        # Pass 36 #23: a step recorded as skipped is marked as
+        # such, never rendered as if it had run — the bundle
+        # shows SKIPPED explicitly so the grader cannot mistake
+        # a classifier skip for completed work.
+        if norm["output"] == "[skipped]":
+            norm["skipped"] = True
         if s.get("id") is not None:
             norm["id"] = s.get("id")
         out.append(norm)
@@ -273,8 +279,16 @@ def build_bundle(goal: str, steps: List[dict], rubric: dict,
     if steps:
         for s in steps:
             desc = f" — {s['description']}" if s["description"] else ""
-            lines.append(f"- step {s['step']} ({s['tool']}){desc}: "
-                         f"{_cap_output(s['output']) or '(no output)'}")
+            if s.get("skipped"):
+                # Pass 36 #23: a skipped step is named as
+                # skipped — it claims no effect and no output.
+                lines.append(
+                    f"- step {s['step']} ({s['tool']}){desc}: "
+                    f"SKIPPED — the classifier skipped this step; "
+                    f"no effect claimed, no output recorded")
+            else:
+                lines.append(f"- step {s['step']} ({s['tool']}){desc}: "
+                             f"{_cap_output(s['output']) or '(no output)'}")
     else:
         lines.append("(no steps)")
     lines.append("")

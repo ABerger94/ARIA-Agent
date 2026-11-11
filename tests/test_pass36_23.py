@@ -117,6 +117,233 @@ def _executor(llm, **kw):
         sleep_fn=lambda s: None, **kw)
 
 
+# -- #23 deterministic gates ---------------------------------------
+
+def _llm_grader_pass(prompt, system):
+    if "independent grader" in system:
+        return _grade_json("general")
+    return "VERDICT: PASS"
+
+
+def test_gate_completion_missing_plan_step_vetoes_pass(grader_on):
+    ex = _executor(_llm_grader_pass)
+    reason = ex._verify(
+        "do the thing",
+        [{"step": 1, "id": "a1", "tool": "web_search",
+          "parameters": {}}],
+        {1: "found it"},
+        plan={"task_type": "general", "steps": [
+            {"step": 1, "id": "a1", "tool": "web_search"},
+            {"step": 2, "id": "b2", "tool": "web_search"}]})
+    assert reason is not None, "a pass must not certify an unfinished plan"
+    assert "no recorded completion" in reason
+
+
+def test_gate_skipped_critical_step_vetoes_pass(grader_on):
+    ex = _executor(_llm_grader_pass)
+    reason = ex._verify(
+        "do the thing",
+        [{"step": 1, "id": "a1", "tool": "send_email",
+          "parameters": {"to": "x"}}],
+        {1: "[skipped]"},
+        plan={"task_type": "general", "steps": [
+            {"step": 1, "id": "a1", "tool": "send_email",
+             "critical": True}]})
+    assert reason is not None
+    assert "was skipped" in reason
+
+
+def test_gate_skipped_noncritical_step_does_not_veto(grader_on):
+    ex = _executor(_llm_grader_pass)
+    reason = ex._verify(
+        "do the thing",
+        [{"step": 1, "id": "a1", "tool": "send_email",
+          "parameters": {"to": "x"}}],
+        {1: "[skipped]"},
+        plan={"task_type": "general", "steps": [
+            {"step": 1, "id": "a1", "tool": "send_email",
+             "critical": False}]})
+    assert reason is None, reason
+
+
+def test_gate_missing_receipt_vetoes_pass(grader_on):
+    # Journal ids were supplied (production path) but this effect
+    # step has no receipt identity at all.
+    ex = _executor(_llm_grader_pass)
+    reason = ex._verify(
+        "send the mail",
+        [{"step": 1, "id": "a1", "tool": "send_email",
+          "parameters": {"to": "x"}}],
+        {1: "sent"},
+        plan={"task_type": "general", "steps": [
+            {"step": 1, "id": "a1", "tool": "send_email"}]},
+        journal_ids={"zzz": "op-nope"})
+    assert reason is not None
+    assert "no action-journal receipt" in reason
+
+
+def test_gate_nonterminal_receipt_vetoes_pass(grader_on):
+    op = "task:gate23:step:a1:abc"
+    assert action_journal.begin(
+        op, "send_email", {"to": "x"}) is None
+    action_journal.finish(op, "status=started action=send_email")
+    assert action_journal.get(op)["state"] == "started"
+    ex = _executor(_llm_grader_pass)
+    reason = ex._verify(
+        "send the mail",
+        [{"step": 1, "id": "a1", "tool": "send_email",
+          "parameters": {"to": "x"}}],
+        {1: "sent"},
+        plan={"task_type": "general", "steps": [
+            {"step": 1, "id": "a1", "tool": "send_email"}]},
+        journal_ids={"a1": op})
+    assert reason is not None
+    assert "not terminal" in reason
+
+
+def test_gate_done_receipt_passes(grader_on):
+    op = "task:gate23b:step:a1:abc"
+    assert action_journal.begin(
+        op, "send_email", {"to": "x"}) is None
+    action_journal.finish(op, "sent it")
+    assert action_journal.get(op)["state"] == "done"
+    ex = _executor(_llm_grader_pass)
+    reason = ex._verify(
+        "send the mail",
+        [{"step": 1, "id": "a1", "tool": "send_email",
+          "parameters": {"to": "x"}}],
+        {1: "sent"},
+        plan={"task_type": "general", "steps": [
+            {"step": 1, "id": "a1", "tool": "send_email"}]},
+        journal_ids={"a1": op})
+    assert reason is None, reason
+
+
+def test_gate_settled_child_passes_and_failed_child_vetoes(
+        tmp_path, monkeypatch, grader_on):
+    from aria.agent import taskstore as _ts
+    monkeypatch.setattr(config, "WORKSPACE_DIR", str(tmp_path))
+    _ts.create("child23", "child goal")
+    _ts.finish("child23", "completed", result="child did it")
+    op = "task:gate23c:step:a1:abc"
+    assert action_journal.begin(
+        op, "delegate_task", {"goal": "child goal"}) is None
+    action_journal.finish(
+        op, "status=started action=delegate_task task_id=child23 "
+            "project=default")
+    ex = _executor(_llm_grader_pass)
+    reason = ex._verify(
+        "do the thing",
+        [{"step": 1, "id": "a1", "tool": "delegate_task",
+          "parameters": {"goal": "child goal"}}],
+        {1: "status=started action=delegate_task task_id=child23 "
+            "project=default"},
+        plan={"task_type": "general", "steps": [
+            {"step": 1, "id": "a1", "tool": "delegate_task"}]},
+        journal_ids={"a1": op})
+    assert reason is None, reason
+
+    # The same shape with a FAILED child vetoes: the parent step
+    # claims completion the settlement contradicts.
+    _ts.create("child23f", "child goal")
+    _ts.finish("child23f", "failed", error="child blew up")
+    op2 = "task:gate23d:step:a1:abc"
+    assert action_journal.begin(
+        op2, "delegate_task", {"goal": "child goal"}) is None
+    action_journal.finish(
+        op2, "status=started action=delegate_task task_id=child23f "
+             "project=default")
+    reason = ex._verify(
+        "do the thing",
+        [{"step": 1, "id": "a1", "tool": "delegate_task",
+          "parameters": {"goal": "child goal"}}],
+        {1: "status=started action=delegate_task task_id=child23f "
+            "project=default"},
+        plan={"task_type": "general", "steps": [
+            {"step": 1, "id": "a1", "tool": "delegate_task"}]},
+        journal_ids={"a1": op2})
+    assert reason is not None
+    assert "settled as failed" in reason
+
+
+def test_gate_missing_file_vetoes_pass(
+        tmp_path, monkeypatch, grader_on):
+    from aria.tools import builtins
+    monkeypatch.setattr(builtins, "WORKSPACE_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "WORKSPACE_DIR", str(tmp_path))
+    op = "task:gate23e:step:a1:abc"
+    assert action_journal.begin(
+        op, "write_file", {"filename": "gone.txt"}) is None
+    action_journal.finish(op, "wrote gone.txt")
+    ex = _executor(_llm_grader_pass)
+    reason = ex._verify(
+        "write the file",
+        [{"step": 1, "id": "a1", "tool": "write_file",
+          "parameters": {"filename": "gone.txt"}}],
+        {1: "wrote"},
+        plan={"task_type": "general", "steps": [
+            {"step": 1, "id": "a1", "tool": "write_file"}]},
+        journal_ids={"a1": op})
+    assert reason is not None
+    assert "is missing" in reason
+
+
+def test_gate_changed_file_vetoes_pass_and_verified_passes(
+        tmp_path, monkeypatch, grader_on):
+    import hashlib
+    from aria.outcome import ToolResult
+    from aria.tools import builtins
+    monkeypatch.setattr(builtins, "WORKSPACE_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "WORKSPACE_DIR", str(tmp_path))
+    target = tmp_path / "real.txt"
+    target.write_text("current bytes", encoding="utf-8")
+    current_sha = hashlib.sha256(b"current bytes").hexdigest()
+    ex = _executor(_llm_grader_pass)
+    completed = [{"step": 1, "id": "a1", "tool": "write_file",
+                  "parameters": {"filename": "real.txt"}}]
+    plan = {"task_type": "general", "steps": [
+        {"step": 1, "id": "a1", "tool": "write_file"}]}
+
+    # Attested hash is for OTHER bytes: the file changed since
+    # the recorded execution.
+    op = "task:gate23f:step:a1:abc"
+    assert action_journal.begin(
+        op, "write_file", {"filename": "real.txt"}) is None
+    action_journal.finish(op, ToolResult(
+        "done", "wrote real.txt", {},
+        ({"path": str(target), "sha256": "0" * 64},)))
+    reason = ex._verify("write the file", completed, {1: "wrote"},
+                        plan=plan, journal_ids={"a1": op})
+    assert reason is not None
+    assert "is changed" in reason
+
+    # Attested hash matches the current bytes: verified, pass.
+    op2 = "task:gate23g:step:a1:abc"
+    assert action_journal.begin(
+        op2, "write_file", {"filename": "real.txt"}) is None
+    action_journal.finish(op2, ToolResult(
+        "done", "wrote real.txt", {},
+        ({"path": str(target), "sha256": current_sha},)))
+    reason = ex._verify("write the file", completed, {1: "wrote"},
+                        plan=plan, journal_ids={"a1": op2})
+    assert reason is None, reason
+
+
+def test_bundle_renders_skipped_step_explicitly():
+    steps = grader.normalize_steps([
+        {"step": 1, "tool": "send_email",
+         "parameters": {"to": "x"}, "output": "[skipped]"},
+        {"step": 2, "tool": "web_search",
+         "parameters": {}, "output": "found it"},
+    ])
+    assert steps[0].get("skipped") is True
+    assert steps[1].get("skipped") is not True
+    bundle = grader.build_bundle(
+        "g", steps, rubrics.get_rubric("general"))
+    assert "step 1 (send_email): SKIPPED" in bundle
+    assert "no effect claimed" in bundle
+
+
 # -- (f) _journal_ids keyed by stable step id ------------------------
 
 def test_journal_ids_keyed_by_stable_step_id():

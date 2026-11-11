@@ -496,6 +496,130 @@ class AgentExecutor:
         except Exception as e:
             add_log(f"taskexec: grade persist failed ({e})")
 
+    def _deterministic_gates(self, completed: List[dict],
+                             results: Dict[int, str],
+                             plan: Optional[Dict[str, Any]],
+                             journal_ids: Optional[Dict[Any, str]],
+                             probes: Optional[List[dict]]
+                             ) -> Optional[str]:
+        """Deterministic checks a grader PASS must survive before
+        it can certify (pass 36 #23). The model judges claims;
+        these gates judge facts the model cannot override:
+          * completion — every step of the current plan is in
+            `completed` (a missing step means the run did not
+            finish the plan);
+          * required skips — a critical step recorded as skipped
+            never certifies; a non-critical skip is visible in
+            the bundle as SKIPPED and does not veto, and a skip
+            from a superseded plan revision does not veto either
+            (the replan owns that abandonment);
+          * receipt identity + terminal state — every effect
+            step's journal receipt must exist and be terminal
+            (done, or started with a completed child settlement
+            per pass 36 #28); read-only tools have no receipt
+            by design and are exempt, skipped steps are owned
+            by the completion gate above, and when no journal
+            ids were supplied (a direct _verify call) there is
+            nothing to check, so the gate stands down;
+          * required artifacts — a file probe showing a missing
+            file, or content that differs from the recorded
+            artifact hash, vetoes the pass; unavailable /
+            unreadable probes carry no evidence either way and
+            do not veto (pass 36 #20).
+        Returns a rejection reason, or None when the pass
+        stands. Never raises."""
+        try:
+            from aria.tool_policy import retry_safe
+
+            def _recorded(n):
+                if n is None:
+                    return None
+                if n in results:
+                    return results[n]
+                return results.get(str(n))
+
+            steps = plan.get("steps") \
+                if isinstance(plan, dict) else None
+            by_id: Dict[Any, dict] = {}
+            by_number: Dict[Any, dict] = {}
+            for s in completed:
+                if s.get("id") is not None:
+                    by_id[s["id"]] = s
+                if s.get("step") is not None:
+                    by_number[s["step"]] = s
+            if steps:
+                for ps in steps:
+                    if not isinstance(ps, dict):
+                        continue
+                    done = None
+                    if ps.get("id") is not None:
+                        done = by_id.get(ps["id"])
+                    if done is None and ps.get("step") is not None:
+                        done = by_number.get(ps["step"])
+                    if done is None:
+                        return (f"plan step {ps.get('step')} "
+                                f"({ps.get('tool', '?')}) has no "
+                                f"recorded completion — the run did "
+                                f"not finish the plan")
+                    if ps.get("critical") and \
+                            _recorded(ps.get("step")) == "[skipped]":
+                        return (f"critical step {ps.get('step')} "
+                                f"({ps.get('tool', '?')}) was skipped "
+                                f"— a skipped critical step cannot "
+                                f"certify")
+            if journal_ids:
+                journal_probes: Dict[Any, dict] = {}
+                for p in probes or []:
+                    if isinstance(p, dict) and \
+                            p.get("kind") == "journal":
+                        journal_probes[p.get("step")] = p
+                for s in completed:
+                    tool = s.get("tool") or ""
+                    if retry_safe(tool):
+                        continue
+                    n = s.get("step")
+                    if _recorded(n) == "[skipped]":
+                        continue
+                    probe = journal_probes.get(n)
+                    if probe is None:
+                        return (f"step {n} ({tool}) has no "
+                                f"action-journal receipt — the effect "
+                                f"cannot be confirmed")
+                    state = probe.get("state")
+                    settlement = probe.get("settlement") or {}
+                    if isinstance(settlement, dict) and \
+                            settlement.get("status") in ("failed",
+                                                       "cancelled"):
+                        return (f"step {n} ({tool}) settled as "
+                                f"{settlement['status']} — the child "
+                                f"did not complete")
+                    if state == "done":
+                        continue
+                    if state == "started" and \
+                            isinstance(settlement, dict) and \
+                            settlement.get("status") == "completed":
+                        continue
+                    return (f"step {n} ({tool}) journal receipt is "
+                            f"{state or 'missing'} — not terminal, so "
+                            f"the effect cannot be confirmed")
+            for p in probes or []:
+                if isinstance(p, dict) and p.get("kind") == "file":
+                    if p.get("status") in ("missing", "changed"):
+                        return (f"step {p.get('step')} "
+                                f"({p.get('tool', '?')}) file probe: "
+                                f"{p.get('path', '?')} is "
+                                f"{p.get('status')} — the recorded "
+                                f"artifact cannot be confirmed")
+            return None
+        except Exception as e:
+            # A gate that cannot run cannot certify: park for
+            # review instead of letting the pass through on an
+            # unchecked error. Loud, not silent.
+            add_log(f"taskexec: deterministic gate errored ({e})")
+            return ("deterministic verification gate errored — "
+                    "the grader pass cannot be certified until "
+                    "reviewed")
+
     def _verify(self, goal: str, completed: List[dict],
                 results: Dict[int, str], *,
                 plan: Optional[Dict[str, Any]] = None,
@@ -572,13 +696,29 @@ class AgentExecutor:
                         (plan or {}).get("steps") or [])
                     if (plan or {}).get("steps") else None)
                 self._last_grade = g
+                if g["verdict"] == "fail":
+                    # Pass 36 #35: the structured verdict is
+                    # persisted on the task journal record.
+                    self._persist_grade(g)
+                    return _grader.format_failure_reason(g)
+                if g["verdict"] == "pass":
+                    # Pass 36 #23: a pass certifies only when
+                    # the deterministic gates hold — a veto
+                    # parks the task for review instead, and the
+                    # un-certified pass is NOT persisted as a
+                    # grade (the veto reason is the record).
+                    veto = self._deterministic_gates(
+                        completed, results, plan, journal_ids,
+                        probes)
+                    if veto is not None:
+                        add_log("taskexec: grader pass vetoed by "
+                                f"deterministic gate ({veto[:80]})")
+                        return veto
+                    self._persist_grade(g)
+                    return None
                 # Pass 36 #35: the structured verdict is
                 # persisted on the task journal record.
                 self._persist_grade(g)
-                if g["verdict"] == "fail":
-                    return _grader.format_failure_reason(g)
-                if g["verdict"] == "pass":
-                    return None
                 add_log("taskexec: outcome grader could not "
                         "grade; legacy verifier path")
         except runtime.Cancelled:
