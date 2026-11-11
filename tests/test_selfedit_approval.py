@@ -23,10 +23,12 @@ Fix contract pinned here, through the REAL dispatcher:
   approve_token replay executes the exact held call;
 - in auto mode all three reach the handler (control);
 - at handler level, a planted user-tool file's import-time code
-  still executes on load before validation rejects it — that
-  execution is why the dispatcher gate, not the loader, is the
-  fix, and why the plant path (edit) is gated with the trigger
-  (reload).
+  does NOT run during load: the loader validates via AST scan
+  and never imports at load time, so validation is side-effect
+  free — a planted file is rejected without executing, and a
+  valid tool only executes when explicitly called (through the
+  dispatcher gate). The dispatcher gate on the plant path is
+  the second line of defence, not the only one.
 
 Run per-file (own process), like every suite in this repo.
 """
@@ -174,12 +176,13 @@ def test_auto_mode_reaches_handlers():
     assert len(_CALLS) == 2
 
 
-def test_planted_user_tool_executes_on_load_before_rejection():
-    """Handler-level proof of why the gate matters: import-time
-    code in a planted user-tool file runs during load, before the
-    loader rejects the module (here: no TOOL_NAME at all). Uses
-    the REAL selfedit + usertools handlers against temp dirs
-    only — nothing is written to the real repo tree."""
+def test_planted_user_tool_validation_is_side_effect_free():
+    """A planted user-tool file is rejected WITHOUT its
+    import-time code running: the loader validates via AST scan
+    and never imports at load time (the old exec_module-before-
+    check chain is closed). Uses the REAL selfedit + usertools
+    handlers against temp dirs only — nothing is written to the
+    real repo tree."""
     # Restore the real handlers for this test only.
     selfedit.tool_edit_own_code = _ORIG_EDIT
     usertools.tool_reload_user_tools = _ORIG_RELOAD
@@ -189,6 +192,7 @@ def test_planted_user_tool_executes_on_load_before_rejection():
     scan = os.path.join(root, 'aria', 'tools', 'user_tools')
     os.makedirs(scan)
     marker = os.path.join(root, 'marker.txt')
+    good_marker = os.path.join(root, 'good_marker.txt')
     try:
         config.ROOT_DIR = root
         usertools._SCAN_DIR = scan
@@ -202,9 +206,38 @@ def test_planted_user_tool_executes_on_load_before_rejection():
         assert out.startswith('Rewrote'), out
         loaded = usertools.load_user_tools()
         assert loaded == [], 'invalid planted module was accepted'
-        with open(marker, encoding='utf-8') as f:
-            assert f.read() == 'ran', \
-                'import-time code did not execute during load'
+        assert not os.path.exists(marker), \
+            'import-time code ran during load — validation is not ' \
+            'side-effect-free'
+        # A second load does not run it either.
+        loaded = usertools.load_user_tools()
+        assert loaded == [], loaded
+        assert not os.path.exists(marker)
+        # Control: a valid tool loads without executing anything —
+        # its import-time code runs only when the tool is
+        # explicitly called (through the dispatcher gate).
+        good = (
+            "import pathlib\n"
+            "pathlib.Path(%r).write_text('ran', encoding='utf-8')\n"
+            "TOOL_NAME = 'good_tool'\n"
+            "TOOL_DESCRIPTION = 'Greets.'\n"
+            "TOOL_PARAMETERS = {'type': 'OBJECT', 'properties': {}, "
+            "'required': []}\n"
+            "def run(args):\n"
+            "    return 'good ' + str((args or {}).get('name') or "
+            "'stranger')\n" % good_marker)
+        out = selfedit.tool_edit_own_code(
+            'aria/tools/user_tools/good.py', good)
+        assert out.startswith('Rewrote'), out
+        loaded = usertools.load_user_tools()
+        assert [n for n, _, _ in loaded] == ['good_tool'], loaded
+        assert not os.path.exists(good_marker), \
+            'valid tool executed at load time'
+        assert not os.path.exists(marker)
+        _, handler, _decl = loaded[0]
+        assert handler({'name': 'Zed'}) == 'good Zed'
+        assert os.path.exists(good_marker), \
+            'explicit call did not execute the tool'
     finally:
         config.ROOT_DIR = real_root
         usertools._SCAN_DIR = real_scan

@@ -6,6 +6,7 @@ boots a second ARIA instead of running the script. aria.py now
 has a --run-script early flag (same shape as --diagnostics /
 --desktop-node), and the sandbox routes frozen runs through it.
 """
+import io
 import subprocess
 import sys
 import types
@@ -14,6 +15,37 @@ from pathlib import Path
 from aria.tools import sandbox
 
 ARIA_PY = Path(__file__).parents[1] / "aria.py"
+
+
+class _FakePopen:
+    """A Popen stand-in: tool_run_python (pass 28 #26) spawns via
+    Popen + drain threads, not subprocess.run — a fake run() is
+    never called. Records the command; the drain threads read
+    stdout/stderr to EOF."""
+
+    def __init__(self, cmd, **kwargs):
+        self._cmd = cmd
+        self.stdout = io.StringIO("ok")
+        self.stderr = io.StringIO("")
+        self.pid = 1234
+        self.returncode = 0
+
+    def wait(self, timeout=None):
+        return 0
+
+    def kill(self):
+        pass
+
+    def poll(self):
+        return 0
+
+
+def _fake_popen_factory(seen):
+    def _fake(cmd, **kwargs):
+        proc = _FakePopen(cmd, **kwargs)
+        seen["cmd"] = cmd
+        return proc
+    return _fake
 
 
 def _run_aria_py(script: Path, *extra):
@@ -48,16 +80,12 @@ def test_run_script_flag_failure_exits_nonzero(tmp_path):
 def test_tool_run_python_frozen_routes_through_flag(monkeypatch, tmp_path):
     # The frozen branch must not pass a bare .py to the exe: the
     # command is [exe, --run-script, script]. The subprocess is
-    # stubbed; only the routing is pinned here.
+    # stubbed at the Popen seam the implementation actually uses;
+    # only the routing is pinned here.
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     seen = {}
-
-    def fake_run(cmd, **kwargs):
-        seen["cmd"] = cmd
-        return types.SimpleNamespace(stdout="ok", stderr="",
-                                     returncode=0)
-
-    monkeypatch.setattr(sandbox.subprocess, "run", fake_run)
+    monkeypatch.setattr(sandbox.subprocess, "Popen",
+                        _fake_popen_factory(seen))
     out = sandbox.tool_run_python("print(1)",
                                   workspace_dir=str(tmp_path))
     assert out == "ok"
@@ -72,13 +100,8 @@ def test_tool_run_python_unfrozen_routes_direct(monkeypatch, tmp_path):
     # plain [interpreter, script] shape the suite already relies on.
     monkeypatch.delattr(sys, "frozen", raising=False)
     seen = {}
-
-    def fake_run(cmd, **kwargs):
-        seen["cmd"] = cmd
-        return types.SimpleNamespace(stdout="ok", stderr="",
-                                     returncode=0)
-
-    monkeypatch.setattr(sandbox.subprocess, "run", fake_run)
+    monkeypatch.setattr(sandbox.subprocess, "Popen",
+                        _fake_popen_factory(seen))
     sandbox.tool_run_python("print(1)", workspace_dir=str(tmp_path))
     cmd = seen["cmd"]
     assert cmd == [sys.executable, cmd[1]]

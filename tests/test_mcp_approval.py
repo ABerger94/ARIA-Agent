@@ -54,6 +54,7 @@ approval = importlib.import_module('aria.approval')
 config = importlib.import_module('aria.config')
 dispatch = importlib.import_module('aria.tools.dispatch')
 builtins = importlib.import_module('aria.tools.builtins')
+mcp = importlib.import_module('aria.mcp')
 
 _SETUP_CALLS = []
 _CONNECT_CALLS = []
@@ -70,7 +71,7 @@ def _stub_setup(name='', command='', args='', url='', env='', headers='',
     return 'STUB_SETUP'
 
 
-def _stub_connect(name=''):
+def _stub_connect(name='', _config_digest=None, _servers_digest=None):
     _CONNECT_CALLS.append({'name': name})
     return 'STUB_CONNECT'
 
@@ -91,8 +92,20 @@ def _fresh():
     _SETUP_CALLS.clear()
     _CONNECT_CALLS.clear()
     _LIST_CALLS.clear()
+    mcp.save_servers({})
     os.environ.pop('ARIA_SAFE_MODE', None)
     approval.tool_set_approval_mode('auto')
+
+
+def _register_probe():
+    """A real registered server: the pass-27 #19 freeze binds an
+    mcp_connect approval to the server config it was approved
+    against, and refuses to park a connect for an unknown server
+    (no revisionless approval). The fixture must register one."""
+    out = mcp.add_server('probe', command='cmd.exe',
+                         args=['/c', 'echo PROBE'])
+    assert 'probe' in mcp.get_servers(), out
+    return out
 
 
 def teardown_module(module=None):
@@ -146,13 +159,32 @@ def test_confirm_risky_holds_setup_and_approve_replay_executes_it():
 
 def test_confirm_risky_holds_connect():
     _fresh()
+    _register_probe()
     approval.tool_set_approval_mode('confirm-risky')
     res, _ok = dispatch.execute_tool('mcp_connect', {'name': 'probe'})
     assert res.startswith('[AWAITING_APPROVAL token='), res
     assert _CONNECT_CALLS == [], 'held connect executed without approval'
     held = [e for e in approval._PENDING.values()
             if e['tool'] == 'mcp_connect']
-    assert held and held[0]['args'] == {'name': 'probe'}
+    assert held and held[0]['args']['name'] == 'probe'
+    # The freeze bound the approval to the registered config.
+    assert '_config_digest' in held[0]['args'], held[0]['args']
+    token = re.search(r'token=(\S+)\]', res).group(1)
+    out = approval.approve_token(token)
+    assert _CONNECT_CALLS == [{'name': 'probe'}], _CONNECT_CALLS
+    assert 'STUB_CONNECT' in out, out
+
+
+def test_connect_unknown_server_is_refused_not_parked():
+    # The freeze produces a refusal, not a parking: an approval
+    # for a server that does not exist would be revisionless.
+    _fresh()
+    approval.tool_set_approval_mode('confirm-risky')
+    res, _ok = dispatch.execute_tool('mcp_connect', {'name': 'ghost'})
+    assert res.startswith("[Approval refused: No MCP server named "
+                          "'ghost'."), res
+    assert approval._PENDING == {}, 'unknown server created a pending approval'
+    assert _CONNECT_CALLS == []
 
 
 def test_auto_mode_reaches_handlers_and_list_stays_ungated():

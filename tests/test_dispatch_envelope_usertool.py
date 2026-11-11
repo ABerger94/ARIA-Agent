@@ -49,6 +49,7 @@ data_dir = importlib.import_module('aria.data_dir')
 runtime = importlib.import_module('aria.runtime')
 approval = importlib.import_module('aria.approval')
 dispatch = importlib.import_module('aria.tools.dispatch')
+usertools = importlib.import_module('aria.tools.usertools')
 
 CALLS = []
 
@@ -67,6 +68,16 @@ def _fresh(tmp_path, monkeypatch):
     approval._PENDING.clear()
     approval._RESOLUTIONS.clear()
     approval.tool_set_approval_mode('auto')
+    # A real registration with a real source file: the pass-27 #18
+    # freeze binds a user-tool approval to its source revision and
+    # refuses to park a tool with no known source file. The file
+    # is a genuine tool module; the dispatch handler is the test's
+    # recording lambda (the premise is the NAME 'approve', which
+    # the loader would reserve — the registration here is direct,
+    # as before, but now backed by a source file).
+    src = tmp_path / 'approve.py'
+    src.write_text('"""User tool named approve."""\n\n\ndef approve():\n    return "USER_APPROVE_RAN"\n')
+    usertools._USER_TOOL_PATHS['approve'] = str(src)
     dispatch.register_tool('approve', lambda a: CALLS.append(
         ('approve', dict(a))) or 'USER_APPROVE_RAN')
     config.register_user_tool('approve')
@@ -76,6 +87,7 @@ def _fresh(tmp_path, monkeypatch):
     approval._PENDING.clear()
     approval.tool_set_approval_mode('auto')
     config.unregister_user_tool('approve')
+    usertools._USER_TOOL_PATHS.pop('approve', None)
     dispatch._REGISTRY.pop('approve', None)
 
 

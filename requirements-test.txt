@@ -72,8 +72,12 @@ ruff==0.17.3
     # via -r requirements-test.in
 six==1.17.0
     # via python-dateutil
+speechrecognition==3.10.0
+    # via -r requirements-test.in
 typing-extensions==4.16.0
-    # via aiosignal
+    # via
+    #   aiosignal
+    #   speechrecognition
 tzdata==2026.2
     # via -r requirements-test.in
 urllib3==2.8.0

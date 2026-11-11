@@ -109,8 +109,15 @@ sys.modules["aria.speech"] = _speech
 
 
 class _DDGS:
+    """A DuckDuckGo stand-in that answers with one fixture hit —
+    the registry walk needs a real success case for web_search,
+    not a stubbed backend error (the typed FAILED for a dead
+    backend is covered by tests/test_web_search.py)."""
+
     def text(self, *a, **k):
-        raise RuntimeError("search stubbed in registry test")
+        return [{"title": "Fixture result",
+                 "href": "https://example.com/fixture",
+                 "body": "a fixture search hit"}]
 
 
 for _mod_name in ("ddgs", "duckduckgo_search"):
@@ -172,9 +179,37 @@ taskqueue.get_queue = lambda: _FakeQueue()
 
 dispatch = importlib.import_module("aria.tools.dispatch")
 schemas = importlib.import_module("aria.tools.schemas")
+builtins_mod = importlib.import_module("aria.tools.builtins")
 pricecheck = importlib.import_module("aria.pricecheck")
 dispatch.set_spine_hook(lambda *a, **k: None)
 dispatch.set_log_hook(lambda *a, **k: None)
+
+
+class _FakeHTTPResponse:
+    """A fetched page: fetch_url reads it through the opener's
+    context-manager protocol, so the walk needs a real success
+    case, not the network (the typed FAILED for an unfetchable
+    URL is the designed result for an unavailable resource)."""
+
+    def __init__(self, body=b"<html><body>fixture page</body></html>"):
+        self._body = body
+
+    def read(self, n=-1):
+        return self._body if n in (-1, None) else self._body[:n]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeHTTPOpener:
+    def open(self, req, timeout=None):
+        return _FakeHTTPResponse()
+
+
+builtins_mod._HTTP_ONLY_OPENER = _FakeHTTPOpener()
 
 _SAMPLE = {"STRING": "test", "INTEGER": 1, "NUMBER": 1.0,
            "BOOLEAN": True}
@@ -193,6 +228,13 @@ _UNDECLARED_BY_DESIGN = {"load_toolkit"}
 def _args_for(name, decls):
     if name == "load_toolkit":
         return {"toolkit": "core"}
+    if name == "fetch_url":
+        # The schema's STRING sample ("test") is not a public URL,
+        # so the public-destination gate refuses it by design — a
+        # typed failure for an unavailable resource, not a success
+        # case. The walk's success case is a literal public IP
+        # (no DNS lookup) served by the fake opener above.
+        return {"url": "http://93.184.216.34/"}
     decl = decls.get(name) or {}
     props = (decl.get("parameters") or {}).get("properties", {})
     return {p: _SAMPLE.get((spec or {}).get("type", "STRING"), "test")
@@ -225,6 +267,14 @@ def test_a_registry_declaration_parity():
 def test_b_every_tool_answers():
     tools = dispatch.get_registered_tools()
     decls = schemas.get_tool_decls_by_name()
+    # Valid local fixture for the success cases that read a file:
+    # the schema's STRING sample names a file "test", and read_file
+    # (and process_file) answer from the workspace — with no such
+    # file their typed failure is the designed result for an
+    # unavailable resource, not a broken tool.
+    with open(os.path.join(config.WORKSPACE_DIR, "test"),
+              "w", encoding="utf-8") as f:
+        f.write("registry fixture\n")
     failures = []
     for name in sorted(tools):
         dispatch.reset_turn_state("registry-test")

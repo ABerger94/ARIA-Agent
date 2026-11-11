@@ -104,10 +104,11 @@ def test_bool_clear_still_clears_and_bool_false_reports(state, monkeypatch):
     assert store["backup_mirror_dir"] == ""
 
 
-def test_malformed_clear_gates_but_approved_replay_still_does_not_clear(
+def test_malformed_clear_rejected_before_approval_and_never_clears(
         state, monkeypatch):
     store = _stub_settings(monkeypatch, {"backup_mirror_dir": "/mirror"})
-    # Malformed clear parks (it looks like a clear attempt) …
+    # needs_approval still treats a present non-False clear value
+    # as gating (a malformed clear looks like a clear attempt) …
     assert approval.needs_approval("set_backup_mirror", {"clear": "false"})
     assert approval.needs_approval("set_backup_mirror", {"clear": "0"})
     assert approval.needs_approval("set_backup_mirror", {"clear": 0})
@@ -117,17 +118,26 @@ def test_malformed_clear_gates_but_approved_replay_still_does_not_clear(
                                         {"clear": False})
     assert not approval.needs_approval("set_backup_mirror", {})
 
+    # … but dispatch's argument validation now rejects a
+    # wrong-typed clear BEFORE any approval gate runs (the
+    # file_organize dry_run precedent the fix contract cites):
+    # nothing parks, nothing clears, and the store is untouched.
     proj = workspaces.create("Project A")
     with workspaces.use(proj):
         res, _ok = dispatch.execute_tool(
             "set_backup_mirror", {"clear": "false"})
-    assert res.startswith("[AWAITING_APPROVAL token="), res
-    (token,) = list(approval._PENDING)
-    out = approval.approve_token(token)
-    assert "status=failed" in out, out
+    assert res.startswith("[Argument error"), res
+    assert "wrong-typed value for clear" in res, res
     assert store["backup_mirror_dir"] == "/mirror"
-    (rec,) = approval.recent_resolutions()
-    assert rec["verdict"] == "errored", rec
+    assert not approval._PENDING
+    # Even an approved replay of the malformed call still fails
+    # without clearing — the handler contract holds under dispatch
+    # too, and no token is ever minted for it.
+    with workspaces.use(proj):
+        res, _ok = dispatch.execute_tool(
+            "set_backup_mirror", {"clear": "false"}, preauthorized=True)
+    assert res.startswith("[Argument error"), res
+    assert store["backup_mirror_dir"] == "/mirror"
 
     # Control: a real bool clear still clears after approval.
     with workspaces.use(proj):

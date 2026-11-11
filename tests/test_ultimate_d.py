@@ -25,6 +25,7 @@ for name in ('aria.scheduler', 'aria.vision', 'aria.hardware', 'aria.spotify', '
     sys.modules[name] = types.ModuleType(name)
 builtins_mod = importlib.import_module('aria.tools.builtins')
 dispatch = importlib.import_module('aria.tools.dispatch')
+approval = importlib.import_module('aria.approval')
 usertools = importlib.import_module('aria.tools.usertools')
 persona = importlib.import_module('aria.persona')
 first_run = importlib.import_module('aria.first_run')
@@ -80,9 +81,20 @@ def test_sdk_execute_via_dispatch():
     try:
         added = usertools.load_user_tools_into_registry(scan_dir=tmp)
         assert added == ['hi_tool'], added
+        # User tools gate under confirm-risky (the default mode):
+        # the call parks, and the freeze binds the approval to the
+        # source revision — assert the park, then the approved
+        # replay executes the exact held call.
         res, needs_confirm = dispatch.execute_tool('hi_tool', {'name': 'Zed'})
         assert needs_confirm is False, (res, needs_confirm)
-        assert res == 'hi Zed', res
+        assert res.startswith('[AWAITING_APPROVAL token='), res
+        held = [e for e in approval._PENDING.values()
+                if e['tool'] == 'hi_tool']
+        assert held and held[0]['args']['name'] == 'Zed'
+        assert '_source_digest' in held[0]['args'], held[0]['args']
+        token = re.search(r'token=(\S+)\]', res).group(1)
+        out = approval.approve_token(token)
+        assert out == 'hi Zed', out
         out = usertools.tool_reload_user_tools()
         assert 'hi_tool' in out and 'active' in out, out
     finally:
@@ -90,6 +102,7 @@ def test_sdk_execute_via_dispatch():
         reg.pop('hi_tool', None)
         reg.pop('greeting', None)
         usertools._USER_TOOLS.clear()
+        approval._PENDING.clear()
 
 def test_sdk_reload_default_dir():
     usertools._USER_TOOLS.clear()
@@ -97,12 +110,20 @@ def test_sdk_reload_default_dir():
         out = usertools.tool_reload_user_tools()
         assert 'greeting' in out, out
         assert 'greeting' in dispatch.get_registered_tools(), out
+        # Same gate as hi_tool above: 'greeting' parks under
+        # confirm-risky, and the old 'Alek' in res assertion was
+        # matching the parked args echo, not an execution. Approve
+        # the held call and assert the handler's real output.
         res, _ = dispatch.execute_tool('greeting', {'name': 'Alek'})
-        assert 'Alek' in res, res
+        assert res.startswith('[AWAITING_APPROVAL token='), res
+        token = re.search(r'token=(\S+)\]', res).group(1)
+        out = approval.approve_token(token)
+        assert 'Alek' in out, out
     finally:
         reg = getattr(dispatch, '_REGISTRY', {})
         reg.pop('greeting', None)
         usertools._USER_TOOLS.clear()
+        approval._PENDING.clear()
 
 def test_persona_roundtrip():
     tmp = tempfile.mkdtemp(prefix='aria_persona_')
@@ -176,7 +197,14 @@ def test_first_run_import_safety():
 
 def test_usertools_import_safety():
     tree = ast.parse(open(os.path.join(PKG, 'tools', 'usertools.py'), encoding='utf-8').read())
-    allowed = {'importlib', 'os', 're', 'aria'}
+    # The loader's real imports, pinned exactly: 'ast' is its own
+    # mechanism (user-tool metadata comes from an AST scan, never
+    # from executing module code); 'hashlib' digests sources for
+    # the approval freeze; 'inspect'/'threading' serve the lazy
+    # handler and load lock. All stdlib, no subprocess / network /
+    # shell — a new import fails loudly here (pass 36 #43d).
+    allowed = {'ast', 'hashlib', 'importlib', 'inspect', 'os', 're',
+               'threading', 'aria'}
     for node in tree.body:
         if isinstance(node, ast.Import):
             for a in node.names:

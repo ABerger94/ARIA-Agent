@@ -68,6 +68,7 @@ agent_pkg = types.ModuleType("aria.agent")
 agent_pkg.__path__ = [str(Path(__file__).parents[1] / "aria" / "agent")]
 sys.modules.setdefault("aria.agent", agent_pkg)
 taskqueue = importlib.import_module("aria.agent.taskqueue")
+taskstore = importlib.import_module("aria.agent.taskstore")
 workers_mod = importlib.import_module("aria.agent.workers")
 agent_pkg.start_background_job = workers_mod.start_background_job
 agent_pkg.list_background_jobs = workers_mod.list_background_jobs
@@ -96,20 +97,30 @@ dispatch.set_log_hook(lambda *a, **k: None)
 
 
 class _FakeExecutor:
-    """A delegated-task executor: completes at once, or raises."""
+    """A delegated-task executor: completes at once, or raises.
 
-    def __init__(self, behavior="ok"):
+    With a gate event, execute() blocks until the test releases
+    it — that is what makes the waiting_child state STABLE: with
+    an instant executor the worker reconciles the finished child
+    in the same pass, so the pump's waiting_child observation is
+    transient and the mission is already done before the test can
+    lose the record."""
+
+    def __init__(self, behavior="ok", gate=None):
         self.behavior = behavior
+        self.gate = gate
 
     def execute(self, goal, speak=None, cancel_flag=None):
+        if self.gate is not None:
+            self.gate.wait(timeout=30)
         if self.behavior == "fail":
             raise RuntimeError("child blew up")
         return "child did the thing"
 
 
-def _make_queue(behavior="ok"):
+def _make_queue(behavior="ok", gate=None):
     q = taskqueue.TaskQueue(
-        executor_factory=lambda: _FakeExecutor(behavior))
+        executor_factory=lambda: _FakeExecutor(behavior, gate))
     q.start()
     return q
 
@@ -222,16 +233,67 @@ def test_mission_fails_when_child_fails(env, monkeypatch):
 
 
 def test_mission_blocked_when_child_record_gone(env, monkeypatch):
+    import threading
+    # The child must stay RUNNING while the mission parks: with
+    # an instant executor the worker reconciles the finished child
+    # in the same pass, so waiting_child is transient and the
+    # mission is already done before the record can be lost.
+    gate = threading.Event()
+    gated = _make_queue("ok", gate)
+    monkeypatch.setattr(taskqueue, "get_queue", lambda: gated)
     mid = _create_mission(
         "child lost",
         [("delegate_task", {"goal": "child goal"}),
          ("fake_note", {"text": "after"})],
         allowed_tools="delegate_task,fake_note")
     _approve_plan(mid)
-    # Park the mission on the child, then lose the queue — the
-    # restart case (pass 27 #26's gap, before it is fixed).
+    # Park the mission on the child — stable now, the worker has
+    # returned and the child is still blocked on the gate.
     row = _pump(mid, {"waiting_child"})
     assert row["status"] == "waiting_child", row
+    steps = missions._step_rows(mid)
+    assert steps[0]["status"] == "waiting_child", steps
+    handle = json.loads(steps[0]["child_handle"])
+    child_id = handle["task_id"]
+    # Quiesce the mission worker before releasing the child: the
+    # pump's last tick may have started a worker that is still in
+    # flight, and it would reconcile the child the moment the gate
+    # opens — the mission would be done before the record can be
+    # lost. After the pump returns no new worker can start
+    # (nothing ticks), so waiting for _worker_alive to clear
+    # quiesces the one in flight.
+    end = time.time() + 10
+    while missions._worker_alive and time.time() < end:
+        time.sleep(0.05)
+    assert not missions._worker_alive, "mission worker never quiesced"
+    # Let the child finish and land its terminal journal write,
+    # then lose the record EVERYWHERE. A fresh in-memory queue
+    # alone is NOT enough: the pass-28 #12 journal fallback
+    # recovers the durable record after a restart, so the mission
+    # completes — that recovery is the restart case, and it is
+    # correct. Only a genuinely journal-free fixture (fresh queue
+    # AND the journal record deleted) reaches the uncertain path:
+    # no record at all means the loss is surfaced, never certified.
+    gate.set()
+    end = time.time() + 10
+    while time.time() < end:
+        rec = taskstore.get(child_id)
+        if rec and rec.get("status") in ("completed", "failed"):
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("child never reached a terminal state")
+    # Stop the queues so no worker can rewrite the journal (a
+    # finish() is a read-modify-write: a load before our edit and
+    # a save after would resurrect the record), then remove just
+    # this child's record — other tests' records stay.
+    gated.stop()
+    env.queue.stop()
+    data = taskstore._load()
+    assert child_id in data, "no journal record to lose"
+    del data[child_id]
+    assert taskstore._save(data)
+    assert taskstore.get(child_id) is None, "journal still holds the child"
     fresh = taskqueue.TaskQueue(
         executor_factory=lambda: _FakeExecutor("ok"))
     fresh.start()
@@ -244,6 +306,7 @@ def test_mission_blocked_when_child_record_gone(env, monkeypatch):
         assert CALLS == [], CALLS  # nothing certified, nothing ran on
     finally:
         fresh.stop()
+        gated.stop()
 
 
 def test_background_job_waits_then_completes(env):

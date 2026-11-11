@@ -339,6 +339,11 @@ def _load_scheduler_stubbed():
     mem_stub = types.ModuleType('aria.memory')
     mem_stub.DB_LOCK = threading.Lock()
     mem_stub.DB_PATH = ':memory:'
+    # The real ensure_policy_columns() is a no-arg idempotent
+    # migration for the scheduler tables; the stubbed DB is
+    # ':memory:' and these tests never touch the policy tables,
+    # so a no-op keeps the contract (pass 36 #43g).
+    mem_stub.ensure_policy_columns = lambda: None
     sys.modules['aria.memory'] = mem_stub
     speech_stub = types.ModuleType('aria.speech')
     speech_stub.speak = lambda *a, **k: None
