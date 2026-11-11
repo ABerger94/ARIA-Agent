@@ -216,7 +216,6 @@ def test_only_provider_restricts_chain():
     assert data['candidates'][0]['content']['parts'][0]['text'] == 'ok'
 
 def test_native_vision_payload_format():
-    import io
     import json as _json
     try:
         vision_mod = importlib.import_module('aria.vision')

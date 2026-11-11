@@ -4,7 +4,6 @@
 Run:  python3 -m pytest tests/test_pass36_prov.py -q
 """
 import json
-import math
 import os
 import sqlite3
 import sys
@@ -190,8 +189,6 @@ def test_05_dedicated_opener_disables_proxy_and_redirects():
 
 
 def _fake_opener(models):
-    import urllib.request
-
     class _Resp:
         def __enter__(self): return self
         def __exit__(self, *a): return False
