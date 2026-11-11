@@ -41,7 +41,7 @@ from aria.tools.dispatch import (
 import aria.speech as speech
 from aria.agent.shortcuts import check_voice_shortcut
 from aria.agent.providers import provider_call, get_active_provider, get_last_call_stats
-from aria.agent.providers import resolve_role_model, current_request_policy
+from aria.agent.providers import resolve_role_model
 from aria.agent.providers import classify_turn_tier, resolve_tier_chain_start
 from aria.agent import sentinel
 import aria.hud as hud
@@ -696,14 +696,46 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
     # role's model tag (None = default conversational model). The override
     # only applies to the ollama_cloud leg; a failing role model falls back
     # to default automatically (see providers._attempt_provider_call).
-    # Pass 36 #06: the turn's request policy is captured ONCE here —
+    # Pass 36 #06/#10: the turn's request policy is captured ONCE here —
     # the role tag, the chain, and the walk all resolve from this same
-    # policy, so a toggle flip mid-turn cannot retag the leg.
-    _turn_policy = current_request_policy()
+    # policy, so a toggle flip mid-turn cannot retag the leg. The
+    # policy/route imports are lazy, like effective_chain_names below:
+    # brain must stay importable against a providers surface that
+    # predates those helpers (test_ultimate_e stubs providers).
+    try:
+        from aria.agent.providers import current_request_policy
+        _turn_policy = current_request_policy()
+    except Exception:
+        _turn_policy = None
     _task_role = classify_task_role(user_prompt)
-    _turn_model_override = resolve_role_model(_task_role, _turn_policy)
+    try:
+        _turn_model_override = resolve_role_model(_task_role, _turn_policy)
+    except TypeError:
+        # A providers surface that predates the policy parameter
+        # (test_ultimate_e's stubbed providers take one arg) —
+        # fall back to the one-arg call instead of failing the turn.
+        _turn_model_override = resolve_role_model(_task_role)
+    _turn_route = {"status": "default", "provider": None,
+                   "model": None, "reason": ""}
+    try:
+        from aria.agent.providers import resolve_role_route
+        _turn_route = resolve_role_route(_task_role, _turn_policy)
+    except Exception:
+        pass
+    _turn_override_provider = (
+        _turn_route.get("provider") if _turn_route.get("status") == "ok"
+        else None)
     if _task_role != "default":
-        add_log(f"task role '{_task_role}' -> model '{_turn_model_override or '(default)'}'")
+        if _turn_route.get("status") == "ignored":
+            # Pass 36 #10: the role is bound to a NAMED provider +
+            # model. When no leg can serve the tag, the drop is logged
+            # with its reason here (and again in the walk) — never silently.
+            add_log(f"task role '{_task_role}' override ignored: "
+                    f"{_turn_route.get('reason')}")
+        else:
+            add_log(f"task role '{_task_role}' -> "
+                    f"{_turn_route.get('provider') or '(default leg)'}/"
+                    f"'{_turn_model_override or '(default model)'}'")
 
     # Turn-tier routing ("Jev", Alek 2026-11-03): light conversational
     # turns start the provider chain at a cheap leg instead of gemini;
@@ -820,6 +852,7 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                 model_override=_turn_model_override,
                 chain_start=_turn_chain_start,
                 policy=_turn_policy,
+                override_provider=_turn_override_provider,
             )
 
             # Primary = head of the EFFECTIVE chain (PROVIDER_MODE-

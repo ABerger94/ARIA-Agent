@@ -1219,7 +1219,7 @@ def _build_chain(verify_local: bool = False) -> List[Provider]:
 # tag) in aria_keys.json and the role silently falls back to the default
 # OLLAMA_CLOUD_MODEL. The conversational loop always uses the default.
 
-def resolve_role_model(role: str, policy: Optional[Dict[str, Any]] = None) -> Optional[str]:
+def resolve_role_model(role: str, policy=None) -> Optional[str]:
     """Map a task role to an Ollama Cloud model tag.
 
     Returns None for the default/unknown roles (provider's configured model)
@@ -1247,6 +1247,10 @@ def resolve_role_model(role: str, policy: Optional[Dict[str, Any]] = None) -> Op
     # this function with a fixed namespace that predates both
     # names, and globals().get() keeps that contract — an extracted
     # copy sees "auto" and the default vision tag, not a NameError.
+    # The same extraction is why `policy` carries no Dict
+    # annotation: the extracted copy compiles without the module's
+    # `from __future__ import annotations`, so a Dict[...] default
+    # would NameError (pass 36 #06 regression, caught by that test).
     # The name read IS the live value: set_provider_mode() rebinds
     # this module's PROVIDER_MODE global, so a Settings-toggle flip
     # is visible here on the next call.
@@ -1275,6 +1279,113 @@ def resolve_role_model(role: str, policy: Optional[Dict[str, Any]] = None) -> Op
         add_log(f"role '{r}': model '{tag}' in failure cooldown, using default")
         return None
     return tag
+
+
+# Pass 36 #10: role bindings. A role override is a (provider, model)
+# pair, not a bare tag — the tag alone used to resolve and log and
+# then never apply, because the only leg that honored it
+# (ollama_cloud) left the default chain. resolve_role_route binds
+# the override to its eligible leg and says plainly when no leg can
+# serve it, so the drop is a logged decision, never a silent one.
+# The code role's serving leg is Alek's product call, still open:
+# until he picks one, code resolves to "ignored" with that reason.
+_KNOWN_ROLE_PROVIDERS = frozenset({
+    "gemini", "groq", "openrouter", "mistral", "ollama_cloud",
+    "freellmapi", "ollama_local"})
+
+_CODE_NO_LEG_REASON = (
+    "no eligible provider serves the code role in the default chain "
+    "(ollama_cloud left the chain 2026-11-10); which leg should serve "
+    "code is Alek's product call, still open — the default model serves")
+
+
+def resolve_role_route(role: str, policy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Bind a task role to a named eligible provider + model.
+
+    Returns {"role", "provider", "model", "status", "reason"}:
+    - "ok": provider + model bound and eligible under this policy.
+    - "ignored": a tag exists but no eligible leg can serve it —
+      callers MUST log the reason, never drop it silently.
+    - "default": no override configured; the leg's default model serves.
+    Settings overrides may be a bare tag (bound by the role's
+    default provider) or {"provider": ..., "model": ...} (explicit
+    binding, validated in Work Center)."""
+    r = (role or "default").strip().lower()
+    mode = (policy or {}).get("mode") if policy else None
+    if mode is None:
+        mode = globals().get("PROVIDER_MODE", "auto")
+
+    def _ignored(reason: str, model=None, provider=None):
+        return {"role": r, "provider": provider, "model": model,
+                "status": "ignored", "reason": reason}
+
+    def _cooled(tag: str):
+        return bool(tag and _ROLE_MODEL_COOLDOWN.get(tag, 0) > time.time())
+
+    if mode == "local_only":
+        if r != "vision":
+            return _ignored(
+                f"role '{r}' has no local binding in local-only mode; "
+                f"the local default model serves")
+        tag = globals().get(
+            "OLLAMA_LOCAL_VISION_MODEL", "qwen2.5vl:7b") or None
+        if not tag:
+            return _ignored("no local vision model is configured "
+                            "(OLLAMA_LOCAL_VISION_MODEL is empty)")
+        if _cooled(tag):
+            return _ignored(f"local vision model '{tag}' is in failure "
+                            f"cooldown, using default", model=tag,
+                            provider="ollama_local")
+        return {"role": r, "provider": "ollama_local", "model": tag,
+                "status": "ok", "reason": ""}
+
+    override = usage.settings().get("role_models", {}).get(r)
+    if isinstance(override, dict):
+        provider = (override.get("provider") or "").strip()
+        model = (override.get("model") or "").strip()
+        if provider not in _KNOWN_ROLE_PROVIDERS:
+            return _ignored(f"role '{r}' names unknown provider "
+                            f"'{provider}'", model=model or None,
+                            provider=provider or None)
+        if not model:
+            return _ignored(f"role '{r}' names provider '{provider}' "
+                            f"with no model", provider=provider)
+        if _cooled(model):
+            return _ignored(f"role model '{model}' is in failure "
+                            f"cooldown, using default", model=model,
+                            provider=provider)
+        return {"role": r, "provider": provider, "model": model,
+                "status": "ok", "reason": ""}
+    if isinstance(override, str) and override.strip():
+        tag = override.strip()
+        if r == "vision":
+            if _cooled(tag):
+                return _ignored(f"role model '{tag}' is in failure "
+                                f"cooldown, using default", model=tag,
+                                provider="ollama_cloud")
+            return {"role": r, "provider": "ollama_cloud", "model": tag,
+                    "status": "ok", "reason": ""}
+        if r == "code":
+            return _ignored(_CODE_NO_LEG_REASON, model=tag)
+        return _ignored(f"role '{r}' is not a routable role", model=tag)
+    if r == "vision":
+        tag = OLLAMA_VISION_MODEL or None
+        if not tag:
+            return {"role": r, "provider": None, "model": None,
+                    "status": "default",
+                    "reason": "no vision model configured; default serves"}
+        if _cooled(tag):
+            return _ignored(f"role model '{tag}' is in failure "
+                            f"cooldown, using default", model=tag,
+                            provider="ollama_cloud")
+        return {"role": r, "provider": "ollama_cloud", "model": tag,
+                "status": "ok", "reason": ""}
+    if r == "code":
+        return _ignored(_CODE_NO_LEG_REASON,
+                         model=OLLAMA_CODE_MODEL or None)
+    return {"role": r, "provider": None, "model": None,
+            "status": "default",
+            "reason": "no role override configured; default serves"}
 
 
 # --- Turn-tier routing ("Jev", Alek 2026-11-03) ---
@@ -1533,7 +1644,8 @@ def chain_all_quarantined() -> bool:
         return False
 
 
-def _role_override_leg(provider_name: str, mode: Optional[str] = None) -> bool:
+def _role_override_leg(provider_name: str, mode: Optional[str] = None,
+                       override_provider: Optional[str] = None) -> bool:
     """The leg a role model_override may run on. Auto mode: the
     ollama_cloud leg only — an override must never retag a keyed
     cloud leg or the local leg. Local-only mode: the ollama_local
@@ -1542,16 +1654,23 @@ def _role_override_leg(provider_name: str, mode: Optional[str] = None) -> bool:
     model.
 
     Pass 36 #06: mode= pins the answer to one turn's policy;
-    None (default) reads live, as before."""
+    None (default) reads live, as before.
+    Pass 36 #10: override_provider= names the leg an explicit
+    role binding chose (resolve_role_route). An explicitly bound
+    provider is eligible in auto mode; in local_only only
+    ollama_local ever is, whatever the binding says."""
     effective = mode if mode is not None else provider_mode()
     if effective == "local_only":
         return provider_name == "ollama_local"
+    if override_provider:
+        return provider_name == override_provider
     return provider_name == "ollama_cloud"
 
 
 def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
                            on_text_chunk, model_override: Optional[str],
-                           policy: Optional[Dict[str, Any]] = None):
+                           policy: Optional[Dict[str, Any]] = None,
+                           override_provider: Optional[str] = None):
     """Call one provider, optionally on a role-specific model.
 
     A failing role model (exception OR empty result — provider.call swallows
@@ -1561,9 +1680,14 @@ def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
     Returns (data, used_fallback).
     """
     use_override = bool(model_override) and _role_override_leg(
-        provider.name, (policy or {}).get("mode") if policy else None)
+        provider.name, (policy or {}).get("mode") if policy else None,
+        override_provider)
     saved = provider.model if use_override else None
     attempted_models: List[str] = []
+    if use_override:
+        # Pass 36 #10: report the route actually attempted.
+        add_log(f"role override: attempting {provider.name} on model "
+                f"'{model_override}'")
     try:
         if use_override:
             provider.model = model_override
@@ -1620,6 +1744,7 @@ def provider_call(
     only_provider: Optional[str] = None,
     chain_start: Optional[str] = None,
     policy: Optional[Dict[str, Any]] = None,
+    override_provider: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Walk the provider chain in order; first provider that returns
     candidates wins. Quarantined/unconfigured providers are skipped
@@ -1652,15 +1777,18 @@ def provider_call(
     # One authoritative policy per turn: capture once, re-check often.
     policy = dict(policy) if policy else current_request_policy()
     walk_mode = policy.get("mode") or provider_mode()
-    # _attempt_provider_call takes an optional policy= kwarg; older
-    # doubles of it (the tier-routing tests' 6-arg fake) do not.
-    # Pass the policy only when the helper accepts it, so a double
-    # still walks exactly like the real helper.
+    # _attempt_provider_call takes optional policy= / override_provider=
+    # kwargs; older doubles of it (the tier-routing tests' 6-arg fake)
+    # take neither. Pass each only when the helper accepts it, so a
+    # double still walks exactly like the real helper.
     try:
-        _attempt_accepts_policy = ("policy" in inspect.signature(
-            _attempt_provider_call).parameters)
+        _attempt_params = inspect.signature(
+            _attempt_provider_call).parameters
+        _attempt_accepts_policy = "policy" in _attempt_params
+        _attempt_accepts_provider = "override_provider" in _attempt_params
     except (TypeError, ValueError):
         _attempt_accepts_policy = False
+        _attempt_accepts_provider = False
     chain = usage.order(_build_chain())
     if not chain:
         add_log("provider_call: chain is empty, nothing configured")
@@ -1711,7 +1839,8 @@ def provider_call(
         # The model this walk would actually attempt on p: the
         # role override applies to one leg only (mirrors
         # _attempt_provider_call; see _role_override_leg).
-        if model_override and _role_override_leg(p.name, walk_mode):
+        if model_override and _role_override_leg(p.name, walk_mode,
+                                                 override_provider):
             return model_override
         return getattr(p, "model", None)
 
@@ -1720,6 +1849,21 @@ def provider_call(
     # pair is cooling, in which case walk them anyway.
     ignore_pairs = bool(candidates) and all(
         _model_in_cooldown(p.name, _eff_model(p)) for p in candidates)
+    # Pass 36 #10: a role override with no eligible leg in this
+    # walk is IGNORED with its reason in the log — never silently.
+    # (The eligible set respects only_provider: a vision-only walk
+    # on ollama_cloud counts that leg even though it is not in the
+    # configured chain.)
+    if model_override:
+        walk_names = [p.name for p in chain
+                      if not only_provider or p.name == only_provider]
+        if not any(_role_override_leg(n, walk_mode, override_provider)
+                   for n in walk_names):
+            bound = (f" (bound to {override_provider})"
+                     if override_provider else "")
+            add_log(f"role override '{model_override}'{bound} ignored: "
+                    f"no eligible leg in this walk can serve it; "
+                    f"default model serves")
     failed_endpoints = set()
     for provider in chain:
         runtime.check_cancelled()
@@ -1801,8 +1945,11 @@ def provider_call(
         _note_call(provider.name)
         attempt_started = time.monotonic()
         try:
-            attempt_kwargs = ({"policy": policy}
-                              if _attempt_accepts_policy else {})
+            attempt_kwargs = {}
+            if _attempt_accepts_policy:
+                attempt_kwargs["policy"] = policy
+            if _attempt_accepts_provider:
+                attempt_kwargs["override_provider"] = override_provider
             data, _used_fallback = _attempt_provider_call(
                 provider, system_instruction, contents, tool_decls,
                 on_text_chunk, model_override, **attempt_kwargs,
@@ -1878,13 +2025,22 @@ def provider_text(system_instruction: str, user_text: str, role: str = "default"
 
     Used by tools that need a quick classification/read, e.g. triage.
     role: "default" (conversational model), "vision", or "code" — resolved
-    via resolve_role_model(); unknown/empty roles use the default model.
+    via resolve_role_route(); unknown/empty roles use the default model.
+    A role with no eligible leg is reported as ignored (with its
+    reason) and served by the default model — never silently dropped.
     Returns the concatenated response text, or a bracketed error string.
     """
     try:
+        route = resolve_role_route(role)
+        if route["status"] == "ignored":
+            add_log(f"provider_text role '{role}' ignored: "
+                    f"{route['reason']}")
         contents = [{"role": "user", "parts": [{"text": str(user_text)}]}]
         data = provider_call(system_instruction, contents, tool_decls=None,
-                             model_override=resolve_role_model(role))
+                             model_override=route.get("model")
+                             if route["status"] == "ok" else None,
+                             override_provider=route.get("provider")
+                             if route["status"] == "ok" else None)
     except Exception as e:
         add_log(f"provider_text: chain error: {e}")
         return f"[provider_text error: {e}]"

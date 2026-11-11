@@ -415,3 +415,160 @@ def test_06_attempt_records_models_actually_tried():
         p._last_attempted_models)
     assert p.model == "default-model", "provider model must be restored"
     print("ok 06 attempted-model record for cooldown attribution")
+
+
+# --- #10: role overrides bind to a named provider + model -----------
+
+def test_10_route_binds_vision_and_ignores_code_with_reason():
+    saved_mode = pv.PROVIDER_MODE
+    pv.clear_role_model_cooldown()
+    try:
+        pv.PROVIDER_MODE = "auto"
+        vision = pv.resolve_role_route("vision")
+        assert vision["status"] == "ok", vision
+        assert vision["provider"] == "ollama_cloud", vision
+        assert vision["model"] == pv.OLLAMA_VISION_MODEL, vision
+        code = pv.resolve_role_route("code")
+        assert code["status"] == "ignored", code
+        assert "Alek" in code["reason"] or "product call" in code["reason"], code
+        assert code["model"] == pv.OLLAMA_CODE_MODEL, code
+        default = pv.resolve_role_route("default")
+        assert default["status"] == "default", default
+        # Local-only: vision binds the local leg, code stays ignored.
+        pv.PROVIDER_MODE = "local_only"
+        vision = pv.resolve_role_route("vision")
+        assert (vision["status"], vision["provider"]) == ("ok", "ollama_local"), vision
+        assert vision["model"] == pv.OLLAMA_LOCAL_VISION_MODEL, vision
+        assert pv.resolve_role_route("code")["status"] == "ignored"
+    finally:
+        pv.PROVIDER_MODE = saved_mode
+        pv.clear_role_model_cooldown()
+    print("ok 10 route binds vision, ignores code with its reason")
+
+
+def test_10_explicit_binding_is_honored_and_validated():
+    saved_mode = pv.PROVIDER_MODE
+    real_settings = pv.usage.settings
+    pv.clear_role_model_cooldown()
+    try:
+        pv.PROVIDER_MODE = "auto"
+        pv.usage.settings = lambda: {"role_models": {
+            "code": {"provider": "groq", "model": "llama-3.3-70b"},
+            "vision": "custom-vision:1b"}}
+        code = pv.resolve_role_route("code")
+        assert (code["status"], code["provider"], code["model"]) == (
+            "ok", "groq", "llama-3.3-70b"), code
+        vision = pv.resolve_role_route("vision")
+        assert (vision["status"], vision["provider"]) == (
+            "ok", "ollama_cloud"), vision
+        pv.usage.settings = lambda: {"role_models": {
+            "code": {"provider": "nope", "model": "x"}}}
+        bad = pv.resolve_role_route("code")
+        assert bad["status"] == "ignored" and "unknown provider" in bad["reason"], bad
+        # In local-only, even an explicit cloud binding is ignored.
+        pv.PROVIDER_MODE = "local_only"
+        pv.usage.settings = lambda: {"role_models": {
+            "code": {"provider": "groq", "model": "llama-3.3-70b"}}}
+        assert pv.resolve_role_route("code")["status"] == "ignored"
+    finally:
+        pv.usage.settings = real_settings
+        pv.PROVIDER_MODE = saved_mode
+        pv.clear_role_model_cooldown()
+    print("ok 10 explicit provider+model binding, unknown provider ignored")
+
+
+def test_10_resolve_role_model_contract_unchanged():
+    # Pinned by test_ultimate_e + test_providers: resolve_role_model
+    # still returns the tag (the route layer, not the resolver, is
+    # where the drop becomes visible).
+    saved_mode = pv.PROVIDER_MODE
+    pv.clear_role_model_cooldown()
+    try:
+        pv.PROVIDER_MODE = "auto"
+        assert pv.resolve_role_model("code") == pv.OLLAMA_CODE_MODEL
+        assert pv.resolve_role_model("vision") == pv.OLLAMA_VISION_MODEL
+        assert pv.resolve_role_model("default") is None
+    finally:
+        pv.PROVIDER_MODE = saved_mode
+        pv.clear_role_model_cooldown()
+    print("ok 10 resolve_role_model return contract unchanged")
+
+
+def test_10_walk_logs_ignored_override_instead_of_silently_dropping():
+    from aria import runtime
+
+    class _Stub:
+        def __init__(self, name):
+            self.name = name
+            self.model = "stub-model"
+            self.base_url = ""
+            self.api_key = "stub"
+        def is_available(self):
+            return True
+
+    saved_mode = pv.PROVIDER_MODE
+    real_build = pv._build_chain
+    real_attempt = pv._attempt_provider_call
+    real_log = pv.add_log
+    logged = []
+    pv.add_log = lambda msg, **kw: logged.append(msg)
+    pv.PROVIDER_MODE = "auto"
+    try:
+        pv._build_chain = lambda: [_Stub(n) for n in ("gemini", "groq")]
+        pv._attempt_provider_call = lambda *a, **k: (None, False)
+        pv.clear_provider_cooldown()
+        pv.clear_model_cooldown()
+        with runtime.execution():
+            assert pv.provider_call("sys", [{"role": "user",
+                                             "parts": [{"text": "hi"}]}],
+                                    model_override="qwen3-coder:480b-cloud") is None
+        assert any("ignored" in m and "qwen3-coder" in m for m in logged), logged
+    finally:
+        pv._build_chain = real_build
+        pv._attempt_provider_call = real_attempt
+        pv.add_log = real_log
+        pv.PROVIDER_MODE = saved_mode
+    print("ok 10 walk logs the ignored override with its tag")
+
+
+def test_10_bound_provider_actually_serves_the_override():
+    p = pv.OpenAICompatProvider("groq", "https://example.invalid/v1",
+                                "k", "groq-default")
+    seen = {}
+    ok = {"candidates": [{"content": {"parts": [{"text": "hi"}]}}]}
+    def fake_call(system_instruction, contents, tool_decls=None, on_text_chunk=None):
+        seen["model"] = p.model
+        return ok
+    p.call = fake_call
+    try:
+        data, used = pv._attempt_provider_call(
+            p, "", [], None, None, "llama-3.3-70b",
+            policy={"mode": "auto", "generation": 0},
+            override_provider="groq")
+    finally:
+        pv.clear_role_model_cooldown()
+        pv.clear_model_cooldown()
+    assert data is ok and used is False, (data, used)
+    assert seen["model"] == "llama-3.3-70b", seen
+    assert p.model == "groq-default", "provider model must be restored"
+    print("ok 10 explicitly bound provider serves the override")
+
+
+def test_10_work_center_validates_role_bindings():
+    from aria.work_center import validate_role_models
+    errors, notes = validate_role_models(
+        {"code": {"provider": "groq", "model": "llama-3.3-70b"},
+         "vision": "gemma4:31b-cloud"})
+    assert errors == [] and notes == [], (errors, notes)
+    errors, _ = validate_role_models(
+        {"code": {"provider": "nope", "model": "x"}})
+    assert errors and "unknown provider" in errors[0], errors
+    errors, _ = validate_role_models({"code": {"provider": "groq"}})
+    assert errors and "non-empty model" in errors[0], errors
+    errors, _ = validate_role_models({"chat": "x"})
+    assert errors and "unknown role" in errors[0], errors
+    errors, _ = validate_role_models("not-a-dict")
+    assert errors, errors
+    errors, notes = validate_role_models({"code": "qwen3-coder:480b-cloud"})
+    assert errors == [] and len(notes) == 1 and "ignored" in notes[0], notes
+    print("ok 10 Work Center validates role bindings")

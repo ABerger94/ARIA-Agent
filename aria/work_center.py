@@ -6,6 +6,59 @@ import math
 from pathlib import Path
 
 
+_KNOWN_ROLE_PROVIDERS = (
+    "gemini", "groq", "openrouter", "mistral", "ollama_cloud",
+    "freellmapi", "ollama_local")
+
+
+def validate_role_models(value):
+    """Validate the Work Center 'Role models' JSON (pass 36 #10).
+
+    Returns (errors, notes): errors block the save; notes are shown
+    alongside the saved message. A role override is a bare model tag
+    or {"provider": <known name>, "model": <tag>} — the binding
+    providers.resolve_role_route() applies. A bare code tag has no
+    eligible provider in the default chain and will be ignored with
+    a logged reason until Alek picks the serving leg: a note, not an
+    error, so existing settings still save. Pure function, no Qt."""
+    errors, notes = [], []
+    if not isinstance(value, dict):
+        return (["Role models must be a JSON object "
+                 "(role -> model tag or {provider, model})"], [])
+    for role, binding in value.items():
+        if role not in ("vision", "code"):
+            errors.append(f"Role models: unknown role '{role}' "
+                          f"(use 'vision' or 'code')")
+            continue
+        if isinstance(binding, str):
+            if not binding.strip():
+                errors.append(f"Role models: role '{role}' has an "
+                              f"empty model tag")
+            elif role == "code":
+                notes.append(
+                    f"Code role '{binding.strip()}' has no eligible "
+                    f"provider in the default chain and will be ignored "
+                    f"(with a logged reason) until a serving leg is chosen.")
+            continue
+        if isinstance(binding, dict):
+            provider = binding.get("provider")
+            model = binding.get("model")
+            extra = sorted(set(binding) - {"provider", "model"})
+            if extra:
+                errors.append(f"Role models: role '{role}' has unknown "
+                              f"keys {extra} (use provider + model)")
+            if provider not in _KNOWN_ROLE_PROVIDERS:
+                errors.append(f"Role models: role '{role}' names unknown "
+                              f"provider '{provider}'")
+            if not isinstance(model, str) or not model.strip():
+                errors.append(f"Role models: role '{role}' needs a "
+                              f"non-empty model tag")
+            continue
+        errors.append(f"Role models: role '{role}' must be a model tag "
+                      f"or {{provider, model}}, not {type(binding).__name__}")
+    return errors, notes
+
+
 def create_work_center(parent=None, callbacks=None):
     from PyQt6.QtCore import QTimer, QUrl, Qt
     from PyQt6.QtGui import QDesktopServices
@@ -158,6 +211,11 @@ def create_work_center(parent=None, callbacks=None):
         value['role_models'] = json.loads(dialog.role_models.toPlainText() or '{}')
         value['model_rates'] = json.loads(dialog.rates.toPlainText() or '{}')
         if not isinstance(value['role_models'], dict) or not isinstance(value['model_rates'], dict): raise ValueError('Model settings must be JSON objects')
+        # Pass 36 #10: a role binding names its provider + model —
+        # an unknown provider or a malformed binding blocks the
+        # save; a code tag with no eligible leg is a note, not an error.
+        _role_errors, _role_notes = validate_role_models(value['role_models'])
+        if _role_errors: raise ValueError('; '.join(_role_errors))
         for price in value['model_rates'].values():
             if not isinstance(price, dict): raise ValueError('Each model needs input and output prices')
             for key in ('input','output'):
@@ -177,7 +235,10 @@ def create_work_center(parent=None, callbacks=None):
                 live_manager.stop()
                 main_module._LIVE_MANAGER = None
         mode = 'ON' if value['enforce_model_budget'] else 'OFF; usage is tracked without blocking unpriced models'
-        message.setText(f'Project settings saved. Spending limits: {mode}. New calls use these settings.')
+        saved_msg = f'Project settings saved. Spending limits: {mode}. New calls use these settings.'
+        if _role_notes:
+            saved_msg += ' ' + ' '.join(_role_notes)
+        message.setText(saved_msg)
     save.clicked.connect(guarded(save_settings))
 
     def change_project():
