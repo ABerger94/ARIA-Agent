@@ -1149,6 +1149,13 @@ def tool_code_helper(args) -> str:
         return _failed("code_helper", f"the code provider failed: {exc}")
     if not text.strip():
         return _failed("code_helper", "the provider returned nothing")
+    if _is_provider_failure(text):
+        # Pass 36 #40: the write branch already guards this, but
+        # explain/fix wrapped the same bracketed failure strings
+        # in _done — a provider outage read as a completed
+        # explanation or fix. Same narrow markers, no heuristic.
+        return _failed("code_helper",
+                       f"the code provider failed: {text.strip()}")
     return _done("code_helper", action=action,
                  chars=len(text)) + f"\n{text}"
 

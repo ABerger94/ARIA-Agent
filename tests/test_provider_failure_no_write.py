@@ -87,6 +87,25 @@ def test_dev_agent_rejects_failed_code_after_good_plan(no_save, monkeypatch):
     assert no_save == []
 
 
+@pytest.mark.parametrize("bad", FAILURES)
+@pytest.mark.parametrize("action", ["explain", "fix"])
+def test_code_helper_explain_fix_reject_provider_failure(
+        bad, action, monkeypatch):
+    """Pass 36 #40: explain/fix wrapped the same bracketed failure
+    strings in _done — the write branch already guarded them."""
+    monkeypatch.setattr(gap, "_provider_text", lambda *a, **k: bad)
+    out = gap.tool_code_helper({"action": action, "code": "print('hi')"})
+    assert out.startswith("status=failed"), out
+
+
+def test_code_helper_explain_genuine_text_still_done(monkeypatch):
+    monkeypatch.setattr(gap, "_provider_text",
+                        lambda *a, **k: "This prints hi.")
+    out = gap.tool_code_helper({"action": "explain", "code": "print('hi')"})
+    assert out.startswith("status=done"), out
+    assert "This prints hi." in out
+
+
 def test_genuine_code_still_saves(no_save, monkeypatch):
     monkeypatch.setattr(gap, "_provider_text",
                         lambda *a, **k: "print('hi')\n")
