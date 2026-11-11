@@ -152,11 +152,14 @@ class OrPool:
         self._vision_models = list(vision_models) if vision_models else list(VISION_MODELS)
         self._cooldowns = CooldownRegistry(RATE_LIMIT_COOLDOWN)
         # Session-scoped dead-model set: a model that answers 404
-        # (retired/renamed upstream) or 400 (rejects the request
-        # shape) will never succeed later in this session, so it is
-        # parked after ONE attempt and skipped by every later walk —
-        # the 2026-10-21 log showed the old behaviour cycling a dead
-        # roster at 2 attempts per model, per call, all session.
+        # (retired/renamed upstream) or a MODEL-level 400 (the
+        # model rejects the request shape) will never succeed
+        # later in this session, so it is parked after ONE attempt
+        # and skipped by every later walk — the 2026-10-21 log
+        # showed the old behaviour cycling a dead roster at 2
+        # attempts per model, per call, all session. A
+        # request-specific 400 (this payload, not the model)
+        # only cools briefly instead (pass 36 #34).
         self._parked: set = set()
         self._parked_lock = threading.Lock()
 
@@ -228,6 +231,54 @@ class OrPool:
         with self._parked_lock:
             return sorted(self._parked)
 
+    # Phrases OpenRouter uses when the MODEL itself is the
+    # problem (retired id, unsupported request shape for that
+    # model, no serving endpoint) — as opposed to a 400 about
+    # THIS request (oversize payload, bad parameter, content
+    # policy), which must not park a healthy model for the
+    # session (pass 36 #34).
+    _MODEL_LEVEL_400 = (
+        "not supported", "unsupported", "no endpoints",
+        "invalid model", "unknown model", "model not found",
+        "does not support", "not available",
+    )
+
+    @staticmethod
+    def _error_text(resp) -> str:
+        try:
+            data = resp.json()
+            if isinstance(data, dict):
+                err = data.get("error")
+                if isinstance(err, dict):
+                    return str(err.get("message") or "")
+                if isinstance(err, str):
+                    return err
+        except Exception:
+            pass
+        return str(getattr(resp, "text", "") or "")
+
+    def _is_model_level_400(self, resp) -> bool:
+        msg = self._error_text(resp).lower()
+        if not msg:
+            return False
+        if "no endpoints" in msg:
+            return True
+        return "model" in msg and any(
+            phrase in msg for phrase in self._MODEL_LEVEL_400)
+
+    def _mark_request_400_cooldown(self, model: str) -> None:
+        """A request-specific 400: brief cooldown (same 60 s
+        registry as 429s), NOT a session park — the model may
+        be healthy and the next, different request may serve.
+        (Pass 36 #34.)"""
+        self._cooldowns.mark_failed(model)
+        logger.warning("[orpool] %s → HTTP 400 (request-specific) "
+                       "— cooling down briefly, not parked",
+                       model)
+        add_log(f"orpool: {model} answered a request-specific "
+                f"HTTP 400; cooling down {RATE_LIMIT_COOLDOWN}s, "
+                f"not parked")
+
     # -- one model ------------------------------------------------------
     def _call(self, model: str, messages: List[dict], max_tokens=DEFAULT_MAX_TOKENS,
               temperature=DEFAULT_TEMPERATURE, response_format=None):
@@ -275,11 +326,20 @@ class OrPool:
                 if resp.status_code == 429:
                     self._mark_rate_limited(model)
                     return None
-                if resp.status_code in (400, 404):
-                    # Dead model (retired id) or a request shape this
-                    # model rejects: retrying cannot help, and the
+                if resp.status_code == 404:
+                    # Retired id: retrying cannot help, and the
                     # next call must not cycle back to it either.
                     self._park_model(model, resp.status_code)
+                    return None
+                if resp.status_code == 400:
+                    # Pass 36 #34: park only a MODEL-level 400
+                    # (the model rejects the shape / is gone);
+                    # a request-specific 400 gets a brief
+                    # cooldown instead of a session park.
+                    if self._is_model_level_400(resp):
+                        self._park_model(model, resp.status_code)
+                    else:
+                        self._mark_request_400_cooldown(model)
                     return None
                 if resp.status_code == 200:
                     data = resp.json()
@@ -308,22 +368,45 @@ class OrPool:
               response_format: Optional[dict] = None):
         """The fallback walk, reporting WHICH model answered.
         Returns (text, model). _call_with_fallback is the
-        text-only face existing callers use."""
+        text-only face existing callers use.
+
+        A per-model BudgetExceeded (unpriced model under a cap,
+        or a genuinely exhausted budget) skips THAT model and
+        the walk continues — the global cap stays authoritative
+        because every later model re-reserves against it (pass
+        36 #34). runtime.Cancelled is never swallowed here.
+        The preferred model is tried at most once: the pool
+        loop skips it when already attempted (pass 36 #34)."""
         self._require_available()
-        if model and not self._is_rate_limited(model) \
-                and not self._is_parked(model):
-            result = self._call(model, messages, max_tokens, temperature,
-                                response_format)
+        attempted: set = set()
+
+        def _try(m: str) -> Optional[str]:
+            if m in attempted:
+                return None
+            attempted.add(m)
+            if self._is_rate_limited(m) or self._is_parked(m):
+                return None
+            try:
+                return self._call(m, messages, max_tokens,
+                                  temperature, response_format)
+            except usage.BudgetExceeded as e:
+                logger.info("[orpool] %s → budget refused (%s); "
+                            "trying next model", m, e)
+                add_log(f"orpool: {m} budget-refused; trying next "
+                        f"model (global cap still applies)")
+                return None
+
+        if model:
+            result = _try(model)
             if result:
                 return result, model
             logger.info("[orpool] Requested model failed, falling back "
                         "to pool: %s", model)
         for m in pool:
-            if self._is_rate_limited(m) or self._is_parked(m):
-                continue
+            if m == model:
+                continue  # already attempted above, never twice
             logger.info("[orpool] Trying: %s", m)
-            result = self._call(m, messages, max_tokens, temperature,
-                                response_format)
+            result = _try(m)
             if result:
                 logger.info("[orpool] Success: %s", m)
                 return result, m

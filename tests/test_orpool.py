@@ -289,8 +289,12 @@ def test_local_turn_zero_pool_transport(monkeypatch):
 
 
 def test_pool_400_parks_model_too():
+    # Pass 36 #34: only a MODEL-level 400 parks — the error
+    # body must say the model itself is the problem.
     transport = _ScriptedTransport({
-        "m1": [_Resp(400)],
+        "m1": [_Resp(400, payload={
+            "error": {"message": "Model m1 is not supported for "
+                                 "this request", "code": 400}})],
         "m2": [_Resp(200, "m2 answers")],
     })
     pool = _pool(transport, models=("m1", "m2"))
@@ -298,6 +302,58 @@ def test_pool_400_parks_model_too():
     assert transport.calls == ["m1", "m2"], transport.calls
     assert pool.parked_models() == ["m1"]
     print("ok pool_400_parks_model_too")
+
+
+def test_pool_400_request_specific_cools_not_parks():
+    # Pass 36 #34: a 400 about THIS request (oversize payload,
+    # bad parameter) must not park a healthy model for the
+    # session — it cools briefly instead, and the next call
+    # may try it again.
+    transport = _ScriptedTransport({
+        "m1": [_Resp(400, payload={
+            "error": {"message": "max_tokens exceeds the limit "
+                                 "for this request", "code": 400}}),
+               _Resp(200, "m1 recovered")],
+        "m2": [_Resp(200, "m2 answers")],
+    })
+    pool = _pool(transport, models=("m1", "m2"))
+    assert pool.chat("hi") == "m2 answers"
+    assert transport.calls == ["m1", "m2"], transport.calls
+    assert pool.parked_models() == [], pool.parked_models()
+    assert pool._cooldowns.in_cooldown("m1")
+    print("ok pool_400_request_specific_cools_not_parks")
+
+
+def test_pool_budget_exceeded_continues_walk():
+    # Pass 36 #34: a per-model BudgetExceeded (unpriced model
+    # under a cap) skips THAT model — the walk still reaches a
+    # priced, eligible model. The global cap stays authoritative
+    # because every later model re-reserves against it.
+    import aria.usage as _usage
+    transport = _ScriptedTransport({
+        "m1": [_usage.BudgetExceeded(
+            "no price is configured for openrouter:m1")],
+        "m2": [_Resp(200, "m2 answers")],
+    })
+    pool = _pool(transport, models=("m1", "m2"))
+    assert pool.chat("hi") == "m2 answers"
+    assert transport.calls == ["m1", "m2"], transport.calls
+    print("ok pool_budget_exceeded_continues_walk")
+
+
+def test_pool_preferred_model_tried_once():
+    # Pass 36 #34: a preferred model that fails (500, not
+    # parked/cooled) must not appear twice in one walk — the
+    # pool loop skips it after the first attempt.
+    transport = _ScriptedTransport({
+        "m1": [_Resp(500), _Resp(500)],
+        "m2": [_Resp(200, "m2 answers")],
+    })
+    pool = _pool(transport, models=("m1", "m2"))
+    out = pool.chat("hi", model="m1")
+    assert out == "m2 answers", out
+    assert transport.calls == ["m1", "m1", "m2"], transport.calls
+    print("ok pool_preferred_model_tried_once")
 
 
 def test_pool_parked_requested_model_falls_back():
