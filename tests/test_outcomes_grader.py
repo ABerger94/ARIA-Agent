@@ -675,6 +675,45 @@ def test_mission_grader_repair_targets_by_scope(
     assert calls["n"] == 2                  # graded twice
 
 
+def test_mission_grade_never_leaks_across_projects(
+        menv, monkeypatch, grader_on, tmp_path):
+    # Pass 36 #21: mission ids are per-project, so a grade for
+    # mission #1 in one project must never publish in another
+    # project's mission #1.
+    _script_grader(monkeypatch,
+                   lambda n, p: _grade_json("general"))
+    mid = _mcreate("graded pass",
+                   [("grader_note", {"text": "hi"})])
+    _mapprove(mid)
+    row = _mpump(mid, {"done"})
+    assert row["status"] == "done", row
+    assert "Grade: general v1 PASS" in (row["summary"] or "")
+
+    db2 = str(tmp_path / "aria_memory_2.db")
+    monkeypatch.setattr(memory, "DB_PATH", db2)
+    memory.init_databases()
+    _script_grader(monkeypatch, lambda n, p: "definitely not json")
+    mid2 = _mcreate("other project",
+                    [("grader_note", {"text": "yo"})])
+    assert mid2 == 1  # same numeric id, different project
+    _mapprove(mid2)
+    row2 = _mpump(mid2, {"done"})
+    assert row2["status"] == "done", row2
+    assert "Grade:" not in (row2["summary"] or ""), row2["summary"]
+
+
+def test_build_summary_ignores_stale_last_grade(menv):
+    # Pass 36 #21: the summary is built from the grade passed
+    # in, never from the process-wide map — even a populated
+    # _LAST_GRADE must not render when this verify graded
+    # nothing.
+    missions._LAST_GRADE[1] = {
+        "rubric_id": "general", "rubric_version": 1,
+        "verdict": "pass", "criteria": [], "failure_cases": []}
+    m = {"id": 1, "goal": "g", "status": "done"}
+    assert "Grade:" not in missions._build_summary(m, [])
+
+
 def test_mission_cannot_grade_falls_back_to_evidence_check(
         menv, monkeypatch, grader_on):
     _script_grader(monkeypatch, lambda n, p: "definitely not json")
