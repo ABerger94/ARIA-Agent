@@ -1182,3 +1182,214 @@ def test_18_frame_states_configured_live_unreachable():
         pv.local_verification_cached = saved_verify
         pv.ACTIVE_PROVIDER = saved_active
     print("ok 18 frame shows configured / live / unreachable distinctly")
+
+
+# --- #19: SSE EOF / finish-reason checks ------------------------------
+
+class _SseResponse:
+    """Fake urlopen response: iterates SSE lines, or reads JSON."""
+    def __init__(self, value=None, lines=()):
+        self.value, self.lines = value, lines
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        pass
+    def read(self):
+        return json.dumps(self.value).encode()
+    def __iter__(self):
+        return iter(self.lines)
+
+
+def _sse_line(payload):
+    return b"data: " + json.dumps(payload).encode()
+
+
+def _stub_usage_for_call():
+    """Stub usage.reserve/finish/max_output_tokens for a real
+    provider.call() (no memory DB). Returns a restore callable."""
+    import aria.usage as us
+    saved = (us.reserve, us.finish, us.max_output_tokens)
+    us.reserve = lambda *a, **k: "test-reservation"
+    us.finish = lambda *a, **k: None
+    us.max_output_tokens = lambda: 2048
+    return lambda: (setattr(us, "reserve", saved[0]),
+                    setattr(us, "finish", saved[1]),
+                    setattr(us, "max_output_tokens", saved[2]))
+
+
+def _stream_provider(monkeypatch_lines=None, json_value=None):
+    """A real OpenAICompatProvider whose urlopen serves the given
+    SSE lines (or JSON body). Caller must stub usage + run inside
+    runtime.execution()."""
+    import aria.usage as us  # noqa: F401  (usage stubbed by caller)
+    p = pv.OpenAICompatProvider("gemini", "https://example.invalid/v1",
+                                "k-test-19", "test-model")
+    orig_urlopen = pv.urllib.request.urlopen
+    if json_value is not None:
+        pv.urllib.request.urlopen = lambda *a, **k: _SseResponse(
+            value=json_value)
+    else:
+        pv.urllib.request.urlopen = lambda *a, **k: _SseResponse(
+            lines=monkeypatch_lines)
+    return p, orig_urlopen
+
+
+def test_19_eof_stream_refused():
+    from aria import runtime
+    restore_usage = _stub_usage_for_call()
+    chunks = []
+    lines = [_sse_line({"choices": [{"delta": {"content": "partial text"}}]})]
+    p, orig = _stream_provider(monkeypatch_lines=lines)
+    try:
+        with runtime.execution():
+            out = p.call("", [], on_text_chunk=chunks.append)
+        assert out is None, out
+        assert p._stream_complete is False
+        assert "EOF before completion" in (p.last_error or ""), p.last_error
+    finally:
+        pv.urllib.request.urlopen = orig
+        restore_usage()
+    print("ok 19 a stream cut off mid-text is refused, not committed")
+
+
+def test_19_done_without_finish_reason_commits():
+    # Some adapters (Gemini's OpenAI-compat stream) end tool-call
+    # streams with [DONE] and no finish_reason chunk — [DONE] is
+    # their terminal event, not an EOF. It commits, with the reason
+    # recorded as None.
+    from aria import runtime
+    restore_usage = _stub_usage_for_call()
+    chunks = []
+    lines = [_sse_line({"choices": [{"delta": {"content": "Done."}}]}),
+             b"data: [DONE]"]
+    p, orig = _stream_provider(monkeypatch_lines=lines)
+    try:
+        with runtime.execution():
+            out = p.call("", [], on_text_chunk=chunks.append)
+        assert out is not None, out
+        assert out["finish_reason"] is None, out
+        assert out["stream_complete"] is True, out
+        assert p._stream_complete is True
+    finally:
+        pv.urllib.request.urlopen = orig
+        restore_usage()
+    print("ok 19 [DONE] with no finish reason commits (terminal event present)")
+
+
+def test_19_done_with_invalid_finish_reason_refused():
+    from aria import runtime
+    restore_usage = _stub_usage_for_call()
+    chunks = []
+    lines = [_sse_line({"choices": [{"delta": {"content": "Done."}}]}),
+             _sse_line({"choices": [{"delta": {}, "finish_reason": "banana"}]}),
+             b"data: [DONE]"]
+    p, orig = _stream_provider(monkeypatch_lines=lines)
+    try:
+        with runtime.execution():
+            out = p.call("", [], on_text_chunk=chunks.append)
+        assert out is None, out
+        assert p._stream_complete is False
+        assert "without a valid finish reason" in (p.last_error or ""), p.last_error
+    finally:
+        pv.urllib.request.urlopen = orig
+        restore_usage()
+    print("ok 19 [DONE] with an invalid finish reason is refused")
+
+
+def test_19_stop_stream_commits_with_finish_reason():
+    from aria import runtime
+    restore_usage = _stub_usage_for_call()
+    chunks = []
+    lines = [_sse_line({"choices": [{"delta": {"content": "Done."}}]}),
+             _sse_line({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+             b"data: [DONE]"]
+    p, orig = _stream_provider(monkeypatch_lines=lines)
+    try:
+        with runtime.execution():
+            out = p.call("", [], on_text_chunk=chunks.append)
+        assert out is not None, out
+        assert out["candidates"][0]["content"]["parts"] == [{"text": "Done."}]
+        assert out["finish_reason"] == "stop", out
+        assert out["stream_complete"] is True, out
+        assert p._stream_complete is True
+    finally:
+        pv.urllib.request.urlopen = orig
+        restore_usage()
+    print("ok 19 a stop-terminated stream commits with its finish reason")
+
+
+def test_19_length_stream_commits_as_truncated():
+    from aria import runtime
+    restore_usage = _stub_usage_for_call()
+    chunks = []
+    lines = [_sse_line({"choices": [{"delta": {"content": "Cut off mid-"}}]}),
+             _sse_line({"choices": [{"delta": {}, "finish_reason": "length"}]}),
+             b"data: [DONE]"]
+    p, orig = _stream_provider(monkeypatch_lines=lines)
+    try:
+        with runtime.execution():
+            out = p.call("", [], on_text_chunk=chunks.append)
+        assert out is not None, out
+        assert out["finish_reason"] == "length", out
+        assert out["stream_complete"] is True, out
+    finally:
+        pv.urllib.request.urlopen = orig
+        restore_usage()
+    print("ok 19 a length-terminated stream commits, flagged truncated")
+
+
+def test_19_tool_call_stream_only_commits_when_complete():
+    from aria import runtime
+    restore_usage = _stub_usage_for_call()
+    lines = [_sse_line({"choices": [{"delta": {"tool_calls": [
+        {"index": 0, "id": "c1", "function": {
+            "name": "read_file", "arguments": '{"path": "x"}'}}]}}]}),
+        _sse_line({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        b"data: [DONE]"]
+    p, orig = _stream_provider(monkeypatch_lines=lines)
+    try:
+        with runtime.execution():
+            out = p.call("", [], on_text_chunk=lambda c: None)
+        assert out is not None, out
+        fc = out["candidates"][0]["content"]["parts"][0]["functionCall"]
+        assert fc["name"] == "read_file" and fc["args"] == {"path": "x"}, fc
+        assert out["finish_reason"] == "tool_calls", out
+    finally:
+        pv.urllib.request.urlopen = orig
+        restore_usage()
+    print("ok 19 tool calls commit only on a complete stream")
+
+
+def test_19_nonstreaming_records_finish_reason():
+    from aria import runtime
+    restore_usage = _stub_usage_for_call()
+    p, orig = _stream_provider(json_value={
+        "choices": [{"message": {"content": "Done."},
+                     "finish_reason": "stop"}]})
+    try:
+        with runtime.execution():
+            out = p.call("", [])
+        assert out is not None, out
+        assert out["finish_reason"] == "stop", out
+        assert out["stream_complete"] is True, out
+    finally:
+        pv.urllib.request.urlopen = orig
+        restore_usage()
+    print("ok 19 a non-streaming reply records its finish reason")
+
+
+def test_19_nonstreaming_invalid_finish_reason_refused():
+    from aria import runtime
+    restore_usage = _stub_usage_for_call()
+    p, orig = _stream_provider(json_value={
+        "choices": [{"message": {"content": "Done."},
+                     "finish_reason": "banana"}]})
+    try:
+        with runtime.execution():
+            out = p.call("", [])
+        assert out is None, out
+        assert "invalid finish_reason" in (p.last_error or ""), p.last_error
+    finally:
+        pv.urllib.request.urlopen = orig
+        restore_usage()
+    print("ok 19 a non-streaming reply with an invalid finish reason is refused")

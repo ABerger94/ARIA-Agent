@@ -960,6 +960,16 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                     - (time.time() - _turn_t0))),
             )
 
+            # Pass 36 #19: a leg that returned an incomplete stream
+            # (EOF before a terminal event) is a failed call — never
+            # commit its partial text or dispatch tools from it.
+            # provider_call normally returns None for that already;
+            # this is the second line for any leg that returns a
+            # dict flagged incomplete.
+            if data is not None and data.get("stream_complete") is False:
+                add_log("provider returned an incomplete stream; treating as failure")
+                data = None
+
             # Primary = head of the EFFECTIVE chain (PROVIDER_MODE-
             # gated): in local_only mode that is ollama_local, so a
             # local answer is not misreported as a "fallback". The

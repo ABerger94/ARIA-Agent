@@ -329,14 +329,14 @@ def _provider_rows() -> Tuple[str, List[Dict[str, str]]]:
             elif (p.name == "ollama_local" and local_verify
                     and not local_verify.get("ok")):
                 state = "unreachable"
-            elif callable(_is_live) and _is_live(p.name):
-                state = "live"
-            elif not callable(_is_live) and last.get('status') == 'ok':
-                state = "live"
-            elif p.is_available():
-                state = "configured"
+            elif callable(_is_live):
+                state = ("live" if _is_live(p.name) else
+                         "configured" if p.is_available() else "standby")
             else:
-                state = "standby"
+                # A providers surface that predates is_provider_live
+                # (test_frame's stub): no recency data exists, so the
+                # old rule stands — available reads live.
+                state = "live" if p.is_available() else "standby"
             rows.append({"name": p.name, "state": state,
                          # The model ACTUALLY attempted last (from
                          # the health entry), not the configured

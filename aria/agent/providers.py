@@ -661,6 +661,14 @@ def _has_model_output(parts):
         and bool(part['functionCall']['name'].strip())) for part in parts or [])
 
 
+# Pass 36 #19: valid terminal finish reasons (OpenAI chat
+# completions). A stream is complete only when it ends with [DONE]
+# AND one of these; anything else is an early EOF or a missing
+# terminal event, and the text must not be committed.
+_VALID_FINISH_REASONS = ("stop", "length", "tool_calls",
+                         "content_filter", "function_call")
+
+
 def _usable_response(data):
     try:
         return _has_model_output(data['candidates'][0]['content']['parts'])
@@ -728,11 +736,23 @@ class OpenAICompatProvider(Provider):
         """Accumulate OpenAI SSE deltas -> parts. Feeds on_text_chunk per
         chunk; a final on_text_chunk(None) signals stream completion.
         Captures the `usage` block when the provider sends one (usually in
-        the final chunk) into self._stream_usage."""
+        the final chunk) into self._stream_usage.
+
+        Pass 36 #19: also records the stream's terminal state on the
+        instance — self._stream_saw_done ([DONE] seen), self._
+        stream_finish_reason (last finish_reason received), self._
+        stream_complete ([DONE] + a valid-or-absent finish reason;
+        an EOF with no [DONE] is incomplete). The PARTS return is
+        unchanged (existing tests pin it); call() reads the attrs
+        and refuses an incomplete stream instead of committing
+        partial text."""
         text_buf = ""
         tc_accum: Dict[int, Dict[str, Any]] = {}
         message_extra = {}
         self._stream_usage = None
+        self._stream_finish_reason = None
+        self._stream_saw_done = False
+        self._stream_complete = False
         try:
             for raw_line in resp:
                 runtime.check_cancelled()
@@ -745,6 +765,7 @@ class OpenAICompatProvider(Provider):
                     continue
                 data_str = line[6:].strip()
                 if data_str == '[DONE]':
+                    self._stream_saw_done = True
                     break
                 if not data_str:
                     continue
@@ -754,7 +775,11 @@ class OpenAICompatProvider(Provider):
                     continue
                 if isinstance(chunk.get("usage"), dict):
                     self._stream_usage = chunk["usage"]
-                delta = ((chunk.get("choices") or [{}])[0]).get("delta", {}) or {}
+                _choice = (chunk.get("choices") or [{}])[0] or {}
+                _fr = _choice.get("finish_reason")
+                if isinstance(_fr, str) and _fr:
+                    self._stream_finish_reason = _fr
+                delta = _choice.get("delta", {}) or {}
                 if isinstance(delta.get('extra_content'), dict):
                     _merge_extra_content(message_extra, delta['extra_content'])
                 c = delta.get("content")
@@ -783,6 +808,19 @@ class OpenAICompatProvider(Provider):
                     on_text_chunk(None)  # stream-complete signal: brain treats None as done
                 except Exception as _e_silent:
                     _config_silent.log_silent("_parse_sse_stream", _e_silent)
+
+        # Pass 36 #19: complete = [DONE] AND a valid-or-absent
+        # finish reason. A stream that just stops (EOF, connection
+        # cut) has text but no terminal event — call() refuses it
+        # below. [DONE] alone suffices: some adapters (Gemini's
+        # OpenAI-compat stream) end tool-call streams with [DONE]
+        # and no finish_reason chunk — that is their terminal
+        # event, not an EOF. A present-but-invalid reason still
+        # refuses the stream.
+        self._stream_complete = bool(
+            self._stream_saw_done
+            and (self._stream_finish_reason is None
+                 or self._stream_finish_reason in _VALID_FINISH_REASONS))
 
         parts: List[Dict[str, Any]] = []
         if text_buf:
@@ -862,13 +900,32 @@ class OpenAICompatProvider(Provider):
                 req = urllib.request.Request(url, data=sbody, headers=self._headers())
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     parts = self._parse_sse_stream(resp, on_text_chunk, first_output_deadline)
+                # Pass 36 #19: an incomplete stream is a failed call,
+                # never a committed reply. EOF before [DONE], or [DONE]
+                # with no valid finish reason, means the text may be
+                # cut mid-sentence and tool args may be fragments —
+                # the walk fails over instead of dispatching from it.
+                # (The _args_parse_error path already refuses
+                # fragmented tool args; this keeps them from being
+                # committed as text in the first place.)
+                if not getattr(self, "_stream_complete", False):
+                    if not getattr(self, "_stream_saw_done", False):
+                        self.last_error = "stream ended early (EOF before completion)"
+                    else:
+                        self.last_error = ("stream ended without a valid finish reason "
+                                           f"(finish_reason={getattr(self, '_stream_finish_reason', None)!r})")
+                    return None
+                if getattr(self, "_stream_finish_reason", None) == "length":
+                    add_log(f"{self.name}: response stopped at the length limit (truncated)")
                 usage_data, request_ok = getattr(self, "_stream_usage", None), True
                 if not _has_model_output(parts):
                     self.last_error = 'No usable model response'
                     return None
                 _record_call_stats(self.name, int((time.time() - t0) * 1000),
                                    getattr(self, "_stream_usage", None))
-                return {"candidates": [{"content": {"parts": parts}}]}
+                return {"candidates": [{"content": {"parts": parts}}],
+                        "finish_reason": getattr(self, "_stream_finish_reason", None),
+                        "stream_complete": True}
             req = urllib.request.Request(url, data=body, headers=self._headers())
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
@@ -879,7 +936,20 @@ class OpenAICompatProvider(Provider):
             if not _has_model_output(parts):
                 self.last_error = 'No usable model response'
                 return None
-            return {"candidates": [{"content": {"parts": parts}}]}
+            # Pass 36 #19: record the finish reason when the provider
+            # sends one. A present-but-invalid reason refuses the
+            # response; an absent one is fine — the completed HTTP
+            # body IS the terminal event here (unlike a stream, an
+            # EOF is not ambiguous). A length stop commits the text
+            # with the truncation explicit, not silent.
+            finish_reason = ((data.get("choices") or [{}])[0] or {}).get("finish_reason")
+            if finish_reason is not None and finish_reason not in _VALID_FINISH_REASONS:
+                self.last_error = f"invalid finish_reason {finish_reason!r}"
+                return None
+            if finish_reason == "length":
+                add_log(f"{self.name}: response stopped at the length limit (truncated)")
+            return {"candidates": [{"content": {"parts": parts}}],
+                    "finish_reason": finish_reason, "stream_complete": True}
         except runtime.Cancelled:
             raise
         except urllib.error.HTTPError as e:
