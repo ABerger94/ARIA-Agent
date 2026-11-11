@@ -94,12 +94,48 @@ _SYSTEM = (
 # Settings
 # ------------------------------------------------------------------
 
+_TRUE_STRINGS = frozenset({"true", "1", "yes", "on"})
+
+
+def _as_bool(value) -> bool:
+    """A setting read is typed, not raw bool() (pass 36 #35):
+    bool("false") is True, so a stored string "false" used to
+    enable the grader. Only a real True, a nonzero number, or
+    an explicit true-like string enables it."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUE_STRINGS
+    return False
+
+
 def outcomes_enabled() -> bool:
     try:
-        return bool(_config.get_setting(
+        return _as_bool(_config.get_setting(
             "outcomes_grader_enabled", False))
     except Exception:
         return False
+
+
+def grader_settings() -> dict:
+    """The grader's effective, typed settings for inspection
+    (pass 36 #35): the enable switch as actually interpreted,
+    the model policy as validated, and the rubric listing.
+    Never raises."""
+    try:
+        raw_enabled = _config.get_setting(
+            "outcomes_grader_enabled", False)
+    except Exception:
+        raw_enabled = False
+    return {"enabled": _as_bool(raw_enabled),
+            "enabled_raw": raw_enabled
+            if isinstance(raw_enabled, (bool, str, int, float))
+            else repr(raw_enabled),
+            "policy": grader_policy(),
+            "policies": list(_POLICIES),
+            "rubrics": _rubrics.list_rubrics()}
 
 
 def grader_policy() -> str:
@@ -867,3 +903,59 @@ def format_grade_note(result: dict) -> str:
     if failed:
         note += f"; failed criteria: {', '.join(failed)}"
     return note + "."
+
+
+_REF_RE = re.compile(
+    r"step\s+\d+|journal|file probe|probe", re.IGNORECASE)
+
+
+def _evidence_refs(result: dict) -> List[str]:
+    """Evidence REFERENCES from a grade's citations: step
+    numbers and probe kinds, deduplicated and bounded. Never
+    raw excerpts — the persisted verdict must not duplicate
+    sensitive bundle content into workflow state."""
+    refs: List[str] = []
+    for group in ((result or {}).get("criteria") or [],
+                  (result or {}).get("failure_cases") or []):
+        for entry in group:
+            ev = str((entry or {}).get("evidence") or "")
+            for m in _REF_RE.finditer(ev):
+                ref = m.group(0).strip().lower()
+                if ref and ref not in refs:
+                    refs.append(ref)
+    return refs[:32]
+
+
+def structured_verdict(result: dict,
+                       worker_model: Optional[str] = None) -> dict:
+    """The bounded structured verdict persisted alongside a
+    mission/task row (pass 36 #35): rubric id + version,
+    per-criterion verdicts, evidence references, grader and
+    worker models, self-graded flag. Bounded and JSON-safe;
+    never raises."""
+    try:
+        criteria = [{
+            "id": str(c.get("id")),
+            "verdict": str(c.get("verdict"))}
+            for c in (result or {}).get("criteria") or []][:32]
+        cases = [{
+            "id": str(f.get("id")),
+            "present": bool(f.get("present"))}
+            for f in (result or {}).get("failure_cases") or []
+        ][:32]
+        return {"rubric_id": str(result.get("rubric_id") or ""),
+                "rubric_version": int(
+                    result.get("rubric_version") or 0),
+                "verdict": str(result.get("verdict") or ""),
+                "criteria": criteria,
+                "failure_cases": cases,
+                "evidence_refs": _evidence_refs(result),
+                "grader_model": str(result.get("grader_model") or ""),
+                "worker_model": str(worker_model or ""),
+                "self_graded": bool(result.get("self_graded"))}
+    except Exception:
+        return {"rubric_id": "", "rubric_version": 0,
+                "verdict": "cannot_grade", "criteria": [],
+                "failure_cases": [], "evidence_refs": [],
+                "grader_model": "", "worker_model": "",
+                "self_graded": False}

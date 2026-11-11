@@ -190,16 +190,92 @@ def _delegated_rows() -> list:
         for t in get_queue().get_all_statuses() or []:
             status = str(t.get("status") or "?")
             rows.append({
+                "task_id": str(t.get("task_id") or ""),
                 "goal": str(t.get("goal") or "")[:GOAL_LIMIT],
                 "status": status,
                 "active": status.lower() in _ACTIVE_DELEGATED,
                 "error": str(t.get("error") or "")[:120],
                 "result": str(t.get("result") or "")[:120],
             })
+        # Pass 36 #35: merge the durable journal rows. A task
+        # the in-memory queue no longer holds (restart, long
+        # finished) still appears, with its persisted grade;
+        # in-memory rows gain the structured grade from their
+        # journal row. The queue stays the live source; the
+        # journal is the durable one.
+        try:
+            from aria.agent import taskstore as _ts
+            journal = {str(r.get("task_id") or ""): r
+                       for r in _ts.all_records()}
+        except Exception:
+            journal = {}
+        seen = {r.get("task_id") for r in rows}
+        for r in rows:
+            rec = journal.get(r.get("task_id") or "")
+            if rec and rec.get("grade"):
+                r["grade"] = rec["grade"]
+        for tid, rec in journal.items():
+            if not tid or tid in seen:
+                continue
+            status = str(rec.get("status") or "?")
+            rows.append({
+                "task_id": tid,
+                "goal": str(rec.get("goal") or "")[:GOAL_LIMIT],
+                "status": status,
+                "active": status.lower() in _ACTIVE_DELEGATED,
+                "error": str(rec.get("error") or "")[:120],
+                "result": str(rec.get("result") or "")[:120],
+                "grade": rec.get("grade"),
+                "durable": True,
+            })
         rows.sort(key=lambda r: 0 if r["active"] else 1)
         return rows
     except Exception:
         return []
+
+
+def delegated_detail(task_id: str) -> dict:
+    """The Fleet detail view for one delegated task (pass 36
+    #35): the durable journal row merged with the live queue
+    row when there is one — the FULL result (never clipped),
+    the structured grade verdict with its evidence refs, the
+    blocked reason and error. {} when the task is unknown to
+    both. Never raises."""
+    try:
+        tid = str(task_id or "")
+        if not tid:
+            return {}
+        live = None
+        try:
+            from aria.agent.taskqueue import get_queue
+            for t in get_queue().get_all_statuses() or []:
+                if str(t.get("task_id") or "") == tid:
+                    live = t
+                    break
+        except Exception:
+            live = None
+        rec = None
+        try:
+            from aria.agent import taskstore as _ts
+            rec = _ts.get(tid)
+        except Exception:
+            rec = None
+        if live is None and rec is None:
+            return {}
+        live = live or {}
+        rec = rec or {}
+        return {
+            "task_id": tid,
+            "goal": rec.get("goal") or live.get("goal") or "",
+            "status": live.get("status") or rec.get("status") or "",
+            "result": rec.get("result") or live.get("result") or "",
+            "error": rec.get("error") or live.get("error") or "",
+            "blocked_reason": rec.get("blocked_reason") or "",
+            "grade": rec.get("grade"),
+            "step_evidence": rec.get("step_evidence"),
+        }
+    except Exception:
+        return {}
 
 
 def _scheduled_count() -> int:
@@ -291,7 +367,11 @@ def render_text(snap: dict = None) -> str:
         lines.append(f"\nDELEGATED ({len(active)} active / {len(delegated)} total)")
         for t in delegated[:12]:
             note = t.get("error") or t.get("result") or ""
-            lines.append(f"  {t['status'].upper()}  {t['goal']}"
+            grade = t.get("grade") or {}
+            verdict = grade.get("verdict") \
+                if isinstance(grade, dict) else None
+            suffix = f" — grade: {verdict}" if verdict else ""
+            lines.append(f"  {t['status'].upper()}  {t['goal']}{suffix}"
                          + (f"\n    {note}" if note else ""))
     recent_rows = snap.get("recent") or []
     if recent_rows:

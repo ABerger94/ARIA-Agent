@@ -229,7 +229,11 @@ def merge_step_evidence(task_id: str,
 
 
 def finish(task_id: str, status: str, result: str = "",
-           error: str = "", blocked_reason: str = "") -> None:
+           error: str = "", blocked_reason: str = "",
+           grade: Optional[dict] = None) -> None:
+    """grade (pass 36 #35) is a raw grade result dict: the
+    BOUNDED structured verdict is stored, never the raw grade
+    with its cited excerpts."""
     with _LOCK:
         data = _load()
         rec = data.get(task_id)
@@ -242,8 +246,41 @@ def finish(task_id: str, status: str, result: str = "",
             rec["error"] = error
         if blocked_reason:
             rec["blocked_reason"] = blocked_reason
+        if grade is not None:
+            rec["grade"] = _structured_grade(grade)
         rec["updated_at"] = time.time()
         _save(data)
+
+
+def _structured_grade(grade: Optional[dict]) -> Optional[dict]:
+    """The bounded structured verdict for storage (pass 36
+    #35); None clears. Lazy import: the grader never imports
+    the store, so there is no cycle."""
+    if grade is None:
+        return None
+    try:
+        from aria.agent import grader as _grader
+        return _grader.structured_verdict(grade)
+    except Exception:
+        return None
+
+
+def set_grade(task_id: str, grade: Optional[dict]) -> bool:
+    """Store (or, with grade=None, clear) the structured
+    verdict on a journal record without touching its status or
+    checkpoint (pass 36 #35). Returns False when the record
+    does not exist or the write failed."""
+    with _LOCK:
+        data = _load()
+        rec = data.get(task_id)
+        if rec is None:
+            return False
+        if grade is None:
+            rec.pop("grade", None)
+        else:
+            rec["grade"] = _structured_grade(grade)
+        rec["updated_at"] = time.time()
+        return _save(data)
 
 
 def get(task_id: str) -> Optional[Dict[str, Any]]:

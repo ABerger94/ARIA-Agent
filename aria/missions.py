@@ -113,6 +113,15 @@ def _ensure_tables() -> None:
             if "child_handle" not in cols:
                 conn.execute("ALTER TABLE mission_steps "
                              "ADD COLUMN child_handle TEXT")
+            # Pass 36 #35: the bounded structured verdict for
+            # the mission's last grade, alongside the row —
+            # the summary keeps the human-readable grade lines,
+            # this column keeps the auditable one.
+            mcols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(missions)")}
+            if "grade_json" not in mcols:
+                conn.execute("ALTER TABLE missions "
+                             "ADD COLUMN grade_json TEXT")
             conn.commit()
         finally:
             conn.close()
@@ -141,8 +150,8 @@ def _query(sql: str, params=()) -> List[tuple]:
 def _mission_row(mid: int) -> Optional[Dict[str, Any]]:
     rows = _query(
         "SELECT id, goal, created, deadline, status, envelope, "
-        "plan_approved, plan_token, verify_attempts, summary "
-        "FROM missions WHERE id = ?", (mid,))
+        "plan_approved, plan_token, verify_attempts, summary, "
+        "grade_json FROM missions WHERE id = ?", (mid,))
     if not rows:
         return None
     r = rows[0]
@@ -150,10 +159,15 @@ def _mission_row(mid: int) -> Optional[Dict[str, Any]]:
         envelope = json.loads(r[5] or "{}")
     except Exception:
         envelope = {}
+    try:
+        grade = json.loads(r[10] or "null")
+    except Exception:
+        grade = None
     return {"id": r[0], "goal": r[1], "created": r[2],
             "deadline": r[3], "status": r[4], "envelope": envelope,
             "plan_approved": bool(r[6]), "plan_token": r[7],
-            "verify_attempts": r[8], "summary": r[9]}
+            "verify_attempts": r[8], "summary": r[9],
+            "grade": grade if isinstance(grade, dict) else None}
 
 
 def _step_rows(mid: int) -> List[Dict[str, Any]]:
@@ -1313,6 +1327,9 @@ def _finish(mid: int, status: str, note: str = "",
     pop means no later finish can re-render it, and the
     (database, mission) key means no other project's grade can
     leak in. Any other status renders no grade."""
+    # Pass 36 #35: ensure the grade_json column exists before
+    # the row is read or the structured verdict is written.
+    _ensure_tables()
     m = _mission_row(mid)
     if m is None or m["status"] in TERMINAL:
         return
@@ -1320,8 +1337,20 @@ def _finish(mid: int, status: str, note: str = "",
         grade = _CURRENT_GRADE.pop((_memory.db_path(), mid), None)
     m["status"] = status
     steps = _step_rows(mid)
-    _set_mission(mid, status=status,
-                 summary=_build_summary(m, steps, note, grade))
+    fields: Dict[str, Any] = {
+        "status": status,
+        "summary": _build_summary(m, steps, note, grade)}
+    if grade is not None:
+        # Pass 36 #35: the bounded structured verdict is
+        # committed alongside the status, in the same write as
+        # the summary — never raw excerpts, only refs.
+        try:
+            from aria.agent import grader as _grader
+            fields["grade_json"] = json.dumps(
+                _grader.structured_verdict(grade))
+        except Exception:
+            pass
+    _set_mission(mid, **fields)
     add_log(f"[mission] #{mid} {status}: {m['goal'][:80]}")
 
 

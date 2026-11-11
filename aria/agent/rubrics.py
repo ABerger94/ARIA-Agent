@@ -255,6 +255,20 @@ def known_task_types() -> set:
     return set(_REGISTRY)
 
 
+def list_rubrics() -> List[dict]:
+    """Every registered rubric for inspection (pass 36 #35):
+    id, version, task types, and criterion / failure-case ids.
+    No model input, no evidence — the listing is the audit
+    surface for which rules a grade was judged against."""
+    return [{"id": r["id"], "version": r["version"],
+             "task_types": list(r["task_types"]),
+             "criteria": [c["id"] for c in r["criteria"]],
+             "failure_cases": [f["id"]
+                               for f in r["failure_cases"]]}
+            for r in sorted(_REGISTRY.values(),
+                            key=lambda r: r["id"])]
+
+
 def get_rubric(task_type: Optional[str]) -> dict:
     """The rubric for a task type; unknown / missing types get
     `general`. Never raises, never returns a malformed rubric."""

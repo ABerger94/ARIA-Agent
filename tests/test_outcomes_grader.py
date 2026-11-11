@@ -772,6 +772,137 @@ def test_settle_mission_delegates(tmp_path, monkeypatch):
     assert row["receipt"]["settlement"]["status"] == "completed"
 
 
+# -- pass 36 #35 ------------------------------------------------------
+
+def test_grader_settings_are_typed(monkeypatch):
+    # Raw bool() would enable the grader on the string "false".
+    values = {"outcomes_grader_enabled": "false",
+              "grader_model_policy": "bogus"}
+    monkeypatch.setattr(
+        config, "get_setting",
+        lambda key, default=None: values.get(key, default))
+    assert grader.outcomes_enabled() is False
+    assert grader.grader_policy() == "different"
+    settings = grader.grader_settings()
+    assert settings["enabled"] is False
+    assert settings["enabled_raw"] == "false"
+    assert settings["policy"] == "different"
+    assert settings["policies"] == ["different", "cheap", "same"]
+    assert [r["id"] for r in settings["rubrics"]] == [
+        "code_change", "general", "research"]
+    values["outcomes_grader_enabled"] = "yes"
+    assert grader.outcomes_enabled() is True
+    values["outcomes_grader_enabled"] = True
+    assert grader.outcomes_enabled() is True
+    values["outcomes_grader_enabled"] = 0
+    assert grader.outcomes_enabled() is False
+    values["outcomes_grader_enabled"] = 1
+    assert grader.outcomes_enabled() is True
+
+
+def test_structured_verdict_keeps_refs_not_excerpts():
+    result = {
+        "verdict": "fail", "rubric_id": "research",
+        "rubric_version": 1,
+        "criteria": [
+            {"id": "question_answered", "verdict": "fail",
+             "evidence": "step 1: no answer in the file probe"},
+            {"id": "sourced_claims", "verdict": "pass",
+             "evidence": "step 2 journal receipt backs it"}],
+        "failure_cases": [
+            {"id": "unsourced_assertion", "present": True,
+             "evidence": "step 1: bare assertion"}],
+        "failed_criteria": ["question_answered",
+                            "unsourced_assertion"],
+        "grader_model": "m", "self_graded": False}
+    out = grader.structured_verdict(result,
+                                    worker_model="worker-m")
+    assert out["verdict"] == "fail"
+    assert out["criteria"] == [
+        {"id": "question_answered", "verdict": "fail"},
+        {"id": "sourced_claims", "verdict": "pass"}]
+    assert out["failure_cases"] == [
+        {"id": "unsourced_assertion", "present": True}]
+    assert out["worker_model"] == "worker-m"
+    assert "no answer in the file probe" not in json.dumps(out)
+    assert "bare assertion" not in json.dumps(out)
+    assert "step 1" in out["evidence_refs"]
+    assert "file probe" in out["evidence_refs"]
+    assert "journal" in out["evidence_refs"]
+
+
+def test_taskstore_finish_stores_structured_grade(
+        tmp_path, monkeypatch):
+    from aria.agent import taskstore as _ts
+    monkeypatch.setattr(config, "WORKSPACE_DIR", str(tmp_path))
+    _ts.create("g1", "goal")
+    _ts.finish("g1", "completed", result="done", grade={
+        "verdict": "fail", "rubric_id": "research",
+        "rubric_version": 1,
+        "criteria": [{"id": "question_answered",
+                      "verdict": "fail",
+                      "evidence": "step 1: no answer"}],
+        "failure_cases": [], "failed_criteria": ["question_answered"],
+        "grader_model": "m", "self_graded": False})
+    rec = _ts.get("g1")
+    assert rec["grade"]["verdict"] == "fail"
+    assert rec["grade"]["criteria"] == [
+        {"id": "question_answered", "verdict": "fail"}]
+    assert rec["grade"]["evidence_refs"] == ["step 1"]
+    assert "no answer" not in json.dumps(rec["grade"])
+    assert _ts.set_grade("g1", None) is True
+    assert "grade" not in _ts.get("g1")
+    assert _ts.set_grade("nope", {"verdict": "pass"}) is False
+
+
+def test_mission_grade_persisted_as_structured_verdict(
+        menv, monkeypatch, grader_on):
+    _script_grader(monkeypatch,
+                   lambda n, p: _grade_json("general"))
+    mid = _mcreate("graded pass",
+                   [("grader_note", {"text": "hi"})])
+    _mapprove(mid)
+    row = _mpump(mid, {"done"})
+    assert row["status"] == "done", row
+    grade = row["grade"]
+    assert grade is not None, row
+    assert grade["verdict"] == "pass"
+    assert grade["rubric_id"] == "general"
+    assert grade["rubric_version"] == 1
+    assert grade["criteria"][0]["id"] == "goal_accomplished"
+    assert "evidence for goal_accomplished" not in json.dumps(grade)
+    assert "step 1" in grade["evidence_refs"]
+    assert "Grade: general v1 PASS" in (row["summary"] or "")
+
+
+def test_fleet_detail_merges_durable_grade(
+        tmp_path, monkeypatch):
+    from aria import fleet as _fleet
+    from aria.agent import taskstore as _ts
+    monkeypatch.setattr(config, "WORKSPACE_DIR", str(tmp_path))
+    _ts.create("fleet1", "do the fleet thing")
+    _ts.finish("fleet1", "completed", result="x" * 500, grade={
+        "verdict": "pass", "rubric_id": "general",
+        "rubric_version": 1,
+        "criteria": [{"id": "goal_accomplished", "verdict": "pass",
+                      "evidence": "step 1: did it"}],
+        "failure_cases": [], "failed_criteria": [],
+        "grader_model": "m", "self_graded": False})
+    queue = types.ModuleType("aria.agent.taskqueue")
+    queue.get_queue = lambda: types.SimpleNamespace(
+        get_all_statuses=lambda: [])
+    monkeypatch.setitem(sys.modules, "aria.agent.taskqueue", queue)
+    detail = _fleet.delegated_detail("fleet1")
+    assert detail["status"] == "completed"
+    assert detail["result"] == "x" * 500  # never clipped
+    assert detail["grade"]["verdict"] == "pass"
+    assert detail["grade"]["rubric_id"] == "general"
+    assert "did it" not in json.dumps(detail["grade"])
+    assert _fleet.delegated_detail("nope") == {}
+    text = _fleet.render_text(_fleet.snapshot())
+    assert "grade: pass" in text
+
+
 def test_grader_model_policies_and_self_graded():
     roster = grader._roster()
     assert len(roster) >= 2

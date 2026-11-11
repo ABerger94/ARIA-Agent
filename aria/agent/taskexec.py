@@ -377,6 +377,21 @@ class AgentExecutor:
         except Exception as e:
             add_log(f"taskexec: delegate settle failed ({e})")
 
+    def _persist_grade(self, grade_result: dict) -> None:
+        """Persist the structured verdict on the task journal
+        record (pass 36 #35): rubric id + version, per-criterion
+        verdicts, evidence refs — never raw excerpts. Best
+        effort; a direct _verify call outside the queue has no
+        record to persist into."""
+        try:
+            from aria.agent import taskstore as _ts
+            scope = str(runtime.current().id or "")
+            if not scope.startswith("task:"):
+                return
+            _ts.set_grade(scope[len("task:"):], grade_result)
+        except Exception as e:
+            add_log(f"taskexec: grade persist failed ({e})")
+
     def _verify(self, goal: str, completed: List[dict],
                 results: Dict[int, str], *,
                 plan: Optional[Dict[str, Any]] = None,
@@ -448,6 +463,9 @@ class AgentExecutor:
                         (plan or {}).get("steps") or [])
                     if (plan or {}).get("steps") else None)
                 self._last_grade = g
+                # Pass 36 #35: the structured verdict is
+                # persisted on the task journal record.
+                self._persist_grade(g)
                 if g["verdict"] == "fail":
                     return _grader.format_failure_reason(g)
                 if g["verdict"] == "pass":
