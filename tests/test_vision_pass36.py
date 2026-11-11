@@ -252,3 +252,94 @@ def test_native_vision_success_still_works(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Resp())
     assert vision._ollama_native_vision_call("see?", _vision_contents()) == "a tabby cat"
+
+
+# ── Pass 36 #38 ──────────────────────────────────────────────────────
+
+def test_tool_read_screen_success_is_done(monkeypatch):
+    monkeypatch.setattr(vision, "capture_screen", lambda: FAKE_JPEG)
+    monkeypatch.setattr(vision, "_VISION_TEXT_CALL", lambda sp, c: "The screen shows a terminal.")
+    result = vision.tool_read_screen("read it")
+    assert str(result) == "The screen shows a terminal."
+    assert normalize(result).status == "done"
+
+
+def test_tool_read_screen_service_failure_is_failed(monkeypatch):
+    monkeypatch.setattr(vision, "capture_screen", lambda: FAKE_JPEG)
+    monkeypatch.setattr(
+        vision, "_VISION_TEXT_CALL",
+        lambda sp, c: "[Vision unavailable: local-only mode is on and the local vision model did not respond.]")
+    result = vision.tool_read_screen("read it")
+    assert getattr(result, "status", None) == "failed"
+    assert normalize(result).status == "failed"
+    # Display text is unchanged: the bracketed reason still travels.
+    assert str(result).startswith("[Vision unavailable:")
+
+
+def test_tool_read_screen_capture_failure_is_failed(monkeypatch):
+    def _boom():
+        raise RuntimeError("no display")
+    monkeypatch.setattr(vision, "capture_screen", _boom)
+    result = vision.tool_read_screen("read it")
+    assert getattr(result, "status", None) == "failed"
+    assert normalize(result).status == "failed"
+    assert str(result) == "[Screen capture failed: no display]"
+
+
+def test_tool_read_screen_no_caller_is_failed(monkeypatch):
+    monkeypatch.setattr(vision, "capture_screen", lambda: FAKE_JPEG)
+    monkeypatch.setattr(vision, "_VISION_TEXT_CALL", None)
+    result = vision.tool_read_screen("read it")
+    assert getattr(result, "status", None) == "failed"
+    assert normalize(result).status == "failed"
+
+
+def test_tool_describe_camera_success_is_done(monkeypatch):
+    monkeypatch.setattr(vision, "capture_webcam", lambda: FAKE_JPEG)
+    monkeypatch.setattr(vision, "_VISION_TEXT_CALL", lambda sp, c: "A person waving.")
+    result = vision.tool_describe_camera("what do you see?")
+    assert str(result) == "A person waving."
+    assert normalize(result).status == "done"
+
+
+def test_tool_describe_camera_failures_are_failed(monkeypatch):
+    monkeypatch.setattr(vision, "capture_webcam", lambda: FAKE_JPEG)
+    monkeypatch.setattr(
+        vision, "_VISION_TEXT_CALL",
+        lambda sp, c: "[Vision returned no description.]")
+    result = vision.tool_describe_camera("what do you see?")
+    assert normalize(result).status == "failed"
+
+    monkeypatch.setattr(vision, "capture_webcam", lambda: None)
+    result = vision.tool_describe_camera("what do you see?")
+    assert str(result) == "[Camera not available right now.]"
+    assert normalize(result).status == "failed"
+
+    def _boom():
+        raise RuntimeError("no camera")
+    monkeypatch.setattr(vision, "capture_webcam", _boom)
+    result = vision.tool_describe_camera("what do you see?")
+    assert normalize(result).status == "failed"
+
+
+def test_describe_phone_view_no_frame_is_failed(monkeypatch):
+    monkeypatch.setitem(vision._PHONE_CAM, "jpeg", None)
+    monkeypatch.setitem(vision._PHONE_CAM, "last", 0.0)
+    result = vision.describe_phone_view()
+    assert getattr(result, "status", None) == "failed"
+    assert normalize(result).status == "failed"
+
+
+def test_describe_phone_view_success_and_failure(monkeypatch):
+    monkeypatch.setitem(vision._PHONE_CAM, "last", 0.0)
+    assert vision.publish_phone_frame(FAKE_JPEG) is True
+    monkeypatch.setattr(vision, "_VISION_TEXT_CALL", lambda sp, c: "A kitchen.")
+    result = vision.describe_phone_view()
+    assert str(result) == "A kitchen."
+    assert normalize(result).status == "done"
+
+    monkeypatch.setattr(
+        vision, "_VISION_TEXT_CALL",
+        lambda sp, c: "[Vision unavailable: ollama native: HTTP 401: bad key]")
+    result = vision.describe_phone_view()
+    assert normalize(result).status == "failed"

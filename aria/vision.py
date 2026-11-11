@@ -168,21 +168,22 @@ def vision_preview() -> Dict[str, Any]:
 
 
 def describe_phone_view(question: str = "") -> str:
-    """Describe what ARIA's phone camera currently sees."""
+    """Describe what ARIA's phone camera currently sees.
+
+    Pass 36 #38: typed — a missing frame or a failed vision service
+    returns a ResultText(FAILED), never a plain bracketed string, so
+    outcome.normalize() (dispatch/missions) records a failure instead
+    of DONE. Callers display str() of the result, unchanged.
+    """
     jpg = get_phone_frame_jpeg()
     if not jpg:
-        return "[No camera view — turn on Camera in the bridge page's settings.]"
+        return _ResultText(
+            "[No camera view — turn on Camera in the bridge page's settings.]",
+            _OUTCOME_FAILED)
     q = question or "Describe what you see in one or two sentences, as ARIA seeing through her own eyes."
-    b64 = base64.b64encode(jpg).decode("utf-8")
-    contents = [{"role": "user", "parts": [
-        {"text": q},
-        {"inline_data": {"mime_type": "image/jpeg", "data": b64}}
-    ]}]
     sys_prompt = ("You are ARIA, a robot describing what your own camera eyes see. "
                   "Be concise and concrete.")
-    if _VISION_TEXT_CALL:
-        return _VISION_TEXT_CALL(sys_prompt, contents)
-    return "[Vision unavailable: no vision text caller configured.]"
+    return describe_image(jpg, q, sys_prompt=sys_prompt, kind="camera")
 
 _NATIVE_LAST_ERROR: Optional[str] = None
 
@@ -600,45 +601,42 @@ def tool_take_photo(name: str = "") -> str:
 
 
 def tool_read_screen(question: str = "") -> str:
-    """Analyze current user screen using multimodal vision."""
+    """Analyze current user screen using multimodal vision.
+
+    Pass 36 #38: typed — capture and vision-service failures return a
+    ResultText(FAILED) so normalize() records a failure instead of
+    DONE; a description returns typed DONE. Display is str(), unchanged.
+    """
     try:
         data = capture_screen()
     except Exception as e:
-        return f"[Screen capture failed: {e}]"
+        return _ResultText(f"[Screen capture failed: {e}]", _OUTCOME_FAILED)
     publish_vision_preview(data, "SCREEN")
     q = question or "Read all text visible on this screen, top to bottom. Be concise."
-    b64 = base64.b64encode(data).decode("utf-8")
-    contents = [{"role": "user", "parts": [
-        {"text": q},
-        {"inline_data": {"mime_type": "image/jpeg", "data": b64}}
-    ]}]
-
-    if _VISION_TEXT_CALL:
-        return _VISION_TEXT_CALL("You are a precise screen reader. Answer only what is asked, concisely.", contents)
-
-    return "[Screen reading unavailable: no vision text caller configured.]"
+    return describe_image(
+        data, q,
+        sys_prompt="You are a precise screen reader. Answer only what is asked, concisely.",
+        kind="screen")
 
 
 def tool_describe_camera(question: str = "") -> str:
-    """Look through the webcam right now and describe what it sees."""
+    """Look through the webcam right now and describe what it sees.
+
+    Pass 36 #38: typed — capture and vision-service failures return a
+    ResultText(FAILED) so normalize() records a failure instead of
+    DONE; a description returns typed DONE. Display is str(), unchanged.
+    """
     try:
         data = capture_webcam()
     except Exception as e:
-        return f"[Camera capture failed: {e}]"
+        return _ResultText(f"[Camera capture failed: {e}]", _OUTCOME_FAILED)
     if not data:
-        return "[Camera not available right now.]"
+        return _ResultText("[Camera not available right now.]", _OUTCOME_FAILED)
     publish_vision_preview(data, "CAMERA")
     q = question or "Describe what you see in detail."
-    b64 = base64.b64encode(data).decode("utf-8")
-    contents = [{"role": "user", "parts": [
-        {"text": q},
-        {"inline_data": {"mime_type": "image/jpeg", "data": b64}}
-    ]}]
     sys_prompt = ("You are ARIA, a robot describing what your own camera eyes see. "
                   "Be concise and concrete.")
-    if _VISION_TEXT_CALL:
-        return _VISION_TEXT_CALL(sys_prompt, contents)
-    return "[Camera description unavailable: no vision text caller configured.]"
+    return describe_image(data, q, sys_prompt=sys_prompt, kind="camera")
 
 
 # ---------------------------------------------------------------------------
