@@ -23,6 +23,7 @@ from PIL import ImageGrab
 from aria.config import WORKSPACE_DIR, add_log
 from aria.hardware import send_servo_command, SERVO_POS
 from aria import config as _config_silent
+from aria.outcome import FAILED as _OUTCOME_FAILED, ResultText as _ResultText
 
 VISION_SCREEN_SIZE = (800, 450)
 VISION_CAM_SIZE = (640, 480)
@@ -379,6 +380,86 @@ _VISION_TEXT_CALL: Optional[Callable[[str, Any], str]] = _default_vision_call
 def set_vision_text_caller(fn: Callable[[str, Any], str]):
     global _VISION_TEXT_CALL
     _VISION_TEXT_CALL = fn
+
+
+# ── Typed vision results (pass 36 #08 / #38) ─────────────────────────
+# The shared vision service (_VISION_TEXT_CALL, i.e. _default_vision_call)
+# reports failure as a plain bracketed string ("[Vision unavailable: ...]"),
+# which outcome.normalize() reads as DONE — a failed vision step then
+# counts as a completed one. These helpers keep the failure typed:
+# callers that need a decision use describe_image(); tools that must
+# stay string-shaped return a ResultText so normalize() keeps FAILED.
+
+_VISION_FAILURE_HINTS = ("unavailable", "no description", "not available",
+                         "disabled", "failed", "could not")
+
+
+def _is_vision_failure_text(text: Any) -> bool:
+    """True when a vision-service string is one of its own failure lines.
+
+    Only matches the service's bracketed "[Vision ..." shapes, so a
+    genuine description that happens to contain e.g. "unavailable"
+    mid-sentence is never misread — the bracket prefix is required.
+    """
+    t = (text or "").strip() if isinstance(text, str) else ""
+    if not t.startswith("[Vision"):
+        return False
+    low = t.lower()
+    return any(hint in low for hint in _VISION_FAILURE_HINTS)
+
+
+def describe_image(image_bytes: bytes, question: str = "", *,
+                   sys_prompt: Optional[str] = None,
+                   kind: str = "image") -> _ResultText:
+    """Describe one image through the shared mode-aware vision service.
+
+    Routes through _VISION_TEXT_CALL (i.e. _default_vision_call), never
+    through the native ollama.com call directly — so Local only mode
+    uses the local vision leg instead of silently dropping the image
+    (pass 36 #08: the brain pre-pass called _ollama_native_vision_call,
+    which returns None under local_only by construction).
+
+    Returns a ResultText: status DONE carrying the description, or
+    FAILED carrying a bracketed reason. Never raises.
+    """
+    if not image_bytes:
+        return _ResultText("[Vision unavailable: no image was provided.]",
+                           _OUTCOME_FAILED)
+    if not _VISION_TEXT_CALL:
+        return _ResultText("[Vision unavailable: no vision text caller "
+                           "configured.]", _OUTCOME_FAILED)
+    q = (question or "").strip() or \
+        "Describe exactly what you see in this image, in detail."
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    contents = [{"role": "user", "parts": [
+        {"text": q},
+        {"inline_data": {"mime_type": "image/jpeg", "data": b64}}
+    ]}]
+    try:
+        text = _VISION_TEXT_CALL(
+            sys_prompt or "You are a precise visual observer.", contents)
+    except Exception as e:
+        return _ResultText(f"[Vision unavailable: {e}]", _OUTCOME_FAILED)
+    text = (text or "").strip() if isinstance(text, str) else ""
+    if not text:
+        return _ResultText("[Vision returned no description.]",
+                           _OUTCOME_FAILED)
+    if _is_vision_failure_text(text):
+        return _ResultText(text, _OUTCOME_FAILED)
+    return _ResultText(text)
+
+
+def release_screen_hash() -> None:
+    """Forget the last seen screen hash so the next capture re-captures.
+
+    capture_screen_if_changed() consumes the hash at capture time, so a
+    vision attempt that then fails would leave a retry on the same
+    unchanged screen yielding nothing (pass 36 #08). Call this when a
+    screen vision attempt fails; the next identical-screen question
+    re-captures the frame and retries the description.
+    """
+    global _LAST_SCREEN_HASH
+    _LAST_SCREEN_HASH = None
 
 
 def get_vision_status() -> Dict[str, Any]:

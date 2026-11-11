@@ -437,29 +437,47 @@ def _wait_and_restart_program() -> None:
 
 
 def _vision_prepass(user_prompt: str, image_bytes: bytes, is_screen: bool) -> str:
-    """Describe image bytes via native Ollama /api/chat and fold the
-    description into the prompt text. Returns the augmented prompt.
-    Never raises; on any failure returns the prompt with a notice."""
+    """Describe image bytes via the shared mode-aware vision service and
+    fold the description into the prompt text. Returns the augmented
+    prompt. Never raises; on any failure returns the prompt with a notice.
+
+    Pass 36 #08: this used to call _ollama_native_vision_call directly,
+    which returns None under Local only (an ollama.com call by
+    construction), so screen/camera questions silently went text-only.
+    It now routes through vision.describe_image() — the shared service —
+    so Local only uses the local vision leg. On a failed screen attempt
+    the screen hash is released, so retrying on the same unchanged
+    screen re-captures instead of yielding nothing.
+    """
+    from aria.outcome import FAILED as _FAILED
+    _kind = "screen" if is_screen else "camera"
     try:
         from aria import vision as _vision_mod
-        _b64 = base64.b64encode(image_bytes).decode("utf-8")
-        _desc = _vision_mod._ollama_native_vision_call(
-            "You are a precise visual observer.",
-            [{"role": "user", "parts": [
-                {"text": "Describe exactly what you see in this image, in detail. "
-                         "This description goes to an AI agent that cannot see the image itself."},
-                {"inline_data": {"mime_type": "image/jpeg", "data": _b64}},
-            ]}])
-        _kind = "screen" if is_screen else "camera"
-        if _desc:
-            return (f"[Image from {_kind}, described by vision model]: {_desc}\n"
+        _result = _vision_mod.describe_image(
+            image_bytes,
+            "Describe exactly what you see in this image, in detail. "
+            "This description goes to an AI agent that cannot see the image itself.",
+            sys_prompt="You are a precise visual observer.",
+            kind=_kind)
+        if getattr(_result, "status", None) == _FAILED:
+            if is_screen:
+                _vision_mod.release_screen_hash()
+            add_log("Vision pre-pass failed; continuing text-only.",
+                    level="warn")
+            return (f"[The {_kind} image could not be processed: "
+                    f"{str(_result)}] "
                     f"User request: {user_prompt}")
-        add_log("Vision pre-pass returned nothing; continuing text-only.",
-                level="warn")
-        return (f"[The {_kind} image could not be processed] "
+        return (f"[Image from {_kind}, described by vision model]: "
+                f"{str(_result)}\n"
                 f"User request: {user_prompt}")
     except Exception as _ve:
         add_log(f"Vision pre-pass error: {_ve}", level="warn")
+        try:
+            if is_screen:
+                from aria import vision as _vision_mod2
+                _vision_mod2.release_screen_hash()
+        except Exception:
+            pass
         return user_prompt
 
 
@@ -686,8 +704,11 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
     # 1b. Vision pre-pass. No provider on the OpenAI-compatible /v1 chain
     # accepts image input (ollama_cloud /v1, groq, openrouter all reject
     # image_url; mistral tier lacks the model), so image bytes must NEVER
-    # reach provider_call. Describe the image once via the native Ollama
-    # /api/chat endpoint and feed the description as text instead.
+    # reach provider_call. Describe the image once via the shared
+    # mode-aware vision service (_vision_prepass -> vision.describe_image)
+    # and feed the description as text instead; Local only mode uses the
+    # local vision leg, and a failed screen attempt releases the screen
+    # hash so a retry re-captures (pass 36 #08).
     if image_bytes:
         user_prompt = _vision_prepass(user_prompt, image_bytes, is_screen)
         image_bytes = None
