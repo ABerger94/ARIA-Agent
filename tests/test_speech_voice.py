@@ -201,3 +201,130 @@ def test_synthesis_uses_session_voice(sp, monkeypatch):
     assert captured['voice'] == 'en-US-JennyNeural'
     # asyncio.run inside strict leaves no loop behind for other tests.
     assert asyncio.get_event_loop_policy() is not None
+
+
+# -- Pass 36 #04: no cloud speech in Local only -------------------
+# speech.py had zero PROVIDER_MODE refs: Google STT fallback and
+# Edge TTS both ran in Local only, contradicting the toggle label.
+# In local_only, STT is faster-whisper or typed-unavailable (never
+# Google) and TTS is offline SAPI (never Edge); the Providers panel
+# says so via speech_route_text().
+
+class _Seg:
+    def __init__(self, text, no_speech_prob=0.0):
+        self.text = text
+        self.no_speech_prob = no_speech_prob
+
+
+class _FakeFwModel:
+    def __init__(self, text="hello local world"):
+        self._text = text
+
+    def transcribe(self, pcm, **kw):
+        return ([_Seg(self._text)], None)
+
+
+def _fake_audio(sp):
+    import speech_recognition as sr
+    return sr.AudioData(b"\x00\x00" * 1600, 16000, 2)
+
+
+def test_transcribe_local_only_never_calls_google(sp, monkeypatch):
+    monkeypatch.setattr(sp, "_local_only", lambda: True)
+    monkeypatch.setattr(sp, "get_fw_model", lambda on_log=None: None)
+    monkeypatch.setattr(
+        sp, "_recognize_google",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("Google STT must never run in Local only")))
+    logs = []
+    out = sp.transcribe(_fake_audio(sp), None, use_local_stt=True,
+                        on_log=logs.append)
+    assert out == "", out
+    assert any("Local STT unavailable" in m for m in logs), logs
+
+
+def test_transcribe_local_only_uses_local_model(sp, monkeypatch):
+    monkeypatch.setattr(sp, "_local_only", lambda: True)
+    monkeypatch.setattr(sp, "get_fw_model",
+                        lambda on_log=None: _FakeFwModel())
+    monkeypatch.setattr(
+        sp, "_recognize_google",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("Google STT must never run in Local only")))
+    out = sp.transcribe(_fake_audio(sp), None, use_local_stt=True)
+    assert out == "hello local world", out
+
+
+def test_transcribe_auto_still_uses_google_when_asked(sp, monkeypatch):
+    monkeypatch.setattr(sp, "_local_only", lambda: False)
+    monkeypatch.setattr(sp, "_recognize_google",
+                        lambda *a, **k: "hello cloud")
+    out = sp.transcribe(_fake_audio(sp), None, use_local_stt=False)
+    assert out == "hello cloud", out
+
+
+def test_edge_strict_refuses_in_local_only(sp, monkeypatch):
+    monkeypatch.setattr(sp, "_local_only", lambda: True)
+    with pytest.raises(RuntimeError, match="Local only mode"):
+        sp._edge_tts_bytes_strict("hello")
+
+
+def test_probe_refuses_edge_in_local_only(sp, monkeypatch, tmp_path):
+    monkeypatch.setattr(sp, "_local_only", lambda: True)
+    monkeypatch.setattr(
+        sp, "_edge_tts_bytes_strict",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("Edge must never be probed in Local only")))
+    logs = []
+    mgr = _manager(sp, tmp_path, logs)
+    assert mgr._probe_edge_once() is False
+    assert mgr.edge_ready is False
+    assert any("Local only mode" in m for m in logs), logs
+
+
+def test_bridge_tts_local_only_has_no_cloud_path(sp, monkeypatch):
+    monkeypatch.setattr(sp, "_local_only", lambda: True)
+    monkeypatch.setattr(
+        sp, "_edge_tts_bytes_strict",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("Edge must never run in Local only")))
+    with pytest.raises(RuntimeError, match="Local only mode"):
+        sp.tts_bytes_for_bridge("hello")
+
+
+def test_synth_worker_routes_to_sapi_in_local_only(sp, monkeypatch,
+                                                   tmp_path):
+    import threading
+    import time
+    monkeypatch.setattr(sp, "_local_only", lambda: True)
+    logs = []
+    mgr = _manager(sp, tmp_path, logs)
+    mgr.edge_ready = True  # latched before the flip: must not matter
+    monkeypatch.setattr(
+        sp, "edge_tts_bytes",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("Edge must never synthesize in Local only")))
+    t = threading.Thread(target=mgr._synth_worker, daemon=True)
+    t.start()
+    mgr.speech_queue.put("hello there")
+    deadline = time.time() + 5
+    item = None
+    while time.time() < deadline:
+        try:
+            item = mgr.audio_play_queue.get(timeout=0.5)
+            break
+        except Exception:
+            continue
+    assert item is not None, "utterance never reached playback"
+    text, audio_buf, is_edge = item
+    assert text == "hello there" and audio_buf is None and is_edge is False
+
+
+def test_speech_route_text_names_the_route(sp, monkeypatch):
+    monkeypatch.setattr(sp, "_local_only", lambda: True)
+    route = sp.speech_route_text()
+    assert "Google STT" in route and "Edge TTS" in route
+    assert "never called in Local only" in route
+    monkeypatch.setattr(sp, "_local_only", lambda: False)
+    route = sp.speech_route_text()
+    assert "Google fallback" in route and "Edge TTS" in route

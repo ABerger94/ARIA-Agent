@@ -151,12 +151,20 @@ def build_providers_widget(parent=None):
     chain_label = QLabel()
     chain_label.setWordWrap(True)
     lay.addWidget(chain_label)
+    speech_label = QLabel()
+    speech_label.setWordWrap(True)
+    lay.addWidget(speech_label)
 
     def refresh():
         active, rows, stats = provider_data()
         body.setText(_providers_html(active, rows))
         stats_label.setText(_stats_text(stats))
         chain_label.setText(_chain_text())
+        try:
+            from aria import speech as _speech_mod
+            speech_label.setText(_speech_mod.speech_route_text())
+        except Exception:
+            speech_label.setText('Speech route unavailable.')
         mode_now = _current_mode()
         mode_label.setText(
             'Provider mode: <b>LOCAL ONLY</b> — the local Ollama '
@@ -221,6 +229,7 @@ def build_providers_widget(parent=None):
     w._body = body
     w._stats = stats_label
     w._chain = chain_label
+    w._speech = speech_label
     w._copy_report = copy_btn
     w._local_only = local_only
     w._mode_label = mode_label

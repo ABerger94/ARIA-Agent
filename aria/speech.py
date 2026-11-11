@@ -316,6 +316,50 @@ except Exception:
     _FW_AVAILABLE = False
 
 
+def _provider_mode_live() -> str:
+    """The live PROVIDER_MODE, read fresh at call time (the
+    Settings toggle rebinds it without a restart — an import-time
+    snapshot would miss a flip). providers.provider_mode() is the
+    authoritative source; config's global is the fallback."""
+    try:
+        from aria.agent.providers import provider_mode
+        return str(provider_mode() or "auto").strip().lower()
+    except Exception:
+        pass
+    try:
+        return str(getattr(_config_silent, "PROVIDER_MODE", "auto")
+                   or "auto").strip().lower()
+    except Exception:
+        return "auto"
+
+
+def _local_only() -> bool:
+    """True in strict local-only mode (PROVIDER_MODE=local_only,
+    Alek 2026-11-10): the toggle promises Ollama on this machine
+    serves everything and API-keyed providers are never called —
+    that covers the speech pipeline too (pass 36 #04). Google STT
+    and Edge TTS are cloud services, so they never run here."""
+    return _provider_mode_live() == "local_only"
+
+
+def speech_route_text() -> str:
+    """The speech route for the current provider mode, for the
+    Providers panel (pass 36 #04): the toggle's claim is true or
+    explicitly scoped — in local_only the route is local STT +
+    offline SAPI TTS and nothing else; in Auto the cloud fallbacks
+    are named, not hidden."""
+    if _local_only():
+        if fw_is_available():
+            stt = "local STT (faster-whisper)"
+        else:
+            stt = ("local STT (faster-whisper — not installed, so "
+                   "voice input is unavailable in Local only)")
+        return (f"Speech route: {stt} + offline SAPI TTS. Google "
+                "STT and Edge TTS are never called in Local only.")
+    return ("Speech route: faster-whisper STT with Google fallback; "
+            "Edge TTS with offline SAPI fallback.")
+
+
 def fw_is_available() -> bool:
     return _FW_AVAILABLE
 
@@ -440,7 +484,38 @@ def _recognize_google(recognizer: sr.Recognizer, audio: sr.AudioData,
 
 
 def transcribe(audio: sr.AudioData, recognizer: sr.Recognizer, use_local_stt: bool = False, on_log: Optional[Callable[[str], None]] = None) -> str:
-    """Transcribe sr.AudioData to text. Prefers faster-whisper with strict VAD filtering, falls back to Google on STT failure."""
+    """Transcribe sr.AudioData to text. Prefers faster-whisper with strict VAD filtering, falls back to Google on STT failure.
+
+    Pass 36 #04: in local_only mode there is NO Google fallback —
+    the toggle promises no cloud calls. When the local model is
+    unavailable (not installed) the answer is typed unavailable:
+    "" with a log line, never a silent cloud STT call."""
+    if _local_only():
+        model = get_fw_model(on_log=on_log)
+        if model is None:
+            if on_log:
+                on_log("Local STT unavailable: no faster-whisper model "
+                       "installed — voice input is off in Local only "
+                       "(Google STT is never used in this mode)")
+            return ""
+        try:
+            pcm = fw_pcm(audio)
+            segments, _ = model.transcribe(
+                pcm, language="en",
+                initial_prompt="Aria.",
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=400, threshold=0.5),
+                condition_on_previous_text=False
+            )
+            kept = [s for s in segments if getattr(s, "no_speech_prob", 0.0) <= _FW_NO_SPEECH_CUTOFF]
+            text = " ".join(s.text.strip() for s in kept).strip()
+            return clean_stt_transcript(text)
+        except Exception as e:
+            if on_log:
+                on_log(f"Local STT failed in Local only mode: {e} "
+                       "(no Google fallback in this mode)")
+            return ""
+
     if not use_local_stt:
         try:
             return clean_stt_transcript(_recognize_google(recognizer, audio))
@@ -556,6 +631,14 @@ class SpeechManager:
         the lock keeps that true if that ever changes.
         """
         with self._probe_lock:
+            # Pass 36 #04: in local_only mode Edge TTS is never
+            # probed — it is a Microsoft cloud service, and the
+            # probe itself is a network call. The SAPI fallback
+            # carries synthesis instead.
+            if _local_only():
+                self.log("Voice: system fallback (Edge TTS is off in "
+                         "Local only mode — offline SAPI voice)")
+                return False
             try:
                 import edge_tts  # noqa: F401
             except Exception as e:
@@ -646,13 +729,20 @@ class SpeechManager:
         entire session (audit §1A #3).
         """
         try:
-            self._probe_edge_once()
+            # Pass 36 #04: in local_only mode Edge is never probed
+            # (see _probe_edge_once) — the supervisor waits instead
+            # of logging a failure every re-probe interval.
+            if _local_only():
+                self.log("Voice: Edge TTS off in Local only mode — "
+                         "offline SAPI voice")
+            else:
+                self._probe_edge_once()
         finally:
             self.edge_probe_done.set()
         while True:
             self._edge_revoked.wait(timeout=EDGE_REPROBE_INTERVAL_S)
             self._edge_revoked.clear()
-            if not self.edge_ready:
+            if not self.edge_ready and not _local_only():
                 self._probe_edge_once()
 
     def _note_edge_result(self, ok: bool):
@@ -684,7 +774,12 @@ class SpeechManager:
                 self.log("Speech held: voice muted or app locked")
                 self.speech_queue.task_done()
                 continue
-            if not self.edge_ready:
+            if _local_only() or not self.edge_ready:
+                # Pass 36 #04: in local_only Edge is never
+                # synthesized — route straight to the offline SAPI
+                # path even if edge_ready was latched before the
+                # flip. Otherwise: Edge down routes to SAPI, as
+                # before.
                 self.audio_play_queue.put((text, None, False))
                 self.speech_queue.task_done()
                 continue
@@ -889,7 +984,15 @@ def _edge_tts_bytes_strict(text: str, whisper_mode: bool = False,
     timeout). Voice: the probe-proven session voice by default (see
     active_edge_voice) — NOT re-read from settings per sentence, so a
     configured voice the probe already proved broken is never retried
-    sentence by sentence."""
+    sentence by sentence.
+
+    Pass 36 #04: fail-closed in local_only mode — this is the Edge
+    seam, and any caller that reaches it after a mode flip gets a
+    loud refusal instead of a cloud call. The policy gates (probe,
+    synth worker, bridge) route around it first; this is the net.
+    """
+    if _local_only():
+        raise RuntimeError("Edge TTS is unavailable in Local only mode")
     import asyncio
     import edge_tts  # raises ImportError when the package is missing
 
@@ -984,7 +1087,22 @@ def tts_bytes_for_bridge(text: str) -> Tuple[bytes, str]:
     Edge TTS first; offline Windows SAPI voice as fallback. Raises
     RuntimeError with the underlying reason when nothing produces audio —
     the bridge turns that into a real error response instead of silence.
+
+    Pass 36 #04: in local_only mode Edge is skipped outright — the
+    bridge gets SAPI on Windows, or a loud error elsewhere (never a
+    silent cloud call and never silence).
     """
+    if _local_only():
+        if sys.platform == "win32":
+            wav, sapi_err = _sapi_tts_wav_ex(text)
+            if wav:
+                return wav, "audio/wav"
+            raise RuntimeError(
+                "Edge TTS is unavailable in Local only mode; "
+                f"SAPI fallback failed ({sapi_err or 'unknown'})")
+        raise RuntimeError(
+            "Edge TTS is unavailable in Local only mode and no "
+            "offline voice is available on this platform")
     edge_err = ""
     try:
         return _edge_tts_bytes_strict(text), "audio/mpeg"
