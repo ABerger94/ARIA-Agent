@@ -41,7 +41,7 @@ from aria.tools.dispatch import (
 import aria.speech as speech
 from aria.agent.shortcuts import check_voice_shortcut
 from aria.agent.providers import provider_call, get_active_provider, get_last_call_stats
-from aria.agent.providers import resolve_role_model
+from aria.agent.providers import resolve_role_model, current_request_policy
 from aria.agent.providers import classify_turn_tier, resolve_tier_chain_start
 from aria.agent import sentinel
 import aria.hud as hud
@@ -72,6 +72,29 @@ def append_audit(entry):
         history = current_history()
         history.append(entry)
         workspaces.save_history(history)
+
+
+def _persist_pending_tool_receipts(contents):
+    """Append tool call/response entries from `contents` that never
+    reached CONVERSATION_HISTORY, so a mode-change abort (#06)
+    does not lose completed tool receipts: the model functionCall
+    parts and their functionResponse parts stay in history for the
+    next turn to reconcile. Only entries carrying such parts, not
+    already recorded. Never raises."""
+    try:
+        history = current_history()
+        for entry in contents or []:
+            parts = entry.get("parts") or []
+            if not any(isinstance(p, dict)
+                       and ("functionCall" in p or "functionResponse" in p)
+                       for p in parts):
+                continue
+            if entry in history:
+                continue
+            history.append(entry)
+        _compact_conversation_history()
+    except Exception as _e_silent:
+        _config_silent.log_silent("_persist_pending_tool_receipts", _e_silent)
 
 
 def _compact_conversation_history():
@@ -673,8 +696,12 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
     # role's model tag (None = default conversational model). The override
     # only applies to the ollama_cloud leg; a failing role model falls back
     # to default automatically (see providers._attempt_provider_call).
+    # Pass 36 #06: the turn's request policy is captured ONCE here —
+    # the role tag, the chain, and the walk all resolve from this same
+    # policy, so a toggle flip mid-turn cannot retag the leg.
+    _turn_policy = current_request_policy()
     _task_role = classify_task_role(user_prompt)
-    _turn_model_override = resolve_role_model(_task_role)
+    _turn_model_override = resolve_role_model(_task_role, _turn_policy)
     if _task_role != "default":
         add_log(f"task role '{_task_role}' -> model '{_turn_model_override or '(default)'}'")
 
@@ -792,6 +819,7 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                 on_text_chunk=_stream_chunk_cb if (not silent and reply_sink is None) else None,
                 model_override=_turn_model_override,
                 chain_start=_turn_chain_start,
+                policy=_turn_policy,
             )
 
             # Primary = head of the EFFECTIVE chain (PROVIDER_MODE-
@@ -813,6 +841,15 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
             if not data or not data.get("candidates"):
                 from aria.agent.providers import provider_failure_message
                 message = provider_failure_message()
+                # Pass 36 #06: a mode-change abort keeps completed
+                # tool receipts — persist any tool call/response
+                # entries from this turn's contents before reporting.
+                try:
+                    if any(f.get("kind") == "mode_change"
+                           for f in runtime.current().provider_failures):
+                        _persist_pending_tool_receipts(contents)
+                except Exception as _e_silent:
+                    _config_silent.log_silent("run_agent_mode_change", _e_silent)
                 hud.set_hud_subtitle(message)
                 log_conversation('A.R.I.A.', message)
                 say(message)

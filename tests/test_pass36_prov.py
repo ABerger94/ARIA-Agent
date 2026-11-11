@@ -85,6 +85,10 @@ def test_07_set_mode_reports_saved_and_invalid():
     saved_mode = pv.PROVIDER_MODE
     saved_cfg = cfg.PROVIDER_MODE
     saved_status = dict(pv.PROVIDER_MODE_STATUS)
+    real_save = cfg.save_keys
+    # Stub the keys-file write (see test_06_policy): no test may
+    # leave a flipped PROVIDER_MODE in the real aria_keys.json.
+    cfg.save_keys = lambda: True
     try:
         # A valid flip reports saved=True (keys file writable here).
         assert pv.set_provider_mode("local_only") == "local_only"
@@ -102,6 +106,7 @@ def test_07_set_mode_reports_saved_and_invalid():
         assert pv.set_provider_mode("auto") == "auto"
         assert pv.provider_mode_status().get("error") is None
     finally:
+        cfg.save_keys = real_save
         pv.PROVIDER_MODE = saved_mode
         cfg.PROVIDER_MODE = saved_cfg
         pv.PROVIDER_MODE_STATUS.clear()
@@ -287,3 +292,126 @@ def test_05_walk_skips_missing_model_with_typed_error():
         pv._build_chain = saved_chain
         pv.PROVIDER_MODE = saved_mode
     print("ok 05 missing-model leg skipped with typed error, no cloud fall-through")
+
+
+# --- #06: one policy per turn, rechecked per attempt -------------------
+
+def test_06_policy_captures_mode_and_generation():
+    saved_mode = pv.PROVIDER_MODE
+    saved_cfg = cfg.PROVIDER_MODE
+    saved_gen = pv._MODE_GENERATION
+    real_save = cfg.save_keys
+    # Stub the keys-file write: the toggle must not rewrite the
+    # real aria_keys.json (a leftover "local_only" there would make
+    # the NEXT process import local_only).
+    cfg.save_keys = lambda: True
+    try:
+        pv.PROVIDER_MODE = "auto"
+        policy = pv.current_request_policy()
+        assert policy == {"mode": "auto", "generation": saved_gen}, policy
+        # A real flip bumps the generation; setting the live mode
+        # again does not.
+        pv.set_provider_mode("local_only")
+        assert pv._MODE_GENERATION == saved_gen + 1
+        pv.set_provider_mode("local_only")
+        assert pv._MODE_GENERATION == saved_gen + 1
+        assert pv.current_request_policy()["mode"] == "local_only"
+    finally:
+        cfg.save_keys = real_save
+        pv.PROVIDER_MODE = saved_mode
+        cfg.PROVIDER_MODE = saved_cfg
+        pv._MODE_GENERATION = saved_gen
+    print("ok 06 policy + generation bump on real flips only")
+
+
+def test_06_role_resolves_from_captured_policy_not_live_mode():
+    saved_mode = pv.PROVIDER_MODE
+    saved_vision = pv.OLLAMA_LOCAL_VISION_MODEL
+    pv.clear_role_model_cooldown()
+    try:
+        pv.PROVIDER_MODE = "auto"
+        policy = pv.current_request_policy()
+        # Flip live to local_only AFTER capturing the policy.
+        pv.PROVIDER_MODE = "local_only"
+        pv.OLLAMA_LOCAL_VISION_MODEL = "qwen2.5vl:7b"
+        # The captured (auto) policy still resolves the cloud tag;
+        # a fresh read resolves the local tag. The tag can no
+        # longer be resolved under one mode and applied under another.
+        assert pv.resolve_role_model("vision", policy) == pv.OLLAMA_VISION_MODEL
+        assert pv.resolve_role_model("vision") == "qwen2.5vl:7b"
+        assert pv.resolve_role_model("vision", pv.current_request_policy()) == "qwen2.5vl:7b"
+    finally:
+        pv.PROVIDER_MODE = saved_mode
+        pv.OLLAMA_LOCAL_VISION_MODEL = saved_vision
+        pv.clear_role_model_cooldown()
+    print("ok 06 role tag pinned to the turn's policy")
+
+
+def test_06_walk_aborts_when_mode_flips_mid_walk():
+    from aria import runtime
+
+    class _Stub:
+        def __init__(self, name):
+            self.name = name
+            self.model = "stub-model"
+            self.base_url = ""
+            self.api_key = "stub"
+        def is_available(self):
+            return True
+
+    saved_mode = pv.PROVIDER_MODE
+    saved_gen = pv._MODE_GENERATION
+    real_build = pv._build_chain
+    real_attempt = pv._attempt_provider_call
+    attempts = []
+    pv.PROVIDER_MODE = "auto"
+    policy = pv.current_request_policy()
+
+    def fake_attempt(provider, system_instruction, contents, tool_decls,
+                     on_text_chunk, model_override, policy=None):
+        attempts.append(provider.name)
+        # The toggle flips after the first attempt starts.
+        pv.PROVIDER_MODE = "local_only"
+        return (None, False)
+
+    try:
+        pv._build_chain = lambda: [_Stub(n) for n in ("gemini", "groq")]
+        pv._attempt_provider_call = fake_attempt
+        pv.clear_provider_cooldown()
+        pv.clear_model_cooldown()
+        with runtime.execution():
+            assert pv.provider_call("sys", [{"role": "user",
+                                             "parts": [{"text": "hi"}]}],
+                                    policy=policy) is None
+            failures = runtime.current().provider_failures
+            # Read the message INSIDE the execution context: the
+            # mode_change failure lives on this turn's context.
+            message = pv.provider_failure_message()
+        assert attempts == ["gemini"], attempts  # groq never attempted
+        assert any(f.get("kind") == "mode_change" for f in failures), failures
+        assert "changed" in message.lower(), message
+    finally:
+        pv._build_chain = real_build
+        pv._attempt_provider_call = real_attempt
+        pv.PROVIDER_MODE = saved_mode
+        pv._MODE_GENERATION = saved_gen
+    print("ok 06 mid-walk mode flip aborts, second leg never attempted")
+
+
+def test_06_attempt_records_models_actually_tried():
+    p = pv.OpenAICompatProvider("ollama_cloud", "https://example.invalid/v1",
+                                "k", "default-model")
+    p.call = lambda *a, **k: None
+    p.last_error = "HTTP 404: gone"
+    try:
+        data, used_fallback = pv._attempt_provider_call(
+            p, "", [], None, None, "role-model",
+            policy={"mode": "auto", "generation": 0})
+    finally:
+        pv.clear_role_model_cooldown()
+        pv.clear_model_cooldown()
+    assert data is None and used_fallback is True
+    assert p._last_attempted_models == ["role-model", "default-model"], (
+        p._last_attempted_models)
+    assert p.model == "default-model", "provider model must be restored"
+    print("ok 06 attempted-model record for cooldown attribution")

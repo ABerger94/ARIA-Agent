@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import copy
+import inspect
 import json
 import math
 import re
@@ -62,6 +63,22 @@ def provider_mode() -> str:
     return "local_only" if raw.strip().lower() == "local_only" else "auto"
 
 
+# Pass 36 #06: the mode generation. Every real mode flip bumps
+# it; a turn captures (mode, generation) once in
+# current_request_policy() and the walk re-checks both before
+# every transport attempt, so a toggle flip mid-turn aborts the
+# walk instead of letting stale legs keep calling the cloud.
+_MODE_GENERATION = 0
+
+
+def current_request_policy() -> Dict[str, Any]:
+    """The authoritative mode + generation for one turn. Capture
+    once at turn start and pass it to resolve_role_model() and
+    provider_call() so the role tag, the chain, and the walk all
+    resolve from the SAME policy instead of three live reads."""
+    return {"mode": provider_mode(), "generation": _MODE_GENERATION}
+
+
 def set_provider_mode(mode) -> str:
     """Flip PROVIDER_MODE live and persist it (the Settings
     toggle's backend). Takes effect on the next provider call —
@@ -76,7 +93,8 @@ def set_provider_mode(mode) -> str:
     at the next restart; an invalid explicit value is a visible
     configuration error (see config.set_provider_mode_result),
     not a silent coercion. provider_mode_status() reads it."""
-    global PROVIDER_MODE
+    global PROVIDER_MODE, _MODE_GENERATION
+    previous_mode = provider_mode()
     try:
         result = _config_silent.set_provider_mode_result(mode)
     except Exception:
@@ -87,6 +105,11 @@ def set_provider_mode(mode) -> str:
     PROVIDER_MODE = result["mode"]
     PROVIDER_MODE_STATUS.clear()
     PROVIDER_MODE_STATUS.update(result)
+    # Pass 36 #06: a real flip bumps the generation so in-flight
+    # walks notice it at their next per-attempt recheck. Setting
+    # the mode that is already live changes nothing and bumps nothing.
+    if result["mode"] != previous_mode:
+        _MODE_GENERATION += 1
     if result.get("error"):
         add_log(f"provider mode: invalid value — {result['error']}",
                 level="error")
@@ -127,7 +150,7 @@ def provider_mode_status() -> Dict[str, Any]:
     return status
 
 
-def effective_chain_names() -> List[str]:
+def effective_chain_names(mode: Optional[str] = None) -> List[str]:
     """PROVIDER_CHAIN as PROVIDER_MODE gates it.
 
     auto: the configured chain, untouched. local_only: exactly
@@ -140,8 +163,11 @@ def effective_chain_names() -> List[str]:
     consumer — the walk, resolve_role_model, brain's primary
     readout, the frame status — goes through here so they can
     never disagree about which legs may serve.
+
+    Pass 36 #06: mode= pins the answer to one turn's policy
+    instead of the live value; None (default) reads live, as before.
     """
-    if provider_mode() == "local_only":
+    if (mode if mode is not None else provider_mode()) == "local_only":
         return ["ollama_local"]
     return list(PROVIDER_CHAIN)
 
@@ -217,6 +243,17 @@ def provider_failure_message() -> str:
     ctx = runtime.current()
     if ctx.budget_error:
         return ctx.budget_error
+    # Pass 36 #06: the mode flipped mid-turn and the walk aborted
+    # on purpose. Say so — the turn did not "fail to reach a
+    # model", it stopped because the policy changed; completed
+    # tool calls kept their receipts (brain persists them).
+    changed = [f for f in ctx.provider_failures
+               if f.get('kind') == 'mode_change']
+    if changed:
+        return ("Provider mode changed during this turn, so I stopped "
+                "before calling another model. Anything I had already "
+                "done kept its receipt — ask me to continue and I will "
+                "pick it up under the new mode.")
     if provider_mode() == "local_only":
         # Strict local-only: the walk had exactly one leg and it did
         # not answer. Say so plainly — the generic messages below
@@ -1182,7 +1219,7 @@ def _build_chain(verify_local: bool = False) -> List[Provider]:
 # tag) in aria_keys.json and the role silently falls back to the default
 # OLLAMA_CLOUD_MODEL. The conversational loop always uses the default.
 
-def resolve_role_model(role: str) -> Optional[str]:
+def resolve_role_model(role: str, policy: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """Map a task role to an Ollama Cloud model tag.
 
     Returns None for the default/unknown roles (provider's configured model)
@@ -1198,6 +1235,11 @@ def resolve_role_model(role: str) -> Optional[str]:
     override applies to that leg — see _attempt_provider_call);
     every other role returns None, so the local provider's
     configured model (OLLAMA_MODEL) handles the turn.
+
+    Pass 36 #06: policy= pins the mode to one turn's captured
+    request policy instead of a fresh live read — the role tag
+    can no longer be resolved under the old mode and applied
+    under the new one.
     """
     r = (role or "default").strip().lower()
     # PROVIDER_MODE / OLLAMA_LOCAL_VISION_MODEL are read through
@@ -1208,7 +1250,10 @@ def resolve_role_model(role: str) -> Optional[str]:
     # The name read IS the live value: set_provider_mode() rebinds
     # this module's PROVIDER_MODE global, so a Settings-toggle flip
     # is visible here on the next call.
-    if globals().get("PROVIDER_MODE", "auto") == "local_only":
+    mode = (policy or {}).get("mode") if policy else None
+    if mode is None:
+        mode = globals().get("PROVIDER_MODE", "auto")
+    if mode == "local_only":
         if r != "vision":
             return None
         tag = globals().get(
@@ -1488,20 +1533,25 @@ def chain_all_quarantined() -> bool:
         return False
 
 
-def _role_override_leg(provider_name: str) -> bool:
+def _role_override_leg(provider_name: str, mode: Optional[str] = None) -> bool:
     """The leg a role model_override may run on. Auto mode: the
     ollama_cloud leg only — an override must never retag a keyed
     cloud leg or the local leg. Local-only mode: the ollama_local
     leg, the only leg there is; resolve_role_model guarantees the
     override in that mode is the local vision tag, never a cloud
-    model."""
-    if provider_mode() == "local_only":
+    model.
+
+    Pass 36 #06: mode= pins the answer to one turn's policy;
+    None (default) reads live, as before."""
+    effective = mode if mode is not None else provider_mode()
+    if effective == "local_only":
         return provider_name == "ollama_local"
     return provider_name == "ollama_cloud"
 
 
 def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
-                           on_text_chunk, model_override: Optional[str]):
+                           on_text_chunk, model_override: Optional[str],
+                           policy: Optional[Dict[str, Any]] = None):
     """Call one provider, optionally on a role-specific model.
 
     A failing role model (exception OR empty result — provider.call swallows
@@ -1510,11 +1560,14 @@ def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
     payload was bad). The provider's configured model is always restored.
     Returns (data, used_fallback).
     """
-    use_override = bool(model_override) and _role_override_leg(provider.name)
+    use_override = bool(model_override) and _role_override_leg(
+        provider.name, (policy or {}).get("mode") if policy else None)
     saved = provider.model if use_override else None
+    attempted_models: List[str] = []
     try:
         if use_override:
             provider.model = model_override
+        attempted_models.append(getattr(provider, "model", "") or "")
         try:
             data = provider.call(
                 system_instruction, contents,
@@ -1535,6 +1588,7 @@ def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
         _note_model_failed(provider.name, model_override,
                            provider.last_error)
         provider.model = saved
+        attempted_models.append(getattr(provider, "model", "") or "")
         try:
             data = provider.call(
                 system_instruction, contents,
@@ -1549,6 +1603,12 @@ def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
     finally:
         if saved is not None:
             provider.model = saved
+        # Pass 36 #18: which models were actually attempted on this
+        # leg (override, then default on fallback) — the walk uses
+        # this for per-(provider, model) cooldowns and health, so a
+        # default-model retry can no longer clear the failed
+        # specialist's pair cooldown or vice versa.
+        provider._last_attempted_models = attempted_models
 
 
 def provider_call(
@@ -1559,6 +1619,7 @@ def provider_call(
     model_override: Optional[str] = None,
     only_provider: Optional[str] = None,
     chain_start: Optional[str] = None,
+    policy: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Walk the provider chain in order; first provider that returns
     candidates wins. Quarantined/unconfigured providers are skipped
@@ -1575,11 +1636,31 @@ def provider_call(
     chain_start: begin the walk at this provider instead of the head of
     the chain (turn-tier routing, see classify_turn_tier); the remaining
     providers wrap around as fallbacks in their configured order.
+    policy: one turn's captured request policy (see
+    current_request_policy()). The chain is snapshotted from it, the
+    role tag is resolved from it, and the walk re-checks the live mode
+    + generation against it before EVERY attempt (#06): a toggle flip
+    mid-turn aborts the walk (returning None, with a 'mode_change'
+    failure recorded) instead of starting more cloud calls under a
+    stale policy. Already-completed tool receipts are preserved by
+    the caller (brain persists them before reporting the abort).
     """
     global ACTIVE_PROVIDER
     ctx = runtime.current()
     ctx.provider_failures = []
     ctx.budget_error = ''
+    # One authoritative policy per turn: capture once, re-check often.
+    policy = dict(policy) if policy else current_request_policy()
+    walk_mode = policy.get("mode") or provider_mode()
+    # _attempt_provider_call takes an optional policy= kwarg; older
+    # doubles of it (the tier-routing tests' 6-arg fake) do not.
+    # Pass the policy only when the helper accepts it, so a double
+    # still walks exactly like the real helper.
+    try:
+        _attempt_accepts_policy = ("policy" in inspect.signature(
+            _attempt_provider_call).parameters)
+    except (TypeError, ValueError):
+        _attempt_accepts_policy = False
     chain = usage.order(_build_chain())
     if not chain:
         add_log("provider_call: chain is empty, nothing configured")
@@ -1595,7 +1676,7 @@ def provider_call(
     # chain_start must not rotate it or — worse — prepend an opt-in
     # leg via _providers_by_name below: that would put a cloud
     # provider back on a strict local-only turn.
-    if chain_start and provider_mode() != "local_only":
+    if chain_start and walk_mode != "local_only":
         rotated = _rotate_chain(chain, chain_start)
         if rotated is not chain and rotated and rotated[0].name == chain_start:
             add_log(f"tier routing: chain starts at '{chain_start}'")
@@ -1630,7 +1711,7 @@ def provider_call(
         # The model this walk would actually attempt on p: the
         # role override applies to one leg only (mirrors
         # _attempt_provider_call; see _role_override_leg).
-        if model_override and _role_override_leg(p.name):
+        if model_override and _role_override_leg(p.name, walk_mode):
             return model_override
         return getattr(p, "model", None)
 
@@ -1642,6 +1723,24 @@ def provider_call(
     failed_endpoints = set()
     for provider in chain:
         runtime.check_cancelled()
+        # Pass 36 #06: re-check eligibility before EVERY transport
+        # attempt. A mode flip (or a generation bump from any mode
+        # set) aborts the walk here — no further provider is
+        # attempted under the stale policy, and the abort is
+        # recorded as a typed failure for the caller to report.
+        if (provider_mode() != walk_mode
+                or _MODE_GENERATION != policy.get("generation")):
+            add_log(f"provider mode changed mid-turn ({walk_mode} -> "
+                    f"{provider_mode()}); aborting provider walk")
+            ctx.provider_failures.append({
+                'provider': getattr(provider, 'name', '?'),
+                'model': getattr(provider, 'model', ''),
+                'kind': 'mode_change', 'code': None,
+                'summary': (f"provider mode changed from '{walk_mode}' "
+                            f"to '{provider_mode()}' during this turn; "
+                            f"the walk stopped before calling another model"),
+                'status': 'error', 'checked_at': time.time()})
+            return None
         if only_provider and provider.name != only_provider:
             continue
         endpoint = getattr(provider, 'base_url', '')
@@ -1702,9 +1801,11 @@ def provider_call(
         _note_call(provider.name)
         attempt_started = time.monotonic()
         try:
+            attempt_kwargs = ({"policy": policy}
+                              if _attempt_accepts_policy else {})
             data, _used_fallback = _attempt_provider_call(
                 provider, system_instruction, contents, tool_decls,
-                on_text_chunk, model_override,
+                on_text_chunk, model_override, **attempt_kwargs,
             )
         except runtime.Cancelled:
             raise
@@ -1738,7 +1839,16 @@ def provider_call(
                     # and recovery stays automatic.
                     _RECENT_FOREGROUND_PROVIDER[ctx.project] = (provider.name, time.monotonic())
             _note_provider_ok(provider.name)
-            _note_model_ok(provider.name, _eff_model(provider))
+            # Pass 36 #18: cool down / clear by the model ACTUALLY
+            # attempted, not the requested override. A successful
+            # default retry must not clear the failed specialist's
+            # pair cooldown (and a failed override + failed default
+            # cools both). _last_attempted_models is recorded by
+            # _attempt_provider_call; fakes that never set it fall
+            # back to the effective model.
+            _attempted = (getattr(provider, "_last_attempted_models", None)
+                          or [_eff_model(provider)])
+            _note_model_ok(provider.name, _attempted[-1])
             if ACTIVE_PROVIDER != provider.name:
                 note = " (fallback)"
                 add_log(f"provider now serving: {provider.name}{note}")
@@ -1747,8 +1857,14 @@ def provider_call(
         _note_failover(provider.name)
         _note_provider_failed(provider.name,
                               getattr(provider, "last_error", None))
-        _note_model_failed(provider.name, _eff_model(provider),
-                           getattr(provider, "last_error", None))
+        # Pass 36 #18: every model actually attempted on this leg
+        # failed (override, then default on fallback) — cool each
+        # one by its own pair key, not just the requested override.
+        _attempted = (getattr(provider, "_last_attempted_models", None)
+                      or [_eff_model(provider)])
+        for _model in _attempted:
+            _note_model_failed(provider.name, _model,
+                               getattr(provider, "last_error", None))
         _record_provider_failure(provider, latency_ms=int((time.monotonic() - attempt_started) * 1000))
         if endpoint and ctx.provider_failures[-1]['kind'] == 'network':
             failed_endpoints.add(endpoint)
