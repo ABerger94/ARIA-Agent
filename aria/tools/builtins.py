@@ -22,7 +22,7 @@ import time
 import urllib.parse
 import urllib.request
 import urllib.error
-from aria.outcome import legacy_error_results
+from aria.outcome import ResultText, FAILED, legacy_error_results
 from typing import Optional, Tuple, Any
 
 from aria.config import (
@@ -54,17 +54,28 @@ JOURNAL_DIR = os.path.join(WORKSPACE_DIR, "journal")
 
 # ---------------- Web Search & Fetch ----------------
 def tool_web_search(query: str) -> str:
-    """Live web search via DuckDuckGo."""
+    """Live web search via DuckDuckGo. Results carry their source
+    URLs (the research rubric needs sourced claims); a missing
+    library or a backend error is a typed FAILED, never a DONE
+    sentence — the old plain-text returns normalized as done, so
+    a step depending on the search proceeded as if it had it. Zero
+    results is a legitimate empty set, not an error: plain text,
+    DONE, naming the query."""
     add_log(f"Searching web: '{query[:25]}...'")
     if not SEARCH_AVAILABLE:
-        return "Search library not installed."
+        return ResultText("Search library not installed.", FAILED)
     try:
         results = DDGS().text(query, max_results=3)
         if not results:
-            return "No web results found."
-        return "\n".join(f"• {r['title']}: {r['body']}" for r in results)
+            return f'No web results found for "{query}".'
+        lines = []
+        for r in results:
+            lines.append(f"• {r['title']}: {r['body']}")
+            if r.get("href"):
+                lines.append(f"  {r['href']}")
+        return "\n".join(lines)
     except Exception as e:
-        return f"Search error: {e}"
+        return ResultText(f"Search error: {e}", FAILED)
 
 
 def _resolved_ips(host: str):
