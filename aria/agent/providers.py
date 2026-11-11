@@ -38,6 +38,7 @@ from aria.config import (
     OLLAMA_VISION_MODEL, OLLAMA_CODE_MODEL,
     OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_LOCAL_TIMEOUT_S,
     OLLAMA_LOCAL_VISION_MODEL, OLLAMA_LOCAL_VISION_TIMEOUT_S,
+    OLLAMA_NUM_CTX,
     OLLAMA_ALLOW_REMOTE,
     PROVIDER_CHAIN, PROVIDER_MODE, KEY_QUARANTINE_DURATION_S,  # noqa: F401 — PROVIDER_MODE is this module's live mode global: read via provider_mode(), rebound by set_provider_mode(), patched directly by tests
     quarantine_key, key_is_quarantined, key_mask, add_log,
@@ -666,6 +667,12 @@ class OpenAICompatProvider(Provider):
         (the local CPU leg) overrides this — see LocalOllamaProvider."""
         return _provider_timeout()
 
+    def _payload_options(self) -> Dict[str, Any]:
+        """Provider-specific payload options (pass 36 #17). Cloud
+        legs send none — Ollama's `options` object is meaningless
+        to them; the local leg overrides this with num_ctx."""
+        return {}
+
     def _headers(self) -> Dict[str, str]:
         # Groq sits behind Cloudflare, which 403s (error 1010) Python's
         # default urllib User-Agent before the API key is even read.
@@ -790,6 +797,11 @@ class OpenAICompatProvider(Provider):
                                    "max_tokens": usage.max_output_tokens()}
         if tools:
             payload["tools"] = tools
+        # Pass 36 #17: the local leg sets num_ctx here (Ollama's
+        # /v1 accepts an `options` object); cloud legs send none.
+        _opts = self._payload_options()
+        if _opts:
+            payload["options"] = _opts
         url = self.base_url + "/chat/completions"
         body = json.dumps(payload).encode("utf-8")
 
@@ -977,6 +989,17 @@ class LocalOllamaProvider(OpenAICompatProvider):
             except (TypeError, ValueError):
                 floor = max(floor, 300.0)
         return max(float(_provider_timeout()), floor)
+
+    def _payload_options(self) -> Dict[str, Any]:
+        """Pass 36 #17: size the local leg's context explicitly.
+        Ollama's /v1 default context is far below ARIA's prompt
+        (system instruction alone is ~12,334 chars); without
+        num_ctx the daemon truncates the prompt silently."""
+        try:
+            num_ctx = int(OLLAMA_NUM_CTX)
+        except (TypeError, ValueError):
+            num_ctx = 8192
+        return {"num_ctx": num_ctx}
 
 
 def _ollama_local_base_url() -> str:
@@ -1476,6 +1499,23 @@ def _contents_have_images(contents) -> bool:
     except Exception:
         return False
     return False
+
+
+def local_prompt_char_budget() -> int:
+    """Prompt character budget for the local leg (pass 36 #17):
+    (num_ctx minus the completion reserve) * ~4 chars/token.
+    The system instruction, history, tool schemas, and tool
+    results must fit inside it; brain._fit_contents_to_local_
+    context enforces it per turn. Never below 1024 chars."""
+    try:
+        ctx = int(OLLAMA_NUM_CTX)
+    except (TypeError, ValueError):
+        ctx = 8192
+    try:
+        reserve = int(usage.max_output_tokens())
+    except Exception:
+        reserve = 2048
+    return max(1024, (max(ctx - reserve, 0)) * 4)
 
 
 def _daemon_unreachable(error) -> bool:

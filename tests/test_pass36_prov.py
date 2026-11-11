@@ -937,3 +937,107 @@ def test_15_mid_stream_drop_still_retries_default():
         pv.clear_role_model_cooldown()
         pv.clear_model_cooldown()
     print("ok 15 a mid-stream drop (not daemon-dead) still retries default")
+
+
+# --- #17: local context sizing, num_ctx, all-part counting --------
+
+def test_17_part_chars_counts_tool_payloads():
+    import aria.agent.brain as brain
+    assert brain._part_chars({"text": "hello"}) == 5
+    call_chars = brain._part_chars(
+        {"functionCall": {"name": "read_file", "args": {"path": "x" * 100}}})
+    assert call_chars > 100, call_chars  # name + JSON args, not zero
+    resp_chars = brain._part_chars(
+        {"functionResponse": {"name": "read_file",
+                              "response": {"content": "y" * 200}}})
+    assert resp_chars > 200, resp_chars
+    assert brain._part_chars({"text": "a",
+                              "functionCall": {"name": "f", "args": {}}}) > 1
+    print("ok 17 part size counts tool calls/results, not just text")
+
+
+def test_17_compaction_counts_tool_results():
+    import aria.agent.brain as brain
+    saved = brain.CONVERSATION_HISTORY
+    big = "y" * 10000
+    entries = [
+        {"role": "model", "parts": [
+            {"text": "t1"},
+            {"functionResponse": {"name": "f", "response": {"c": big}}}]},
+        {"role": "user", "parts": [
+            {"text": "t2"},
+            {"functionResponse": {"name": "f", "response": {"c": big}}}]},
+        {"role": "model", "parts": [
+            {"text": "t3"},
+            {"functionResponse": {"name": "f", "response": {"c": big}}}]},
+    ]
+    try:
+        brain.CONVERSATION_HISTORY = list(entries)
+        brain._compact_conversation_history()
+        # 3 x ~10,013 chars > 24,000 cap: the oldest entry goes,
+        # even though the TEXT parts total 6 chars — the old
+        # text-only cap would have kept all three.
+        assert len(brain.CONVERSATION_HISTORY) == 2, brain.CONVERSATION_HISTORY
+        assert brain.CONVERSATION_HISTORY[0]["parts"][0]["text"] == "t2"
+        assert brain._history_chars(brain.CONVERSATION_HISTORY) <= 24000
+    finally:
+        brain.CONVERSATION_HISTORY = saved
+    print("ok 17 history cap now counts tool results, not just text")
+
+
+def test_17_local_budget_and_num_ctx():
+    leg = pv.LocalOllamaProvider("ollama_local",
+                                 "http://localhost:11434/v1", "qwen2.5:7b")
+    assert leg._payload_options() == {"num_ctx": pv.OLLAMA_NUM_CTX}, (
+        leg._payload_options())
+    cloud = pv.OpenAICompatProvider("ollama_cloud",
+                                    "https://example.invalid/v1", "k", "m")
+    assert cloud._payload_options() == {}
+    budget = pv.local_prompt_char_budget()
+    assert budget == max(1024, (pv.OLLAMA_NUM_CTX - 2048) * 4), budget
+    assert budget >= 1024
+    print(f"ok 17 local leg sends num_ctx={pv.OLLAMA_NUM_CTX}, "
+          f"prompt budget {budget} chars")
+
+
+def test_17_fit_trims_history_to_local_budget():
+    import aria.agent.brain as brain
+    saved_budget = pv.local_prompt_char_budget
+    pv.local_prompt_char_budget = lambda: 1000
+    try:
+        contents = [
+            {"role": "model", "parts": [{"text": "Systems online."}]},
+            {"role": "user", "parts": [{"text": "a" * 400}]},
+            {"role": "model", "parts": [{"text": "b" * 400}]},
+            {"role": "user", "parts": [{"text": "c" * 400}]},
+            {"role": "user", "parts": [{"text": "latest question"}]},
+        ]
+        brain._fit_contents_to_local_context("s" * 200, contents, [])
+        # 200 + 3*400 + 15 = 1,415 > 1,000: oldest history drops
+        # until it fits; primer + latest user entry always survive.
+        assert contents[0]["parts"][0]["text"] == "Systems online."
+        assert contents[-1]["parts"][0]["text"] == "latest question"
+        assert brain._history_chars(contents) + 200 <= 1000, contents
+        assert len(contents) == 3, contents
+    finally:
+        pv.local_prompt_char_budget = saved_budget
+    print("ok 17 local compaction trims oldest history to the budget")
+
+
+def test_17_fit_never_drops_primer_or_user():
+    import aria.agent.brain as brain
+    saved_budget = pv.local_prompt_char_budget
+    pv.local_prompt_char_budget = lambda: 10  # smaller than any prompt
+    try:
+        contents = [
+            {"role": "model", "parts": [{"text": "Systems online."}]},
+            {"role": "user", "parts": [{"text": "old turn"}]},
+            {"role": "user", "parts": [{"text": "latest question"}]},
+        ]
+        brain._fit_contents_to_local_context("s" * 200, contents, [])
+        assert len(contents) == 2, contents
+        assert contents[0]["parts"][0]["text"] == "Systems online."
+        assert contents[-1]["parts"][0]["text"] == "latest question"
+    finally:
+        pv.local_prompt_char_budget = saved_budget
+    print("ok 17 local compaction never drops the primer or latest turn")

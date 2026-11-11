@@ -239,13 +239,17 @@ OLLAMA_LOCAL_VISION_TIMEOUT_S, _ = key_get("OLLAMA_LOCAL_VISION_TIMEOUT_S", "300
 OLLAMA_LOCAL_VISION_TIMEOUT_S = _finite_timeout(OLLAMA_LOCAL_VISION_TIMEOUT_S, 300.0)
 # Pass 36 #17: local context size (num_ctx) for the local leg —
 # Ollama's default is far below ARIA's prompt size, so the leg sets
-# it explicitly (see LocalOllamaProvider._payload_options).
-OLLAMA_NUM_CTX, _ = key_get("OLLAMA_NUM_CTX", "4096")
+# it explicitly (see LocalOllamaProvider._payload_options). Default
+# 8192: the system instruction alone measures ~12,334 chars
+# (~3,100 tokens), and 4096 left no room for history + tool
+# schemas + a completion — the local leg truncated every real
+# prompt. Override per install via OLLAMA_NUM_CTX.
+OLLAMA_NUM_CTX, _ = key_get("OLLAMA_NUM_CTX", "8192")
 try:
     OLLAMA_NUM_CTX = int(float(OLLAMA_NUM_CTX))
 except (TypeError, ValueError):
-    print(f"[ARIA] Config: OLLAMA_NUM_CTX {OLLAMA_NUM_CTX!r} is not a number — using 4096.", flush=True)
-    OLLAMA_NUM_CTX = 4096
+    print(f"[ARIA] Config: OLLAMA_NUM_CTX {OLLAMA_NUM_CTX!r} is not a number — using 8192.", flush=True)
+    OLLAMA_NUM_CTX = 8192
 OLLAMA_NUM_CTX = min(max(OLLAMA_NUM_CTX, 512), 131072)
 # Pass 36 #05: strict local mode rejects a non-loopback OLLAMA_HOST
 # unless an explicit non-strict route is configured (OLLAMA_ALLOW_REMOTE=1

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import py_compile
 import re
@@ -97,21 +98,103 @@ def _persist_pending_tool_receipts(contents):
         _config_silent.log_silent("_persist_pending_tool_receipts", _e_silent)
 
 
-def _compact_conversation_history():
-    """Ensure history stays strictly bounded by both turn count and total token/character budget."""
+def _part_chars(part) -> int:
+    """Character size of one content part, counting ALL content
+    (pass 36 #17). The old cap counted text parts only, so a
+    history full of tool calls/results looked small while the
+    prompt was huge. functionCall args and functionResponse JSON
+    are prompt text too; inline image data counts at its real
+    size (it is sent to the model)."""
+    if not isinstance(part, dict):
+        return len(str(part))
+    total = 0
+    text = part.get("text")
+    if isinstance(text, str):
+        total += len(text)
+    call = part.get("functionCall")
+    if isinstance(call, dict):
+        total += len(call.get("name") or "")
+        try:
+            total += len(json.dumps(call.get("args") or {}, default=str))
+        except Exception:
+            total += len(str(call.get("args") or ""))
+    resp = part.get("functionResponse")
+    if isinstance(resp, dict):
+        total += len(resp.get("name") or "")
+        try:
+            total += len(json.dumps(resp.get("response") or {}, default=str))
+        except Exception:
+            total += len(str(resp.get("response") or ""))
+    idata = part.get("inline_data")
+    if isinstance(idata, dict):
+        data = idata.get("data")
+        if isinstance(data, str):
+            total += len(data)
+    return total
+
+
+def _history_chars(history) -> int:
+    """Total prompt characters of a history list (all parts)."""
+    total = 0
+    for entry in history or []:
+        for p in entry.get("parts", []):
+            total += _part_chars(p)
+    return total
+
+
+def _compact_conversation_history(max_chars: int = 24000):
+    """Ensure history stays strictly bounded by both turn count and total token/character budget.
+
+    Pass 36 #17: the character cap now counts every part
+    (functionCall args, functionResponse JSON, inline data), not
+    just text parts — tool-heavy turns used to blow past the cap
+    while it read small."""
     global CONVERSATION_HISTORY
     if len(CONVERSATION_HISTORY) > HISTORY_TURNS:
         CONVERSATION_HISTORY = CONVERSATION_HISTORY[-HISTORY_TURNS:]
-    MAX_HISTORY_CHARS = 24000
     total_chars = 0
     for item in reversed(CONVERSATION_HISTORY):
         for p in item.get("parts", []):
-            if isinstance(p, dict) and "text" in p:
-                total_chars += len(p["text"])
-        if total_chars > MAX_HISTORY_CHARS:
+            total_chars += _part_chars(p)
+        if total_chars > max_chars:
             idx = CONVERSATION_HISTORY.index(item)
             CONVERSATION_HISTORY = CONVERSATION_HISTORY[idx + 1:]
             break
+
+
+def _fit_contents_to_local_context(system_instruction, contents, decls):
+    """Local compaction (pass 36 #17): drop the oldest history
+    entries from this turn's `contents` (in place) until the whole
+    prompt — system + history + tool schemas — fits the local
+    leg's context budget (providers.local_prompt_char_budget).
+    The primer entry and the final user entry are never dropped.
+    Only the turn's copy is trimmed; CONVERSATION_HISTORY is
+    untouched. If even the bare prompt exceeds the budget, the
+    call still goes ahead (Ollama truncates) but the overshoot is
+    logged, so the fix is a bigger OLLAMA_NUM_CTX, not silence."""
+    try:
+        from aria.agent.providers import local_prompt_char_budget
+        budget = local_prompt_char_budget()
+    except Exception:
+        return
+    try:
+        schema_chars = len(json.dumps(decls or [], default=str))
+    except Exception:
+        schema_chars = len(str(decls or []))
+    sys_chars = len(system_instruction or "")
+
+    def _total():
+        return sys_chars + schema_chars + _history_chars(contents)
+
+    while len(contents) > 2 and _total() > budget:
+        del contents[1]
+    total = _total()
+    if total > budget:
+        add_log(f"local prompt ({total} chars) exceeds the local "
+                f"context budget ({budget} chars); history trimmed "
+                f"to the primer + latest turn, call proceeds and "
+                f"Ollama will truncate — raise OLLAMA_NUM_CTX if "
+                f"this recurs")
 
 BUSY_PROCESSING: bool = False
 LAST_USER_MESSAGE: str = ""
@@ -844,6 +927,21 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
             # Call the provider chain
             loaded_tk = get_loaded_toolkits()
             decls = get_toolkit_declarations(loaded_tk)
+
+            # Pass 36 #17: when the walk will serve locally, size
+            # the prompt against the local leg's actual context
+            # (system + history + tool schemas + tool results)
+            # before the call — the local leg's num_ctx is small
+            # and Ollama truncates silently. The provider_mode()
+            # import is lazy, like the other providers helpers
+            # here; a predating providers surface skips the fit.
+            try:
+                from aria.agent.providers import provider_mode as _pm17
+                if _pm17() == "local_only":
+                    _fit_contents_to_local_context(
+                        system_instruction, contents, decls)
+            except Exception:
+                pass
 
             data = provider_call(
                 system_instruction, contents,
