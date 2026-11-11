@@ -629,6 +629,84 @@ def test_taskstore_step_evidence_merge_and_checkpoint(
     assert _ts.merge_step_evidence("nope", {1: {}}) is False
 
 
+# -- pass 36 #28 ------------------------------------------------------
+
+def test_settle_keeps_started_state_and_renders():
+    op = "test:settle:1"
+    assert action_journal.begin(
+        op, "delegate_task", {"goal": "g"}) is None
+    action_journal.finish(
+        op, "status=started action=delegate_task task_id=child1 "
+            "project=default")
+    row = action_journal.get(op)
+    assert row["state"] == "started"
+    assert action_journal.settle(
+        op, "child1", "completed", "all done") is True
+    row = action_journal.get(op)
+    assert row["state"] == "started"  # never rewritten
+    assert row["receipt"]["settlement"]["status"] == "completed"
+    assert row["receipt"]["settlement"]["child_task_id"] == "child1"
+    assert action_journal.settle(
+        "missing-op", "c", "completed") is False
+    probe = {"kind": "journal", "step": 1, "tool": "delegate_task",
+             "state": "started",
+             "settlement": row["receipt"]["settlement"]}
+    rendered = grader._render_probe(probe)
+    assert "state=started" in rendered
+    assert "settled: completed (child task child1)" in rendered
+
+
+def test_verify_settles_delegate_receipt_before_grading(
+        tmp_path, monkeypatch, grader_on):
+    from aria.agent import taskstore as _ts
+    monkeypatch.setattr(config, "WORKSPACE_DIR", str(tmp_path))
+    _ts.create("child1", "child goal")
+    _ts.finish("child1", "completed", result="child did it")
+    op = "task:test28:step:1:abc"
+    assert action_journal.begin(
+        op, "delegate_task", {"goal": "child goal"}) is None
+    action_journal.finish(
+        op, "status=started action=delegate_task task_id=child1 "
+            "project=default")
+
+    def _llm(prompt, system):
+        if "independent grader" in system:
+            return _grade_json("general")
+        return "VERDICT: PASS"
+    ex = _executor(_llm)
+    reason = ex._verify(
+        "do the thing",
+        [{"step": 1, "tool": "delegate_task",
+          "parameters": {"goal": "child goal"}}],
+        {1: "status=started action=delegate_task task_id=child1 "
+            "project=default"},
+        plan={"task_type": "general"}, journal_ids={1: op})
+    assert reason is None
+    row = action_journal.get(op)
+    assert row["receipt"]["settlement"]["status"] == "completed"
+
+
+def test_settle_mission_delegates(tmp_path, monkeypatch):
+    from aria.agent import taskstore as _ts
+    monkeypatch.setattr(config, "WORKSPACE_DIR", str(tmp_path))
+    _ts.create("child9", "g")
+    _ts.finish("child9", "completed", result="done")
+    op = "mission:7:step:3"
+    assert action_journal.begin(
+        op, "delegate_task", {"goal": "g"}) is None
+    action_journal.finish(
+        op, "status=started action=delegate_task task_id=child9 "
+            "project=default")
+    steps = [{"id": 3, "idx": 0, "tool": "delegate_task",
+              "child_handle": json.dumps(
+                  {"kind": "delegated_task", "task_id": "child9",
+                   "project": None})}]
+    missions._settle_mission_delegates(7, steps)
+    row = action_journal.get(op)
+    assert row["state"] == "started"
+    assert row["receipt"]["settlement"]["status"] == "completed"
+
+
 def test_grader_model_policies_and_self_graded():
     roster = grader._roster()
     assert len(roster) >= 2

@@ -337,6 +337,46 @@ class AgentExecutor:
         except Exception as e:
             add_log(f"taskexec: step evidence persist failed ({e})")
 
+    def _settle_delegates(
+            self, completed: List[dict],
+            results: Dict[int, str],
+            journal_ids: Optional[Dict[int, str]]) -> None:
+        """Pass 36 #28: before grading, write a settlement record
+        on each delegate step's parent op id from the child's
+        terminal task-journal status, so the grader sees the
+        completed child instead of a STARTED receipt. Only
+        terminal child states settle (completed / failed /
+        cancelled); a still-running or blocked child leaves the
+        receipt as submitted. Best-effort; never raises."""
+        if not journal_ids:
+            return
+        try:
+            from aria import action_journal
+            from aria.agent import taskstore as _ts
+            for s in completed:
+                tool = s.get("tool") or ""
+                if tool not in ("delegate_task", "task_resume"):
+                    continue
+                n = s.get("step")
+                op_id = journal_ids.get(n)
+                if op_id is None:
+                    op_id = journal_ids.get(str(n))
+                if not op_id:
+                    continue
+                m = re.search(r"task_id=([A-Za-z0-9_-]+)",
+                              str(results.get(n, "")))
+                if m is None:
+                    continue
+                child = _ts.get(m.group(1))
+                status = (child or {}).get("status") or ""
+                if status in ("completed", "failed", "cancelled"):
+                    action_journal.settle(
+                        op_id, m.group(1), status,
+                        (child or {}).get("result") or
+                        (child or {}).get("error") or "")
+        except Exception as e:
+            add_log(f"taskexec: delegate settle failed ({e})")
+
     def _verify(self, goal: str, completed: List[dict],
                 results: Dict[int, str], *,
                 plan: Optional[Dict[str, Any]] = None,
@@ -374,6 +414,11 @@ class AgentExecutor:
                 # persisted before grading, so a resume probes
                 # from what actually ran.
                 self._persist_step_evidence(completed, journal_ids)
+                # Pass 36 #28: settle delegate receipts from
+                # their children's terminal outcomes first, so
+                # the probes below carry the settlement.
+                self._settle_delegates(completed, results,
+                                       journal_ids)
                 probes = _grader.build_probes(
                     _grader.normalize_steps(steps, results),
                     journal_ids=journal_ids,

@@ -202,8 +202,19 @@ def _render_probe(p: dict) -> str:
     head = f"step {p.get('step')} ({p.get('tool', '?')})"
     if kind == "journal":
         if p.get("state"):
-            return (f"{head} journal receipt: state="
+            text = (f"{head} journal receipt: state="
                     f"{p['state']}")
+            # Pass 36 #28: a delegate receipt that started a
+            # child renders the child's settlement alongside the
+            # submission state — a completed child no longer
+            # looks started to the grader.
+            settlement = p.get("settlement") or {}
+            if isinstance(settlement, dict) and \
+                    settlement.get("status"):
+                text += (f", settled: {settlement['status']} "
+                         f"(child task "
+                         f"{settlement.get('child_task_id') or '?'})")
+            return text
         return f"{head} journal receipt: no receipt found"
     if kind == "file":
         status = p.get("status") or (
@@ -434,10 +445,14 @@ def build_probes(steps: List[dict],
                     probes.append(fp)
             if not retry_safe(tool):
                 if op_id:
+                    receipt = (journal_row or {}).get("receipt") \
+                        or {}
                     probes.append({
                         "kind": "journal", "step": s.get("step"),
                         "tool": tool,
-                        "state": (journal_row or {}).get("state")})
+                        "state": (journal_row or {}).get("state"),
+                        "settlement": receipt.get("settlement")
+                        if isinstance(receipt, dict) else None})
         except Exception as e:
             add_log(f"grader: probe for step {s.get('step')} "
                     f"failed ({e}); probe omitted")

@@ -1036,6 +1036,48 @@ _LAST_GRADE: Dict[int, dict] = {}
 _CURRENT_GRADE: Dict[tuple, dict] = {}
 
 
+def _settle_mission_delegates(mid: int,
+                              steps: List[Dict[str, Any]]) -> None:
+    """Pass 36 #28: before grading, write a settlement record
+    on each delegated-child step's journal receipt from the
+    child's terminal task-journal status, so the grader sees
+    the completed child instead of a STARTED receipt. Only
+    terminal child states settle; the receipt's state is never
+    rewritten. Best-effort; never raises."""
+    try:
+        from aria.agent import taskstore as _ts
+        for s in steps:
+            handle = s.get("child_handle")
+            if isinstance(handle, str):
+                try:
+                    handle = json.loads(handle or "{}")
+                except Exception:
+                    continue
+            if not isinstance(handle, dict):
+                continue
+            if handle.get("kind") != "delegated_task":
+                continue
+            tid = handle.get("task_id")
+            if not tid:
+                continue
+            project = handle.get("project")
+            try:
+                use = workspaces.use(project) if project \
+                    else contextlib.nullcontext()
+            except Exception:
+                use = contextlib.nullcontext()
+            with use:
+                child = _ts.get(str(tid))
+            status = (child or {}).get("status") or ""
+            if status in ("completed", "failed", "cancelled"):
+                action_journal.settle(
+                    f"mission:{mid}:step:{s['id']}", str(tid),
+                    status, (child or {}).get("result") or
+                    (child or {}).get("error") or "")
+    except Exception as e:
+        add_log(f"[mission] #{mid} delegate settle failed ({e})")
+
+
 def _outcome_grade(mid: int, m: Dict[str, Any],
                    steps: List[Dict[str, Any]]) -> Optional[dict]:
     """The shared outcome grader's verdict for this mission,
@@ -1052,6 +1094,10 @@ def _outcome_grade(mid: int, m: Dict[str, Any],
         if not _grader.outcomes_enabled():
             _CURRENT_GRADE.pop((_memory.db_path(), mid), None)
             return None
+        # Pass 36 #28: settle delegate receipts from their
+        # children's terminal outcomes first, so the probes
+        # below carry the settlement.
+        _settle_mission_delegates(mid, steps)
         journal_ids = {}
         for s in steps:
             if not retry_safe(s["tool"]):

@@ -90,6 +90,42 @@ def finish(operation_id, result):
                                  json.dumps(result.artifacts), time.time(), operation_id))
 
 
+def settle(operation_id, child_task_id, child_status, detail=""):
+    """Pass 36 #28: record that a delegated child this operation
+    submitted has settled, as a DISTINCT settlement field on the
+    receipt — the original state (usually STARTED) is never
+    rewritten, so idempotent replay still keys off the
+    submission, and the grader renders the settlement alongside
+    it instead of failing a completed step for looking started.
+    No-op (False) when the row is missing. Never raises."""
+    try:
+        with _connect() as db:
+            row = db.execute(
+                'SELECT receipt FROM action_receipts WHERE id=?',
+                (operation_id,)).fetchone()
+            if row is None:
+                return False
+            try:
+                receipt = json.loads(row[0] or '{}')
+            except Exception:
+                receipt = {}
+            if not isinstance(receipt, dict):
+                receipt = {}
+            receipt["settlement"] = {
+                "child_task_id": str(child_task_id or ""),
+                "status": str(child_status or ""),
+                "detail": str(detail or "")[:200],
+                "at": time.time(),
+            }
+            db.execute(
+                'UPDATE action_receipts SET receipt=?, updated=? '
+                'WHERE id=?',
+                (json.dumps(receipt), time.time(), operation_id))
+        return True
+    except Exception:
+        return False
+
+
 def get(operation_id):
     with _connect() as db:
         row = db.execute('SELECT id,tool,state,result,receipt,artifacts,updated '
