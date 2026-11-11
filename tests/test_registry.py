@@ -216,7 +216,15 @@ _SAMPLE = {"STRING": "test", "INTEGER": 1, "NUMBER": 1.0,
 # Tools whose designed result may legitimately take the [Tool
 # Error] shape with schema-valid minimal args — see the module
 # docstring. Everything else must come back clean.
-_TOOL_ERROR_ALLOWED = {"run_python_code"}
+_TOOL_ERROR_ALLOWED = {"run_python_code",
+                       # Pass 36 #38: these two return a typed FAILED
+                       # ResultText when the hardware is absent, so
+                       # normalize() surfaces a [Tool Error — the
+                       # designed result in a camera-less / X-less
+                       # environment, not a broken tool. On the
+                       # laptop (camera + display present) they
+                       # answer with a description.
+                       "describe_camera", "read_screen"}
 # Registered tools with no static declaration BY DESIGN:
 # load_toolkit is appended to every declaration payload by
 # get_toolkit_declarations (asserted separately below). Dynamic
