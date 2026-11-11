@@ -71,8 +71,15 @@ def test_render_shows_inflight_recent_and_counts(monkeypatch):
             {'goal': 'old job', 'status': 'done', 'result': 'ok'}])
     sched = types.ModuleType('aria.scheduler')
     sched.sched_list = lambda: [(1,), (2,)]
+    # Pass 36 #35: _delegated_rows also merges the durable
+    # task journal, so this snapshot test must stub that seam
+    # too — otherwise the count depends on whatever rows the
+    # on-disk journal holds (blocked rows are active).
+    store = types.ModuleType('aria.agent.taskstore')
+    store.all_records = lambda: []
     monkeypatch.setitem(sys.modules, 'aria.agent.taskqueue', queue)
     monkeypatch.setitem(sys.modules, 'aria.scheduler', sched)
+    monkeypatch.setitem(sys.modules, 'aria.agent.taskstore', store)
     tok = fleet.begin('web_search', 'doja cat tickets')
     snap = fleet.snapshot()
     assert snap['running'] == 2  # 1 in flight + 1 active delegated
