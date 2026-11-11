@@ -60,6 +60,19 @@ def project_budget_enabled(policy=None):
         policy.get(key) is not None for key in ('daily_budget_usd', 'task_budget_usd'))
 
 
+def _is_verified_local() -> bool:
+    """True when the ollama_local leg is verified loopback right now
+    (pass 36 #13). Lazy import on purpose: providers imports usage
+    at its own top, so an eager import here would be circular. Any
+    import or verification failure is False — the exemption is
+    opt-in by proof, never by default."""
+    try:
+        from aria.agent import providers as _pv
+        return bool(_pv.ollama_local_verified())
+    except Exception:
+        return False
+
+
 def reserve(provider, model, payload, reason='configured provider order'):
     ctx, policy = runtime.current(), settings()
     enforce = project_budget_enabled(policy)
@@ -70,11 +83,20 @@ def reserve(provider, model, payload, reason='configured provider order'):
     rates = policy.get('model_rates', {}).get(f'{provider_key}:{model}')
     bounded = daily is not None or task_cap is not None
     if rates is None and bounded:
-        if ctx.spend_cap is not None:
+        # Pass 36 #13: a verified-local loopback ollama_local leg
+        # costs nothing — it runs on the laptop, not a billed API.
+        # Exempt it from the priced-model requirement and record a
+        # zero-cost row (token/latency metrics still land at
+        # finish()). A remote or unverified endpoint keeps the
+        # refusal: it is not provably free.
+        if provider_key == 'ollama_local' and _is_verified_local():
+            rates = {'input': 0.0, 'output': 0.0}
+        elif ctx.spend_cap is not None:
             raise BudgetExceeded(f'This work has an approved spending cap, but no price is configured '
                                  f'for {provider_key}:{model}. Add model prices in Work Center → Project settings.')
-        raise BudgetExceeded(f'Spending limits are enabled, but no price is configured for {provider_key}:{model}. '
-                             'Add model prices or turn off Enforce spending limits in Work Center → Project settings.')
+        else:
+            raise BudgetExceeded(f'Spending limits are enabled, but no price is configured for {provider_key}:{model}. '
+                                 'Add model prices or turn off Enforce spending limits in Work Center → Project settings.')
     amount = None
     input_rate = output_rate = None
     if rates is not None:

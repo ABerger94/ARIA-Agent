@@ -6,9 +6,11 @@ Run:  python3 -m pytest tests/test_pass36_prov.py -q
 import json
 import math
 import os
+import sqlite3
 import sys
 import time
 import types
+from contextlib import contextmanager
 
 PKG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "aria")
 _pkg = types.ModuleType("aria")
@@ -712,3 +714,109 @@ def test_12_vision_failure_message_names_tag_and_reason():
         pv.PROVIDER_MODE = saved_mode
         pv._build_chain = saved_chain
     print("ok 12 vision failure names the tag and the reason")
+
+
+# --- #13: verified-local exemption from priced-model refusal --------
+
+def _stub_usage_db(settings_dict, verified):
+    """Point usage at an in-memory model_usage table, stub its
+    settings, and stub providers' verification. Returns (usage,
+    restore) — call restore() in a finally."""
+    import aria.usage as us
+    conn = sqlite3.connect(":memory:")
+    conn.execute('''CREATE TABLE model_usage (
+        id TEXT PRIMARY KEY, scope TEXT, provider TEXT, model TEXT, day TEXT,
+        created REAL, latency_ms INTEGER, prompt_tokens INTEGER, completion_tokens INTEGER,
+        reserved REAL, cost REAL, estimated INTEGER, status TEXT, reason TEXT, input_rate REAL, output_rate REAL)''')
+    conn.commit()
+
+    @contextmanager
+    def _connect():
+        yield conn
+
+    saved_settings, saved_connect = us.settings, us._connect
+    saved_verify = pv.ollama_local_verified
+    us.settings = lambda: dict(settings_dict)
+    us._connect = _connect
+    pv.ollama_local_verified = lambda: verified
+
+    def restore():
+        us.settings, us._connect = saved_settings, saved_connect
+        pv.ollama_local_verified = saved_verify
+        conn.close()
+    return us, restore
+
+
+def test_13_verified_local_exempt_under_zero_cap():
+    from aria import runtime
+    us, restore = _stub_usage_db(
+        {'enforce_model_budget': True, 'daily_budget_usd': 0,
+         'task_budget_usd': 0, 'model_rates': {}}, verified=True)
+    try:
+        with runtime.execution('foreground'):
+            ticket = us.reserve('ollama_local', 'qwen2.5:7b', {})
+            us.finish(ticket, usage={'prompt_tokens': 10,
+                                     'completion_tokens': 5},
+                      latency_ms=12)
+        row = us.recent()[0]
+        assert row['reserved'] == 0.0 and row['cost'] == 0.0, row
+        assert row['status'] == 'ok' and row['latency_ms'] == 12, row
+        assert row['prompt_tokens'] == 10 and row['completion_tokens'] == 5, row
+    finally:
+        restore()
+    print("ok 13 verified-local leg reserves zero-cost under a $0 cap")
+
+
+def test_13_unverified_local_still_refused():
+    from aria import runtime
+    us, restore = _stub_usage_db(
+        {'enforce_model_budget': True, 'daily_budget_usd': 0,
+         'task_budget_usd': 0, 'model_rates': {}}, verified=False)
+    try:
+        with runtime.execution('foreground'):
+            try:
+                us.reserve('ollama_local', 'qwen2.5:7b', {})
+            except us.BudgetExceeded as e:
+                assert 'Spending limits are enabled' in str(e), e
+            else:
+                raise AssertionError("unverified local leg was not refused")
+    finally:
+        restore()
+    print("ok 13 unverified local leg keeps the priced-model refusal")
+
+
+def test_13_remote_unpriced_still_refused():
+    from aria import runtime
+    us, restore = _stub_usage_db(
+        {'enforce_model_budget': True, 'daily_budget_usd': 0,
+         'task_budget_usd': 0, 'model_rates': {}}, verified=True)
+    try:
+        with runtime.execution('foreground'):
+            try:
+                us.reserve('mistral', 'mistral-small-latest', {})
+            except us.BudgetExceeded as e:
+                assert 'Spending limits are enabled' in str(e), e
+            else:
+                raise AssertionError("unpriced remote model was not refused")
+    finally:
+        restore()
+    print("ok 13 verification exempts local only, never a remote model")
+
+
+def test_13_verified_local_exempt_under_mission_cap():
+    from aria import runtime
+    us, restore = _stub_usage_db(
+        {'enforce_model_budget': False, 'model_rates': {}}, verified=True)
+    try:
+        with runtime.execution('mission', spend_cap=0):
+            ticket = us.reserve('ollama_local', 'qwen2.5:7b', {})
+            assert ticket, ticket
+            try:
+                us.reserve('mistral', 'mistral-small-latest', {})
+            except us.BudgetExceeded as e:
+                assert 'approved spending cap' in str(e), e
+            else:
+                raise AssertionError("unpriced remote model was not refused")
+    finally:
+        restore()
+    print("ok 13 verified-local leg also clears a zero-$ mission cap")
