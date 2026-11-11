@@ -229,6 +229,9 @@ def _record_provider_failure(provider, *, kind=None, code=None, retry_at=0, late
         'no_vision_capability': 'model cannot accept images',
         # Pass 36 #06: the mode flipped mid-walk; the walk aborted.
         'mode_change': 'provider mode changed during this turn',
+        # Pass 36 #15: the request-wide deadline ran out before an
+        # attempt could start — the walk stopped, it did not hang.
+        'deadline': 'request-wide deadline reached',
     }
     summary = descriptions[kind] + (f' (HTTP {code})' if code else '')
     if retry_at > time.time():
@@ -582,6 +585,13 @@ def oai_response_to_parts(resp_json: Dict[str, Any]) -> List[Dict[str, Any]]:
 # OpenAICompatProvider.call for the rationale). Was a hard-coded 90s.
 PROVIDER_CALL_TIMEOUT_S = 30
 
+# Pass 36 #15: default request-wide deadline for provider_call
+# (monotonic seconds). The walk stops starting new attempts past
+# it; a caller with its own turn budget (brain) passes a tighter
+# deadline instead. Long enough to keep the local CPU leg's 180s
+# (vision 300s) profile usable across a failover or two.
+REQUEST_DEADLINE_S = 900
+
 
 def _provider_timeout():
     """Interactive stalls fail over quickly; delegated/mission calls keep 30s."""
@@ -754,11 +764,18 @@ class OpenAICompatProvider(Provider):
             parts.append({'functionCall': call})
         return parts
 
-    def call(self, system_instruction, contents, tool_decls=None, on_text_chunk=None):
+    def call(self, system_instruction, contents, tool_decls=None, on_text_chunk=None,
+             timeout_cap: Optional[float] = None):
         # One attempt, then fail over without backoff sleeps. Interactive
         # connections default to 8s; delegated/mission calls retain 30s.
         # A stream with only heartbeats also gets a first-output deadline.
         # Once content or a tool call arrives, normal streaming can continue.
+        # Pass 36 #15: timeout_cap is the request-wide deadline's
+        # remaining time (monotonic seconds) handed down by the walk —
+        # the connect allowance (socket timeout) and the first-output
+        # allowance are both capped by it, so a long local profile
+        # still cannot outrun the turn's budget. It bounds attempt
+        # starts, not a stream already producing output.
         self.last_error = None
         if not self.is_available():
             return None
@@ -779,6 +796,11 @@ class OpenAICompatProvider(Provider):
         ticket = usage.reserve(self.name, self.model, payload)
         t0, usage_data, request_ok = time.time(), None, False
         timeout = self._call_timeout()
+        if timeout_cap is not None:
+            # Never pass a zero/negative timeout to urlopen (it
+            # means "block forever" or errors immediately) — the
+            # walk guarantees >= 1s of remaining time.
+            timeout = max(1.0, min(timeout, float(timeout_cap)))
         first_output_deadline = (time.monotonic() + timeout
                                  if runtime.current().kind == 'foreground' else None)
         try:
@@ -921,7 +943,8 @@ class LocalOllamaProvider(OpenAICompatProvider):
             return False
         return True
 
-    def call(self, system_instruction, contents, tool_decls=None, on_text_chunk=None):
+    def call(self, system_instruction, contents, tool_decls=None, on_text_chunk=None,
+             timeout_cap: Optional[float] = None):
         # Pass 36 #05: local traffic goes through the dedicated
         # opener (no proxy, no redirects) for the duration of this
         # call only — the global opener is restored afterwards.
@@ -932,7 +955,8 @@ class LocalOllamaProvider(OpenAICompatProvider):
             urllib.request._opener = _local_opener()
             return super().call(system_instruction, contents,
                                 tool_decls=tool_decls,
-                                on_text_chunk=on_text_chunk)
+                                on_text_chunk=on_text_chunk,
+                                timeout_cap=timeout_cap)
         finally:
             urllib.request._opener = previous
 
@@ -1454,6 +1478,19 @@ def _contents_have_images(contents) -> bool:
     return False
 
 
+def _daemon_unreachable(error) -> bool:
+    """True when a leg failure says the daemon itself cannot be
+    reached (connection refused, DNS failure) — as opposed to a
+    mid-stream drop or a slow response. Pass 36 #15: the second
+    model attempt on that daemon would hit the same dead endpoint,
+    so the walk skips it instead of paying a second timeout."""
+    e = (error or "").lower()
+    return any(w in e for w in (
+        "connection refused", "refused", "name or service not known",
+        "temporary failure in name resolution", "unreachable",
+        "no route to host", "econnrefused"))
+
+
 # --- Turn-tier routing ("Jev", Alek 2026-11-03) ---
 # classify_task_role (brain) sorts a turn by WHAT it is; tiers sort it by
 # HOW MUCH MODEL it deserves. A 'light' turn — short, conversational, no
@@ -1743,13 +1780,16 @@ def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
                            on_text_chunk, model_override: Optional[str],
                            policy: Optional[Dict[str, Any]] = None,
                            override_provider: Optional[str] = None,
-                           has_images: bool = False):
+                           has_images: bool = False,
+                           timeout_cap: Optional[float] = None):
     """Call one provider, optionally on a role-specific model.
 
     A failing role model (exception OR empty result — provider.call swallows
     HTTP errors into last_error + None) falls back to the provider's default
     model WITHOUT quarantining the API key (the key is fine; the tag or
     payload was bad). The provider's configured model is always restored.
+    timeout_cap: the walk's remaining request-deadline seconds; the
+    leg caps its connect + first-output allowances by it (pass 36 #15).
     Returns (data, used_fallback).
     """
     use_override = bool(model_override) and _role_override_leg(
@@ -1757,6 +1797,17 @@ def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
         override_provider)
     saved = provider.model if use_override else None
     attempted_models: List[str] = []
+    # Pass 36 #15: only hand the cap to a call() that accepts it —
+    # test doubles take *args/**kwargs or a fixed arity.
+    try:
+        _call_params = inspect.signature(provider.call).parameters
+        _call_accepts_cap = ("timeout_cap" in _call_params or any(
+            p.kind == inspect.Parameter.VAR_KEYWORD
+            for p in _call_params.values()))
+    except (TypeError, ValueError):
+        _call_accepts_cap = False
+    call_kwargs = ({"timeout_cap": timeout_cap}
+                   if timeout_cap is not None and _call_accepts_cap else {})
     if use_override:
         # Pass 36 #10: report the route actually attempted.
         add_log(f"role override: attempting {provider.name} on model "
@@ -1769,6 +1820,7 @@ def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
             data = provider.call(
                 system_instruction, contents,
                 tool_decls=tool_decls, on_text_chunk=on_text_chunk,
+                **call_kwargs,
             )
         except (runtime.Cancelled, usage.BudgetExceeded):
             raise
@@ -1792,6 +1844,17 @@ def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
             _note_role_model_failed(model_override, duration_s=60)
         _note_model_failed(provider.name, model_override,
                            provider.last_error)
+        # Pass 36 #15: the daemon itself is unreachable (connection
+        # refused / DNS) — the default-model retry would hit the
+        # same dead endpoint, so skip it instead of paying a second
+        # timeout on a call that cannot succeed.
+        if (provider.name == "ollama_local"
+                and _daemon_unreachable(provider.last_error)):
+            provider.last_error = (
+                f"local daemon unreachable ({provider.last_error}); "
+                f"default-model retry skipped")
+            add_log(f"provider {provider.name}: {provider.last_error}")
+            return data, False
         if has_images and not model_supports_images(provider.name, saved):
             provider.last_error = (
                 f"vision model '{model_override}' failed "
@@ -1805,6 +1868,7 @@ def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
             data = provider.call(
                 system_instruction, contents,
                 tool_decls=tool_decls, on_text_chunk=on_text_chunk,
+                **call_kwargs,
             )
         except (runtime.Cancelled, usage.BudgetExceeded):
             raise
@@ -1833,10 +1897,20 @@ def provider_call(
     chain_start: Optional[str] = None,
     policy: Optional[Dict[str, Any]] = None,
     override_provider: Optional[str] = None,
+    deadline: Optional[float] = None,
 ) -> Optional[Dict[str, Any]]:
     """Walk the provider chain in order; first provider that returns
     candidates wins. Quarantined/unconfigured providers are skipped
     without network traffic, so recovery is automatic on quarantine expiry.
+
+    deadline: one shared monotonic deadline for the whole request
+    (pass 36 #15). Defaults to now + REQUEST_DEADLINE_S (900s); the
+    brain passes its turn deadline instead. The walk stops starting
+    new attempts past it, and each attempt's connect + first-output
+    allowances are capped by the remaining time — so a 180s local
+    attempt plus a 300s vision attempt can no longer stack past the
+    turn's budget. It bounds attempt starts, not a stream already
+    producing output.
 
     model_override: temporarily run the role-override leg on a different
     model tag (see resolve_role_model) — the ollama_cloud leg in auto
@@ -1865,25 +1939,32 @@ def provider_call(
     # One authoritative policy per turn: capture once, re-check often.
     policy = dict(policy) if policy else current_request_policy()
     walk_mode = policy.get("mode") or provider_mode()
+    # Pass 36 #15: one shared monotonic deadline for the whole
+    # request. The walk stops starting attempts past it, and each
+    # attempt is capped by the remaining time.
+    request_deadline = (deadline if deadline is not None
+                        else time.monotonic() + REQUEST_DEADLINE_S)
     # Pass 36 #12: an image payload is only ever served by a model
     # known to accept images — the walk skips text-only legs for it
     # instead of retrying the picture on the default text model.
     has_images = _contents_have_images(contents)
     # _attempt_provider_call takes optional policy= /
-    # override_provider= / has_images= kwargs; older doubles of it
-    # (the tier-routing tests' 6-arg fake) take none of them. Pass
-    # each only when the helper accepts it, so a double still walks
-    # exactly like the real helper.
+    # override_provider= / has_images= / timeout_cap= kwargs; older
+    # doubles of it (the tier-routing tests' 6-arg fake) take none of
+    # them. Pass each only when the helper accepts it, so a double
+    # still walks exactly like the real helper.
     try:
         _attempt_params = inspect.signature(
             _attempt_provider_call).parameters
         _attempt_accepts_policy = "policy" in _attempt_params
         _attempt_accepts_provider = "override_provider" in _attempt_params
         _attempt_accepts_images = "has_images" in _attempt_params
+        _attempt_accepts_cap = "timeout_cap" in _attempt_params
     except (TypeError, ValueError):
         _attempt_accepts_policy = False
         _attempt_accepts_provider = False
         _attempt_accepts_images = False
+        _attempt_accepts_cap = False
     chain = usage.order(_build_chain())
     if not chain:
         add_log("provider_call: chain is empty, nothing configured")
@@ -1982,6 +2063,17 @@ def provider_call(
             return None
         if only_provider and provider.name != only_provider:
             continue
+        # Pass 36 #15: the shared request deadline — no new attempt
+        # starts past it, whatever leg is next. The remaining time
+        # becomes this attempt's timeout cap, and the OPS log gets
+        # the progress (how much of the request budget is left).
+        remaining = request_deadline - time.monotonic()
+        if remaining <= 0:
+            add_log(f"provider {provider.name}: request deadline "
+                    f"reached, not attempting")
+            _record_provider_failure(provider, kind='deadline')
+            return None
+        timeout_cap = max(1.0, remaining)
         endpoint = getattr(provider, 'base_url', '')
         if not provider.is_available():
             # Pass 36 #05: a strict-rejected local leg (non-loopback
@@ -2049,6 +2141,9 @@ def provider_call(
                 continue
         _note_call(provider.name)
         attempt_started = time.monotonic()
+        add_log(f"provider {provider.name}: attempting model "
+                f"'{_eff_model(provider)}' "
+                f"(request deadline {remaining:.0f}s left)")
         try:
             attempt_kwargs = {}
             if _attempt_accepts_policy:
@@ -2057,6 +2152,8 @@ def provider_call(
                 attempt_kwargs["override_provider"] = override_provider
             if _attempt_accepts_images:
                 attempt_kwargs["has_images"] = has_images
+            if _attempt_accepts_cap:
+                attempt_kwargs["timeout_cap"] = timeout_cap
             data, _used_fallback = _attempt_provider_call(
                 provider, system_instruction, contents, tool_decls,
                 on_text_chunk, model_override, **attempt_kwargs,

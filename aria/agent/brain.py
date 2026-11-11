@@ -853,6 +853,13 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                 chain_start=_turn_chain_start,
                 policy=_turn_policy,
                 override_provider=_turn_override_provider,
+                # Pass 36 #15: the turn's own deadline (from
+                # _turn_t0) is the walk's shared deadline, so a
+                # slow local leg can no longer stack attempts past
+                # the turn budget.
+                deadline=(time.monotonic() + max(
+                    0.0, AGENT_LOOP_TIME_BUDGET_S
+                    - (time.time() - _turn_t0))),
             )
 
             # Primary = head of the EFFECTIVE chain (PROVIDER_MODE-

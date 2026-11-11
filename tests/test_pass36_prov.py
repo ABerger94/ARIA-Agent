@@ -820,3 +820,120 @@ def test_13_verified_local_exempt_under_mission_cap():
     finally:
         restore()
     print("ok 13 verified-local leg also clears a zero-$ mission cap")
+
+
+# --- #15: one shared request-wide deadline ---------------------------
+
+class _CapLeg:
+    """Fake leg that records the timeout_cap it was handed."""
+    def __init__(self, name="gemini", model="gemini-3.8-flash"):
+        self.name = name
+        self.model = model
+        self.base_url = "https://example.invalid/v1"
+        self.api_key = "k"
+        self.last_error = None
+        self.caps = []
+        self.calls = 0
+
+    def is_available(self):
+        return True
+
+    def call(self, *a, **k):
+        self.calls += 1
+        self.caps.append(k.get("timeout_cap"))
+        return {"candidates": [{"content": {"parts": [{"text": "hi"}]}}]}
+
+
+def test_15_expired_deadline_starts_no_attempt():
+    from aria import runtime
+    saved_chain = pv._build_chain
+    saved_active = pv.ACTIVE_PROVIDER
+    legs = [_CapLeg("gemini"), _CapLeg("groq", "llama-3.3-70b")]
+    pv._build_chain = lambda: legs
+    try:
+        pv.clear_provider_cooldown()
+        pv.clear_model_cooldown()
+        with runtime.execution():
+            out = pv.provider_call(
+                "sys", [{"role": "user", "parts": [{"text": "hi"}]}],
+                deadline=time.monotonic() - 1)
+            failures = runtime.current().provider_failures
+        assert out is None, out
+        assert all(leg.calls == 0 for leg in legs), [l.calls for l in legs]
+        assert any(f.get("kind") == "deadline" for f in failures), failures
+    finally:
+        pv._build_chain = saved_chain
+        pv.ACTIVE_PROVIDER = saved_active
+    print("ok 15 an expired request deadline starts no attempt")
+
+
+def test_15_remaining_time_caps_the_attempt():
+    from aria import runtime
+    saved_chain = pv._build_chain
+    saved_active = pv.ACTIVE_PROVIDER
+    leg = _CapLeg()
+    pv._build_chain = lambda: [leg]
+    try:
+        pv.clear_provider_cooldown()
+        pv.clear_model_cooldown()
+        with runtime.execution():
+            out = pv.provider_call(
+                "sys", [{"role": "user", "parts": [{"text": "hi"}]}],
+                deadline=time.monotonic() + 5)
+        assert out is not None, out
+        assert leg.calls == 1 and len(leg.caps) == 1, leg.caps
+        assert 4.0 < leg.caps[0] <= 5.0, leg.caps
+    finally:
+        pv._build_chain = saved_chain
+        pv.ACTIVE_PROVIDER = saved_active
+    print("ok 15 the walk hands the remaining deadline to the attempt")
+
+
+def test_15_dead_daemon_skips_second_model_attempt():
+    leg = pv.LocalOllamaProvider("ollama_local",
+                                 "http://localhost:11434/v1", "qwen2.5:7b")
+    calls = []
+
+    def _dead_call(*a, **k):
+        calls.append(leg.model)
+        leg.last_error = ("network drop: <urlopen error [Errno 111] "
+                          "Connection refused>")
+        return None
+
+    leg.call = _dead_call
+    try:
+        data, used_fallback = pv._attempt_provider_call(
+            leg, "", [], None, None, "qwen2.5vl:7b",
+            policy={"mode": "local_only", "generation": 0})
+        assert data is None and used_fallback is False, (data, used_fallback)
+        assert calls == ["qwen2.5vl:7b"], calls  # default never retried
+        assert "retry skipped" in leg.last_error, leg.last_error
+    finally:
+        pv.clear_role_model_cooldown()
+        pv.clear_model_cooldown()
+    print("ok 15 a dead daemon skips the second model attempt")
+
+
+def test_15_mid_stream_drop_still_retries_default():
+    leg = pv.LocalOllamaProvider("ollama_local",
+                                 "http://localhost:11434/v1", "qwen2.5:7b")
+    calls = []
+
+    def _flaky_call(*a, **k):
+        calls.append(leg.model)
+        if len(calls) == 1:
+            leg.last_error = "network drop: timed out"
+            return None
+        return {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+
+    leg.call = _flaky_call
+    try:
+        data, used_fallback = pv._attempt_provider_call(
+            leg, "", [], None, None, "qwen2.5vl:7b",
+            policy={"mode": "local_only", "generation": 0})
+        assert used_fallback is True and data is not None, (data, used_fallback)
+        assert calls == ["qwen2.5vl:7b", "qwen2.5:7b"], calls
+    finally:
+        pv.clear_role_model_cooldown()
+        pv.clear_model_cooldown()
+    print("ok 15 a mid-stream drop (not daemon-dead) still retries default")
