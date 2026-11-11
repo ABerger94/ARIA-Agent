@@ -230,17 +230,25 @@ def test_bundle_excludes_history_and_reasoning_and_marks_truncation():
     assert "claims" in bundle and "evidence" in bundle
 
 
-def test_probes_file_and_journal(tmp_path):
+def test_probes_file_and_journal(tmp_path, monkeypatch):
+    # The probed file lives INSIDE the workspace (pass 36 #20:
+    # a destination outside it is unavailable evidence, never
+    # read). The journal row attests the destination via
+    # add_evidence, so the probe reads the receipt's path.
+    from aria.tools import builtins
+    monkeypatch.setattr(builtins, "WORKSPACE_DIR", str(tmp_path))
     target = tmp_path / "out.txt"
     target.write_text("landed content", encoding="utf-8")
     steps = grader.normalize_steps([{
         "step": 1, "tool": "write_file",
-        "parameters": {"filename": str(target)},
+        "parameters": {"filename": "out.txt"},
         "output": "wrote it"}])
     op = "test:probe:1"
     assert action_journal.begin(op, "write_file",
-                                {"filename": str(target)}) is None
-    action_journal.finish(op, "file written")
+                                {"filename": "out.txt"}) is None
+    evidenced = action_journal.add_evidence(
+        "write_file", {"filename": "out.txt"}, "file written")
+    action_journal.finish(op, evidenced)
     probes = grader.build_probes(steps, journal_ids={1: op})
     kinds = {(p["kind"], p.get("state") or p.get("exists"))
              for p in probes}
@@ -252,6 +260,39 @@ def test_probes_file_and_journal(tmp_path):
                                  rubrics.get_rubric("code_change"),
                                  probes=probes)
     assert "landed content" in bundle
+
+
+def test_file_probe_rejected_path_is_unavailable(tmp_path,
+                                                monkeypatch):
+    # Pass 36 #20: a path workspace policy rejects — absolute
+    # outside the roots, or inside the reserved projects/
+    # subtree — is unavailable evidence. The probe never falls
+    # back to the raw path, never opens it, and no sample of
+    # its content reaches the bundle.
+    from aria.tools import builtins
+    monkeypatch.setattr(builtins, "WORKSPACE_DIR", str(tmp_path))
+    # The reserved-projects check reads config.WORKSPACE_DIR.
+    monkeypatch.setattr(config, "WORKSPACE_DIR", str(tmp_path))
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOPSECRET-CONTENT", encoding="utf-8")
+    steps = grader.normalize_steps([
+        {"step": 1, "tool": "write_file",
+         "parameters": {"filename": str(secret)},
+         "output": "wrote it"},
+        {"step": 2, "tool": "write_file",
+         "parameters": {"filename": "projects/other/out.txt"},
+         "output": "wrote it"}])
+    probes = grader.build_probes(steps)
+    file_probes = [p for p in probes if p["kind"] == "file"]
+    assert len(file_probes) == 2
+    for fp in file_probes:
+        assert fp["status"] == "unavailable", fp
+        assert fp["exists"] is False
+        assert "sample" not in fp
+    bundle = grader.build_bundle(
+        "g", steps, rubrics.get_rubric("code_change"), probes=probes)
+    assert "TOPSECRET-CONTENT" not in bundle
+    assert "unavailable" in bundle
 
 
 # -- grader verdict computation --------------------------------------

@@ -205,6 +205,20 @@ def _render_probe(p: dict) -> str:
                     f"{p['state']}")
         return f"{head} journal receipt: no receipt found"
     if kind == "file":
+        status = p.get("status") or (
+            "exists" if p.get("exists") else "missing")
+        if status == "unavailable":
+            return (f"{head} file probe: {p.get('path', '?')} "
+                    f"unavailable — {p.get('reason') or 'rejected'}; "
+                    f"no evidence from this destination")
+        if status == "unreadable":
+            return (f"{head} file probe: {p.get('path', '?')} "
+                    f"unreadable — {p.get('reason') or 'read failed'}")
+        if status == "changed":
+            return (f"{head} file probe: {p.get('path', '?')} exists, "
+                    f"{p.get('size', '?')} bytes, sha256 "
+                    f"{str(p.get('sha256') or '')[:12]}… — content "
+                    f"DIFFERS from the recorded artifact hash")
         if not p.get("exists"):
             return (f"{head} file probe: {p.get('path', '?')} "
                     f"does not exist")
@@ -223,7 +237,41 @@ def _render_probe(p: dict) -> str:
 _FILE_WRITE_TOOLS = ("write_file", "code_helper", "dev_agent")
 
 
-def _file_probe(step: dict) -> Optional[dict]:
+def _recheck_resolved(path: str) -> str:
+    """Recheck an already-resolved absolute path against the
+    CURRENT project roots and reserved paths before reading it.
+    resolve_workspace_file only accepts relative names, so a
+    journal-attested absolute destination is rechecked here
+    with the same rules instead of being trusted blind."""
+    from pathlib import Path
+
+    from aria import workspaces
+    from aria.tools import builtins
+    root = Path(workspaces.path("", builtins.WORKSPACE_DIR)).resolve()
+    dest = Path(str(path)).resolve()
+    if dest == root or not dest.is_relative_to(root):
+        raise ValueError("File is outside the project workspace")
+    if workspaces.is_reserved_projects_path(dest):
+        raise ValueError("File is inside the reserved projects/ "
+                         "storage — named projects are not reachable "
+                         "through the default project's file tools")
+    if not workspaces.file_allowed(dest):
+        raise ValueError("File is outside this project's "
+                         "configured roots")
+    return str(dest)
+
+
+def _file_probe(step: dict,
+                journal_artifacts=None) -> Optional[dict]:
+    """Pass 36 #20: a destination workspace policy rejected is
+    UNAVAILABLE evidence — the probe never falls back to the
+    raw path and never reads it. When the action journal
+    attests a destination for this step (add_evidence's
+    recorded artifact), that destination wins over the step's
+    claimed parameter; a claim with no attested artifact is
+    still probed, but only after the current roots/reserved
+    check passes, and its hash is never treated as verified
+    (pass 36 #24 threads the attested hash in)."""
     tool = step["tool"]
     args = step.get("parameters") or {}
     if tool == "write_file":
@@ -233,21 +281,45 @@ def _file_probe(step: dict) -> Optional[dict]:
     if not path:
         return None
     probe = {"kind": "file", "step": step["step"], "tool": tool,
-             "path": str(path), "exists": False}
+             "path": str(path), "exists": False,
+             "status": "unavailable"}
+    attested = None
+    for a in journal_artifacts or []:
+        if isinstance(a, dict) and a.get("path"):
+            attested = a
+            break
+    if attested is not None:
+        # The receipt's destination, not the step's claim.
+        path = str(attested["path"])
+        probe["path"] = path
     try:
         from aria import action_journal, workspaces
         from aria.tools import builtins
-        try:
+        if attested is not None:
+            resolved = _recheck_resolved(path)
+        else:
             resolved = workspaces.resolve_workspace_file(
                 str(path), builtins.WORKSPACE_DIR)
-        except Exception:
-            resolved = str(path)
+    except Exception as e:
+        # Rejected by current policy: unavailable, and the raw
+        # path is never opened (the old fallback read + sent a
+        # sample of a file the workspace had refused).
+        probe["reason"] = (f"workspace policy rejected the path "
+                           f"({e})")
+        return probe
+    probe["path"] = resolved
+    try:
+        from aria import action_journal
         info = action_journal.check_artifact(resolved)
-        probe["path"] = info.get("path", str(path))
         if not info.get("verified") and "File missing" in \
                 str(info.get("reason") or ""):
+            probe["status"] = "missing"
+            probe["reason"] = "File missing"
             return probe
         probe["exists"] = True
+        # Pass 36 #24 (not yet applied here): an attested hash
+        # still needs comparing before this may read "verified".
+        probe["status"] = "unverified"
         probe["size"] = info.get("size")
         probe["sha256"] = info.get("sha256")
         try:
@@ -257,7 +329,8 @@ def _file_probe(step: dict) -> Optional[dict]:
         except Exception:
             probe["sample"] = ""
     except Exception as e:
-        probe["error"] = f"{type(e).__name__}"
+        probe["status"] = "unreadable"
+        probe["reason"] = f"{type(e).__name__}"
     return probe
 
 
@@ -275,21 +348,32 @@ def build_probes(steps: List[dict],
     for s in steps or []:
         tool = s.get("tool") or ""
         try:
+            # The journal row, fetched once: its recorded
+            # artifacts attest the step's destination (#20) and
+            # its state is the receipt probe for effect steps.
+            journal_row = None
+            op_id = journal_ids.get(s.get("step"))
+            if op_id is None:
+                op_id = journal_ids.get(str(s.get("step")))
+            if op_id:
+                from aria import action_journal
+                try:
+                    journal_row = action_journal.get(op_id)
+                except Exception:
+                    journal_row = None
             if tool in _FILE_WRITE_TOOLS:
-                fp = _file_probe(s)
+                fp = _file_probe(
+                    s,
+                    journal_artifacts=(
+                        (journal_row or {}).get("artifacts") or []))
                 if fp is not None:
                     probes.append(fp)
             if not retry_safe(tool):
-                op_id = journal_ids.get(s.get("step"))
-                if op_id is None:
-                    op_id = journal_ids.get(str(s.get("step")))
                 if op_id:
-                    from aria import action_journal
-                    row = action_journal.get(op_id)
                     probes.append({
                         "kind": "journal", "step": s.get("step"),
                         "tool": tool,
-                        "state": (row or {}).get("state")})
+                        "state": (journal_row or {}).get("state")})
         except Exception as e:
             add_log(f"grader: probe for step {s.get('step')} "
                     f"failed ({e}); probe omitted")
