@@ -1,12 +1,14 @@
 # ARIA Provider Fallback Chain — SPEC (SUPERSEDED)
 
 **Status:** SUPERSEDED — built 2026-10-05/06 (commits `3f79daa`, `31122fb`).
-The shipped chain is **ollama_cloud → groq → openrouter → mistral**
-(Ollama Cloud `gpt-oss:120b` primary, not Gemini-first as originally
-spec'd below) — see `aria/agent/providers.py` and `PROVIDER_CHAIN` in
-`aria/config.py`. Gemini left the default chain while its keys return 402;
-screenshot vision stays Gemini-only. Kept for design history.
-**Date:** 2026-10-05
+The shipped chain is **gemini → groq → openrouter → mistral → ollama_local**
+(`PROVIDER_CHAIN` default in `aria/config.py`; `ollama_cloud` left the
+default chain 2026-11-10, Alek's call — Ollama cloud went pay-as-you-go;
+it stays registered so an explicit `PROVIDER_CHAIN` override can still
+name it). The local leg runs `OLLAMA_MODEL`, default `qwen2.5:7b` — there
+is no `qwen2.5:3b` default in the repo; a 3b-only install needs
+`OLLAMA_MODEL` set. See `aria/agent/providers.py`. Kept for design history.
+**Date:** 2026-10-05 (current-state note updated 2026-11-11, pass 36 #11)
 **Author:** Milk (from reading `aria/agent/brain.py`, `aria/config.py`, `aria/tools/schemas.py` at remote `6e0a60b3`)
 
 ---
@@ -78,7 +80,7 @@ The **only** change in `run_agent`: `data = gemini_call(...)` becomes `data = pr
 | 2 | Groq | `https://api.groq.com/openai/v1` | `openai/gpt-oss-120b` | `GROQ_API_KEY` | ~30 req/min, generous daily |
 | 3 | OpenRouter | `https://openrouter.ai/api/v1` | configurable `:free` model (default TBD) | `OPENROUTER_API_KEY` | ~20 req/min, ~50/day |
 | 4 | Mistral | `https://api.mistral.ai/v1` | `mistral-small-latest` | `MISTRAL_API_KEY` | ~1 req/sec, 1B tok/mo cap |
-| 5 | Ollama | `http://localhost:11434/v1` | configurable (default TBD, e.g. `qwen2.5:7b`) | none (local) | offline floor |
+| 5 | Ollama | `http://localhost:11434/v1` | `qwen2.5:7b` (`OLLAMA_MODEL`) | none (local) | offline floor |
 
 Chain order itself is configurable (`PROVIDER_CHAIN` list in config); any provider with no key configured (or Ollama unreachable) is silently skipped.
 
@@ -94,7 +96,17 @@ Chain order itself is configurable (`PROVIDER_CHAIN` list in config); any provid
 - **Ollama safe mode (default ON, configurable):** a 7–8B local model hallucinating tool arguments against irreversible tools (network, system, trading-adjacent) is the sharp edge. Default: Ollama tier exposes read-only tools only (`get_toolkit_declarations` filtered by a `READ_ONLY_TOOLS` allowlist). Full tools available via config flag for those who accept the risk.
 - Fallback tiers announce themselves once per session in the HUD subtitle; no per-turn nagging.
 
-## 9. Embeddings stay Gemini-only (deliberate)
+## 9. Embeddings (current state, pass 36 #11 — the original
+Gemini-only note below is stale)
+
+`memory._embed` uses Ollama Cloud (`OLLAMA_EMBED_MODEL`, default
+`nomic-embed-text`) in Auto mode. In `local_only` mode it returns
+cached vectors only, unless `OLLAMA_LOCAL_EMBED_MODEL` names an
+explicit local model on the on-machine Ollama server — see
+`aria/memory.py`. The cache is keyed by model identity, so vectors
+from different embedding models never mix.
+
+## 9a. Embeddings stay Gemini-only (deliberate) — ORIGINAL, STALE
 
 `memory._embed` keeps its current Gemini-only path. Rationale: embeddings are infrequent, translating embedding models across providers adds a second matrix of subtle breakage, and the code already degrades gracefully — `_pack_embedding(None)` stores NULL and retrieval falls back to recency/text match. If Gemini is fully down, memories save without vectors. No change needed.
 
@@ -102,7 +114,7 @@ Chain order itself is configurable (`PROVIDER_CHAIN` list in config); any provid
 
 - `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, `OLLAMA_API_KEY` — env first, then settings.json, never the repo. Missing = provider skipped.
 - `OPENROUTER_MODEL`, `MISTRAL_MODEL`, `OLLAMA_CLOUD_MODEL`, `OLLAMA_MODEL`, `OLLAMA_HOST` — with sane defaults.
-- `PROVIDER_CHAIN` — ordered list, default `["ollama_cloud", "groq", "openrouter", "mistral"]` (2026-10-05: Gemini dropped from the default chain while its keys are 402; re-add via override).
+- `PROVIDER_CHAIN` — ordered list, default `["gemini", "groq", "openrouter", "mistral", "ollama_local"]` (2026-11-10: `ollama_cloud` out of the default chain, `gemini` primary since 2026-10-27, `ollama_local` added 2026-11-09 as the last-resort leg).
 - `OLLAMA_SAFE_MODE` — default True.
 - All key values go through the existing `redact()` / `key_mask()` paths in logs and spine. No exceptions.
 

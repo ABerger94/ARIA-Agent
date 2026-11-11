@@ -77,6 +77,29 @@ def _stats_text(stats) -> str:
             f"Calls: {total_calls} · Last failover: {last_text}")
 
 
+def _chain_text() -> str:
+    """Effective chain + local model + where each came from (pass
+    36 #11): the checked-in defaults are gemini -> groq ->
+    openrouter -> mistral -> ollama_local with qwen2.5:7b — the
+    panel shows the EFFECTIVE values and their source (env var /
+    keys file / script default), not the docstring's. In local_only
+    the effective chain collapses to exactly ollama_local."""
+    try:
+        from aria.agent.providers import effective_chain_names
+        chain = effective_chain_names()
+    except Exception:
+        chain = []
+    try:
+        from aria.config import key_get
+        _raw, chain_src = key_get("PROVIDER_CHAIN", "")
+        _model, model_src = key_get("OLLAMA_MODEL", "qwen2.5:7b")
+    except Exception:
+        chain_src, model_src, _model = "unknown", "unknown", "?"
+    chain_str = " → ".join(chain) if chain else "unavailable"
+    return (f"Effective chain: {chain_str} (chain source: {chain_src}; "
+            f"local model: {_model}, source: {model_src})")
+
+
 def _current_mode() -> str:
     """The live PROVIDER_MODE for the toggle's initial state: the
     providers module's live value, config's startup global as the
@@ -125,11 +148,15 @@ def build_providers_widget(parent=None):
     stats_label = QLabel()
     stats_label.setWordWrap(True)
     lay.addWidget(stats_label)
+    chain_label = QLabel()
+    chain_label.setWordWrap(True)
+    lay.addWidget(chain_label)
 
     def refresh():
         active, rows, stats = provider_data()
         body.setText(_providers_html(active, rows))
         stats_label.setText(_stats_text(stats))
+        chain_label.setText(_chain_text())
         mode_now = _current_mode()
         mode_label.setText(
             'Provider mode: <b>LOCAL ONLY</b> — the local Ollama '
@@ -183,6 +210,7 @@ def build_providers_widget(parent=None):
     w._refresh = refresh
     w._body = body
     w._stats = stats_label
+    w._chain = chain_label
     w._copy_report = copy_btn
     w._local_only = local_only
     w._mode_label = mode_label
