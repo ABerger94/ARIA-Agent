@@ -20,6 +20,8 @@ import threading
 import time
 import types
 
+import pytest
+
 PKG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "aria")
 _pkg = types.ModuleType("aria")
 _pkg.__path__ = [PKG]
@@ -130,15 +132,31 @@ def test_planner_drops_unknown_tools():
 
 
 def test_planner_fallbacks():
-    bad = planner.create_plan("g", llm=lambda p, s: "not json at all")
-    assert len(bad["steps"]) == 1
-    assert bad["steps"][0]["tool"] == "web_search"
-    assert bad["steps"][0]["critical"] is True
+    # Pass 36 #33: a non-research goal has no safe fallback —
+    # a planning failure is a typed error, not a web search of
+    # the raw goal (which would exfiltrate a private goal to a
+    # search backend and let a search result certify work never
+    # done).
+    with pytest.raises(planner.PlanningFailed):
+        planner.create_plan("g", llm=lambda p, s: "not json at all")
 
     def _boom(p, s):
         raise RuntimeError("pool down")
-    down = planner.create_plan("g", llm=_boom)
-    assert down["steps"][0]["tool"] == "web_search"
+    with pytest.raises(planner.PlanningFailed):
+        planner.create_plan("g", llm=_boom)
+
+    # An explicitly research-shaped goal keeps the scoped search
+    # fallback — with the framing verb stripped, so the raw goal
+    # is never the query.
+    research = planner.create_plan(
+        "research the best laptop under $1000",
+        llm=lambda p, s: "not json at all")
+    assert len(research["steps"]) == 1
+    assert research["steps"][0]["tool"] == "web_search"
+    assert research["steps"][0]["critical"] is True
+    assert research["steps"][0]["parameters"]["query"] == \
+        "the best laptop under $1000", research
+    assert research["task_type"] == "research"
     print("ok planner_fallbacks")
 
 

@@ -588,7 +588,16 @@ class AgentExecutor:
             add_log(f"taskexec: resuming with {len(completed)} "
                     "step(s) already complete")
         else:
-            plan = planner.create_plan(goal, llm=self._llm)
+            try:
+                plan = planner.create_plan(goal, llm=self._llm)
+            except planner.PlanningFailed as e:
+                # Pass 36 #33: no usable plan and no
+                # research-shaped fallback — abort with the
+                # reason instead of searching the raw goal.
+                add_log(f"taskexec: planning failed — {e.reason}")
+                return _finish_outcome(
+                    "I couldn't make a plan for that task: "
+                    f"{e.reason}.")
             completed = []
             results = {}
             skip_steps = set()
@@ -848,8 +857,17 @@ class AgentExecutor:
             replans += 1
             add_log(f"taskexec: replanning ({replans}/{max_replans}) "
                     f"after step failure")
-            plan = planner.replan(goal, completed, failed_step,
-                                  failed_error, llm=self._llm)
+            try:
+                plan = planner.replan(goal, completed, failed_step,
+                                      failed_error, llm=self._llm)
+            except planner.PlanningFailed as e:
+                # Pass 36 #33: the replan produced nothing usable
+                # and the goal is not research-shaped — abort
+                # with the reason instead of searching the goal.
+                add_log(f"taskexec: replan failed — {e.reason}")
+                return _finish_outcome(
+                    "I couldn't find another approach for that task: "
+                    f"{e.reason}.")
             skip_steps = set()  # replanned steps are fresh work
             _checkpoint()
 

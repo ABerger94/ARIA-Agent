@@ -9,7 +9,11 @@ clamped to PLAN_MAX_STEPS, with a deterministic single-step
 fallback when planning fails. task_type is optional, validated
 against the rubric registry (aria.agent.rubrics); an absent or
 invalid type stays absent (None) so the grader infers from the
-executed steps instead of defaulting to "general".
+executed steps instead of defaulting to "general". On a
+research-shaped goal the fallback is a single web_search scoped
+to the research intent; any other goal raises a typed
+PlanningFailed — a private goal is never sent to a search
+backend.
 Differences from his planner:
 
   * the model is ARIA's background pool (orpool, Phase 2), never
@@ -32,6 +36,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from typing import Callable, List, Optional
 
 from aria import config as _config
@@ -174,19 +179,83 @@ def _valid_task_type(raw) -> Optional[str]:
     return None
 
 
+class PlanningFailed(Exception):
+    """Typed planning failure: no usable plan exists and the goal
+    does not authorize a search fallback. Carries the reason so
+    the executor can park/abort with a clear message instead of
+    sending the goal to a search backend (pass 36 #33)."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _new_plan_rev() -> str:
+    """A fresh plan-revision id. Every plan (and every replan)
+    gets its own revision; steps carry stable ids under it, so a
+    resume can never confuse a replacement step with the step it
+    replaced (pass 36 #26)."""
+    return uuid.uuid4().hex[:12]
+
+
+def _new_step_id() -> str:
+    return uuid.uuid4().hex
+
+
+# Explicit research phrasing that authorizes a search fallback
+# (pass 36 #33). A goal that merely happens to mention one of
+# these words in passing is not research-shaped; the markers are
+# leading intent phrases, matched case-insensitively.
+_RESEARCH_PREFIXES = (
+    "research ", "research:", "look up ", "look into ",
+    "find out about ", "find out ", "search for ",
+    "search the web for ", "investigate ",
+    "gather information about ", "gather information on ",
+    "find information about ", "find information on ",
+    "learn about ",
+)
+
+
+def _research_query(goal: str) -> Optional[str]:
+    """The scoped search query for an explicitly research-shaped
+    goal, or None when the goal does not authorize a search.
+    The query is the research intent with its framing verb
+    stripped — never the raw goal, so private framing around
+    the question is not sent to a search backend."""
+    text = (goal or "").strip()
+    lowered = text.lower()
+    for prefix in _RESEARCH_PREFIXES:
+        if lowered.startswith(prefix):
+            query = text[len(prefix):].strip(" :")
+            return query or None
+    return None
+
+
 def _fallback_plan(goal: str) -> dict:
-    """His deterministic fallback: one critical web_search step."""
+    """Research-only deterministic fallback: one critical
+    web_search step scoped to the research intent. Raises
+    PlanningFailed for any goal that is not explicitly
+    research-shaped — a private goal must never be sent to a
+    search backend as a stand-in plan (pass 36 #33)."""
+    query = _research_query(goal)
+    if query is None:
+        raise PlanningFailed(
+            "no usable plan could be made and the goal is not "
+            "phrased as research, so there is no safe fallback")
     return {
         "goal": goal,
-        "task_type": "general",
+        "task_type": "research",
+        "plan_rev": _new_plan_rev(),
         "steps": [{
+            "id": _new_step_id(),
             "step": 1,
             "tool": "web_search",
-            "description": f"Search for: {goal}",
-            "parameters": {"query": goal},
+            "description": f"Search for: {query}",
+            "parameters": {"query": query},
             "critical": True,
         }],
-        "warnings": ["planner fell back to a single search step"],
+        "warnings": ["planner fell back to a single scoped "
+                     "search step (research-shaped goal)"],
     }
 
 
@@ -258,6 +327,8 @@ def create_plan(goal: str, context: str = "",
         add_log(f"planner: plan ready — {len(plan['steps'])} step(s) "
                 f"for '{goal[:50]}'")
         return plan
+    except PlanningFailed:
+        raise
     except Exception as e:
         add_log(f"planner: planning failed ({e}), using fallback plan")
         return _fallback_plan(goal)
@@ -266,7 +337,9 @@ def create_plan(goal: str, context: str = "",
 def replan(goal: str, completed_steps: list, failed_step: dict,
            error: str, llm: Optional[Callable] = None) -> dict:
     """Revised plan for the REMAINING work after a step failure.
-    Same validation/clamps/fallback as create_plan."""
+    Same validation/clamps/fallback as create_plan: a failed
+    replan raises PlanningFailed unless the goal is explicitly
+    research-shaped (pass 36 #33)."""
     llm = llm or _default_llm
     completed_summary = "\n".join(
         f"  - Step {s.get('step')} ({s.get('tool')}): DONE"
@@ -289,6 +362,8 @@ def replan(goal: str, completed_steps: list, failed_step: dict,
             return _fallback_plan(goal)
         add_log(f"planner: revised plan — {len(plan['steps'])} step(s)")
         return plan
+    except PlanningFailed:
+        raise
     except Exception as e:
         add_log(f"planner: replan failed ({e}), using fallback plan")
         return _fallback_plan(goal)

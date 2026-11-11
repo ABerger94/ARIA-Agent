@@ -231,8 +231,10 @@ def test_planner_task_type_validated(monkeypatch):
 
     def _boom(prompt, system):
         raise RuntimeError("pool down")
-    plan = planner.create_plan("g", llm=_boom)
-    assert plan["task_type"] == "general"
+    # Pass 36 #33: a pool failure on a non-research goal is a
+    # typed planning failure, not a web search of the raw goal.
+    with pytest.raises(planner.PlanningFailed):
+        planner.create_plan("g", llm=_boom)
 
 
 # -- bundle construction --------------------------------------------

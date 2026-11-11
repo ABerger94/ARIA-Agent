@@ -149,11 +149,17 @@ def test_resume_waits_while_child_running():
 def test_resume_replans_when_child_failed():
     _seed_child("failed", error="child blew up")
     runner = _Runner()
-    # Replan answers with an empty plan, so the planner falls back
-    # to a single web_search step: the point is the failed child
-    # feeds the replan path (the fallback step runs, the task
-    # completes), not a re-submission of the child.
-    ex = _executor(runner, llm=lambda p, s: _plan_json([]))
+    # Replan answers with a valid single-step plan (pass 36 #33:
+    # the old empty-plan → search-fallback shape is gone): the
+    # point is the failed child feeds the replan path (the
+    # replacement step runs, the task completes), not a
+    # re-submission of the child.
+    _replan_step = {"step": 1, "tool": "web_search",
+                    "description": "check the goal another way",
+                    "parameters": {"query": "parent goal"},
+                    "critical": True}
+    ex = _executor(runner,
+                   llm=lambda p, s: _plan_json([_replan_step]))
     out = ex.execute("parent goal", resume=_pending_state())
     assert [c for c in runner.calls if c[0] == "delegate_task"] == [], \
         runner.calls
@@ -162,7 +168,12 @@ def test_resume_replans_when_child_failed():
 
 def test_resume_replans_when_child_record_missing():
     runner = _Runner()
-    ex = _executor(runner, llm=lambda p, s: _plan_json([]))
+    _replan_step = {"step": 1, "tool": "web_search",
+                    "description": "check the goal another way",
+                    "parameters": {"query": "parent goal"},
+                    "critical": True}
+    ex = _executor(runner,
+                   llm=lambda p, s: _plan_json([_replan_step]))
     out = ex.execute("parent goal", resume=_pending_state())
     assert [c for c in runner.calls if c[0] == "delegate_task"] == [], \
         runner.calls
