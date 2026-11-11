@@ -11,11 +11,7 @@ import json
 import os
 import sys
 import tempfile
-import threading
-import time
 import types
-
-import pytest
 
 PKG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "aria")
 _pkg = types.ModuleType("aria")
