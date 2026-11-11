@@ -632,25 +632,67 @@ def _default_chat(prompt: str, system: str,
         deadline=deadline, exclude=exclude)
 
 
+def _step_in_scope(step, scope, last_number) -> bool:
+    """Is this normalized step inside a rubric criterion's
+    scope ("all", "last", or a tool list)? Unknown scope
+    shapes do not block — they fall back to the lenient
+    referent check."""
+    if scope in ("all", None):
+        return True
+    if step is None:
+        return False
+    if scope == "last":
+        return step.get("step") == last_number
+    if isinstance(scope, str):
+        return step.get("tool") == scope
+    if isinstance(scope, (list, tuple, set)):
+        return step.get("tool") in scope
+    return True
+
+
 def _cites_evidence(evidence: str, probes=None,
-                    step_numbers=None) -> bool:
+                    step_numbers=None, steps=None,
+                    scope="all") -> bool:
     """Does a pass verdict's cited evidence actually reference
     evidence in the bundle — a real step number, or a probe
     kind with a probe present? A bare assertion ("it worked")
     cites nothing and cannot support a pass. Lenient on
     wording, strict on referents: "step 1", "journal receipt
     for step 2", "the file probe" all count when the referent
-    exists; a step number with no such step does not."""
+    exists; a step number with no such step does not.
+    Pass 36 #23 (c): when the citation names step numbers and
+    the criterion's scope is known, at least one named step
+    must be IN scope — a criterion about the final result
+    ("last") cannot rest on an early step, and a criterion
+    about write steps cannot rest on a lookup step. A citation
+    that also names a real probe kind keeps the lenient probe
+    check (the probe is destination evidence in its own
+    right); a citation naming ONLY out-of-scope steps does
+    not support the pass."""
     ev = str(evidence or "").strip().lower()
     if not ev:
         return False
+    cited_steps = []
     if step_numbers is not None:
         for m in re.finditer(r"step\s+(\d+)", ev):
             try:
-                if int(m.group(1)) in step_numbers:
-                    return True
+                n = int(m.group(1))
+                if n in step_numbers:
+                    cited_steps.append(n)
             except Exception:
                 continue
+    if cited_steps and steps is not None:
+        by_number = {}
+        for s in steps:
+            if isinstance(s, dict):
+                by_number[s.get("step")] = s
+        last_number = steps[-1].get("step") \
+            if steps and isinstance(steps[-1], dict) else None
+        for n in cited_steps:
+            if _step_in_scope(by_number.get(n), scope, last_number):
+                return True
+    elif cited_steps:
+        return True
     probes = probes or []
     if probes:
         kinds = set()
@@ -667,7 +709,8 @@ def _cites_evidence(evidence: str, probes=None,
 
 
 def _parse_grade(raw: Any, rubric: dict, *,
-                 probes=None, step_numbers=None) -> Optional[dict]:
+                 probes=None, step_numbers=None,
+                 steps=None) -> Optional[dict]:
     """Strict contract: a JSON object with a criteria array AND
     a failure_cases array. Returns the computed verdict parts,
     or None (cannot_grade). The overall verdict is computed
@@ -736,7 +779,8 @@ def _parse_grade(raw: Any, rubric: dict, *,
             if not evidence.strip():
                 return None
             if c["kind"] == "must" and not _cites_evidence(
-                    evidence, probes, step_numbers):
+                    evidence, probes, step_numbers,
+                    steps=steps, scope=c.get("scope", "all")):
                 return None
         if verdict == "na" and c["kind"] == "must":
             # A must criterion the grader could not judge —
@@ -874,7 +918,8 @@ def grade(goal: str, steps: List[dict],
             raw_text, model_used = raw, (chosen or "")
         parsed = _parse_grade(
             raw_text, rubric, probes=probes,
-            step_numbers={s.get("step") for s in norm})
+            step_numbers={s.get("step") for s in norm},
+            steps=norm)
         if parsed is None:
             return _cannot_grade(
                 rubric, "grader output unparseable",

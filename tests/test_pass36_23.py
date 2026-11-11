@@ -488,3 +488,82 @@ def test_persist_step_evidence_keyed_by_step_id(
     assert got["aaa111"]["op_id"] == "op-aaa"
     assert got["aaa111"]["params"] == {"filename": "a.txt"}
     assert "1" not in got
+
+
+# -- (c) scope-aware citation validation ---------------------------
+
+def _chat_returning(text, model="grader-model"):
+    def _chat(prompt, system, model_arg=None):
+        return text, model
+    return _chat
+
+
+def _grade_with_evidence(rubric_id, evidence_by_id):
+    rubric = rubrics.get_rubric(rubric_id)
+    return json.dumps({
+        "criteria": [
+            {"id": c["id"], "verdict": "pass",
+             "evidence": evidence_by_id.get(c["id"], "step 1: ok")}
+            for c in rubric["criteria"]],
+        "failure_cases": [
+            {"id": f["id"], "present": False,
+             "evidence": "step 1: not present"}
+            for f in rubric["failure_cases"]]})
+
+
+def test_citation_last_scope_must_name_final_step():
+    steps = [
+        {"step": 1, "tool": "web_search", "output": "sources"},
+        {"step": 2, "tool": "fetch_url", "output": "page text"},
+        {"step": 3, "tool": "web_search", "output": "the answer"},
+    ]
+    # question_answered is scope "last": citing only step 1
+    # cannot support it.
+    out = grader.grade(
+        "g", steps, rubric=rubrics.get_rubric("research"),
+        chat=_chat_returning(_grade_with_evidence(
+            "research", {"question_answered":
+                         "step 1: the search found sources"})))
+    assert out["verdict"] == "cannot_grade", out
+    # Citing the final step supports it.
+    out = grader.grade(
+        "g", steps, rubric=rubrics.get_rubric("research"),
+        chat=_chat_returning(_grade_with_evidence(
+            "research", {"question_answered":
+                         "step 3: the final answer covers it"})))
+    assert out["verdict"] == "pass", out
+
+
+def test_citation_tool_scope_must_name_matching_step():
+    steps = [
+        {"step": 1, "tool": "write_file", "output": "wrote"},
+        {"step": 2, "tool": "run_python_code", "output": "ok"},
+    ]
+    # change_landed is scoped to write tools: citing only the
+    # check step cannot support it.
+    out = grader.grade(
+        "g", steps, rubric=rubrics.get_rubric("code_change"),
+        chat=_chat_returning(_grade_with_evidence(
+            "code_change", {"change_landed":
+                            "step 2: the check ran clean"})))
+    assert out["verdict"] == "cannot_grade", out
+    out = grader.grade(
+        "g", steps, rubric=rubrics.get_rubric("code_change"),
+        chat=_chat_returning(_grade_with_evidence(
+            "code_change", {"change_landed":
+                            "step 1: the file probe shows it"})))
+    assert out["verdict"] == "pass", out
+
+
+def test_citation_probe_kind_mention_still_counts():
+    steps = [{"step": 1, "tool": "write_file", "output": "wrote"}]
+    probes = [{"kind": "file", "step": 1, "tool": "write_file",
+               "path": "x.txt", "exists": True, "status": "verified",
+               "size": 3, "sha256": "abc"}]
+    out = grader.grade(
+        "g", steps, rubric=rubrics.get_rubric("code_change"),
+        probes=probes,
+        chat=_chat_returning(_grade_with_evidence(
+            "code_change", {"change_landed":
+                            "the file probe shows it landed"})))
+    assert out["verdict"] == "pass", out
