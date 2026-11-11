@@ -160,10 +160,46 @@ def _cap_output(text: str) -> str:
             f" … [truncated: {len(text) - OUTPUT_CAP} more chars]")
 
 
+_CHECK_TOOLS = frozenset({"read_file", "run_python_code"})
+_CHECK_RE = re.compile(
+    r"\b(check|test|verify|compile|lint)\b", re.IGNORECASE)
+
+
+def identify_check_steps(steps: List[dict]) -> List[dict]:
+    """The plan's check steps (pass 36 #32): steps whose job was
+    to check the work after an edit — a test run, an import, a
+    compile, a read-back. Tool-shaped (read_file /
+    run_python_code) or described as a check. Accepts both the
+    grader's normalized steps ("step") and mission rows ("idx").
+    The code rubric's checked_after_edit criterion is judged
+    against THIS list, so the grader is never left guessing
+    whether the plan included a check."""
+    out = []
+    for s in steps or []:
+        if not isinstance(s, dict):
+            continue
+        tool = str(s.get("tool") or "")
+        desc = str(s.get("description") or "")
+        if tool in _CHECK_TOOLS or _CHECK_RE.search(desc):
+            number = s.get("step")
+            if number is None:
+                idx = s.get("idx")
+                number = (idx + 1) if isinstance(idx, int) else None
+            out.append({"step": number, "tool": tool,
+                        "description": desc})
+    return out
+
+
 def build_bundle(goal: str, steps: List[dict], rubric: dict,
-                 probes: Optional[List[dict]] = None) -> str:
+                 probes: Optional[List[dict]] = None,
+                 check_steps: Optional[List[dict]] = None) -> str:
     """The grader's entire world: goal, rubric, recorded step
-    outputs (claims), destination probes (evidence)."""
+    outputs (claims), destination probes (evidence). check_steps
+    (pass 36 #32) is the plan's check-step list: when given, it
+    is rendered explicitly; when omitted it is derived from the
+    steps themselves."""
+    if check_steps is None:
+        check_steps = identify_check_steps(steps)
     lines = [f"GOAL: {goal}", "",
              f"RUBRIC: {rubric['id']} v{rubric['version']}",
              "CRITERIA:"]
@@ -177,6 +213,19 @@ def build_bundle(goal: str, steps: List[dict], rubric: dict,
         lines.append("FAILURE CASES TO CHECK:")
         for fc in rubric["failure_cases"]:
             lines.append(f"- {fc['id']}: {fc['text']}")
+    lines.append("")
+    lines.append("PLAN CHECK STEPS (steps whose job was to check "
+                 "the work — test / import / compile / read-back):")
+    if check_steps:
+        for cs in check_steps:
+            desc = f" — {cs['description']}" \
+                if cs.get("description") else ""
+            lines.append(f"- step {cs.get('step')} "
+                         f"({cs.get('tool', '?')}){desc}")
+    else:
+        lines.append("(none — the plan included no check step, so "
+                     "a checked_after_edit verdict cannot rest on "
+                     "a check that never ran)")
     lines.append("")
     lines.append("STEP EVIDENCE (recorded outputs are claims):")
     if steps:
@@ -675,7 +724,8 @@ def grade(goal: str, steps: List[dict],
           deadline: Optional[float] = None,
           chat: Optional[Callable] = None,
           probes: Optional[List[dict]] = None,
-          policy: Optional[str] = None) -> dict:
+          policy: Optional[str] = None,
+          check_steps: Optional[List[dict]] = None) -> dict:
     """Grade one finished run. Returns the GradeResult dict
     from the design; never raises — EXCEPT runtime.Cancelled,
     which propagates (pass 36 #31 coordinates with the
@@ -699,9 +749,15 @@ def grade(goal: str, steps: List[dict],
     when the probes were built; full-file hashing is the probe
     layer's bound, not this module's)."""
     if rubric is None:
-        tools = [s.get("tool") for s in steps or []
-                 if isinstance(s, dict)]
-        rubric = _rubrics.select_rubric(task_type, tools)
+        # Pass 36 #32: rubric inference runs on the goal and the
+        # EXECUTED steps (normalized: parameters + outputs), not
+        # on bare tool names — a code_helper explain is not a
+        # code change, and an all-read-only lookup run is not
+        # research.
+        norm = normalize_steps(steps, results)
+        tools = [s.get("tool") for s in norm]
+        rubric = _rubrics.select_rubric(task_type, tools,
+                                        goal=goal, steps=norm)
     if deadline is not None and time.monotonic() >= deadline:
         return _cannot_grade(rubric, "grading deadline already passed",
                              worker_model)
@@ -710,7 +766,8 @@ def grade(goal: str, steps: List[dict],
         norm = normalize_steps(steps, results)
         if probes is None:
             probes = build_probes(norm)
-        bundle = build_bundle(goal, norm, rubric, probes)
+        bundle = build_bundle(goal, norm, rubric, probes,
+                              check_steps)
         if len(bundle) > _BUNDLE_CAP:
             bundle = (bundle[:_BUNDLE_CAP] +
                       f"\n… [bundle truncated: "

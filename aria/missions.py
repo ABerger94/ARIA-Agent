@@ -1126,11 +1126,16 @@ def _outcome_grade(mid: int, m: Dict[str, Any],
                 0.0, min(remaining, 300.0))
         except Exception:
             deadline = None
+        # Pass 36 #32: the plan's check-step list rides into
+        # the bundle, so the code rubric's checked_after_edit
+        # criterion is judged against the steps the plan
+        # actually included.
         result = _grader.grade(
             m["goal"], steps,
             task_type=(m.get("envelope") or {}).get("task_type"),
             worker_model=None,
             deadline=deadline,
+            check_steps=_grader.identify_check_steps(steps),
             probes=_grader.build_probes(
                 _grader.normalize_steps(steps),
                 journal_ids=journal_ids))

@@ -148,6 +148,30 @@ def test_rubric_selection_and_fallbacks():
         "general"
     assert rubrics.select_rubric("research", ["write_file"])["id"] \
         == "research"
+    # Pass 36 #32: inference runs on executed actions, not bare
+    # tool names — an ordinary lookup run is general even when
+    # the goal is a question, and a code_helper explain is not
+    # a code change.
+    assert rubrics.select_rubric(
+        tools=["get_time"], goal="What time is it?")["id"] == \
+        "general"
+    assert rubrics.select_rubric(
+        tools=["code_helper"], steps=[
+            {"step": 1, "tool": "code_helper",
+             "parameters": {"action": "explain"},
+             "output": "it adds one"}])["id"] == "general"
+    assert rubrics.select_rubric(
+        tools=["code_helper"], steps=[
+            {"step": 1, "tool": "code_helper",
+             "parameters": {"action": "write",
+                            "output_path": "x.py"},
+             "output": "saved"}])["id"] == "code_change"
+    assert rubrics.select_rubric(
+        tools=["code_helper"], steps=[
+            {"step": 1, "tool": "code_helper",
+             "parameters": {"action": "fix"},
+             "output": "Saved the fix to x.py"}])["id"] == \
+        "code_change"
 
 
 def test_malformed_rubric_never_validates():
@@ -195,12 +219,15 @@ def test_planner_task_type_validated(monkeypatch):
     plan = planner.create_plan("g", llm=_llm(
         {"goal": "g", "task_type": "research", "steps": [step]}))
     assert plan["task_type"] == "research"
+    # Pass 36 #32: an absent or invalid type is preserved as no
+    # classification (None) — the grader infers from the
+    # executed steps instead of silently becoming "general".
     plan = planner.create_plan("g", llm=_llm(
         {"goal": "g", "task_type": "bogus", "steps": [step]}))
-    assert plan["task_type"] == "general"
+    assert plan["task_type"] is None
     plan = planner.create_plan("g", llm=_llm(
         {"goal": "g", "steps": [step]}))
-    assert plan["task_type"] == "general"
+    assert plan["task_type"] is None
 
     def _boom(prompt, system):
         raise RuntimeError("pool down")
@@ -209,6 +236,44 @@ def test_planner_task_type_validated(monkeypatch):
 
 
 # -- bundle construction --------------------------------------------
+
+def test_bundle_carries_plan_check_steps():
+    # Pass 36 #32: the plan's check-step list rides in the
+    # bundle, so checked_after_edit is judged against the
+    # steps the plan actually included.
+    steps = grader.normalize_steps([
+        {"step": 1, "tool": "write_file",
+         "parameters": {"filename": "x.py"}, "output": "wrote"},
+        {"step": 2, "tool": "run_python_code",
+         "description": "Run the tests", "parameters": {},
+         "output": "ok"},
+    ])
+    bundle = grader.build_bundle(
+        "g", steps, rubrics.get_rubric("code_change"))
+    assert "PLAN CHECK STEPS" in bundle
+    assert "step 2 (run_python_code)" in bundle
+    bundle = grader.build_bundle(
+        "g", steps, rubrics.get_rubric("code_change"),
+        check_steps=[{"step": 9, "tool": "read_file",
+                      "description": "read back"}])
+    assert "step 9 (read_file)" in bundle
+    steps2 = grader.normalize_steps([
+        {"step": 1, "tool": "write_file", "parameters": {},
+         "output": "wrote"}])
+    bundle = grader.build_bundle(
+        "g", steps2, rubrics.get_rubric("code_change"))
+    assert "the plan included no check step" in bundle
+
+
+def test_mission_create_schema_declares_task_type():
+    # Pass 36 #32: the tool declaration exposes task_type so
+    # the model can state the rubric class instead of the
+    # handler silently receiving none.
+    from aria.tools.schemas import get_tool_decls_by_name
+    decls = get_tool_decls_by_name()
+    props = decls["mission_create"]["parameters"]["properties"]
+    assert "task_type" in props
+
 
 def test_bundle_excludes_history_and_reasoning_and_marks_truncation():
     steps = [{

@@ -27,10 +27,10 @@ test suite, so that path is defence in depth, not expectation).
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from aria.config import add_log
-from aria.tool_policy import retry_safe
 
 _KINDS = ("must", "advisory")
 
@@ -268,31 +268,82 @@ def get_rubric(task_type: Optional[str]) -> dict:
 # Tools whose presence marks a task as a code/file change, and
 # the read-only research tools, for type inference when no
 # planner task_type is available (missions carry none).
-_CODE_TOOLS = frozenset(
-    {"write_file", "code_helper", "dev_agent", "run_python_code"})
+# Pass 36 #32: inference runs on EXECUTED actions, not tool
+# names alone. A code change needs an executed write
+# (write_file, dev_agent, run_python_code, or a code_helper
+# write — or a write that demonstrably landed); a code_helper
+# explain/fix is not one. Research needs an executed research
+# tool; an all-read-only run of ordinary lookups (time, status,
+# lists) is general, even when the goal is phrased as a
+# question. The goal only speaks when there are no executed
+# actions to judge from.
+_CODE_WRITE_TOOLS = frozenset(
+    {"write_file", "dev_agent", "run_python_code"})
+_RESEARCH_TOOLS = frozenset({"web_search", "research", "fetch_url"})
+_QUESTION_LIKE_RE = re.compile(
+    r"\?\s*$|^(what|why|how|when|where|which|who|find|compare|"
+    r"research|look\s+up|search)\b", re.IGNORECASE)
+_WRITE_LANDED_RE = re.compile(
+    r"\bsaved\b[^\n]{0,80}\.(py|js|ts|tsx|jsx|html|css|json|md|"
+    r"txt|sh|rs|go|java|c|cpp)\b", re.IGNORECASE)
 
 
-def infer_task_type(tools: List[str]) -> str:
-    """Deterministic rubric selection from a step-tool list,
-    used when no explicit task_type exists. A state-changing or
-    code tool makes it a code_change; an all-read-only run is
-    research-shaped; anything else is general."""
+def _write_landed(step: dict) -> bool:
+    """Did this step's recorded output show a file actually
+    saved? The fallback signal for a code_helper write whose
+    parameters no longer carry the action (older checkpoints).
+    Claims only ever feed type inference, never verification."""
+    return bool(_WRITE_LANDED_RE.search(
+        str(step.get("output") or "")))
+
+
+def infer_task_type(tools: List[str], goal: Optional[str] = None,
+                    steps: Optional[List[dict]] = None) -> str:
+    """Deterministic rubric selection from the executed steps.
+    Explicit task_type (select_rubric) always wins over this;
+    when no explicit type exists, the executed actions decide:
+    a write makes it a code_change, a research tool makes it
+    research, anything else is general — and an absent/invalid
+    planner type is preserved as 'no classification' by the
+    caller, never defaulted here. The goal only speaks when
+    there are no executed actions to judge from."""
     names = [str(t or "") for t in tools or []]
-    if any(t in _CODE_TOOLS for t in names):
+    step_list = [s for s in (steps or []) if isinstance(s, dict)]
+    if any(t in _CODE_WRITE_TOOLS for t in names):
         return "code_change"
-    if names and all(retry_safe(t) for t in names):
+    for s in step_list:
+        if str(s.get("tool") or "") != "code_helper":
+            continue
+        params = s.get("parameters") or {}
+        if isinstance(params, dict) and \
+                str(params.get("action") or "").strip().lower() \
+                == "write":
+            return "code_change"
+        if _write_landed(s):
+            return "code_change"
+    if any(t in _RESEARCH_TOOLS for t in names):
+        return "research"
+    if not names and goal and \
+            _QUESTION_LIKE_RE.search(str(goal).strip()):
+        # No executed actions to judge from — a question-like
+        # goal is the only signal left. A question answered by
+        # plain lookups (get_time, status) stays general: the
+        # tools ran, and they were not research.
         return "research"
     return "general"
 
 
 def select_rubric(task_type: Optional[str] = None,
-                  tools: Optional[List[str]] = None) -> dict:
-    """Explicit task_type wins; otherwise infer from the tools;
-    otherwise general."""
+                  tools: Optional[List[str]] = None,
+                  goal: Optional[str] = None,
+                  steps: Optional[List[dict]] = None) -> dict:
+    """Explicit task_type wins; otherwise infer from the goal
+    and the executed steps; otherwise general."""
     if task_type and str(task_type).strip() in _REGISTRY:
         return get_rubric(str(task_type).strip())
-    if tools:
-        return get_rubric(infer_task_type(tools))
+    if tools or steps:
+        return get_rubric(infer_task_type(tools, goal=goal,
+                                          steps=steps))
     return get_rubric("general")
 
 

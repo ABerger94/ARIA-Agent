@@ -7,8 +7,9 @@ Pattern reimplemented from Mark-XXXIX-OR's agent/planner.py
 "parameters", "critical"}]} — produced in one call, validated,
 clamped to PLAN_MAX_STEPS, with a deterministic single-step
 fallback when planning fails. task_type is optional, validated
-against the rubric registry (aria.agent.rubrics), and defaults
-to "general"; the outcome grader selects its rubric by it.
+against the rubric registry (aria.agent.rubrics); an absent or
+invalid type stays absent (None) so the grader infers from the
+executed steps instead of defaulting to "general".
 Differences from his planner:
 
   * the model is ARIA's background pool (orpool, Phase 2), never
@@ -156,10 +157,13 @@ def _default_llm(prompt: str, system: str) -> str:
     return text
 
 
-def _valid_task_type(raw) -> str:
+def _valid_task_type(raw) -> Optional[str]:
     """A plan's task_type, validated against the rubric
-    registry (Outcomes/Grader upgrade): anything unknown or
-    missing is "general". Never raises."""
+    registry (Outcomes/Grader upgrade). Pass 36 #32: an absent
+    or invalid type is preserved as NO classification (None) —
+    the grader then infers from the goal and the executed
+    steps — instead of silently becoming "general", which
+    suppressed inference. Never raises."""
     try:
         from aria.agent import rubrics
         value = str(raw or "").strip()
@@ -167,7 +171,7 @@ def _valid_task_type(raw) -> str:
             return value
     except Exception:
         pass
-    return "general"
+    return None
 
 
 def _fallback_plan(goal: str) -> dict:

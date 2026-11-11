@@ -440,7 +440,13 @@ class AgentExecutor:
                     task_type=(plan or {}).get("task_type"),
                     worker_model=worker_model,
                     deadline=deadline,
-                    chat=self._grader_chat(), probes=probes)
+                    chat=self._grader_chat(), probes=probes,
+                    # Pass 36 #32: the plan's check-step list
+                    # rides into the bundle; without a plan the
+                    # grader derives it from the executed steps.
+                    check_steps=_grader.identify_check_steps(
+                        (plan or {}).get("steps") or [])
+                    if (plan or {}).get("steps") else None)
                 self._last_grade = g
                 if g["verdict"] == "fail":
                     return _grader.format_failure_reason(g)

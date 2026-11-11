@@ -143,6 +143,8 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
                        'authorization envelope defaults to the tools named in steps; a step outside the envelope, '
                        'or an irreversible tool not listed in pre_approved_irreversible, parks for approval even '
                        'in auto mode. allowed_tools / pre_approved_irreversible are comma-separated tool names. '
+                       'task_type is one of general, research, code_change — it picks the outcome rubric the '
+                       'verifier grades against; omit it to let the grader infer from the executed steps. '
                        'Use for jobs he hands over and walks away from, not quick one-off calls.',
         'name': 'mission_create',
         'parameters': {   'properties': {   'goal': {'type': 'STRING'},
@@ -150,6 +152,7 @@ ALL_FUNCTION_DECLARATIONS = [   {   'description': 'Searches the live web for fa
                                             'allowed_tools': {'type': 'STRING'},
                                             'pre_approved_irreversible': {'type': 'STRING'},
                                             'spend_cap': {'type': 'NUMBER'},
+                                            'task_type': {'type': 'STRING'},
                                             'deadline_minutes': {'type': 'INTEGER'}},
                           'required': ['goal', 'steps'],
                           'type': 'OBJECT'}},
