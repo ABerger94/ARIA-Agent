@@ -226,12 +226,18 @@ class AgentExecutor:
     def _verify(self, goal: str, completed: List[dict],
                 results: Dict[int, str], *,
                 plan: Optional[Dict[str, Any]] = None,
-                journal_ids: Optional[Dict[int, str]] = None
+                journal_ids: Optional[Dict[int, str]] = None,
+                deadline: Optional[float] = None
                 ) -> Optional[str]:
         """Return a rejection reason, or None when the work
         passes (or cannot be judged — fail-open). The verifier
         sees ONLY the goal and the recorded step results: it
-        judges evidence, not intentions."""
+        judges evidence, not intentions. deadline is the
+        monotonic-seconds wall-clock bound for the grader,
+        derived from the task's remaining budget by execute()
+        (pass 36 #31); the grader's cancel propagates (pass 36
+        #30 owns the cancel path — this method does not swallow
+        runtime.Cancelled)."""
         if self._verifier is not None:
             try:
                 return self._verifier(goal, completed, results)
@@ -255,6 +261,7 @@ class AgentExecutor:
                 g = _grader.grade(
                     goal, steps, results,
                     task_type=(plan or {}).get("task_type"),
+                    deadline=deadline,
                     chat=self._grader_chat(), probes=probes)
                 self._last_grade = g
                 if g["verdict"] == "fail":
@@ -263,6 +270,12 @@ class AgentExecutor:
                     return None
                 add_log("taskexec: outcome grader could not "
                         "grade; legacy verifier path")
+        except runtime.Cancelled:
+            # Pass 36 #31 (with #30): a cancelled grade
+            # propagates — it must not fall through to the legacy
+            # verifier and park-or-pass a task whose run was
+            # cancelled.
+            raise
         except Exception as e:
             add_log(f"taskexec: outcome grader errored ({e}); "
                     f"legacy verifier path")
@@ -594,10 +607,18 @@ class AgentExecutor:
 
             if failed_step is None:
                 if verify:
+                    # Pass 36 #31: the grade gets what is left
+                    # of the task budget (capped at 300 s, so one
+                    # slow grade can never hold the worker past a
+                    # useful window), as a monotonic deadline.
+                    _remaining = budget_s - (time.time() - t0)
+                    _grade_deadline = time.monotonic() + max(
+                        0.0, min(_remaining, 300.0))
                     rejection = self._verify(
                         goal, completed, results, plan=plan,
                         journal_ids=self._journal_ids(
-                            completed, results, resume))
+                            completed, results, resume),
+                        deadline=_grade_deadline)
                     if rejection:
                         add_log("taskexec: verifier parked the task — "
                                 f"{rejection[:80]}")

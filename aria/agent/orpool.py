@@ -281,7 +281,8 @@ class OrPool:
 
     # -- one model ------------------------------------------------------
     def _call(self, model: str, messages: List[dict], max_tokens=DEFAULT_MAX_TOKENS,
-              temperature=DEFAULT_TEMPERATURE, response_format=None):
+              temperature=DEFAULT_TEMPERATURE, response_format=None,
+              deadline: Optional[float] = None):
         runtime.check_cancelled()
         # The single-attempt transport wrapper accounts retries independently.
         original = self._transport
@@ -301,12 +302,19 @@ class OrPool:
                 usage.finish(ticket, latency_ms=int((time.monotonic()-start)*1000), status='error')
                 raise
         # Don't mutate the shared pool transport; each call gets a local adapter.
-        return self._call_unmetered(model, messages, max_tokens, temperature, response_format, transport=metered)
+        return self._call_unmetered(model, messages, max_tokens, temperature, response_format, transport=metered,
+                                    deadline=deadline)
 
     def _call_unmetered(self, model: str, messages: List[dict],
               max_tokens: int = DEFAULT_MAX_TOKENS,
               temperature: float = DEFAULT_TEMPERATURE,
-              response_format: Optional[dict] = None, *, transport=None) -> Optional[str]:
+              response_format: Optional[dict] = None, *, transport=None,
+              deadline: Optional[float] = None) -> Optional[str]:
+        """One model, up to MAX_RETRIES_PER_MODEL attempts. A
+        monotonic `deadline` (time.monotonic seconds) aborts the
+        walk between attempts — a single in-flight request still
+        runs to its own REQUEST_TIMEOUT, so the deadline bounds
+        the walk, not a blocking read (pass 36 #31)."""
         payload: Dict = {
             "model": model,
             "messages": messages,
@@ -319,6 +327,8 @@ class OrPool:
         if self._is_parked(model):
             return None
         for attempt in range(1, MAX_RETRIES_PER_MODEL + 1):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise OrPoolError("[orpool] walk deadline exceeded")
             try:
                 resp = (transport or self._transport)(
                     API_URL, headers=self._headers(), json=payload,
@@ -351,6 +361,8 @@ class OrPool:
                                MAX_RETRIES_PER_MODEL)
             except (usage.BudgetExceeded, runtime.Cancelled):
                 raise
+            except OrPoolError:
+                raise
             except Exception as e:
                 # His client distinguished Timeout for the log line;
                 # the recovery is identical (retry once, then move on).
@@ -365,11 +377,19 @@ class OrPool:
               model: Optional[str] = None,
               max_tokens: int = DEFAULT_MAX_TOKENS,
               temperature: float = DEFAULT_TEMPERATURE,
-              response_format: Optional[dict] = None):
+              response_format: Optional[dict] = None, *,
+              deadline: Optional[float] = None,
+              max_attempts: Optional[int] = None):
         """The fallback walk, reporting WHICH model answered.
         Returns (text, model). _call_with_fallback is the
         text-only face existing callers use.
 
+        deadline: monotonic-seconds wall-clock bound (pass 36
+        #31) — checked before every model and every transport
+        attempt; expiry raises OrPoolError. When a deadline is
+        given and no explicit max_attempts, the walk starts at
+        most one model per REQUEST_TIMEOUT of remaining budget.
+        max_attempts: hard cap on model attempts in this walk.
         A per-model BudgetExceeded (unpriced model under a cap,
         or a genuinely exhausted budget) skips THAT model and
         the walk continues — the global cap stays authoritative
@@ -378,17 +398,30 @@ class OrPool:
         The preferred model is tried at most once: the pool
         loop skips it when already attempted (pass 36 #34)."""
         self._require_available()
+        if deadline is not None and max_attempts is None:
+            remaining = deadline - time.monotonic()
+            max_attempts = max(
+                1, int(remaining // REQUEST_TIMEOUT))
         attempted: set = set()
+        attempts = 0
 
         def _try(m: str) -> Optional[str]:
+            nonlocal attempts
             if m in attempted:
                 return None
             attempted.add(m)
             if self._is_rate_limited(m) or self._is_parked(m):
                 return None
+            if deadline is not None and time.monotonic() >= deadline:
+                raise OrPoolError("[orpool] walk deadline exceeded")
+            if max_attempts is not None and attempts >= max_attempts:
+                raise OrPoolError(
+                    "[orpool] walk attempt budget exhausted")
+            attempts += 1
             try:
                 return self._call(m, messages, max_tokens,
-                                  temperature, response_format)
+                                  temperature, response_format,
+                                  deadline=deadline)
             except usage.BudgetExceeded as e:
                 logger.info("[orpool] %s → budget refused (%s); "
                             "trying next model", m, e)
@@ -441,17 +474,22 @@ class OrPool:
     def chat_traced(self, prompt: str, system: str,
                     model: Optional[str] = None,
                     max_tokens: int = DEFAULT_MAX_TOKENS,
-                    temperature: float = DEFAULT_TEMPERATURE):
+                    temperature: float = DEFAULT_TEMPERATURE, *,
+                    deadline: Optional[float] = None,
+                    max_attempts: Optional[int] = None):
         """chat() that also reports the model that actually
         answered — the grader (aria.agent.grader) records it so a
         verdict never claims a grader model the fallback walk did
-        not use. Returns (text, model_used)."""
+        not use. Returns (text, model_used). deadline/
+        max_attempts are the _walk bounds (pass 36 #31)."""
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
         ]
         return self._walk(self._text_models, messages, model,
-                          max_tokens, temperature)
+                          max_tokens, temperature,
+                          deadline=deadline,
+                          max_attempts=max_attempts)
 
     def chat_json(self, prompt: str,
                   system: str = ("Return ONLY valid JSON. "

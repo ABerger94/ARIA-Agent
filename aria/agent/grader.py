@@ -44,15 +44,20 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 from aria import config as _config
+from aria import runtime
 from aria.agent import rubrics as _rubrics
 from aria.config import add_log
 
 OUTPUT_CAP = 1500          # chars of one step's recorded output
 _EVIDENCE_CAP = 240        # chars of cited evidence per criterion
 _SAMPLE_CAP = 300          # chars of file content sample per probe
+_BUNDLE_CAP = 64000        # chars of the whole evidence bundle sent
+                           # to the grader (pass 36 #31: total
+                           # evidence budget, not just per-step caps)
 _POLICIES = ("different", "cheap", "same")
 
 _FENCE_RE = re.compile(r"```(?:json)?")
@@ -312,14 +317,17 @@ def _choose_model(policy: str, worker_model: Optional[str],
 
 
 def _default_chat(prompt: str, system: str,
-                  model: Optional[str]):
+                  model: Optional[str], *,
+                  deadline: Optional[float] = None):
     """Pool-backed chat reporting the model that answered.
     Raises when the pool cannot serve — grade() turns that
-    into cannot_grade."""
+    into cannot_grade. deadline is the _walk wall-clock bound
+    (pass 36 #31)."""
     from aria.agent.orpool import get_pool
     return get_pool().chat_traced(
         prompt, system=system, model=model,
-        max_tokens=2048, temperature=0.2)
+        max_tokens=2048, temperature=0.2,
+        deadline=deadline)
 
 
 def _parse_grade(raw: Any, rubric: dict) -> Optional[dict]:
@@ -398,9 +406,24 @@ def grade(goal: str, steps: List[dict],
           worker_model: Optional[str] = None,
           chat: Optional[Callable] = None,
           probes: Optional[List[dict]] = None,
-          policy: Optional[str] = None) -> dict:
+          policy: Optional[str] = None,
+          deadline: Optional[float] = None) -> dict:
     """Grade one finished run. Returns the GradeResult dict
-    from the design; never raises."""
+    from the design; never raises — EXCEPT runtime.Cancelled,
+    which propagates (pass 36 #31 coordinates with the
+    cancel-propagation fix: a cancelled grade must not be
+    swallowed into a cannot_grade that the engines then treat
+    as "unverifiable, carry on").
+
+    deadline: monotonic-seconds (time.monotonic) wall-clock
+    bound for the whole grade, derived from the run's
+    remaining deadline/budget by the caller (pass 36 #31).
+    A grade that cannot finish inside it is cannot_grade,
+    and the already-completed work is retained by the caller.
+    The evidence bundle is capped at _BUNDLE_CAP chars in
+    total (per-artifact samples were already capped when the
+    probes were built; full-file hashing is the probe layer's
+    bound, not this module's)."""
     if rubric is None:
         tools = [s.get("tool") for s in steps or []
                  if isinstance(s, dict)]
@@ -410,13 +433,29 @@ def grade(goal: str, steps: List[dict],
         if probes is None:
             probes = build_probes(norm)
         bundle = build_bundle(goal, norm, rubric, probes)
+        if len(bundle) > _BUNDLE_CAP:
+            bundle = (bundle[:_BUNDLE_CAP] +
+                      f"\n… [bundle truncated: "
+                      f"{len(bundle) - _BUNDLE_CAP} more chars]")
         policy = policy if policy in _POLICIES else grader_policy()
         roster = _roster()
         chosen = _choose_model(policy, worker_model, roster)
         presumed_worker = worker_model or (roster[0] if roster
                                            else None)
+        if deadline is not None and time.monotonic() >= deadline:
+            return _cannot_grade(
+                rubric, "grading deadline already passed")
         call = chat or _default_chat
-        raw = call(bundle, _SYSTEM, chosen)
+        try:
+            raw = call(bundle, _SYSTEM, chosen,
+                       deadline=deadline)
+        except TypeError:
+            # Injected 3-arg chat callables (the (prompt, system,
+            # model) contract tests and engines use) do not take
+            # the walk bounds — retry positionally. The real
+            # default chat takes them, so production never lands
+            # here.
+            raw = call(bundle, _SYSTEM, chosen)
         if isinstance(raw, tuple):
             raw_text, model_used = raw[0], str(raw[1] or "")
         else:
@@ -442,6 +481,8 @@ def grade(goal: str, steps: List[dict],
                 f"{model_used or 'unknown'}"
                 f"{', self-graded' if result['self_graded'] else ''})")
         return result
+    except runtime.Cancelled:
+        raise
     except Exception as e:
         return _cannot_grade(rubric, f"{type(e).__name__}: {e}")
 

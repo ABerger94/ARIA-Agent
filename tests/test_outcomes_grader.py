@@ -300,6 +300,37 @@ def test_grader_malformed_output_is_cannot_grade():
     assert out["verdict"] == "cannot_grade", out
 
 
+def test_grader_deadline_already_passed_is_cannot_grade():
+    # Pass 36 #31: a grade whose deadline already passed never
+    # calls the pool — it is cannot_grade immediately.
+    def _never(prompt, system, model=None):
+        raise AssertionError("grader chat must not be called")
+
+    steps = [{"step": 1, "tool": "web_search", "output": "x"}]
+    out = grader.grade("g", steps, chat=_never,
+                       deadline=time.monotonic() - 1)
+    assert out["verdict"] == "cannot_grade", out
+    print("ok grader_deadline_already_passed_is_cannot_grade")
+
+
+def test_grader_cancelled_propagates():
+    # Pass 36 #31 (with #30): a cancelled grade propagates as
+    # runtime.Cancelled — it must not be swallowed into a
+    # cannot_grade the engines then treat as "unverifiable".
+    runtime = importlib.import_module("aria.runtime")
+
+    def _cancelled(prompt, system, model=None):
+        raise runtime.Cancelled("cancelled mid-grade")
+
+    steps = [{"step": 1, "tool": "web_search", "output": "x"}]
+    try:
+        grader.grade("g", steps, chat=_cancelled)
+    except runtime.Cancelled:
+        print("ok grader_cancelled_propagates")
+        return
+    raise AssertionError("expected runtime.Cancelled")
+
+
 def test_grader_model_policies_and_self_graded():
     roster = grader._roster()
     assert len(roster) >= 2

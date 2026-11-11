@@ -304,6 +304,24 @@ def test_pool_400_parks_model_too():
     print("ok pool_400_parks_model_too")
 
 
+def test_pool_walk_deadline_exceeded():
+    # Pass 36 #31: an already-passed walk deadline raises
+    # before any transport call.
+    import time as _time
+    transport = _ScriptedTransport({
+        "m1": [_Resp(200, "m1 answers")],
+    })
+    pool = _pool(transport, models=("m1",))
+    try:
+        pool.chat_traced("hi", "sys",
+                         deadline=_time.monotonic() - 1)
+        raise AssertionError("expected OrPoolError")
+    except orpool.OrPoolError:
+        pass
+    assert transport.calls == [], transport.calls
+    print("ok pool_walk_deadline_exceeded")
+
+
 def test_pool_400_request_specific_cools_not_parks():
     # Pass 36 #34: a 400 about THIS request (oversize payload,
     # bad parameter) must not park a healthy model for the

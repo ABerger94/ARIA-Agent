@@ -1039,9 +1039,29 @@ def _outcome_grade(mid: int, m: Dict[str, Any],
             if not retry_safe(s["tool"]):
                 journal_ids[s["idx"] + 1] = \
                     f"mission:{mid}:step:{s['id']}"
+        # Pass 36 #31: the grade is bounded by the mission's
+        # remaining deadline, capped at 300 s so one slow grade
+        # can never hold the single mission worker past a useful
+        # window; a mission with no deadline gets the same 300 s
+        # default. Expiry is cannot_grade and the caller keeps
+        # its legacy verify outcome.
+        import time as _time
+        deadline = None
+        try:
+            if m.get("deadline"):
+                remaining = (datetime.strptime(
+                    m["deadline"], "%Y-%m-%d %H:%M:%S")
+                    - datetime.now()).total_seconds()
+            else:
+                remaining = 300.0
+            deadline = _time.monotonic() + max(
+                0.0, min(remaining, 300.0))
+        except Exception:
+            deadline = None
         result = _grader.grade(
             m["goal"], steps,
             task_type=(m.get("envelope") or {}).get("task_type"),
+            deadline=deadline,
             probes=_grader.build_probes(
                 _grader.normalize_steps(steps),
                 journal_ids=journal_ids))
