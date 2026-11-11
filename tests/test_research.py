@@ -4,6 +4,7 @@ filing, index, summary extraction and tool actions are real."""
 
 import importlib
 import json
+import pytest
 import os
 import sys
 import types
@@ -154,3 +155,98 @@ def test_section_text_for_briefing_tab(tmp_path, monkeypatch):
     assert "How long does the widget last?" in section
     assert "The widget lasts 40 hours." in section
     print("ok section_text")
+
+
+# ---- Pass 36 #36: research classified by action -----------------
+
+def test_retry_safe_classifies_research_by_action():
+    from aria.tool_policy import retry_safe
+    assert retry_safe("research", {"action": "list"}) is True
+    assert retry_safe("research", {"action": "read"}) is True
+    assert retry_safe("research", {"action": "run"}) is False
+    # Unknown action (no args — the missions/grader/rubrics call
+    # sites) is conservative: a run files a brief, so not safe.
+    assert retry_safe("research") is False
+    assert retry_safe("research", {}) is False
+    assert retry_safe("read_file") is True
+    assert retry_safe("write_file") is False
+
+
+def test_run_returns_durable_receipt(tmp_path, monkeypatch):
+    _use_tmp(tmp_path, monkeypatch)
+    result = research.run_research("How long does the widget last?",
+                                   **_fakes())
+    assert result["ok"], result
+    receipt = result["receipt"]
+    assert receipt["brief_id"] == result["id"] == 1
+    assert receipt["file"] == result["file"]
+    assert os.path.exists(os.path.join(research.RESEARCH_DIR,
+                                       receipt["file"]))
+    second = research.run_research("a second question", **_fakes())
+    assert second["ok"] and second["receipt"]["brief_id"] == 2, second
+    # The tool surface carries the same receipt line (seams faked
+    # so the tool's own run path is exercised, not the network).
+    monkeypatch.setattr(research, "_ddgs_search", lambda q: list(_HITS))
+    monkeypatch.setattr(research, "_fetch_text",
+                        lambda url: f"Full text from {url} with facts.")
+    monkeypatch.setattr(research, "_provider",
+                        lambda system, user: _BRIEF)
+    out = research.tool_research(
+        {"action": "run", "question": "How long does the widget last?"})
+    assert "Receipt: brief #3" in out, out
+
+
+# ---- Pass 36 #37: corrupt index is surfaced, never empty --------
+
+def _file_brief(tmp_path, monkeypatch):
+    _use_tmp(tmp_path, monkeypatch)
+    result = research.run_research("How long does the widget last?",
+                                   **_fakes())
+    assert result["ok"], result
+    return result
+
+
+def test_corrupt_index_raises_and_preserves_copy(tmp_path, monkeypatch):
+    _file_brief(tmp_path, monkeypatch)
+    index_path = os.path.join(research.RESEARCH_DIR,
+                              "research_index.json")
+    with open(index_path, "w", encoding="utf-8") as f:
+        f.write("{not json,,,")
+    with pytest.raises(research.ResearchIndexCorrupt):
+        research._load_index()
+    copies = [n for n in os.listdir(research.RESEARCH_DIR)
+              if n.startswith("research_index.json.corrupt-")]
+    assert copies, "corrupt index must be preserved, not discarded"
+    # The next run refuses to file (no orphan brief, no id restart)
+    result = research.run_research("another question", **_fakes())
+    assert not result["ok"] and "corrupt" in result["error"]
+    assert research.tool_research({"action": "list"}).startswith(
+        "Cannot list research briefs:")
+    assert "corrupt" in research.read_research(1)
+    assert "corrupt" in research.research_section_text()
+
+
+def test_missing_index_is_empty_not_corrupt(tmp_path, monkeypatch):
+    _use_tmp(tmp_path, monkeypatch)
+    assert research._load_index() == []
+    assert research.list_research() == []
+
+
+def test_non_list_index_is_corrupt(tmp_path, monkeypatch):
+    _use_tmp(tmp_path, monkeypatch)
+    os.makedirs(research.RESEARCH_DIR, exist_ok=True)
+    with open(os.path.join(research.RESEARCH_DIR,
+                           "research_index.json"),
+              "w", encoding="utf-8") as f:
+        json.dump({"id": 1}, f)
+    with pytest.raises(research.ResearchIndexCorrupt):
+        research._load_index()
+
+
+def test_second_brief_keeps_id_after_first(tmp_path, monkeypatch):
+    # Regression anchor for the #37 failure mode: ids must not
+    # restart at 1 while older briefs still exist.
+    _file_brief(tmp_path, monkeypatch)
+    second = research.run_research("a second question", **_fakes())
+    assert second["ok"] and second["id"] == 2, second
+    assert [e["id"] for e in research.list_research(5)] == [2, 1]

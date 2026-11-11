@@ -78,18 +78,68 @@ def _index_path() -> str:
     return os.path.join(_research_dir(), _INDEX_NAME)
 
 
+class ResearchIndexCorrupt(Exception):
+    """The research index exists but is not a valid JSON list.
+
+    Pass 36 #37: a corrupt index is NOT an empty index — the old
+    _load_index returned [] for any read/parse error, so the next
+    run restarted ids at 1 and orphaned every older brief from
+    the index. Callers must surface this, never silently empty.
+    """
+
+
+def _preserve_corrupt_index(path: str, exc: Exception) -> str:
+    """Keep a timestamped copy of a corrupt index next to it, so
+    the records are recoverable by hand. Best effort, never raises."""
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    dest = f"{path}.corrupt-{stamp}"
+    try:
+        import shutil
+        shutil.copyfile(path, dest)
+        return dest
+    except Exception:
+        return ""
+
+
 def _load_index() -> list:
     try:
         with open(_index_path(), encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, list) else []
-    except Exception:
+    except FileNotFoundError:
         return []
+    except Exception as exc:
+        dest = _preserve_corrupt_index(_index_path(), exc)
+        raise ResearchIndexCorrupt(
+            "research index is corrupt"
+            + (f" (preserved as {dest})" if dest else "")
+            + f": {exc}") from exc
+    if not isinstance(data, list):
+        dest = _preserve_corrupt_index(_index_path(), TypeError(
+            "index is not a JSON list"))
+        raise ResearchIndexCorrupt(
+            "research index is corrupt: not a JSON list"
+            + (f" (preserved as {dest})" if dest else ""))
+    return data
 
 
 def _save_index(entries: list) -> None:
-    with open(_index_path(), "w", encoding="utf-8") as f:
-        json.dump(entries, f, indent=1)
+    # Pass 36 #37: atomic write — temp file in the same directory
+    # + os.replace, so an interrupted save can never truncate the
+    # live index in place (the old open("w") did exactly that).
+    import tempfile
+    path = _index_path()
+    fd, tmp = tempfile.mkstemp(prefix=".research_index.",
+                               dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(entries, f, indent=1)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _slug(question: str) -> str:
@@ -205,7 +255,13 @@ def run_research(question: str, *, search=None, fetch=None,
                         if ln.strip()), "")[:300]
 
     with _INDEX_LOCK:
-        entries = _load_index()
+        try:
+            entries = _load_index()
+        except ResearchIndexCorrupt as exc:
+            # Pass 36 #37: a corrupt index blocks filing — writing
+            # the brief first would orphan it (no index entry) and
+            # the next run would restart ids at 1. Surface it.
+            return {"ok": False, "error": str(exc)}
         rid = (entries[-1]["id"] + 1) if entries else 1
         fname = f"{_slug(question)}-{now.strftime('%Y%m%d-%H%M%S')}.md"
         doc = (
@@ -232,11 +288,21 @@ def run_research(question: str, *, search=None, fetch=None,
     return {"ok": True, "id": rid, "question": question,
             "summary": summary, "file": fname,
             "verification": verification,
-            "sources": len(sources)}
+            "sources": len(sources),
+            # Pass 36 #36: durable artifact receipt for the filed
+            # brief — a repair/replay gate can check this instead
+            # of re-running run and filing a second brief.
+            "receipt": {"brief_id": rid, "file": fname,
+                        "filed_at": now.isoformat(timespec="seconds")}}
 
 
 def list_research(limit: int = 5) -> list:
-    """Newest briefs first: [{id, question, filed_at, file, summary}]."""
+    """Newest briefs first: [{id, question, filed_at, file, summary}].
+
+    Raises ResearchIndexCorrupt when the index is corrupt — the
+    caller surfaces it; an empty list means "no briefs", never
+    "the index could not be read" (pass 36 #37).
+    """
     return list(reversed(_load_index()))[:limit]
 
 
@@ -246,7 +312,11 @@ def read_research(rid) -> str:
         rid = int(rid)
     except (TypeError, ValueError):
         return f"No research brief with id '{rid}'."
-    for entry in _load_index():
+    try:
+        entries = _load_index()
+    except ResearchIndexCorrupt as exc:
+        return f"Cannot read research briefs: {exc}"
+    for entry in entries:
         if entry["id"] == rid:
             path = os.path.join(_research_dir(), entry["file"])
             try:
@@ -259,7 +329,10 @@ def read_research(rid) -> str:
 
 def research_section_text(limit: int = 5) -> str:
     """Dashboard-ready Research section for the Briefing tab."""
-    entries = list_research(limit)
+    try:
+        entries = list_research(limit)
+    except ResearchIndexCorrupt as exc:
+        return f"\n\n—— RESEARCH BRIEFS ——\n({exc})"
     if not entries:
         return ""
     lines = ["", "", "—— RESEARCH BRIEFS ——"]
@@ -279,7 +352,10 @@ def tool_research(args) -> str:
     args = args or {}
     action = str(args.get("action") or "run").strip().lower()
     if action == "list":
-        entries = list_research(8)
+        try:
+            entries = list_research(8)
+        except ResearchIndexCorrupt as exc:
+            return f"Cannot list research briefs: {exc}"
         if not entries:
             return "No research briefs filed yet."
         return "Research briefs (newest first):\n" + "\n".join(
@@ -310,4 +386,6 @@ def tool_research(args) -> str:
             f"Short answer: {result['summary']}\n"
             f"{status}"
             f"Full brief is in the Briefing tab's Research section "
-            f"({result['file']}).")
+            f"({result['file']}). "
+            f"Receipt: brief #{result['id']} ({result['file']}) — "
+            f"already filed; do not re-run to file it again.")
