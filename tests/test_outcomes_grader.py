@@ -300,6 +300,23 @@ def test_grader_malformed_output_is_cannot_grade():
     assert out["verdict"] == "cannot_grade", out
 
 
+def test_grader_unknown_worker_labelled_not_presumed():
+    # Pass 36 #29: worker_model None is unknown provenance —
+    # roster[0] is never presumed to be the worker, self_graded
+    # stays False, and the note says so.
+    roster = grader._roster()
+    assert len(roster) >= 2
+    steps = [{"step": 1, "tool": "web_search", "output": "x"}]
+    out = grader.grade("g", steps,
+                       chat=_chat_returning(_grade_json("research")),
+                       worker_model=None, policy="different")
+    assert out["verdict"] == "pass", out
+    assert out["worker_model"] is None, out
+    assert out["self_graded"] is False, out
+    assert "worker unknown" in grader.format_grade_note(out), out
+    print("ok grader_unknown_worker_labelled_not_presumed")
+
+
 def test_grader_deadline_already_passed_is_cannot_grade():
     # Pass 36 #31: a grade whose deadline already passed never
     # calls the pool — it is cannot_grade immediately.

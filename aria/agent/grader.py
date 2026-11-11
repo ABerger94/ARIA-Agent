@@ -33,7 +33,14 @@ grader sharing the worker's model shares its blind spots. The
 GradeResult records the model that actually graded (the pool
 reports it via chat_traced); when it equals the worker's model
 the result carries self_graded=True so a self-check is never
-dressed as an independent grade.
+dressed as an independent grade. When the caller cannot say
+which model did the work (worker_model None) the result
+records worker_model None and the note says "worker unknown":
+roster[0] is never presumed to be the worker, and the pool
+walk enforces the exclusion itself (pass 36 #29). A grade
+also carries a wall-clock deadline from the run's remaining
+budget (pass 36 #31); expiry is cannot_grade, and a
+cancelled grade propagates instead of being swallowed.
 
 Master switch: setting outcomes_grader_enabled (default False).
 With it off, neither engine calls this module and both behave
@@ -303,31 +310,40 @@ def _roster() -> List[str]:
 
 def _choose_model(policy: str, worker_model: Optional[str],
                   roster: List[str]) -> Optional[str]:
+    """The grader leg under the policy. Pass 36 #29: when the
+    worker model is UNKNOWN (None) there is nothing to exclude
+    and nothing to presume — the roster head is picked as the
+    grader, but the result labels provenance unknown and
+    self_graded stays False; roster[0] is never treated as
+    "the model that did the work"."""
     if not roster:
         return worker_model if policy == "same" else None
     if policy == "same":
         return worker_model
     if policy == "cheap":
         return roster[-1]
-    presumed = worker_model or roster[0]
+    if worker_model is None:
+        return roster[0]
     for m in roster:
-        if m != presumed:
+        if m != worker_model:
             return m
     return None
 
 
 def _default_chat(prompt: str, system: str,
                   model: Optional[str], *,
-                  deadline: Optional[float] = None):
+                  deadline: Optional[float] = None,
+                  exclude: Optional[str] = None):
     """Pool-backed chat reporting the model that answered.
     Raises when the pool cannot serve — grade() turns that
-    into cannot_grade. deadline is the _walk wall-clock bound
-    (pass 36 #31)."""
+    into cannot_grade. deadline/exclude are the _walk bounds
+    (pass 36 #29/#31): a monotonic wall-clock bound and a
+    model the walk must never fall back onto."""
     from aria.agent.orpool import get_pool
     return get_pool().chat_traced(
         prompt, system=system, model=model,
         max_tokens=2048, temperature=0.2,
-        deadline=deadline)
+        deadline=deadline, exclude=exclude)
 
 
 def _parse_grade(raw: Any, rubric: dict) -> Optional[dict]:
@@ -389,14 +405,16 @@ def _parse_grade(raw: Any, rubric: dict) -> Optional[dict]:
             "failed_criteria": failed}
 
 
-def _cannot_grade(rubric: dict, reason: str) -> dict:
+def _cannot_grade(rubric: dict, reason: str,
+                  worker_model: Optional[str] = None) -> dict:
     add_log(f"grader: cannot grade ({reason})")
     return {"verdict": "cannot_grade",
             "rubric_id": rubric["id"],
             "rubric_version": rubric["version"],
             "criteria": [], "failure_cases": [],
             "failed_criteria": [],
-            "grader_model": "", "self_graded": False}
+            "grader_model": "", "self_graded": False,
+            "worker_model": worker_model}
 
 
 def grade(goal: str, steps: List[dict],
@@ -415,6 +433,12 @@ def grade(goal: str, steps: List[dict],
     swallowed into a cannot_grade that the engines then treat
     as "unverifiable, carry on").
 
+    worker_model: the model (or model set label) that did the
+    work, captured by the caller (planner via chat_traced for
+    delegated tasks). None means UNKNOWN provenance: the
+    result records worker_model None, self_graded is False,
+    and the grade note says so — roster[0] is never presumed
+    to be the worker (pass 36 #29).
     deadline: monotonic-seconds (time.monotonic) wall-clock
     bound for the whole grade, derived from the run's
     remaining deadline/budget by the caller (pass 36 #31).
@@ -440,15 +464,18 @@ def grade(goal: str, steps: List[dict],
         policy = policy if policy in _POLICIES else grader_policy()
         roster = _roster()
         chosen = _choose_model(policy, worker_model, roster)
-        presumed_worker = worker_model or (roster[0] if roster
-                                           else None)
+        # Pass 36 #29: exclusion is enforced inside the walk,
+        # not just at the pick — the pool loop must never fall
+        # back onto the worker when the preferred grader fails.
+        exclude = worker_model if policy == "different" else None
         if deadline is not None and time.monotonic() >= deadline:
             return _cannot_grade(
-                rubric, "grading deadline already passed")
+                rubric, "grading deadline already passed",
+                worker_model)
         call = chat or _default_chat
         try:
             raw = call(bundle, _SYSTEM, chosen,
-                       deadline=deadline)
+                       deadline=deadline, exclude=exclude)
         except TypeError:
             # Injected 3-arg chat callables (the (prompt, system,
             # model) contract tests and engines use) do not take
@@ -463,7 +490,7 @@ def grade(goal: str, steps: List[dict],
         parsed = _parse_grade(raw_text, rubric)
         if parsed is None:
             return _cannot_grade(
-                rubric, "grader output unparseable")
+                rubric, "grader output unparseable", worker_model)
         result = {
             "verdict": parsed["verdict"],
             "rubric_id": rubric["id"],
@@ -473,18 +500,21 @@ def grade(goal: str, steps: List[dict],
             "failed_criteria": parsed["failed_criteria"],
             "grader_model": model_used,
             "self_graded": bool(
-                model_used and presumed_worker
-                and model_used == presumed_worker),
+                model_used and worker_model
+                and model_used == worker_model),
+            "worker_model": worker_model,
         }
         add_log(f"grader: {rubric['id']} v{rubric['version']} → "
                 f"{result['verdict']} (grader: "
                 f"{model_used or 'unknown'}"
-                f"{', self-graded' if result['self_graded'] else ''})")
+                f"{', self-graded' if result['self_graded'] else ''}"
+                f"{', worker unknown' if worker_model is None else ''})")
         return result
     except runtime.Cancelled:
         raise
     except Exception as e:
-        return _cannot_grade(rubric, f"{type(e).__name__}: {e}")
+        return _cannot_grade(rubric, f"{type(e).__name__}: {e}",
+                             worker_model)
 
 
 def format_failure_reason(result: dict) -> str:
@@ -507,13 +537,18 @@ def format_failure_reason(result: dict) -> str:
 
 
 def format_grade_note(result: dict) -> str:
-    """One-line rendering for summaries / status surfaces."""
+    """One-line rendering for summaries / status surfaces.
+    Unknown worker provenance is labelled explicitly (pass 36
+    #29) — a grade never silently claims independence it
+    cannot establish."""
     note = (f"Grade: {result.get('rubric_id')} "
             f"v{result.get('rubric_version')} "
             f"{str(result.get('verdict') or '').upper()}"
             f" — grader {result.get('grader_model') or 'unknown'}")
     if result.get("self_graded"):
         note += ", self-graded"
+    elif result.get("worker_model") is None:
+        note += ", worker unknown"
     failed = result.get("failed_criteria") or []
     if failed:
         note += f"; failed criteria: {', '.join(failed)}"

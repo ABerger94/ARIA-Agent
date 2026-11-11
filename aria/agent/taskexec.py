@@ -258,9 +258,21 @@ class AgentExecutor:
                 probes = _grader.build_probes(
                     _grader.normalize_steps(steps, results),
                     journal_ids=journal_ids)
+                # Pass 36 #29: the worker model is the model
+                # that planned this task (planner records it via
+                # chat_traced); an injected executor LLM grades
+                # through the same callable the work was planned
+                # with, so its worker identity is "injected-llm"
+                # and a self-grade is labelled, not hidden. Pass
+                # 36 #31: the grade runs inside the deadline
+                # execute() derived from the remaining budget.
+                worker_model = (
+                    "injected-llm" if self._llm is not None
+                    else planner.last_worker_model())
                 g = _grader.grade(
                     goal, steps, results,
                     task_type=(plan or {}).get("task_type"),
+                    worker_model=worker_model,
                     deadline=deadline,
                     chat=self._grader_chat(), probes=probes)
                 self._last_grade = g

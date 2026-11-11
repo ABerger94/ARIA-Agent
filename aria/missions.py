@@ -1039,6 +1039,10 @@ def _outcome_grade(mid: int, m: Dict[str, Any],
             if not retry_safe(s["tool"]):
                 journal_ids[s["idx"] + 1] = \
                     f"mission:{mid}:step:{s['id']}"
+        # Pass 36 #29: a mission records no worker model
+        # identity (steps run through dispatch, not a traced
+        # planning call), so worker_model stays None and the
+        # grader labels provenance unknown — never presumed.
         # Pass 36 #31: the grade is bounded by the mission's
         # remaining deadline, capped at 300 s so one slow grade
         # can never hold the single mission worker past a useful
@@ -1061,6 +1065,7 @@ def _outcome_grade(mid: int, m: Dict[str, Any],
         result = _grader.grade(
             m["goal"], steps,
             task_type=(m.get("envelope") or {}).get("task_type"),
+            worker_model=None,
             deadline=deadline,
             probes=_grader.build_probes(
                 _grader.normalize_steps(steps),

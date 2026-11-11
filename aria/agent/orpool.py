@@ -217,20 +217,6 @@ class OrPool:
         with self._parked_lock:
             return model in self._parked
 
-    def _park_model(self, model: str, status: int) -> None:
-        with self._parked_lock:
-            if model in self._parked:
-                return
-            self._parked.add(model)
-        logger.warning("[orpool] %s → HTTP %s — parked for this session",
-                       model, status)
-        add_log(f"orpool: {model} answered HTTP {status}; "
-                f"parked for this session")
-
-    def parked_models(self) -> List[str]:
-        with self._parked_lock:
-            return sorted(self._parked)
-
     # Phrases OpenRouter uses when the MODEL itself is the
     # problem (retired id, unsupported request shape for that
     # model, no serving endpoint) — as opposed to a 400 about
@@ -278,6 +264,20 @@ class OrPool:
         add_log(f"orpool: {model} answered a request-specific "
                 f"HTTP 400; cooling down {RATE_LIMIT_COOLDOWN}s, "
                 f"not parked")
+
+    def _park_model(self, model: str, status: int) -> None:
+        with self._parked_lock:
+            if model in self._parked:
+                return
+            self._parked.add(model)
+        logger.warning("[orpool] %s → HTTP %s — parked for this session",
+                       model, status)
+        add_log(f"orpool: {model} answered HTTP {status}; "
+                f"parked for this session")
+
+    def parked_models(self) -> List[str]:
+        with self._parked_lock:
+            return sorted(self._parked)
 
     # -- one model ------------------------------------------------------
     def _call(self, model: str, messages: List[dict], max_tokens=DEFAULT_MAX_TOKENS,
@@ -379,7 +379,8 @@ class OrPool:
               temperature: float = DEFAULT_TEMPERATURE,
               response_format: Optional[dict] = None, *,
               deadline: Optional[float] = None,
-              max_attempts: Optional[int] = None):
+              max_attempts: Optional[int] = None,
+              exclude: Optional[str] = None):
         """The fallback walk, reporting WHICH model answered.
         Returns (text, model). _call_with_fallback is the
         text-only face existing callers use.
@@ -389,7 +390,11 @@ class OrPool:
         attempt; expiry raises OrPoolError. When a deadline is
         given and no explicit max_attempts, the walk starts at
         most one model per REQUEST_TIMEOUT of remaining budget.
-        max_attempts: hard cap on model attempts in this walk.
+        exclude: a model that must never answer this walk (pass
+        36 #29 — the grader passes the worker model under the
+        "different" policy, so a grade is never a self-check
+        smuggled in through fallback). max_attempts: hard cap
+        on model attempts in this walk.
         A per-model BudgetExceeded (unpriced model under a cap,
         or a genuinely exhausted budget) skips THAT model and
         the walk continues — the global cap stays authoritative
@@ -410,6 +415,8 @@ class OrPool:
             if m in attempted:
                 return None
             attempted.add(m)
+            if exclude is not None and m == exclude:
+                return None
             if self._is_rate_limited(m) or self._is_parked(m):
                 return None
             if deadline is not None and time.monotonic() >= deadline:
@@ -429,7 +436,7 @@ class OrPool:
                         f"model (global cap still applies)")
                 return None
 
-        if model:
+        if model and model != exclude:
             result = _try(model)
             if result:
                 return result, model
@@ -438,6 +445,8 @@ class OrPool:
         for m in pool:
             if m == model:
                 continue  # already attempted above, never twice
+            if exclude is not None and m == exclude:
+                continue
             logger.info("[orpool] Trying: %s", m)
             result = _try(m)
             if result:
@@ -476,12 +485,13 @@ class OrPool:
                     max_tokens: int = DEFAULT_MAX_TOKENS,
                     temperature: float = DEFAULT_TEMPERATURE, *,
                     deadline: Optional[float] = None,
-                    max_attempts: Optional[int] = None):
+                    max_attempts: Optional[int] = None,
+                    exclude: Optional[str] = None):
         """chat() that also reports the model that actually
         answered — the grader (aria.agent.grader) records it so a
         verdict never claims a grader model the fallback walk did
-        not use. Returns (text, model_used). deadline/
-        max_attempts are the _walk bounds (pass 36 #31)."""
+        not use. Returns (text, model_used). deadline/exclude/
+        max_attempts are the _walk bounds (pass 36 #29/#31)."""
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
@@ -489,7 +499,7 @@ class OrPool:
         return self._walk(self._text_models, messages, model,
                           max_tokens, temperature,
                           deadline=deadline,
-                          max_attempts=max_attempts)
+                          max_attempts=max_attempts, exclude=exclude)
 
     def chat_json(self, prompt: str,
                   system: str = ("Return ONLY valid JSON. "

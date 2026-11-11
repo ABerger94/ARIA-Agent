@@ -279,6 +279,8 @@ def test_local_turn_zero_pool_transport(monkeypatch):
     assert saved == {}, saved
     # Planning routes to the local leg, not the pool.
     assert planner._default_llm("plan this", "sys") == "local plan text"
+    assert planner.last_worker_model() is None, \
+        "local planning has no traced worker model"
     # Grading cannot grade without ever touching the pool.
     out = grader.grade(
         "g", [{"step": 1, "tool": "web_search", "output": "x"}])
@@ -320,6 +322,32 @@ def test_pool_walk_deadline_exceeded():
         pass
     assert transport.calls == [], transport.calls
     print("ok pool_walk_deadline_exceeded")
+
+
+def test_pool_walk_excludes_worker_model():
+    # Pass 36 #29: the walk itself enforces the exclusion —
+    # the preferred model is never tried when excluded, and a
+    # walk with nothing else eligible fails without calling it.
+    transport = _ScriptedTransport({
+        "m1": [_Resp(200, "m1 must not answer")],
+        "m2": [_Resp(200, "m2 answers")],
+    })
+    pool = _pool(transport, models=("m1", "m2"))
+    text, used = pool.chat_traced("hi", "sys", model="m1", exclude="m1")
+    assert (text, used) == ("m2 answers", "m2"), (text, used)
+    assert transport.calls == ["m2"], transport.calls
+
+    transport2 = _ScriptedTransport({
+        "m1": [_Resp(200, "m1 must not answer")],
+    })
+    pool2 = _pool(transport2, models=("m1",))
+    try:
+        pool2.chat_traced("hi", "sys", model="m1", exclude="m1")
+        raise AssertionError("expected OrPoolError")
+    except orpool.OrPoolError:
+        pass
+    assert transport2.calls == [], transport2.calls
+    print("ok pool_walk_excludes_worker_model")
 
 
 def test_pool_400_request_specific_cools_not_parks():
