@@ -79,10 +79,21 @@ if '--run-script' in sys.argv:
         print("aria.py: --run-script needs a script path",
               file=sys.stderr)
         sys.exit(2)
+    _script_args = sys.argv[_index + 2:]
+    # Pass 36 #42: the child script gets its intended argv — the
+    # script path as argv[0], then its own arguments — so a script
+    # reading sys.argv sees what it would see under a plain
+    # `python script.py ...` invocation.
+    sys.argv = [_script, *_script_args]
     try:
         runpy.run_path(_script, run_name="__main__")
-    except SystemExit as _e:
-        sys.exit(_e.code if isinstance(_e.code, int) else 0)
+    except SystemExit:
+        # Pass 36 #42: preserve Python's own exit semantics —
+        # re-raise so a string code prints to stderr and exits 1,
+        # None exits 0, an int exits with that code. Mapping every
+        # non-int code to 0 turned a failed validation into a
+        # successful run (the sandbox reads exit 0 as done).
+        raise
     except BaseException:
         _traceback.print_exc()
         sys.exit(1)
