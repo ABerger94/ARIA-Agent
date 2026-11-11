@@ -430,11 +430,61 @@ def _default_chat(prompt: str, system: str,
         deadline=deadline, exclude=exclude)
 
 
-def _parse_grade(raw: Any, rubric: dict) -> Optional[dict]:
-    """Strict contract: a JSON object with a criteria array.
-    Returns the computed verdict parts, or None (cannot_grade).
-    The overall verdict is computed from the criteria, never
-    taken from the model's own summary of itself."""
+def _cites_evidence(evidence: str, probes=None,
+                    step_numbers=None) -> bool:
+    """Does a pass verdict's cited evidence actually reference
+    evidence in the bundle — a real step number, or a probe
+    kind with a probe present? A bare assertion ("it worked")
+    cites nothing and cannot support a pass. Lenient on
+    wording, strict on referents: "step 1", "journal receipt
+    for step 2", "the file probe" all count when the referent
+    exists; a step number with no such step does not."""
+    ev = str(evidence or "").strip().lower()
+    if not ev:
+        return False
+    if step_numbers is not None:
+        for m in re.finditer(r"step\s+(\d+)", ev):
+            try:
+                if int(m.group(1)) in step_numbers:
+                    return True
+            except Exception:
+                continue
+    probes = probes or []
+    if probes:
+        kinds = set()
+        for p in probes:
+            if isinstance(p, dict):
+                kinds.add(str(p.get("kind") or ""))
+        if "probe" in ev and kinds:
+            return True
+        if "journal" in ev and "journal" in kinds:
+            return True
+        if "file" in ev and "file" in kinds:
+            return True
+    return False
+
+
+def _parse_grade(raw: Any, rubric: dict, *,
+                 probes=None, step_numbers=None) -> Optional[dict]:
+    """Strict contract: a JSON object with a criteria array AND
+    a failure_cases array. Returns the computed verdict parts,
+    or None (cannot_grade). The overall verdict is computed
+    from the criteria, never taken from the model's own summary
+    of itself. Pass 36 #22:
+      * exactly one entry per required criterion / failure-case
+        id, with exact types (verdict a string in
+        pass|fail|na, present a real bool, evidence a string);
+        a duplicate, a missing id, or a wrong type is
+        cannot_grade — an omitted failure_cases array no longer
+        silently passes, and a missing entry no longer becomes
+        a quiet na;
+      * a validated hard negative (a must fail, or a present
+        failure case) is decisive even when another check is
+        unknown — cannot_grade no longer discards an explicit
+        must-fail;
+      * a pass requires complete valid evidence: every passing
+        criterion cites evidence, and a passing MUST criterion
+        must cite a real step or probe from the bundle."""
     try:
         text = _FENCE_RE.sub("", str(raw or "")).strip()
         text = text.rstrip("`").strip()
@@ -442,62 +492,99 @@ def _parse_grade(raw: Any, rubric: dict) -> Optional[dict]:
     except Exception:
         return None
     if not isinstance(data, dict) or \
-            not isinstance(data.get("criteria"), list):
+            not isinstance(data.get("criteria"), list) or \
+            not isinstance(data.get("failure_cases"), list):
         return None
-    by_id: Dict[str, dict] = {}
-    for entry in data["criteria"]:
-        if isinstance(entry, dict) and entry.get("id"):
-            by_id[str(entry["id"])] = entry
+
+    def _entries(key: str) -> Optional[Dict[str, dict]]:
+        seen: Dict[str, dict] = {}
+        for entry in data[key]:
+            if not isinstance(entry, dict):
+                return None
+            eid = entry.get("id")
+            if not isinstance(eid, str) or not eid.strip():
+                return None
+            eid = eid.strip()
+            if eid in seen:
+                return None  # duplicate id: ambiguous, not a grade
+            seen[eid] = entry
+        return seen
+
+    by_id = _entries("criteria")
+    case_by_id = _entries("failure_cases")
+    if by_id is None or case_by_id is None:
+        return None
     criteria_out = []
     failed: List[str] = []
     incomplete = False
     for c in rubric["criteria"]:
         entry = by_id.get(c["id"])
-        verdict = str((entry or {}).get("verdict") or "").lower()
+        if entry is None:
+            return None  # a required criterion is missing
+        verdict = entry.get("verdict")
+        if not isinstance(verdict, str):
+            return None
+        verdict = verdict.lower()
         if verdict not in ("pass", "fail", "na"):
-            verdict = "na"
+            return None
+        evidence = entry.get("evidence")
+        if not isinstance(evidence, str):
+            return None
+        if verdict == "pass":
+            if not evidence.strip():
+                return None
+            if c["kind"] == "must" and not _cites_evidence(
+                    evidence, probes, step_numbers):
+                return None
         if verdict == "na" and c["kind"] == "must":
             # A must criterion the grader could not judge —
-            # missing entry, bad verdict string, or an explicit
-            # na — makes the grade incomplete, not a pass.
+            # an explicit na — makes the grade incomplete,
+            # not a pass. (It does NOT erase a hard negative:
+            # see the precedence below.)
             incomplete = True
-        evidence = str((entry or {}).get("evidence") or "")[
-            :_EVIDENCE_CAP]
         criteria_out.append({"id": c["id"], "verdict": verdict,
-                             "evidence": evidence})
+                             "evidence": evidence[:_EVIDENCE_CAP]})
         if verdict == "fail" and c["kind"] == "must":
             failed.append(c["id"])
-    case_by_id: Dict[str, dict] = {}
-    for entry in data.get("failure_cases") or []:
-        if isinstance(entry, dict) and entry.get("id"):
-            case_by_id[str(entry["id"])] = entry
     cases_out = []
     for fc in rubric["failure_cases"]:
         entry = case_by_id.get(fc["id"])
-        present = bool(entry and entry.get("present") is True)
-        evidence = str((entry or {}).get("evidence") or "")[
-            :_EVIDENCE_CAP]
+        if entry is None:
+            return None  # a required failure case is missing
+        present = entry.get("present")
+        if not isinstance(present, bool):
+            return None
+        evidence = entry.get("evidence")
+        if not isinstance(evidence, str):
+            return None
         cases_out.append({"id": fc["id"], "present": present,
-                          "evidence": evidence})
+                          "evidence": evidence[:_EVIDENCE_CAP]})
         if present:
             failed.append(fc["id"])
+    if failed:
+        # A validated hard negative is decisive even when
+        # another check is unknown.
+        return {"verdict": "fail", "criteria": criteria_out,
+                "failure_cases": cases_out,
+                "failed_criteria": failed}
     if incomplete:
         return {"verdict": "cannot_grade", "criteria": criteria_out,
                 "failure_cases": cases_out, "failed_criteria": failed}
-    return {"verdict": "fail" if failed else "pass",
+    return {"verdict": "pass",
             "criteria": criteria_out, "failure_cases": cases_out,
             "failed_criteria": failed}
 
 
 def _cannot_grade(rubric: dict, reason: str,
-                  worker_model: Optional[str] = None) -> dict:
+                  worker_model: Optional[str] = None,
+                  grader_model: str = "") -> dict:
     add_log(f"grader: cannot grade ({reason})")
     return {"verdict": "cannot_grade",
             "rubric_id": rubric["id"],
             "rubric_version": rubric["version"],
             "criteria": [], "failure_cases": [],
             "failed_criteria": [],
-            "grader_model": "", "self_graded": False,
+            "grader_model": grader_model, "self_graded": False,
             "worker_model": worker_model}
 
 
@@ -506,10 +593,10 @@ def grade(goal: str, steps: List[dict],
           rubric: Optional[dict] = None,
           task_type: Optional[str] = None,
           worker_model: Optional[str] = None,
+          deadline: Optional[float] = None,
           chat: Optional[Callable] = None,
           probes: Optional[List[dict]] = None,
-          policy: Optional[str] = None,
-          deadline: Optional[float] = None) -> dict:
+          policy: Optional[str] = None) -> dict:
     """Grade one finished run. Returns the GradeResult dict
     from the design; never raises — EXCEPT runtime.Cancelled,
     which propagates (pass 36 #31 coordinates with the
@@ -526,16 +613,20 @@ def grade(goal: str, steps: List[dict],
     deadline: monotonic-seconds (time.monotonic) wall-clock
     bound for the whole grade, derived from the run's
     remaining deadline/budget by the caller (pass 36 #31).
-    A grade that cannot finish inside it is cannot_grade,
-    and the already-completed work is retained by the caller.
-    The evidence bundle is capped at _BUNDLE_CAP chars in
-    total (per-artifact samples were already capped when the
-    probes were built; full-file hashing is the probe layer's
-    bound, not this module's)."""
+    An already-past deadline returns cannot_grade before any
+    model call, and the already-completed work is retained by
+    the caller. The evidence bundle is capped at _BUNDLE_CAP
+    chars in total (per-artifact samples were already capped
+    when the probes were built; full-file hashing is the probe
+    layer's bound, not this module's)."""
     if rubric is None:
         tools = [s.get("tool") for s in steps or []
                  if isinstance(s, dict)]
         rubric = _rubrics.select_rubric(task_type, tools)
+    if deadline is not None and time.monotonic() >= deadline:
+        return _cannot_grade(rubric, "grading deadline already passed",
+                             worker_model)
+    model_used = ""
     try:
         norm = normalize_steps(steps, results)
         if probes is None:
@@ -571,10 +662,13 @@ def grade(goal: str, steps: List[dict],
             raw_text, model_used = raw[0], str(raw[1] or "")
         else:
             raw_text, model_used = raw, (chosen or "")
-        parsed = _parse_grade(raw_text, rubric)
+        parsed = _parse_grade(
+            raw_text, rubric, probes=probes,
+            step_numbers={s.get("step") for s in norm})
         if parsed is None:
             return _cannot_grade(
-                rubric, "grader output unparseable", worker_model)
+                rubric, "grader output unparseable",
+                worker_model, grader_model=model_used)
         result = {
             "verdict": parsed["verdict"],
             "rubric_id": rubric["id"],
@@ -598,7 +692,7 @@ def grade(goal: str, steps: List[dict],
         raise
     except Exception as e:
         return _cannot_grade(rubric, f"{type(e).__name__}: {e}",
-                             worker_model)
+                             worker_model, grader_model=model_used)
 
 
 def format_failure_reason(result: dict) -> str:

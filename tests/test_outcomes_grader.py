@@ -108,11 +108,13 @@ def _grade_json(rubric_id, fail_must=(), fail_advisory=(),
              "verdict": ("na" if c["id"] in na_must else
                          "fail" if c["id"] in fail_must or
                          c["id"] in fail_advisory else "pass"),
-             "evidence": f"evidence for {c['id']}"}
+             # Pass 36 #22: a passing MUST criterion must cite
+             # a real step or probe from the bundle.
+             "evidence": f"step 1: evidence for {c['id']}"}
             for c in rubric["criteria"]],
         "failure_cases": [
             {"id": f["id"], "present": f["id"] in present_cases,
-             "evidence": f"case evidence {f['id']}"}
+             "evidence": f"step 1: case evidence {f['id']}"}
             for f in rubric["failure_cases"]]})
 
 
@@ -389,6 +391,94 @@ def test_grader_cancelled_propagates():
     raise AssertionError("expected runtime.Cancelled")
 
 
+def test_grader_strict_contract_pass36_22():
+    # Omitted failure_cases no longer silently passes.
+    steps = [{"step": 1, "tool": "web_search", "output": "x"}]
+    rubric = rubrics.get_rubric("research")
+    data = json.loads(_grade_json("research"))
+    del data["failure_cases"]
+    out = grader.grade("g", steps,
+                       chat=_chat_returning(json.dumps(data)))
+    assert out["verdict"] == "cannot_grade", out
+
+    # A duplicated criterion id is ambiguous, not a grade.
+    data = json.loads(_grade_json("research"))
+    data["criteria"].append(dict(data["criteria"][0]))
+    out = grader.grade("g", steps,
+                       chat=_chat_returning(json.dumps(data)))
+    assert out["verdict"] == "cannot_grade", out
+
+    # Wrong types: a non-string verdict, a non-bool present.
+    data = json.loads(_grade_json("research"))
+    data["criteria"][0]["verdict"] = 1
+    out = grader.grade("g", steps,
+                       chat=_chat_returning(json.dumps(data)))
+    assert out["verdict"] == "cannot_grade", out
+    data = json.loads(_grade_json("research"))
+    data["failure_cases"][0]["present"] = "yes"
+    out = grader.grade("g", steps,
+                       chat=_chat_returning(json.dumps(data)))
+    assert out["verdict"] == "cannot_grade", out
+
+    # A missing required criterion id is cannot_grade.
+    data = json.loads(_grade_json("research"))
+    data["criteria"] = [c for c in data["criteria"]
+                        if c["id"] != "sourced_claims"]
+    out = grader.grade("g", steps,
+                       chat=_chat_returning(json.dumps(data)))
+    assert out["verdict"] == "cannot_grade", out
+
+
+def test_grader_hard_negative_beats_unknown_pass36_22():
+    # A must fail stays a FAIL even when another must is na;
+    # a present failure case does the same.
+    steps = [{"step": 1, "tool": "web_search", "output": "x"}]
+    out = grader.grade(
+        "g", steps,
+        chat=_chat_returning(_grade_json(
+            "research", fail_must=("question_answered",),
+            na_must=("sourced_claims",))))
+    assert out["verdict"] == "fail", out
+    assert "question_answered" in out["failed_criteria"]
+    out = grader.grade(
+        "g", steps,
+        chat=_chat_returning(_grade_json(
+            "research", present_cases=("unsourced_assertion",),
+            na_must=("sourced_claims",))))
+    assert out["verdict"] == "fail", out
+    assert "unsourced_assertion" in out["failed_criteria"]
+    # With no hard negative, the unknown must still blocks.
+    out = grader.grade(
+        "g", steps,
+        chat=_chat_returning(_grade_json(
+            "research", na_must=("sourced_claims",))))
+    assert out["verdict"] == "cannot_grade", out
+
+
+def test_grader_pass_needs_cited_evidence_pass36_22():
+    steps = [{"step": 1, "tool": "web_search", "output": "x"}]
+
+    def _with_evidence(text):
+        data = json.loads(_grade_json("research"))
+        for c in data["criteria"]:
+            if c["id"] == "question_answered":
+                c["evidence"] = text
+        return json.dumps(data)
+
+    # Empty evidence for a passing must: no pass.
+    out = grader.grade("g", steps, chat=_chat_returning(
+        _with_evidence("")))
+    assert out["verdict"] == "cannot_grade", out
+    # Evidence citing a step that does not exist: no pass.
+    out = grader.grade("g", steps, chat=_chat_returning(
+        _with_evidence("step 99 shows it worked")))
+    assert out["verdict"] == "cannot_grade", out
+    # Evidence citing the real step: pass.
+    out = grader.grade("g", steps, chat=_chat_returning(
+        _with_evidence("step 1 output answers the question")))
+    assert out["verdict"] == "pass", out
+
+
 def test_grader_model_policies_and_self_graded():
     roster = grader._roster()
     assert len(roster) >= 2
@@ -396,7 +486,10 @@ def test_grader_model_policies_and_self_graded():
 
     def _chat(prompt, system, model=None):
         seen["model"] = model
-        return _grade_json("general"), model
+        # web_search selects the research rubric — grade
+        # against it, so the verdict is a real pass, not a
+        # rubric mismatch.
+        return _grade_json("research"), model
 
     steps = [{"step": 1, "tool": "web_search", "output": "x"}]
     out = grader.grade("g", steps, chat=_chat,
@@ -440,8 +533,8 @@ def test_taskexec_grader_fail_returns_structured_reason(grader_on):
         plan={"task_type": "general"})
     assert reason is not None
     assert "grader (rubric general v1) failed:" in reason
-    assert "[goal_accomplished] evidence for goal_accomplished" \
-        in reason
+    assert "[goal_accomplished] step 1: evidence for " \
+        "goal_accomplished" in reason
 
 
 def test_taskexec_grader_pass_and_cannot_grade_fallback(grader_on):
