@@ -271,11 +271,86 @@ def _normalize_provider_mode(raw) -> str:
 # their providers are simply never walked. Set in aria_keys.json
 # (or the PROVIDER_MODE env var); takes effect on restart like
 # every other config value.
-_PROVIDER_MODE_RAW, _ = key_get("PROVIDER_MODE", "auto")
+# Pass 36 #07: the startup source is recorded, not discarded —
+# an env var beats the saved file at every restart, so the toggle
+# must be able to say so instead of claiming a save that will
+# never take effect. An invalid stored value is a visible
+# configuration error, not a silent coercion to auto.
+_PROVIDER_MODE_RAW, _PROVIDER_MODE_SOURCE = key_get("PROVIDER_MODE", "auto")
 PROVIDER_MODE = _normalize_provider_mode(_PROVIDER_MODE_RAW)
+_PROVIDER_MODE_ERROR = None
 if str(_PROVIDER_MODE_RAW or "").strip().lower() not in ("auto", "local_only"):
-    print(f"[ARIA] Config: PROVIDER_MODE={_PROVIDER_MODE_RAW!r} is not "
-          f"'auto' or 'local_only' — using 'auto'.", flush=True)
+    _PROVIDER_MODE_ERROR = (f"PROVIDER_MODE={_PROVIDER_MODE_RAW!r} is not "
+                            f"'auto' or 'local_only' — using 'auto'. Fix "
+                            f"aria_keys.json or the PROVIDER_MODE env var.")
+    print(f"[ARIA] Config: {_PROVIDER_MODE_ERROR}", flush=True)
+
+
+def _provider_mode_env_override() -> bool:
+    """True when a PROVIDER_MODE env var is set: it beats the saved
+    file at every restart, so a toggle save cannot change the next
+    start's mode until the env var is cleared."""
+    return bool(os.environ.get("PROVIDER_MODE"))
+
+
+def provider_mode_status() -> dict:
+    """Current mode + where it came from, for the Settings panel:
+    the effective mode, the stored file value, whether an env var
+    overrides the file, whether the last save persisted, and any
+    invalid-value error. Never raises."""
+    try:
+        return {
+            "mode": PROVIDER_MODE,
+            "stored": _KEYS.get("PROVIDER_MODE"),
+            "source": ("env var PROVIDER_MODE (overrides the saved file)"
+                       if _provider_mode_env_override()
+                       else ("keys file" if "PROVIDER_MODE" in _KEYS
+                             else "default (auto)")),
+            "env_override": _provider_mode_env_override(),
+            "error": _PROVIDER_MODE_ERROR,
+        }
+    except Exception:
+        return {"mode": "auto", "stored": None, "source": "unknown",
+                "env_override": False, "error": None}
+
+
+def set_provider_mode_result(mode) -> dict:
+    """Switch PROVIDER_MODE at runtime and report the full outcome:
+    {"mode", "saved", "error", "env_override", "source"}.
+
+    "saved" is save_keys()'s real result — a failed write used to
+    be discarded and the toggle still claimed success. "error" is
+    set when the requested value is not auto/local_only: the
+    running mode still coerces to auto (there is no third mode to
+    run as), but the misconfiguration is now visible instead of
+    silent. When an env var overrides the file, "saved" can be
+    True and the next restart still restores the env value — the
+    panel must show that, not just "saved"."""
+    global PROVIDER_MODE, _PROVIDER_MODE_ERROR
+    raw = mode
+    PROVIDER_MODE = _normalize_provider_mode(mode)
+    error = None
+    if str(raw or "").strip().lower() not in ("auto", "local_only"):
+        error = (f"PROVIDER_MODE={raw!r} is not 'auto' or "
+                 f"'local_only' — using 'auto'. Fix aria_keys.json "
+                 f"or the PROVIDER_MODE env var.")
+        _PROVIDER_MODE_ERROR = error
+        print(f"[ARIA] Config: {error}", flush=True)
+    else:
+        _PROVIDER_MODE_ERROR = None
+    saved = False
+    try:
+        _KEYS["PROVIDER_MODE"] = PROVIDER_MODE
+        saved = bool(save_keys())
+    except Exception:
+        saved = False
+    if not saved:
+        print(f"[ARIA] Config: PROVIDER_MODE={PROVIDER_MODE!r} was NOT "
+              f"saved to {KEYS_FILE} — the next restart will restore "
+              f"the previous value.", flush=True)
+    status = provider_mode_status()
+    status.update({"mode": PROVIDER_MODE, "saved": saved, "error": error})
+    return status
 
 
 def set_provider_mode(mode) -> str:
@@ -290,15 +365,12 @@ def set_provider_mode(mode) -> str:
     providers module owns the live value and this function keeps
     it — and the persisted file — in step. Never raises; a broken
     keys file refuses the write inside save_keys() and the
-    in-memory mode still applies for the session."""
-    global PROVIDER_MODE
-    PROVIDER_MODE = _normalize_provider_mode(mode)
-    try:
-        _KEYS["PROVIDER_MODE"] = PROVIDER_MODE
-        save_keys()
-    except Exception:
-        pass
-    return PROVIDER_MODE
+    in-memory mode still applies for the session.
+
+    Pass 36 #07: the persistence result is no longer discarded —
+    see set_provider_mode_result(); this wrapper keeps the old
+    return contract (effective mode string) for existing callers."""
+    return set_provider_mode_result(mode)["mode"]
 
 # Chain: gemini -> groq -> openrouter -> mistral -> ollama_local
 # (Gemini promoted to primary 2026-10-27, Alek's call — the old

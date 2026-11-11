@@ -66,16 +66,64 @@ def set_provider_mode(mode) -> str:
     toggle's backend). Takes effect on the next provider call —
     the chain walk, role routing, failure wording, the Live gate,
     and vision all read the live value. Returns the effective
-    mode."""
+    mode.
+
+    Pass 36 #07: the persistence result is no longer discarded.
+    PROVIDER_MODE_STATUS carries it — {"mode", "saved", "error",
+    "env_override", "source"} — so the panel can show "saved" vs
+    "NOT saved" and warn when an env var beats the stored value
+    at the next restart; an invalid explicit value is a visible
+    configuration error (see config.set_provider_mode_result),
+    not a silent coercion. provider_mode_status() reads it."""
     global PROVIDER_MODE
     try:
-        effective = _config_silent.set_provider_mode(mode)
+        result = _config_silent.set_provider_mode_result(mode)
     except Exception:
-        effective = ("local_only" if str(mode or "").strip().lower()
-                     == "local_only" else "auto")
-    PROVIDER_MODE = effective
-    add_log(f"provider mode set to '{effective}' from the Settings toggle")
-    return effective
+        result = {"mode": ("local_only" if str(mode or "").strip().lower()
+                           == "local_only" else "auto"),
+                  "saved": False, "error": None, "env_override": False,
+                  "source": "unknown"}
+    PROVIDER_MODE = result["mode"]
+    PROVIDER_MODE_STATUS.clear()
+    PROVIDER_MODE_STATUS.update(result)
+    if result.get("error"):
+        add_log(f"provider mode: invalid value — {result['error']}",
+                level="error")
+    elif result.get("saved"):
+        if result.get("env_override"):
+            add_log(f"provider mode set to '{result['mode']}' (saved, "
+                    f"but a PROVIDER_MODE env var overrides the saved "
+                    f"value at the next restart)")
+        else:
+            add_log(f"provider mode set to '{result['mode']}' (saved)")
+    else:
+        add_log(f"provider mode set to '{result['mode']}' for this "
+                f"session — NOT saved; the next restart restores the "
+                f"previous value", level="warn")
+    return result["mode"]
+
+
+# Pass 36 #07: outcome of the last set_provider_mode() call —
+# the panel's saved-vs-NOT-saved + env-override + error surface.
+# Empty until the toggle is used once; provider_mode_status()
+# merges it with the live mode.
+PROVIDER_MODE_STATUS: Dict[str, Any] = {}
+
+
+def provider_mode_status() -> Dict[str, Any]:
+    """Live mode + persistence outcome for the Settings panel.
+    Never raises."""
+    try:
+        status = _config_silent.provider_mode_status()
+    except Exception:
+        status = {"mode": provider_mode(), "stored": None,
+                  "source": "unknown", "env_override": False,
+                  "error": None}
+    status["mode"] = provider_mode()
+    if PROVIDER_MODE_STATUS:
+        status["saved"] = PROVIDER_MODE_STATUS.get("saved")
+        status["error"] = PROVIDER_MODE_STATUS.get("error") or status.get("error")
+    return status
 
 
 def effective_chain_names() -> List[str]:

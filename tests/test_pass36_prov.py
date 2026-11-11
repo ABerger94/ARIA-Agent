@@ -77,3 +77,67 @@ def test_16_broken_leg_never_kills_chain():
     assert "gemini" not in names, names
     assert "groq" in names and "ollama_local" in names, names
     print("ok 16 broken leg skipped, chain survives", names)
+
+
+# --- #07: mode persistence is reported, not discarded ---------------
+
+def test_07_set_mode_reports_saved_and_invalid():
+    saved_mode = pv.PROVIDER_MODE
+    saved_cfg = cfg.PROVIDER_MODE
+    saved_status = dict(pv.PROVIDER_MODE_STATUS)
+    try:
+        # A valid flip reports saved=True (keys file writable here).
+        assert pv.set_provider_mode("local_only") == "local_only"
+        status = pv.provider_mode_status()
+        assert status["mode"] == "local_only", status
+        assert status.get("saved") is True, status
+        assert status.get("error") is None, status
+        # An invalid explicit value still coerces for the running
+        # mode (no third mode exists) but is a VISIBLE error now.
+        assert pv.set_provider_mode("bogus") == "auto"
+        status = pv.provider_mode_status()
+        assert status["mode"] == "auto", status
+        assert status.get("error") and "bogus" in status["error"], status
+        # A valid flip clears the error.
+        assert pv.set_provider_mode("auto") == "auto"
+        assert pv.provider_mode_status().get("error") is None
+    finally:
+        pv.PROVIDER_MODE = saved_mode
+        cfg.PROVIDER_MODE = saved_cfg
+        pv.PROVIDER_MODE_STATUS.clear()
+        pv.PROVIDER_MODE_STATUS.update(saved_status)
+    print("ok 07 mode status saved + invalid visible")
+
+
+def test_07_save_failure_is_reported_not_saved(monkeypatch=None):
+    # save_keys() False (e.g. broken keys file) must surface as
+    # saved=False, never a silent "saved" claim.
+    saved_mode = pv.PROVIDER_MODE
+    saved_cfg = cfg.PROVIDER_MODE
+    real_save = cfg.save_keys
+    cfg.save_keys = lambda: False
+    try:
+        result = cfg.set_provider_mode_result("local_only")
+        assert result["mode"] == "local_only", result
+        assert result["saved"] is False, result
+    finally:
+        cfg.save_keys = real_save
+        pv.PROVIDER_MODE = saved_mode
+        cfg.PROVIDER_MODE = saved_cfg
+    print("ok 07 failed save reported as not saved")
+
+
+def test_07_env_override_is_visible():
+    import os as _os
+    saved = _os.environ.get("PROVIDER_MODE")
+    _os.environ["PROVIDER_MODE"] = "auto"
+    try:
+        status = cfg.provider_mode_status()
+        assert status["env_override"] is True, status
+        assert "env var" in status["source"], status
+    finally:
+        if saved is None:
+            _os.environ.pop("PROVIDER_MODE", None)
+        else:
+            _os.environ["PROVIDER_MODE"] = saved
+    print("ok 07 env override visible in status")
