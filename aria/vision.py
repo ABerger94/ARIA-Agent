@@ -186,6 +186,27 @@ def describe_phone_view(question: str = "") -> str:
 
 _NATIVE_LAST_ERROR: Optional[str] = None
 
+# HTTP statuses on which the text-only diagnostic probe cannot tell
+# "bad model tag" from "image format rejected": the probe would fail
+# with the same auth/billing error. Pass 36 #09 — never probe on
+# 401 (unauthorized), 403 (forbidden), or 402 (payment required).
+_NO_PROBE_HTTP_CODES = (401, 403, 402)
+
+
+def _has_real_cloud_key(key: Any) -> bool:
+    """True only for a configured, non-placeholder cloud key.
+
+    Mirrors config.key_is_quarantined's rule: the checked-in default is
+    the literal placeholder "INSERT" (key_get fallback), which the old
+    `if not OLLAMA_CLOUD_API_KEY` check accepted as a real key — a
+    clean install then attempted a call with `Bearer INSERT` and got a
+    401 (pass 36 #09). Blank/whitespace keys are likewise "no key".
+    """
+    if not isinstance(key, str):
+        return False
+    stripped = key.strip()
+    return bool(stripped) and stripped.upper() != "INSERT"
+
 
 def _probe_model_text(model: str, api_key: str) -> Optional[str]:
     """Text-only probe of the vision model via native /api/chat.
@@ -194,6 +215,8 @@ def _probe_model_text(model: str, api_key: str) -> Optional[str]:
     Lets a failed image call distinguish 'bad model tag' from
     'image format rejected'.
     """
+    if not _has_real_cloud_key(api_key):
+        return "no key configured"
     payload = {"model": model, "stream": False,
                "messages": [{"role": "user", "content": "Reply with the word ok."}]}
     try:
@@ -247,7 +270,12 @@ def _ollama_native_vision_call(sys_prompt: str, contents: Any) -> Optional[str]:
         # construction — never make it. Local vision is served by
         # _default_vision_call via the ollama_local leg instead.
         return None
-    if not OLLAMA_CLOUD_API_KEY:
+    if not _has_real_cloud_key(OLLAMA_CLOUD_API_KEY):
+        # Pass 36 #09: the placeholder "INSERT" is a missing key, not
+        # a key — a clean install used to attempt `Bearer INSERT` and
+        # eat a 401. Record it plainly and make no call.
+        _NATIVE_LAST_ERROR = "no key configured"
+        add_log("ollama native vision: no key configured")
         return None
     texts: list = []
     images: list = []
@@ -292,12 +320,19 @@ def _ollama_native_vision_call(sys_prompt: str, contents: Any) -> Optional[str]:
         _NATIVE_LAST_ERROR = f"HTTP {e.code}: {detail}"
         add_log(f"ollama native vision: {_NATIVE_LAST_ERROR}")
         # Self-diagnosis: text-only probe of the same model distinguishes
-        # "bad model tag" from "image format rejected".
-        probe = _probe_model_text(model, OLLAMA_CLOUD_API_KEY)
-        if probe is None:
-            _NATIVE_LAST_ERROR += " | text-only probe OK -> image format rejected"
+        # "bad model tag" from "image format rejected" — but only when
+        # the failure class can answer that question. On 401/403/402
+        # the probe would fail identically (auth/billing), so it is
+        # skipped and the error stands on its own (pass 36 #09).
+        if e.code in _NO_PROBE_HTTP_CODES:
+            _NATIVE_LAST_ERROR += (" | not probed (auth/billing error; "
+                                   "probe cannot distinguish model/tag here)")
         else:
-            _NATIVE_LAST_ERROR += f" | text-only probe also failed ({probe}) -> model/tag issue"
+            probe = _probe_model_text(model, OLLAMA_CLOUD_API_KEY)
+            if probe is None:
+                _NATIVE_LAST_ERROR += " | text-only probe OK -> image format rejected"
+            else:
+                _NATIVE_LAST_ERROR += f" | text-only probe also failed ({probe}) -> model/tag issue"
         add_log(f"ollama native vision diagnosis: {_NATIVE_LAST_ERROR}")
         return None
     except Exception as e:

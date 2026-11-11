@@ -7,9 +7,12 @@ absent on this box); imports the REAL aria.vision and aria.agent.brain.
 
 Run:  python3 -m pytest tests/test_vision_pass36.py -q
 """
+import io
 import os
 import sys
 import types
+import urllib.error
+import urllib.request
 
 PKG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "aria")
 pkg = types.ModuleType("aria")
@@ -70,8 +73,22 @@ _hud.set_hud_state = lambda *a, **k: None
 _hud.draw_hud = lambda *a, **k: None
 sys.modules["aria.hud"] = _hud
 brain = importlib.import_module("aria.agent.brain")
+providers = importlib.import_module("aria.agent.providers")
 
 FAKE_JPEG = b"\xff\xd8" + b"x" * 200
+
+
+def _vision_contents():
+    return [{"role": "user", "parts": [
+        {"text": "Describe what you see."},
+        {"inline_data": {"mime_type": "image/jpeg", "data": "aGVsbG8="}},
+    ]}]
+
+
+def _http_error(code):
+    return urllib.error.HTTPError(
+        "https://ollama.com/api/chat", code, "error", {},
+        io.BytesIO(b"bad key"))
 
 
 # ── Pass 36 #08 ──────────────────────────────────────────────────────
@@ -158,3 +175,80 @@ def test_vision_prepass_camera_failure_keeps_hash(monkeypatch):
     out = brain._vision_prepass("what do you see?", FAKE_JPEG, False)
     assert "could not be processed" in out
     assert vision._LAST_SCREEN_HASH == "sentinel-hash"
+
+
+# ── Pass 36 #09 ──────────────────────────────────────────────────────
+
+def _no_call_urlopen(*a, **k):
+    raise AssertionError("no HTTP call must be made")
+
+
+def test_native_vision_placeholder_key_makes_no_call(monkeypatch):
+    """'INSERT'/blank keys are 'no key configured', not a Bearer call."""
+    monkeypatch.setattr(providers, "provider_mode", lambda: "auto")
+    monkeypatch.setattr(urllib.request, "urlopen", _no_call_urlopen)
+    for bad_key in ("INSERT", "insert", "  INSERT  ", "", "   "):
+        monkeypatch.setattr(providers, "OLLAMA_CLOUD_API_KEY", bad_key)
+        assert vision._ollama_native_vision_call("see?", _vision_contents()) is None
+        assert vision._NATIVE_LAST_ERROR == "no key configured"
+
+
+def test_probe_rejects_placeholder_key(monkeypatch):
+    monkeypatch.setattr(urllib.request, "urlopen", _no_call_urlopen)
+    assert vision._probe_model_text("m", "INSERT") == "no key configured"
+    assert vision._probe_model_text("m", "") == "no key configured"
+
+
+def test_native_vision_auth_errors_skip_probe(monkeypatch):
+    """401/403/402: no diagnostic probe — it would fail identically."""
+    monkeypatch.setattr(providers, "provider_mode", lambda: "auto")
+    monkeypatch.setattr(providers, "OLLAMA_CLOUD_API_KEY", "real-key-123")
+    monkeypatch.setattr(providers, "OLLAMA_CLOUD_MODEL", "vision-model")
+    monkeypatch.setattr(providers, "resolve_role_model", lambda role: None)
+    probed = []
+    monkeypatch.setattr(vision, "_probe_model_text",
+                        lambda m, k: probed.append((m, k)) or "probe-ran")
+    for code in (401, 403, 402):
+        def _raise(*a, _c=code, **k):
+            raise _http_error(_c)
+        monkeypatch.setattr(urllib.request, "urlopen", _raise)
+        assert vision._ollama_native_vision_call("see?", _vision_contents()) is None
+        assert probed == [], f"probe ran on HTTP {code}"
+        assert "not probed" in (vision._NATIVE_LAST_ERROR or "")
+        assert f"HTTP {code}" in (vision._NATIVE_LAST_ERROR or "")
+
+
+def test_native_vision_400_runs_probe(monkeypatch):
+    """400 (e.g. image format): the probe still runs and can exonerate the tag."""
+    monkeypatch.setattr(providers, "provider_mode", lambda: "auto")
+    monkeypatch.setattr(providers, "OLLAMA_CLOUD_API_KEY", "real-key-123")
+    monkeypatch.setattr(providers, "OLLAMA_CLOUD_MODEL", "vision-model")
+    monkeypatch.setattr(providers, "resolve_role_model", lambda role: None)
+    monkeypatch.setattr(vision, "_probe_model_text", lambda m, k: None)  # model OK
+
+    def _raise400(*a, **k):
+        raise _http_error(400)
+    monkeypatch.setattr(urllib.request, "urlopen", _raise400)
+    assert vision._ollama_native_vision_call("see?", _vision_contents()) is None
+    assert "image format rejected" in (vision._NATIVE_LAST_ERROR or "")
+
+
+def test_native_vision_success_still_works(monkeypatch):
+    """Happy path unchanged: a 200 with content returns the description."""
+    monkeypatch.setattr(providers, "provider_mode", lambda: "auto")
+    monkeypatch.setattr(providers, "OLLAMA_CLOUD_API_KEY", "real-key-123")
+    monkeypatch.setattr(providers, "OLLAMA_CLOUD_MODEL", "vision-model")
+    monkeypatch.setattr(providers, "resolve_role_model", lambda role: None)
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"message": {"content": "a tabby cat"}}'
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Resp())
+    assert vision._ollama_native_vision_call("see?", _vision_contents()) == "a tabby cat"
