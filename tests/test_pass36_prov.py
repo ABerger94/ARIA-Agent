@@ -7,6 +7,7 @@ import json
 import math
 import os
 import sys
+import time
 import types
 
 PKG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "aria")
@@ -572,3 +573,142 @@ def test_10_work_center_validates_role_bindings():
     errors, notes = validate_role_models({"code": "qwen3-coder:480b-cloud"})
     assert errors == [] and len(notes) == 1 and "ignored" in notes[0], notes
     print("ok 10 Work Center validates role bindings")
+
+
+# --- #12: vision capability per candidate ----------------------------
+
+_IMAGE_CONTENTS = [{"role": "user", "parts": [
+    {"text": "what is this?"},
+    {"inline_data": {"mime_type": "image/jpeg",
+                     "data": "AAAA"}}]}]
+
+
+def test_12_model_supports_images():
+    assert pv.model_supports_images("ollama_cloud", "gemma4:31b-cloud") is True
+    assert pv.model_supports_images("ollama_local", "qwen2.5vl:7b") is True
+    assert pv.model_supports_images("ollama_cloud", "gpt-oss:120b") is False
+    assert pv.model_supports_images("ollama_local", "qwen2.5:7b") is False
+    assert pv.model_supports_images("gemini", "gemini-3.8-flash") is True
+    assert pv.model_supports_images("ollama_cloud", "") is False
+    assert pv.model_supports_images("ollama_cloud", None) is False
+    print("ok 12 vision capability is per-model, not per-leg")
+
+
+def test_12_classify_vision_failure():
+    assert pv.classify_vision_failure("HTTP 404: model 'x' not found") == "missing_model"
+    assert pv.classify_vision_failure("HTTP 410: gone") == "missing_model"
+    assert pv.classify_vision_failure("network timeout") == "transient"
+    assert pv.classify_vision_failure("HTTP 503: unavailable") == "transient"
+    assert pv.classify_vision_failure("HTTP 400: image format unsupported") == "format"
+    assert pv.classify_vision_failure("something odd") == "unknown"
+    print("ok 12 failure classes separate missing model / transient / format")
+
+
+def test_12_park_length_follows_failure_class():
+    p = pv.OpenAICompatProvider("ollama_cloud", "https://example.invalid/v1",
+                                "k", "gpt-oss:120b")
+    p.call = lambda *a, **k: None
+    try:
+        # Missing model -> the full 15-minute park.
+        p.last_error = "HTTP 404: model 'gemma4:31b-cloud' not found"
+        pv._attempt_provider_call(p, "", [], None, None, "gemma4:31b-cloud",
+                                  policy={"mode": "auto", "generation": 0})
+        remaining = pv._ROLE_MODEL_COOLDOWN["gemma4:31b-cloud"] - time.time()
+        assert 800 < remaining <= 900, remaining
+        # Transient failure -> a 60-second park, so a daemon outage
+        # stops suppressing recovery for a quarter of an hour.
+        p.last_error = "network timeout"
+        pv._attempt_provider_call(p, "", [], None, None, "gemma4:31b-cloud",
+                                  policy={"mode": "auto", "generation": 0})
+        remaining = pv._ROLE_MODEL_COOLDOWN["gemma4:31b-cloud"] - time.time()
+        assert 30 < remaining <= 60, remaining
+    finally:
+        pv.clear_role_model_cooldown()
+        pv.clear_model_cooldown()
+    print("ok 12 park is 15 min for a missing model, 60 s for transient")
+
+
+def test_12_image_never_retried_on_text_default():
+    from aria import runtime
+    saved_mode = pv.PROVIDER_MODE
+    saved_chain = pv._build_chain
+    pv.PROVIDER_MODE = "auto"
+    p = pv.OpenAICompatProvider("ollama_cloud", "https://example.invalid/v1",
+                                "k", "gpt-oss:120b")
+    calls = []
+    p.call = lambda *a, **k: (calls.append(p.model) or None)
+    p.last_error = "HTTP 404: model 'gemma4:31b-cloud' not found"
+    pv._build_chain = lambda: [p]
+    try:
+        pv.clear_role_model_cooldown()
+        pv.clear_model_cooldown()
+        with runtime.execution():
+            out = pv.provider_call("sys", _IMAGE_CONTENTS,
+                                   model_override="gemma4:31b-cloud")
+            failures = runtime.current().provider_failures
+        assert out is None, out
+        # The override was attempted; the text default was NOT — no
+        # second call on gpt-oss:120b with the image still attached.
+        assert calls == ["gemma4:31b-cloud"], calls
+        assert "cannot accept images" in p.last_error, p.last_error
+        assert any(f.get("kind") in ("model", "response", "no_vision_capability")
+                   for f in failures), failures
+    finally:
+        pv._build_chain = saved_chain
+        pv.PROVIDER_MODE = saved_mode
+        pv.clear_role_model_cooldown()
+        pv.clear_model_cooldown()
+    print("ok 12 image payload is not retried on the text default model")
+
+
+def test_12_walk_skips_text_only_leg_for_images():
+    from aria import runtime
+    saved_mode = pv.PROVIDER_MODE
+    saved_chain = pv._build_chain
+    pv.PROVIDER_MODE = "auto"
+    p = pv.OpenAICompatProvider("ollama_cloud", "https://example.invalid/v1",
+                                "k", "gpt-oss:120b")
+    calls = []
+    p.call = lambda *a, **k: (calls.append(1) or {"candidates": []})
+    pv._build_chain = lambda: [p]
+    try:
+        with runtime.execution():
+            out = pv.provider_call("sys", _IMAGE_CONTENTS)
+            failures = runtime.current().provider_failures
+        assert out is None, out
+        assert calls == [], calls  # never handed the picture
+        assert any(f.get("kind") == "no_vision_capability"
+                   for f in failures), failures
+    finally:
+        pv._build_chain = saved_chain
+        pv.PROVIDER_MODE = saved_mode
+    print("ok 12 walk skips a text-only leg for an image payload")
+
+
+def test_12_vision_failure_message_names_tag_and_reason():
+    from aria import runtime
+    from aria import vision as vis
+    saved_mode = pv.PROVIDER_MODE
+    saved_chain = pv._build_chain
+    # _default_vision_call reads the live mode via provider_mode()
+    # each call — flip the providers global, not a vision attribute.
+    pv.PROVIDER_MODE = "local_only"
+    leg = pv.LocalOllamaProvider("ollama_local",
+                                 "http://localhost:11434/v1", "qwen2.5vl:7b")
+    leg.verify = lambda force=False: {
+        "ok": False, "code": "daemon_unreachable",
+        "reason": "local Ollama daemon is not reachable at http://localhost:11434",
+        "strict": True, "host": "http://localhost:11434",
+        "model": "qwen2.5vl:7b", "models": []}
+    pv._build_chain = lambda: [leg]
+    try:
+        with runtime.execution():
+            out = vis._default_vision_call("describe", _IMAGE_CONTENTS)
+        assert out.startswith("[Vision unavailable:"), out
+        assert "qwen2.5vl:7b" in out, out
+        # The typed walk summary (network), not a bare "did not respond".
+        assert "network connection failed" in out, out
+    finally:
+        pv.PROVIDER_MODE = saved_mode
+        pv._build_chain = saved_chain
+    print("ok 12 vision failure names the tag and the reason")

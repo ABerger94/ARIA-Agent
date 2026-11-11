@@ -223,6 +223,10 @@ def _record_provider_failure(provider, *, kind=None, code=None, retry_at=0, late
         # host, or the daemon answered but lacks the model) — a typed
         # error, never a silent fall-through to cloud.
         'local_unverified': 'local Ollama verification failed',
+        # Pass 36 #12: a leg whose model cannot accept images is a
+        # routing dead-end, not a generic failure — the walk must
+        # not retry the image on it (or on the default text model).
+        'no_vision_capability': 'model cannot accept images',
         # Pass 36 #06: the mode flipped mid-walk; the walk aborted.
         'mode_change': 'provider mode changed during this turn',
     }
@@ -1388,6 +1392,68 @@ def resolve_role_route(role: str, policy: Optional[Dict[str, Any]] = None) -> Di
             "reason": "no role override configured; default serves"}
 
 
+# --- Pass 36 #12: vision capability + failure classes --------------
+# A vision payload must only ever be served by a model known to
+# accept images. The old walk retried a failed vision tag on the
+# default text model (which can hallucinate a "seen" answer) and
+# parked the tag for 15 minutes whatever the cause.
+
+_VISION_MODEL_HINTS = (
+    "vl", "vision", "multimodal", "llava", "moondream", "gemma",
+    "gpt-4o", "gemini", "pixtral", "llama-4", "qwen2-vl", "qwen2.5vl")
+
+
+def model_supports_images(provider_name: str, model) -> bool:
+    """True when `model` is known to accept images. The configured
+    vision tags are capable by definition; otherwise a tag hint
+    (vl/vision/multimodal/gemma/...) decides. Conservative by
+    design: an unknown tag is text-only, so the walk never bets an
+    image on a guess."""
+    tag = (model or "").strip().lower()
+    if not tag:
+        return False
+    configured = {
+        str(OLLAMA_VISION_MODEL or "").strip().lower(),
+        str(globals().get("OLLAMA_LOCAL_VISION_MODEL", "") or "").strip().lower(),
+    }
+    if tag in configured:
+        return True
+    return any(h in tag for h in _VISION_MODEL_HINTS)
+
+
+def classify_vision_failure(error) -> str:
+    """Bucket a vision-call failure: 'missing_model' (404/410, the
+    tag is not on the daemon), 'format' (400 / image rejected),
+    'transient' (network, timeout, 5xx), or 'unknown'."""
+    e = (error or "").strip().lower()
+    if (e.startswith("http 404") or e.startswith("http 410")
+            or "model not found" in e or "no such model" in e
+            or "does not exist" in e):
+        return "missing_model"
+    if e.startswith("http 400") or (
+            "image" in e and any(w in e for w in (
+                "format", "invalid", "unsupported", "rejected"))):
+        return "format"
+    if (e.startswith("http 5") or "network" in e or "timeout" in e
+            or "timed out" in e or "connection" in e
+            or "urlerror" in e or "unreachable" in e):
+        return "transient"
+    return "unknown"
+
+
+def _contents_have_images(contents) -> bool:
+    """True when any content part carries inline image data."""
+    try:
+        for block in contents or []:
+            for p in (block.get("parts") or []):
+                idata = p.get("inline_data") if isinstance(p, dict) else None
+                if isinstance(idata, dict) and idata.get("data"):
+                    return True
+    except Exception:
+        return False
+    return False
+
+
 # --- Turn-tier routing ("Jev", Alek 2026-11-03) ---
 # classify_task_role (brain) sorts a turn by WHAT it is; tiers sort it by
 # HOW MUCH MODEL it deserves. A 'light' turn — short, conversational, no
@@ -1490,11 +1556,17 @@ _ROLE_MODEL_COOLDOWN: Dict[str, float] = {}
 ROLE_MODEL_COOLDOWN_S = 900
 
 
-def _note_role_model_failed(tag: Optional[str]) -> None:
+def _note_role_model_failed(tag: Optional[str],
+                            duration_s: int = ROLE_MODEL_COOLDOWN_S) -> None:
+    """Park a failed role model. Pass 36 #12: the park length now
+    follows the failure class — a missing model parks the full 15
+    minutes; a transient connection failure or a format rejection
+    parks only 60 seconds, so a daemon outage stops suppressing
+    recovery for a quarter of an hour."""
     try:
         if tag:
-            _ROLE_MODEL_COOLDOWN[tag] = time.time() + ROLE_MODEL_COOLDOWN_S
-            add_log(f"role model '{tag}' parked for {ROLE_MODEL_COOLDOWN_S // 60} min after failure")
+            _ROLE_MODEL_COOLDOWN[tag] = time.time() + duration_s
+            add_log(f"role model '{tag}' parked for {duration_s // 60} min after failure")
             # Merger Phase 1 (blueprint SS3.2): parking a role model
             # is a classified SKIP in the failure record — the role
             # is skipped and the default model serves — not just a
@@ -1670,7 +1742,8 @@ def _role_override_leg(provider_name: str, mode: Optional[str] = None,
 def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
                            on_text_chunk, model_override: Optional[str],
                            policy: Optional[Dict[str, Any]] = None,
-                           override_provider: Optional[str] = None):
+                           override_provider: Optional[str] = None,
+                           has_images: bool = False):
     """Call one provider, optionally on a role-specific model.
 
     A failing role model (exception OR empty result — provider.call swallows
@@ -1708,9 +1781,24 @@ def _attempt_provider_call(provider, system_instruction, contents, tool_decls,
             return data, False
         add_log(f"provider {provider.name}: role model '{model_override}' failed "
                 f"({provider.last_error}); retrying default model (key NOT quarantined)")
-        _note_role_model_failed(model_override)
+        # Pass 36 #12: park by failure class, and never retry an
+        # image payload on a default model that cannot accept
+        # images — that retry used to hand the picture to a text
+        # model that could hallucinate a "seen" answer.
+        failure_kind = classify_vision_failure(provider.last_error)
+        if failure_kind == "missing_model":
+            _note_role_model_failed(model_override)
+        else:
+            _note_role_model_failed(model_override, duration_s=60)
         _note_model_failed(provider.name, model_override,
                            provider.last_error)
+        if has_images and not model_supports_images(provider.name, saved):
+            provider.last_error = (
+                f"vision model '{model_override}' failed "
+                f"({failure_kind}: {provider.last_error}); default model "
+                f"'{saved}' cannot accept images — not retried")
+            add_log(f"provider {provider.name}: {provider.last_error}")
+            return data, False
         provider.model = saved
         attempted_models.append(getattr(provider, "model", "") or "")
         try:
@@ -1777,18 +1865,25 @@ def provider_call(
     # One authoritative policy per turn: capture once, re-check often.
     policy = dict(policy) if policy else current_request_policy()
     walk_mode = policy.get("mode") or provider_mode()
-    # _attempt_provider_call takes optional policy= / override_provider=
-    # kwargs; older doubles of it (the tier-routing tests' 6-arg fake)
-    # take neither. Pass each only when the helper accepts it, so a
-    # double still walks exactly like the real helper.
+    # Pass 36 #12: an image payload is only ever served by a model
+    # known to accept images — the walk skips text-only legs for it
+    # instead of retrying the picture on the default text model.
+    has_images = _contents_have_images(contents)
+    # _attempt_provider_call takes optional policy= /
+    # override_provider= / has_images= kwargs; older doubles of it
+    # (the tier-routing tests' 6-arg fake) take none of them. Pass
+    # each only when the helper accepts it, so a double still walks
+    # exactly like the real helper.
     try:
         _attempt_params = inspect.signature(
             _attempt_provider_call).parameters
         _attempt_accepts_policy = "policy" in _attempt_params
         _attempt_accepts_provider = "override_provider" in _attempt_params
+        _attempt_accepts_images = "has_images" in _attempt_params
     except (TypeError, ValueError):
         _attempt_accepts_policy = False
         _attempt_accepts_provider = False
+        _attempt_accepts_images = False
     chain = usage.order(_build_chain())
     if not chain:
         add_log("provider_call: chain is empty, nothing configured")
@@ -1911,6 +2006,16 @@ def provider_call(
                                          code=code if isinstance(code, int) else None,
                                          retry_at=retry_at)
             continue
+        # Pass 36 #12: an image payload is served only by a model
+        # known to accept images. A text-only leg is skipped with a
+        # typed reason — never handed the picture to hallucinate a
+        # "seen" answer.
+        if has_images and not model_supports_images(
+                provider.name, _eff_model(provider)):
+            add_log(f"provider {provider.name}: model "
+                    f"'{_eff_model(provider)}' cannot accept images, skipping")
+            _record_provider_failure(provider, kind='no_vision_capability')
+            continue
         if endpoint and endpoint in failed_endpoints:
             _record_provider_failure(provider, kind='network')
             continue
@@ -1950,6 +2055,8 @@ def provider_call(
                 attempt_kwargs["policy"] = policy
             if _attempt_accepts_provider:
                 attempt_kwargs["override_provider"] = override_provider
+            if _attempt_accepts_images:
+                attempt_kwargs["has_images"] = has_images
             data, _used_fallback = _attempt_provider_call(
                 provider, system_instruction, contents, tool_decls,
                 on_text_chunk, model_override, **attempt_kwargs,

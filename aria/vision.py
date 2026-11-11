@@ -342,6 +342,29 @@ def _ollama_native_vision_call(sys_prompt: str, contents: Any) -> Optional[str]:
         return None
 
 
+def _vision_failure_reason(provider_name: str, tag: str) -> str:
+    """Best available reason a vision call failed, for the
+    user-facing message (pass 36 #12): the walk's typed provider
+    failures first, else the failure class of the native error.
+    Never raises; the tag + reason travel in the message instead
+    of a bare 'did not respond'."""
+    try:
+        from aria import runtime as _rt
+        for f in _rt.current().provider_failures:
+            if f.get("provider") == provider_name:
+                return f.get("summary") or "no reason recorded"
+    except Exception:
+        pass
+    try:
+        from aria.agent.providers import classify_vision_failure
+        kind = classify_vision_failure(_NATIVE_LAST_ERROR)
+        if kind != "unknown":
+            return f"{kind} ({_NATIVE_LAST_ERROR or 'no detail'})"
+    except Exception:
+        pass
+    return _NATIVE_LAST_ERROR or "no reason recorded"
+
+
 def _default_vision_call(sys_prompt: str, contents: Any) -> str:
     """Vision via the provider chain on the vision-role model.
 
@@ -378,8 +401,14 @@ def _default_vision_call(sys_prompt: str, contents: Any) -> str:
             if text:
                 return text
             return "[Vision returned no description.]"
-        return ("[Vision unavailable: local-only mode is on and the "
-                "local vision model did not respond.]")
+        # Pass 36 #12: report the tag + reason, not a bare "did not
+        # respond" — and never fall back to the text model.
+        from aria.agent.providers import resolve_role_model as _rrm
+        _tag = _rrm("vision") or _config_silent.OLLAMA_LOCAL_VISION_MODEL
+        return ("[Vision unavailable: local vision model "
+                f"'{_tag}' did not respond "
+                f"({_vision_failure_reason('ollama_local', _tag)}). "
+                f"No cloud provider was tried.]")
     try:
         text = _ollama_native_vision_call(sys_prompt, contents)
         if text:
@@ -405,9 +434,17 @@ def _default_vision_call(sys_prompt: str, contents: Any) -> str:
         return "[Vision returned no description.]"
     # Native and provider-chain vision are both down — surface the real cause
     # in the user-facing message: the OPS log panel truncates lines, so the
-    # diagnosis must travel in chat text.
+    # diagnosis must travel in chat text. Pass 36 #12: the chain tag +
+    # reason travel with it, never a bare failure.
     native_err = _NATIVE_LAST_ERROR or "not attempted"
-    return f"[Vision unavailable: ollama native: {native_err}]"
+    try:
+        from aria.agent.providers import resolve_role_model as _rrm
+        _tag = _rrm("vision") or _config_silent.OLLAMA_VISION_MODEL
+    except Exception:
+        _tag = _config_silent.OLLAMA_VISION_MODEL
+    _reason = _vision_failure_reason("ollama_cloud", _tag)
+    return (f"[Vision unavailable: ollama native: {native_err}; "
+            f"provider-chain vision model '{_tag}': {_reason}]")
 
 
 _VISION_TEXT_CALL: Optional[Callable[[str, Any], str]] = _default_vision_call
