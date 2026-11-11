@@ -176,6 +176,31 @@ def _local_only() -> bool:
     return _provider_mode() == "local_only"
 
 
+# Pass 36 #03: PROVIDER_MODE flips are published to the
+# voice-listener owner (aria/main.py holds _LIVE_MANAGER). The
+# Settings toggle calls publish_provider_mode() after
+# set_provider_mode(); main.py registers a listener that stops an
+# open Live session on entering local_only and re-attempts the
+# voice startup on returning to Auto. Listeners never raise into
+# the toggle — publish swallows per-listener errors.
+_MODE_LISTENERS = []
+
+
+def register_mode_listener(fn) -> None:
+    """Register a PROVIDER_MODE change listener (deduped)."""
+    if fn is not None and fn not in _MODE_LISTENERS:
+        _MODE_LISTENERS.append(fn)
+
+
+def publish_provider_mode(mode) -> None:
+    """Notify every registered listener of a mode flip."""
+    for fn in list(_MODE_LISTENERS):
+        try:
+            fn(mode)
+        except Exception:
+            pass
+
+
 def _runtime():
     """The execution-context module (aria/runtime.py), lazy-imported
     like _app_locked: the standalone test harness loads this file
@@ -514,6 +539,10 @@ class LiveManager:
         # tool worker fails its check_cancelled() instead of
         # acting after the session was cancelled.
         self._turn_cancel = _TurnCancelSink()
+        # Pass 36 #03: the mic pump's bounded chunk queue, so
+        # stop() can drain queued audio on a mode flip instead of
+        # leaving captured chunks to stream after the session ends.
+        self._mic_queue = None
 
     def _cancel_turn_tools(self) -> None:
         """Set the active turn's cancellation event, if any.
@@ -563,6 +592,7 @@ class LiveManager:
         nothing leaves the machine from an empty room."""
         import queue as _queue
         chunks: "_queue.Queue[bytes]" = _queue.Queue(maxsize=50)
+        self._mic_queue = chunks
 
         def _cb(indata, frames, time_info, status):
             try:
@@ -585,6 +615,15 @@ class LiveManager:
                 # kept listening with voice off.
                 if not _voice_enabled():
                     self._log("Voice off — stopping Gemini Live mic")
+                    return
+                # Pass 36 #03: a flip to Local only ends the pump
+                # here too — the reconnect guard in _run covers
+                # the next connect, but an open session's pump
+                # must stop sending mic audio the moment the mode
+                # flips, not when the session task is cancelled.
+                if _local_only():
+                    self._log("Local-only mode — stopping Gemini "
+                              "Live mic")
                     return
                 try:
                     data = chunks.get_nowait()
@@ -676,9 +715,20 @@ class LiveManager:
         for model in models_to_try:
             if self._stop.is_set():
                 return
+            # Pass 36 #03: check the mode before EACH (re)connect
+            # attempt, not only in start() — a flip to Local only
+            # mid-session must not reconnect the cloud session.
+            if _local_only():
+                self._log("Gemini Live not (re)starting: local-only "
+                          "mode is on")
+                return
             retried_fresh = False
             while True:
                 if self._stop.is_set():
+                    return
+                if _local_only():
+                    self._log("Gemini Live not (re)starting: "
+                              "local-only mode is on")
                     return
                 handle_in_use = self._resume_handle
                 config = build_live_config(
@@ -915,9 +965,18 @@ class LiveManager:
         """End the session. Setting the stop event alone used to
         leave the receive loop alive (run_session loops forever
         re-entering receive()), so the session never ended — now
-        the live session task is cancelled on its own loop too."""
+        the live session task is cancelled on its own loop too.
+        Pass 36 #03: queued mic audio is drained here, so chunks
+        captured before the stop never stream after it."""
         self._stop.set()
         self._cancel_turn_tools()
+        _queue = getattr(self, "_mic_queue", None)
+        if _queue is not None:
+            try:
+                while True:
+                    _queue.get_nowait()
+            except Exception:
+                pass
         loop = getattr(self, "_loop", None)
         task = getattr(self, "_session_task", None)
         if loop is not None and task is not None and not task.done():

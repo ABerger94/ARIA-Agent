@@ -597,6 +597,15 @@ def continuous_voice_listener():
             VOICE_LISTENER_ONLINE = False
             time.sleep(1.0)
             continue
+        if _PIPELINE_MIC_PAUSED.is_set():
+            # Pass 36 #03: a Live session owns the mic — the
+            # pipeline listener yields instead of opening a second
+            # pair of ears. Set by _start_live_if_configured(),
+            # cleared by its 'ended' handler before the pipeline
+            # is re-armed.
+            VOICE_LISTENER_ONLINE = False
+            time.sleep(0.5)
+            continue
         try:
             with speech.SoundDeviceSource(device=_mic_device()) as source:
                 VOICE_LISTENER_ONLINE = True
@@ -973,6 +982,45 @@ def _proactive_speak(text):
 # ---------------------------------------------------------------- gemini live
 _LIVE_MANAGER = None
 
+# Pass 36 #03: the pipeline wake-word listener and a Live session
+# must never own the mic at the same time. _start_live_if_configured
+# sets this while Live runs; the listener loop yields while it is
+# set, and the 'ended' handler clears it before re-arming the
+# pipeline. Without it, flipping back to Auto (which re-starts
+# Live) would leave two pairs of ears.
+_PIPELINE_MIC_PAUSED = threading.Event()
+
+
+def handle_provider_mode_change(mode) -> None:
+    """PROVIDER_MODE flip handler (pass 36 #03): main.py is the
+    voice-listener owner — it holds _LIVE_MANAGER. Entering
+    local_only stops an open Live session (LiveManager.stop also
+    drains queued mic audio) — a flip must never leave cloud audio
+    streaming. Returning to Auto re-attempts _start_live_if_configured()
+    when voice_mode is 'live'; the pipeline listener yields while
+    Live owns the mic (see _PIPELINE_MIC_PAUSED). Never raises: a
+    broken handler must not break the Settings toggle that called
+    it."""
+    try:
+        mode = str(mode or "").strip().lower()
+        global _LIVE_MANAGER
+        if mode == "local_only":
+            mgr = _LIVE_MANAGER
+            if mgr is not None:
+                mgr.stop()
+                add_log("Provider mode: Local only — Gemini Live stopped")
+            return
+        mgr = _LIVE_MANAGER
+        if mgr is not None and getattr(mgr, "active", False):
+            return
+        _LIVE_MANAGER = None
+        _start_live_if_configured()
+    except Exception as e:
+        try:
+            add_log(f"Provider mode change handling failed: {e}")
+        except Exception:
+            pass
+
 
 def _start_live_if_configured() -> bool:
     """Gemini Live voice mode (aria/live.py) when the 'voice_mode'
@@ -983,6 +1031,14 @@ def _start_live_if_configured() -> bool:
     If a Live session later ENDS mid-run, the wake-word listener
     is armed once as the failover, Mark-LVI style."""
     global _LIVE_MANAGER
+    # Pass 36 #03: register the mode-flip handler once (deduped in
+    # live.py) — before the voice_mode check, so a flip back to
+    # Auto can re-arm Live even when Live never started at boot.
+    try:
+        from aria import live as _live_reg
+        _live_reg.register_mode_listener(handle_provider_mode_change)
+    except Exception:
+        pass
     try:
         if str(_config_silent.get_setting(
                 'voice_mode', 'pipeline')).lower() != 'live':
@@ -1001,6 +1057,10 @@ def _start_live_if_configured() -> bool:
             add_log(f"Gemini Live: {state}")
             if state == 'ended' and not failover['armed']:
                 failover['armed'] = True
+                # Pass 36 #03: Live no longer owns the mic — clear
+                # the pause BEFORE re-arming the pipeline, or the
+                # listener would yield forever.
+                _PIPELINE_MIC_PAUSED.clear()
                 add_log("Gemini Live ended — wake-word pipeline re-armed")
                 threading.Thread(target=continuous_voice_listener,
                                  daemon=True).start()
@@ -1030,6 +1090,9 @@ def _start_live_if_configured() -> bool:
             policy_check=usage.project_budget_enabled)
         if manager.start():
             _LIVE_MANAGER = manager
+            # Pass 36 #03: Live owns the mic now — the pipeline
+            # listener yields while this is set.
+            _PIPELINE_MIC_PAUSED.set()
             add_log("Voice mode: Gemini Live (pipeline listener off)")
             return True
         add_log("Voice mode: live requested but unavailable — "

@@ -425,3 +425,67 @@ def test_start_allowed_in_auto_mode(monkeypatch):
     mgr.stop()
     mgr._thread.join(timeout=5)
     assert not mgr._thread.is_alive()
+
+
+# -- Pass 36 #03: a mode flip mid-session stops the cloud session --
+# start() checked the mode once; the toggle never signalled the
+# manager, so an open session kept streaming mic audio after the
+# flip to Local only, and there was no re-arm on return to Auto.
+# Now: _run checks the mode before every (re)connect attempt, the
+# mic pump stops sending on a flip, stop() drains queued audio,
+# and flips are published to main.py's listener (tested here at
+# the live.py publish seam; the main.py handler is exercised by
+# the toggle path).
+
+def test_run_never_connects_after_flip_to_local_only(monkeypatch):
+    logs = []
+    connects = []
+    session = _BlockingSession()
+
+    class _RecordingClient:
+        def __init__(self, sess):
+            self.session = sess
+            self.aio = types.SimpleNamespace(
+                live=types.SimpleNamespace(
+                    connect=lambda model=None, config=None: (
+                        connects.append(model),
+                        _FakeLiveCM(session))[1]))
+
+    mgr = live.LiveManager(
+        api_key="k", tool_runner=lambda n, a: ("", True),
+        client_factory=lambda key: _RecordingClient(session),
+        log=logs.append)
+    monkeypatch.setattr(live, "_genai_types", _FakeTypes)
+    monkeypatch.setattr(live, "_local_only", lambda: True)
+    asyncio.run(mgr._run())
+    assert connects == [], connects
+    assert mgr.active is False
+    assert any("local-only mode is on" in m for m in logs), logs
+
+
+def test_stop_drains_queued_mic_audio():
+    import queue
+    mgr = live.LiveManager(api_key="k",
+                           tool_runner=lambda n, a: ("", True))
+    q = queue.Queue()
+    q.put(b"chunk-one")
+    q.put(b"chunk-two")
+    mgr._mic_queue = q
+    mgr.stop()
+    assert q.empty(), "queued mic audio must not survive the stop"
+
+
+def test_mode_listeners_get_published_flips():
+    live._MODE_LISTENERS.clear()
+    try:
+        seen = []
+        live.register_mode_listener(seen.append)
+        live.register_mode_listener(seen.append)  # deduped
+        live.publish_provider_mode("local_only")
+        assert seen == ["local_only"]
+        # A raising listener never breaks the publish for others.
+        live.register_mode_listener(lambda m: 1 / 0)
+        live.publish_provider_mode("auto")
+        assert seen == ["local_only", "auto"]
+    finally:
+        live._MODE_LISTENERS.clear()

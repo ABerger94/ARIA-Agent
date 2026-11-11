@@ -175,6 +175,16 @@ def build_providers_widget(parent=None):
             from aria.agent.providers import set_provider_mode
             effective = set_provider_mode(
                 'local_only' if checked else 'auto')
+            # Pass 36 #03: publish the flip to the voice-listener
+            # owner (aria/main.py) — it stops an open Live session
+            # on entering local_only and re-arms it on return to
+            # Auto. The set_provider_mode contract itself (pass 36
+            # #07, PROV-owned) is untouched; this only notifies.
+            try:
+                from aria import live as _live_mod
+                _live_mod.publish_provider_mode(effective)
+            except Exception:
+                pass
             mode_status.setText(
                 'Local only ON — takes effect on the next turn and '
                 'is saved for the next start.'
