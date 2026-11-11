@@ -1041,3 +1041,144 @@ def test_17_fit_never_drops_primer_or_user():
     finally:
         pv.local_prompt_char_budget = saved_budget
     print("ok 17 local compaction never drops the primer or latest turn")
+
+
+# --- #18: per-attempt identity; configured vs live vs unreachable --
+
+def test_18_is_provider_live_needs_recent_success():
+    saved = dict(pv._PROVIDER_HEALTH)
+    try:
+        pv._PROVIDER_HEALTH["gemini"] = {"status": "ok",
+                                         "checked_at": time.time()}
+        assert pv.is_provider_live("gemini") is True
+        pv._PROVIDER_HEALTH["gemini"] = {
+            "status": "ok", "checked_at": time.time() - 301}
+        assert pv.is_provider_live("gemini") is False  # stale success
+        pv._PROVIDER_HEALTH["gemini"] = {
+            "status": "error", "checked_at": time.time()}
+        assert pv.is_provider_live("gemini") is False
+        assert pv.is_provider_live("never-configured") is False
+    finally:
+        pv._PROVIDER_HEALTH.clear()
+        pv._PROVIDER_HEALTH.update(saved)
+    print("ok 18 live means a recent success, not just configured")
+
+
+def test_18_mode_flip_clears_active_provider():
+    saved_mode = pv.PROVIDER_MODE
+    saved_gen = pv._MODE_GENERATION
+    saved_active = pv.ACTIVE_PROVIDER
+    saved_cfg_mode = cfg.PROVIDER_MODE
+    real_save = cfg.save_keys
+    cfg.save_keys = lambda: True
+    try:
+        pv.PROVIDER_MODE = "auto"
+        cfg.PROVIDER_MODE = "auto"
+        pv.ACTIVE_PROVIDER = "gemini"
+        pv.set_provider_mode("local_only")
+        assert pv.ACTIVE_PROVIDER == "", pv.ACTIVE_PROVIDER
+        assert pv.get_active_provider() == ""
+        # Same-mode set does not clear (nothing flipped).
+        pv.ACTIVE_PROVIDER = "ollama_local"
+        pv.set_provider_mode("local_only")
+        assert pv.ACTIVE_PROVIDER == "ollama_local"
+    finally:
+        cfg.save_keys = real_save
+        pv.PROVIDER_MODE = saved_mode
+        cfg.PROVIDER_MODE = saved_cfg_mode
+        pv._MODE_GENERATION = saved_gen
+        pv.ACTIVE_PROVIDER = saved_active
+    print("ok 18 a mode flip clears ACTIVE_PROVIDER until re-derived")
+
+
+def test_18_health_names_model_actually_attempted():
+    from aria import runtime
+    saved_chain = pv._build_chain
+    saved_active = pv.ACTIVE_PROVIDER
+    saved_health = dict(pv._PROVIDER_HEALTH)
+
+    class _FallbackLeg(_CapLeg):
+        def call(self, *a, **k):
+            self.calls += 1
+            if self.calls == 1:
+                self.last_error = "HTTP 404: model gone"
+                return None
+            return {"candidates": [{"content": {"parts": [{"text": "hi"}]}}]}
+
+    leg = _FallbackLeg("ollama_cloud", "gpt-oss:120b")
+    pv._build_chain = lambda: [leg]
+    try:
+        pv.clear_provider_cooldown()
+        pv.clear_model_cooldown()
+        pv.clear_role_model_cooldown()
+        pv._PROVIDER_HEALTH.clear()
+        with runtime.execution():
+            out = pv.provider_call(
+                "sys", [{"role": "user", "parts": [{"text": "hi"}]}],
+                model_override="gemma4:31b-cloud")
+        assert out is not None, out
+        health = pv.provider_health()["ollama_cloud"]
+        # The override failed, the default served: health names
+        # the default (actually attempted last), not the override.
+        assert health["model"] == "gpt-oss:120b", health
+        assert pv.is_provider_live("ollama_cloud") is True
+    finally:
+        pv._build_chain = saved_chain
+        pv.ACTIVE_PROVIDER = saved_active
+        pv._PROVIDER_HEALTH.clear()
+        pv._PROVIDER_HEALTH.update(saved_health)
+        pv.clear_role_model_cooldown()
+        pv.clear_model_cooldown()
+    print("ok 18 health records the model actually attempted")
+
+
+def test_18_frame_states_configured_live_unreachable():
+    import aria.frame as frame
+    saved_chain = pv._build_chain
+    saved_health = dict(pv._PROVIDER_HEALTH)
+    saved_verify = pv.local_verification_cached
+    saved_active = pv.ACTIVE_PROVIDER
+
+    class _RowLeg:
+        def __init__(self, name, model):
+            self.name = name
+            self.model = model
+            self.base_url = ""
+            self.api_key = "k-" + name
+        def is_available(self):
+            return True
+
+    legs = [_RowLeg("gemini", "gemini-3.8-flash"),
+            _RowLeg("ollama_local", "qwen2.5:7b")]
+    pv._build_chain = lambda: legs
+    try:
+        # No success yet, no verification: configured, not live.
+        pv._PROVIDER_HEALTH.clear()
+        pv.local_verification_cached = lambda: None
+        _, rows = frame._provider_rows()
+        by_name = {r["name"]: r for r in rows}
+        assert by_name["gemini"]["state"] == "configured", rows
+        assert by_name["ollama_local"]["state"] == "configured", rows
+        # A fresh success makes the leg live.
+        pv._PROVIDER_HEALTH["gemini"] = {
+            "status": "ok", "summary": "last model request succeeded",
+            "checked_at": time.time(), "model": "gemini-3.8-flash"}
+        _, rows = frame._provider_rows()
+        by_name = {r["name"]: r for r in rows}
+        assert by_name["gemini"]["state"] == "live", rows
+        assert by_name["gemini"]["model"] == "gemini-3.8-flash", rows
+        # A cached failed verification makes the local leg unreachable.
+        pv.local_verification_cached = lambda: {
+            "ok": False, "code": "daemon_unreachable",
+            "reason": "local Ollama daemon is not reachable",
+            "host": "http://localhost:11434", "model": "qwen2.5:7b"}
+        _, rows = frame._provider_rows()
+        by_name = {r["name"]: r for r in rows}
+        assert by_name["ollama_local"]["state"] == "unreachable", rows
+    finally:
+        pv._build_chain = saved_chain
+        pv._PROVIDER_HEALTH.clear()
+        pv._PROVIDER_HEALTH.update(saved_health)
+        pv.local_verification_cached = saved_verify
+        pv.ACTIVE_PROVIDER = saved_active
+    print("ok 18 frame shows configured / live / unreachable distinctly")

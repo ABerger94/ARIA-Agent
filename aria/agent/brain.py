@@ -973,7 +973,10 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
             except Exception:
                 _eff_names = PROVIDER_CHAIN
             _primary = _eff_names[0] if _eff_names else "ollama_cloud"
-            if get_active_provider() != _primary:
+            # Pass 36 #18: a mode change clears ACTIVE_PROVIDER
+            # ("" until the next success re-derives it) — never
+            # subtitle "Running on  (fallback)" for an empty name.
+            if get_active_provider() and get_active_provider() != _primary:
                 hud.set_hud_subtitle(f"Running on {get_active_provider()} (fallback)")
 
             if not data or not data.get("candidates"):

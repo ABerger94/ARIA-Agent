@@ -94,7 +94,7 @@ def set_provider_mode(mode) -> str:
     at the next restart; an invalid explicit value is a visible
     configuration error (see config.set_provider_mode_result),
     not a silent coercion. provider_mode_status() reads it."""
-    global PROVIDER_MODE, _MODE_GENERATION
+    global PROVIDER_MODE, _MODE_GENERATION, ACTIVE_PROVIDER
     previous_mode = provider_mode()
     try:
         result = _config_silent.set_provider_mode_result(mode)
@@ -111,6 +111,11 @@ def set_provider_mode(mode) -> str:
     # the mode that is already live changes nothing and bumps nothing.
     if result["mode"] != previous_mode:
         _MODE_GENERATION += 1
+        # Pass 36 #18: the last-serving provider belongs to the old
+        # mode — clear it. get_active_provider() is "" until the
+        # next successful call re-derives it; nothing may claim the
+        # old leg is still live under the new mode.
+        ACTIVE_PROVIDER = ""
     if result.get("error"):
         add_log(f"provider mode: invalid value — {result['error']}",
                 level="error")
@@ -188,10 +193,44 @@ _HEALTH_LOCK = threading.RLock()
 _PROVIDER_HEALTH: Dict[str, Dict[str, Any]] = {}
 _RECENT_FOREGROUND_PROVIDER = {}
 
+# Pass 36 #18: a "live" health entry is only fresh this long. A
+# success from an hour ago does not make a dead daemon live now.
+_PROVIDER_HEALTH_FRESH_S = 300
+
 
 def provider_health() -> Dict[str, Dict[str, Any]]:
     with _HEALTH_LOCK:
         return copy.deepcopy(_PROVIDER_HEALTH)
+
+
+def is_provider_live(name: str) -> bool:
+    """True only on a RECENT success (pass 36 #18): the health entry
+    says 'ok' and its check is inside _PROVIDER_HEALTH_FRESH_S.
+    Configured-but-untested is 'configured', not live — a dead
+    local daemon used to show live from is_available() alone."""
+    entry = _PROVIDER_HEALTH.get(name) or {}
+    if entry.get("status") != "ok":
+        return False
+    try:
+        checked_at = float(entry.get("checked_at") or 0)
+    except (TypeError, ValueError):
+        return False
+    return (time.time() - checked_at) <= _PROVIDER_HEALTH_FRESH_S
+
+
+def local_verification_cached() -> Optional[Dict[str, Any]]:
+    """The cached local-leg verification, if any — no network
+    (pass 36 #18). The frame reads this on the render loop instead
+    of probing the daemon; a cached non-ok result (daemon
+    unreachable, model missing, non-loopback) is what turns the
+    local row 'unreachable'."""
+    try:
+        host = _ollama_host_root()
+        strict = not bool(OLLAMA_ALLOW_REMOTE)
+        entry = _LOCAL_VERIFY_CACHE.get(f"{host}|{OLLAMA_MODEL}|{strict}")
+        return dict(entry) if entry else None
+    except Exception:
+        return None
 
 
 def _record_provider_failure(provider, *, kind=None, code=None, retry_at=0, latency_ms=None):
@@ -2211,9 +2250,15 @@ def provider_call(
             data = None
         if _usable_response(data):
             ctx.budget_error = ''
+            # Pass 36 #18: the health entry names the model
+            # ACTUALLY attempted (override, then default on
+            # fallback) — the per-attempt identity the frame and
+            # the cooldowns read — not the leg's configured model.
+            _attempted = (getattr(provider, "_last_attempted_models", None)
+                          or [getattr(provider, "model", "")])
             with _HEALTH_LOCK:
                 _PROVIDER_HEALTH[provider.name] = {
-                    'provider': provider.name, 'model': getattr(provider, 'model', ''),
+                    'provider': provider.name, 'model': _attempted[-1],
                     'status': 'ok', 'summary': 'last model request succeeded',
                     'checked_at': time.time(),
                     'latency_ms': int((time.monotonic() - attempt_started) * 1000),

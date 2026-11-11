@@ -298,23 +298,50 @@ def _fmt_uptime(s: float) -> str:
 
 def _provider_rows() -> Tuple[str, List[Dict[str, str]]]:
     """Chain readout: (active_name, [{name, state}]) — same sources the
-    OPS providers panel used (providers._build_chain + quarantine maps)."""
+    OPS providers panel used (providers._build_chain + quarantine maps).
+
+    Pass 36 #18: the state now distinguishes configured vs
+    last-successful vs unreachable. "live" means a success in the
+    last 5 minutes (providers.is_provider_live) — a merely
+    configured leg is "configured", and a local leg whose cached
+    verification failed is "unreachable". No readiness probe runs
+    here: the chain is built with verify_local=False and the local
+    state reads the cached verification only."""
     try:
         from aria.agent import providers as pv
         from aria import config as cfg
         now = time.time()
         health = pv.provider_health()
+        _is_live = getattr(pv, "is_provider_live", None)
+        local_verify = None
+        try:
+            local_verify = pv.local_verification_cached()
+        except Exception:
+            local_verify = None
         rows = []
         for p in pv._build_chain():
-            state = "live" if p.is_available() else "standby"
+            last = health.get(p.name, {})
             q_until = cfg._KEY_QUARANTINE_UNTIL.get(getattr(p, "api_key", ""), 0)
             if q_until > now:
                 state = "quarantined"
-            last = health.get(p.name, {})
-            if last.get('status') == 'error' and state != 'quarantined':
+            elif last.get('status') == 'error':
                 state = 'error'
+            elif (p.name == "ollama_local" and local_verify
+                    and not local_verify.get("ok")):
+                state = "unreachable"
+            elif callable(_is_live) and _is_live(p.name):
+                state = "live"
+            elif not callable(_is_live) and last.get('status') == 'ok':
+                state = "live"
+            elif p.is_available():
+                state = "configured"
+            else:
+                state = "standby"
             rows.append({"name": p.name, "state": state,
-                         "model": getattr(p, "model", ""),
+                         # The model ACTUALLY attempted last (from
+                         # the health entry), not the configured
+                         # tag — per-attempt identity for the UI.
+                         "model": last.get("model") or getattr(p, "model", ""),
                          "last_result": last.get('summary', '')})
         return pv.get_active_provider() or "", rows
     except Exception:
