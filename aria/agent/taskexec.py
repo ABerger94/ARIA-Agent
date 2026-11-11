@@ -192,6 +192,28 @@ def _substitute(value: Any, results: Dict[str, str],
     return value
 
 
+def _lookup_by_step(mapping, s: dict):
+    """Fetch a per-step record keyed by stable step id (pass 36
+    #23 (f)), falling back to the display number for legacy
+    number-keyed maps. The step id wins when present; a step
+    with no id (hand-built plans, legacy checkpoints) resolves
+    by its display number, so old number-keyed evidence keeps
+    working. Returns None when neither key hits."""
+    if not isinstance(mapping, dict):
+        return None
+    sid = s.get("id") or s.get("step")
+    if sid in mapping:
+        return mapping[sid]
+    if str(sid) in mapping:
+        return mapping[str(sid)]
+    n = s.get("step")
+    if n in mapping:
+        return mapping[n]
+    if str(n) in mapping:
+        return mapping[str(n)]
+    return None
+
+
 def _resolved_artifact_path(tool: str, params: dict
                             ) -> Optional[str]:
     """The artifact a file-writing step actually wrote, resolved
@@ -287,10 +309,12 @@ class AgentExecutor:
         # from the raw template parameters.
         # Pass 36 #26: keyed by stable step id, not display
         # number, so a replanned replacement step cannot
-        # overwrite the replaced step's receipt.
+        # overwrite the replaced step's receipt. Pass 36 #23
+        # (f) re-keyed _journal_ids the same way; steps with no
+        # stable id fall back to their display number (legacy).
         self._op_ids: Dict[str, str] = {}
         self._last_grade: Optional[dict] = None
-        self._step_params: Dict[int, dict] = {}
+        self._step_params: Dict[Any, dict] = {}
 
     # -- skeptical verifier (Gap fill 3) --------------------------
     def _grader_chat(self):
@@ -310,23 +334,32 @@ class AgentExecutor:
     def _journal_ids(self, completed: List[dict],
                      results: Dict[int, str],
                      resume: Optional[Dict[str, Any]] = None
-                     ) -> Dict[int, str]:
-        """Step number → action-journal operation id, for the
-        grader's receipt probes. Ids recorded during this run
+                     ) -> Dict[Any, str]:
+        """Step identity → action-journal operation id, for the
+        grader's receipt probes. Keyed by the STABLE step id
+        (pass 36 #23 (f)): pass 36 #26 made _op_ids id-keyed,
+        but this method still formatted op ids with the display
+        number, so its recompute never matched the receipt the
+        attempt loop recorded and the fast path always fell
+        through to a wrong id. Ids recorded during this run
         win; steps a resume skipped come from the PERSISTED
         per-step evidence in the task journal when it exists
         (pass 36 #25 — the substituted params + op id + resolved
         artifact path recorded at execution time), and are
         otherwise recomputed from the stable execution scope
-        exactly as the attempt loop built them (pass 26 B1#5).
+        exactly as the attempt loop built them (pass 26 B1#5) —
+        with the stable step id in the op id, never the display
+        number. Steps with no stable id (hand-built plans,
+        legacy checkpoints) fall back to their display number,
+        so old number-keyed evidence keeps working.
         Substitution is computed against the results of the
         steps completed BEFORE each step, in execution order —
         never against the final result map, where {prev} would
         mean the last step's result instead of the previous
         one. Also records the substituted params per step in
-        self._step_params for the probes."""
+        self._step_params (keyed the same way) for the probes."""
         ids = dict(self._op_ids)
-        params_by_step: Dict[int, dict] = {}
+        params_by_step: Dict[Any, dict] = {}
         try:
             from aria.action_journal import signature
             scope = (resume or {}).get("execution_scope") \
@@ -346,19 +379,20 @@ class AgentExecutor:
             seen: Dict[int, str] = {}
             for s in completed:
                 n = s.get("step")
-                saved = persisted.get(n)
-                if saved is None:
-                    saved = persisted.get(str(n))
+                # The stable identity: the step id when the plan
+                # carries one, else the display number (legacy).
+                sid = s.get("id") or n
+                saved = _lookup_by_step(persisted, s)
                 if isinstance(saved, dict) and saved.get("op_id"):
-                    ids[n] = str(saved["op_id"])
+                    ids[sid] = str(saved["op_id"])
                     if isinstance(saved.get("params"), dict):
-                        params_by_step[n] = saved["params"]
+                        params_by_step[sid] = saved["params"]
                 else:
                     params = _substitute(
                         s.get("parameters") or {}, seen)
-                    params_by_step[n] = params
-                    if n not in ids:
-                        ids[n] = (f"{scope}:step:{n}:"
+                    params_by_step[sid] = params
+                    if sid not in ids:
+                        ids[sid] = (f"{scope}:step:{sid}:"
                                   f"{signature(s.get('tool', ''), params)}")
                 if n in results:
                     seen[n] = results[n]
@@ -370,12 +404,14 @@ class AgentExecutor:
 
     def _persist_step_evidence(
             self, completed: List[dict],
-            journal_ids: Optional[Dict[int, str]]) -> None:
+            journal_ids: Optional[Dict[Any, str]]) -> None:
         """Persist the per-step evidence for this run into the
         task journal (pass 36 #25): substituted params + op id
         + resolved artifact path per completed step, merged into
         the record's step_evidence without touching the
-        checkpoint. Best-effort and never raising: without a
+        checkpoint. Evidence is keyed by stable step id (pass
+        36 #23 (f)); steps with no id fall back to their display
+        number. Best-effort and never raising: without a
         task-scoped execution (a direct _verify call in tests,
         a non-queue context) there is no journal record to
         persist into, and grading proceeds without it."""
@@ -388,16 +424,16 @@ class AgentExecutor:
                 return
             task_id = scope[len("task:"):]
             params = getattr(self, "_step_params", {}) or {}
-            evidence: Dict[int, dict] = {}
+            evidence: Dict[Any, dict] = {}
             for s in completed:
-                n = s.get("step")
-                rec = {"op_id": journal_ids.get(n),
-                       "params": params.get(n) or {}}
+                sid = s.get("id") or s.get("step")
+                rec = {"op_id": _lookup_by_step(journal_ids, s),
+                       "params": _lookup_by_step(params, s) or {}}
                 artifact = _resolved_artifact_path(
                     s.get("tool") or "", rec["params"])
                 if artifact:
                     rec["artifact_path"] = artifact
-                evidence[n] = rec
+                evidence[sid] = rec
             _ts.merge_step_evidence(task_id, evidence)
         except Exception as e:
             add_log(f"taskexec: step evidence persist failed ({e})")
@@ -423,9 +459,12 @@ class AgentExecutor:
                 if tool not in ("delegate_task", "task_resume"):
                     continue
                 n = s.get("step")
-                op_id = journal_ids.get(n)
-                if op_id is None:
-                    op_id = journal_ids.get(str(n))
+                # Pass 36 #23 (f): the op id is keyed by stable
+                # step id now, with the display number as the
+                # legacy fallback. The result text is still read
+                # from the display-number view (it only carries
+                # the child task id string).
+                op_id = _lookup_by_step(journal_ids, s)
                 if not op_id:
                     continue
                 m = re.search(r"task_id=([A-Za-z0-9_-]+)",
@@ -460,7 +499,7 @@ class AgentExecutor:
     def _verify(self, goal: str, completed: List[dict],
                 results: Dict[int, str], *,
                 plan: Optional[Dict[str, Any]] = None,
-                journal_ids: Optional[Dict[int, str]] = None,
+                journal_ids: Optional[Dict[Any, str]] = None,
                 deadline: Optional[float] = None
                 ) -> Optional[str]:
         """Return a rejection reason, or None when the work
@@ -635,11 +674,13 @@ class AgentExecutor:
 
         def _results_by_display() -> Dict[int, str]:
             """Display-number view of the id-keyed results, for
-            the verifier and journal-id paths (both still key by
-            display number — GRAD owns those; pass 36 #26 notes
-            the residual collision when two completed steps
-            share a display number across plan revisions, where
-            the later one wins)."""
+            the verifier path (which still keys by display
+            number). The journal-id path is id-keyed since pass
+            36 #23 (f); this view exists only for the verifier
+            and the journal-id substitution context, with the
+            residual collision when two completed steps share a
+            display number across plan revisions, where the
+            later one wins (pass 36 #26)."""
             view: Dict[int, str] = {}
             for s in completed:
                 sid = s.get("id")

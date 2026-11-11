@@ -166,7 +166,10 @@ def normalize_steps(steps: List[dict],
     """Both engines' step shapes → the grader's one shape. Only
     known keys are read — anything else a step dict carries
     (chat context, reasoning, journal internals) stays out of
-    the bundle by construction."""
+    the bundle by construction. The stable step "id" is kept
+    when present (pass 36 #23 (f)): probes resolve receipts by
+    it; a step without one resolves by display number, as
+    before."""
     out = []
     for i, s in enumerate(steps or []):
         if not isinstance(s, dict):
@@ -175,7 +178,7 @@ def normalize_steps(steps: List[dict],
         if number is None:
             idx = s.get("idx")
             number = (idx + 1) if isinstance(idx, int) else i + 1
-        out.append({
+        norm = {
             "step": number,
             "tool": str(s.get("tool") or "?"),
             "description": str(s.get("description") or ""),
@@ -184,7 +187,10 @@ def normalize_steps(steps: List[dict],
             else (s.get("args") if isinstance(s.get("args"), dict)
                   else {}),
             "output": _step_output(s, results),
-        })
+        }
+        if s.get("id") is not None:
+            norm["id"] = s.get("id")
+        out.append(norm)
     return out
 
 
@@ -379,9 +385,18 @@ def _file_probe(step: dict,
     tool = step["tool"]
     args = None
     if step_params is not None:
-        args = step_params.get(step.get("step"))
-        if args is None:
-            args = step_params.get(str(step.get("step")))
+        # Pass 36 #23 (f): params are keyed by stable step id
+        # now — a string id wins; mission rows carry an int db
+        # id that must never be tried as a key, so only a
+        # string id resolves here and anything else falls back
+        # to the display number, as before.
+        sid = step.get("id")
+        if isinstance(sid, str) and sid in step_params:
+            args = step_params[sid]
+        else:
+            args = step_params.get(step.get("step"))
+            if args is None:
+                args = step_params.get(str(step.get("step")))
     if not isinstance(args, dict):
         args = step.get("parameters") or {}
     if tool == "code_helper":
@@ -494,13 +509,18 @@ def build_probes(steps: List[dict],
                  step_params: Optional[Dict[Any, dict]] = None
                  ) -> List[dict]:
     """Read-only destination probes for state-changing steps.
-    journal_ids maps a step number → its action-journal
-    operation id (each engine knows its own id scheme); steps
-    without a supplied id simply get no journal probe. File
-    probes cover the file-writing tools. step_params maps a
-    step number → the SUBSTITUTED parameters the step actually
-    executed (pass 36 #25): probes are driven from those, not
-    from the raw template parameters. Never raises."""
+    journal_ids maps a step identity → its action-journal
+    operation id (each engine knows its own id scheme): the
+    delegated engine keys by stable step id (pass 36 #23 (f)),
+    missions by display number. A string step id resolves
+    first; mission rows carry an int db id that must never be
+    tried as a key, so anything non-string falls back to the
+    display number. Steps without a supplied id simply get no
+    journal probe. File probes cover the file-writing tools.
+    step_params maps a step identity → the SUBSTITUTED
+    parameters the step actually executed (pass 36 #25): probes
+    are driven from those, not from the raw template
+    parameters. Never raises."""
     from aria.tool_policy import retry_safe
     probes: List[dict] = []
     journal_ids = journal_ids or {}
@@ -511,9 +531,13 @@ def build_probes(steps: List[dict],
             # artifacts attest the step's destination (#20) and
             # its state is the receipt probe for effect steps.
             journal_row = None
-            op_id = journal_ids.get(s.get("step"))
-            if op_id is None:
-                op_id = journal_ids.get(str(s.get("step")))
+            sid = s.get("id")
+            if isinstance(sid, str) and sid in journal_ids:
+                op_id = journal_ids[sid]
+            else:
+                op_id = journal_ids.get(s.get("step"))
+                if op_id is None:
+                    op_id = journal_ids.get(str(s.get("step")))
             if op_id:
                 from aria import action_journal
                 try:
