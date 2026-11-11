@@ -276,13 +276,86 @@ def init_databases():
         conn.close()
 
 
-def _embed_uncached(text):
-    """Ollama Cloud embedding (768-dim, same as the retired model).
-    Returns list[float] or None."""
+def _provider_mode_live() -> str:
+    """The live PROVIDER_MODE, read fresh at call time (the
+    Settings toggle rebinds it without a restart — an import-time
+    snapshot would miss a flip). providers.provider_mode() is the
+    authoritative source; config's global is the fallback."""
+    try:
+        from aria.agent.providers import provider_mode
+        return str(provider_mode() or "auto").strip().lower()
+    except Exception:
+        pass
+    try:
+        from aria import config as _cfg
+        return str(getattr(_cfg, "PROVIDER_MODE", "auto")
+                   or "auto").strip().lower()
+    except Exception:
+        return "auto"
+
+
+def _local_only() -> bool:
+    return _provider_mode_live() == "local_only"
+
+
+def _local_embed_model() -> str:
+    """An explicitly configured LOCAL embedding model
+    (OLLAMA_LOCAL_EMBED_MODEL in aria_keys.json / env), or ""
+    when none is configured. Empty means local-only embedding has
+    no egress at all — cached vectors only (see _embed)."""
+    try:
+        from aria.config import key_get
+        value, _src = key_get("OLLAMA_LOCAL_EMBED_MODEL", "")
+        return str(value or "").strip()
+    except Exception:
+        return ""
+
+
+def _effective_embed_model():
+    """(model, backend) _embed will use right now.
+
+    local_only + a configured local model -> ("<model>", "local"):
+    vectors come from the on-machine Ollama server. local_only
+    with no local model -> (None, "none"): cached vectors only,
+    never a POST to ollama.com. auto -> (EMBED_MODEL, "cloud"):
+    the existing Ollama Cloud path, unchanged.
+    """
+    if _local_only():
+        local = _local_embed_model()
+        if local:
+            return local, "local"
+        return None, "none"
+    return EMBED_MODEL, "cloud"
+
+
+def _embed_uncached(text, model, backend):
+    """One embedding from the given backend. Returns list[float]
+    or None. The cloud path is the old _embed_uncached body
+    (768-dim Ollama Cloud model, 5s timeout); the local path
+    POSTs to the on-machine Ollama server with the explicitly
+    configured local model — no API key, no usage metering (a
+    local call has no price to reserve against)."""
+    if backend == "local":
+        try:
+            from aria.config import OLLAMA_HOST
+            base = str(OLLAMA_HOST or "http://localhost:11434").rstrip("/")
+        except Exception:
+            base = "http://localhost:11434"
+        payload = {"model": model, "prompt": text[:2000]}
+        body = json.dumps(payload).encode()
+        try:
+            req = urllib.request.Request(
+                f"{base}/api/embeddings", data=body,
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return json.loads(resp.read().decode())["embedding"]
+        except Exception as e:
+            add_log(f"Embed err (local {model}): {e}")
+            return None
     if not OLLAMA_CLOUD_API_KEY or OLLAMA_CLOUD_API_KEY == "INSERT":
         add_log("Embed err: no OLLAMA_API_KEY configured")
         return None
-    payload = {"model": EMBED_MODEL, "prompt": text[:2000]}
+    payload = {"model": model, "prompt": text[:2000]}
     body = json.dumps(payload).encode()
     try:
         req = urllib.request.Request(
@@ -297,7 +370,7 @@ def _embed_uncached(text):
         # capped instead: on timeout the turn proceeds with core
         # memories only (the graceful path that already existed).
         from aria import usage
-        with usage.attempt('ollama_cloud', EMBED_MODEL, {**payload, 'max_tokens':0}, 'memory embedding'):
+        with usage.attempt('ollama_cloud', model, {**payload, 'max_tokens':0}, 'memory embedding'):
             with urllib.request.urlopen(req, timeout=5) as resp:
                 return json.loads(resp.read().decode())["embedding"]
     except urllib.error.HTTPError as e:
@@ -313,8 +386,12 @@ def _embed_uncached(text):
         return None
 
 
-def _cached_embedding(text):
-    cache_key = (workspaces.current(), EMBED_MODEL, text[:2000])
+def _cached_embedding(text, model):
+    """A cached vector for (project, model, text), or None. The
+    cache is keyed by MODEL identity, so vectors from different
+    embedding models never mix silently — even when their
+    dimensions happen to match."""
+    cache_key = (workspaces.current(), model, text[:2000])
     with _EMBED_LOCK:
         hit = _EMBED_CACHE.get(cache_key)
         if hit and time.monotonic() - hit[0] < 3600:
@@ -323,18 +400,38 @@ def _cached_embedding(text):
     return None
 
 
-def _embed(text):
-    cached = _cached_embedding(text)
+def _embed_with_model(text):
+    """(vector, model): the vector for text and the embedding
+    model that produced it (None when there is none). In
+    local_only with no configured local model this returns cached
+    vectors only — no network egress at all — and callers fall
+    back to lexical retrieval."""
+    model, backend = _effective_embed_model()
+    if backend == "none":
+        # Cached vectors only. The cache key is the model that
+        # produced the stored vectors (the configured local model
+        # when there is one — there is not, in this branch — else
+        # the cloud model from earlier saves).
+        cache_model = _local_embed_model() or EMBED_MODEL
+        vec = _cached_embedding(text, cache_model)
+        return vec, (cache_model if vec else None)
+    cached = _cached_embedding(text, model)
     if cached is not None:
-        return cached
-    cache_key = (workspaces.current(), EMBED_MODEL, text[:2000])
-    vector = _embed_uncached(text)
+        return cached, model
+    vector = _embed_uncached(text, model, backend)
     if vector:
+        cache_key = (workspaces.current(), model, text[:2000])
         with _EMBED_LOCK:
             _EMBED_CACHE[cache_key] = (time.monotonic(), tuple(vector))
             while len(_EMBED_CACHE) > 256:
                 _EMBED_CACHE.popitem(last=False)
-    return vector
+        return vector, model
+    return None, None
+
+
+def _embed(text):
+    vec, _model = _embed_with_model(text)
+    return vec
 
 
 def _pack_embedding(vec):
@@ -348,7 +445,7 @@ def memory_save(category: str, key: str, value: str, *, source="conversation", c
     spine_append("memory_save", {"category": category, "key": key,
                                  "value": value})
     _SPINE_BOOT_KEYS.append(key)
-    vec = _embed(f"{key}: {value}")
+    vec, vec_model = _embed_with_model(f"{key}: {value}")
     with DB_LOCK:
         conn = sqlite3.connect(db_path())
         cur = conn.cursor()
@@ -362,7 +459,7 @@ def memory_save(category: str, key: str, value: str, *, source="conversation", c
                 embedding_model=excluded.embedding_model,
                 updated_at=excluded.updated_at''',
             (category, key, value, _pack_embedding(vec), source,
-             max(0.0, min(1.0, float(confidence))), EMBED_MODEL if vec else None))
+             max(0.0, min(1.0, float(confidence))), vec_model))
         conn.commit()
         conn.close()
     add_log(f"Memory saved: [{key}]")
@@ -383,10 +480,10 @@ def memory_save_if_value(category: str, key: str, value: str,
     the lock is never held across the provider call; the compare
     and the upsert run in one transaction under the lock, so no
     writer can slip between them."""
-    vec = _embed(f"{key}: {value}")
+    vec, vec_model = _embed_with_model(f"{key}: {value}")
     packed = _pack_embedding(vec)
     clamped = max(0.0, min(1.0, float(confidence)))
-    model = EMBED_MODEL if vec else None
+    model = vec_model
     landed = False
     with DB_LOCK:
         conn = sqlite3.connect(db_path())
@@ -707,7 +804,11 @@ def build_prompt_memories(query: str = "", top_k: int = 6, *, local_only=False) 
 
     # 2. Add semantically relevant memories if query exists
     if query:
-        qvec = _cached_embedding(query) if local_only else _embed(query)
+        # Pass 36 #02: in local_only this is cached vectors only —
+        # _embed() itself is gated, and the cache is keyed by the
+        # model that produced the vectors.
+        qvec = _cached_embedding(
+            query, _local_embed_model() or EMBED_MODEL) if local_only else _embed(query)
         if qvec:
             q = np.array(qvec, dtype=np.float32)
             q /= (np.linalg.norm(q) or 1)
