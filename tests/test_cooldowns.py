@@ -2,15 +2,21 @@
 
 Pins:
   * _classify_error buckets: 400 bad_request, 429 rate_limit,
-    401/403 auth, 5xx server, everything else transient;
+    401/403 auth, 5xx server, network strings ("network drop:
+    ...", timeouts) network, everything else transient;
   * durations differ by class on both axes (a 429 parks the
     MODEL for 300 s but the provider for 60; an auth failure
-    parks the provider for 300; a blip only 30);
+    parks the provider for 300; a transient blip 60);
   * HTTP 400 cools NEITHER axis;
   * the walk skips a provider whose (provider, model) pair is
     cooling even when the provider axis is clear — and walks
     anyway when every candidate's pair is cooling;
   * a success heals the pair.
+
+Chain slimming (2026-11-10) amended two pins above: the
+network class split out of transient with NETWORK_BENCH_S
+durations, and transient moved (30, 30) -> (60, 60). The
+network-class behaviour is pinned in test_chain_slimming.py.
 """
 import importlib
 import os
@@ -52,6 +58,11 @@ def test_classify_error():
     assert c("HTTP 403: forbidden") == "auth"
     assert c("HTTP 503: down") == "server"
     assert c("HTTP 500") == "server"
+    # Network class (2026-11-10): the strings providers actually
+    # set for network failures/timeouts.
+    assert c("network drop: timed out") == "network"
+    assert c("network drop: [Errno 111] Connection refused") == "network"
+    assert c("TimeoutError: slow") == "network"
     assert c("raised: ConnectionError") == "transient"
     assert c("timeout") == "transient"
     assert c(None) == "transient" and c("") == "transient"
@@ -70,7 +81,7 @@ def test_class_durations_both_axes():
     assert _remaining(providers._PROVIDER_COOLDOWN, "groq") > 290
     providers._note_provider_failed("groq2", "raised: boom")
     r = _remaining(providers._PROVIDER_COOLDOWN, "groq2")
-    assert 25 < r <= 30, r
+    assert 55 < r <= 60, r  # transient is (60, 60) since 2026-11-10
     _reset()
     print("ok class_durations_both_axes")
 

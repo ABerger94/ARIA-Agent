@@ -63,6 +63,11 @@ def test_loader_list_dedupe_and_fallback(monkeypatch):
 
 
 def test_chain_expands_the_pool_in_position(monkeypatch):
+    # GEMINI_POOL_MAX_LEGS (default 2, chain slimming 2026-11-10)
+    # caps the expansion — raise it here so THIS test keeps
+    # pinning expansion order/keys, not the cap (the cap itself
+    # is pinned in test_chain_slimming.py).
+    monkeypatch.setattr(providers, "GEMINI_POOL_MAX_LEGS", 10)
     monkeypatch.setattr(providers, "GEMINI_API_KEYS",
                         ["key-one", "key-two", "key-three"])
     monkeypatch.setattr(providers, "PROVIDER_CHAIN",

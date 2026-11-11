@@ -37,6 +37,7 @@ from aria.config import (
     OLLAMA_VISION_MODEL, OLLAMA_CODE_MODEL,
     OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_LOCAL_TIMEOUT_S,
     OLLAMA_LOCAL_VISION_MODEL, OLLAMA_LOCAL_VISION_TIMEOUT_S,
+    CHAIN_MAX_CLOUD_ATTEMPTS, GEMINI_POOL_MAX_LEGS, NETWORK_BENCH_S,
     PROVIDER_CHAIN, PROVIDER_MODE, KEY_QUARANTINE_DURATION_S,  # noqa: F401 — PROVIDER_MODE is this module's live mode global: read via provider_mode(), rebound by set_provider_mode(), patched directly by tests
     quarantine_key, key_is_quarantined, key_mask, add_log,
 )
@@ -142,6 +143,7 @@ def _record_provider_failure(provider, *, kind=None, code=None, retry_at=0, late
         'network': 'network connection failed or timed out',
         'response': 'no usable model response',
         'unconfigured': 'API key, model, or endpoint not configured',
+        'attempt_cap': 'skipped to limit this turn\'s provider attempts',
         'cooldown': 'temporarily cooling down after a failed request',
         'budget': 'project model budget blocked this request',
     }
@@ -820,6 +822,40 @@ def _ollama_local_base_url() -> str:
     return host if host.endswith("/v1") else host + "/v1"
 
 
+# --- Chain slimming knobs (Alek, 2026-11-10) ---
+# Config values arrive as ints from aria.config (validated
+# there); these readers re-validate defensively because tests
+# patch the module globals directly, sometimes with strings.
+# Read at call time so a patched/live value always wins.
+
+def _positive_int(value, default: int) -> int:
+    try:
+        v = int(float(value))
+    except (TypeError, ValueError):
+        return default
+    return v if v >= 1 else default
+
+
+def _chain_max_cloud_attempts() -> int:
+    """Max real network attempts on cloud legs per provider_call
+    walk (CHAIN_MAX_CLOUD_ATTEMPTS, default 2). The ollama_local
+    leg never counts against it."""
+    return _positive_int(CHAIN_MAX_CLOUD_ATTEMPTS, 2)
+
+
+def _gemini_pool_max_legs() -> int:
+    """Max Gemini legs the key pool expands into
+    (GEMINI_POOL_MAX_LEGS, default 2)."""
+    return _positive_int(GEMINI_POOL_MAX_LEGS, 2)
+
+
+def _network_bench_s() -> float:
+    """How long a network failure benches a provider (and its
+    same-endpoint siblings), in seconds (NETWORK_BENCH_S,
+    default 900)."""
+    return float(_positive_int(NETWORK_BENCH_S, 900))
+
+
 def _gemini_providers() -> List[Provider]:
     """One provider per pooled Gemini key (Alek, 2026-10-27).
     The first keeps the name 'gemini'; the rest are 'gemini_2',
@@ -832,6 +868,13 @@ def _gemini_providers() -> List[Provider]:
     keys = [k for k in (GEMINI_API_KEYS or []) if k]
     if not keys and GEMINI_API_KEY:
         keys = [GEMINI_API_KEY]
+    # Chain slimming: cap the expanded legs at GEMINI_POOL_MAX_LEGS.
+    # Gemini quota is per Google Cloud PROJECT, not per key, so
+    # legs beyond the cap mostly bought extra full-timeout attempts
+    # per turn. Keys in aria_keys.json are never modified — legs
+    # past the cap are simply not constructed, so every consumer
+    # (chain, ping, connection report) inherits the cap from here.
+    keys = keys[:_gemini_pool_max_legs()]
     out: List[Provider] = []
     for i, k in enumerate(keys):
         name = "gemini" if i == 0 else f"gemini_{i + 1}"
@@ -1132,6 +1175,11 @@ def _note_provider_failed(name: str, last_error: Optional[str] = None) -> None:
     cls = _classify_error(last_error)
     if cls == "bad_request":
         return
+    if cls == "network":
+        # Duration comes from live config, not the static table,
+        # so a patched/changed NETWORK_BENCH_S always wins.
+        _PROVIDER_COOLDOWN.mark_failed(name, _network_bench_s())
+        return
     _PROVIDER_COOLDOWN.mark_failed(name, _FAILURE_DURATIONS[cls][0])
 
 
@@ -1163,14 +1211,16 @@ _FAILURE_DURATIONS = {
     "rate_limit": (60, 300),    # per-model quota: park the model long
     "auth": (300, 300),         # key/permission: won't heal in a minute
     "server": (60, 60),         # 5xx
-    "transient": (30, 30),      # network drop, timeout, raised, empty
+    "network": (900, 900),      # nominal; live value is NETWORK_BENCH_S,
+                                # read via _network_bench_s() at note time
+    "transient": (60, 60),      # raised, empty, unknown
 }
 
 
 def _classify_error(last_error: Optional[str]) -> str:
     """Bucket a provider.last_error string into a failure class.
-    Anything unrecognized is 'transient' (shortest cooldown) —
-    unknown failures shouldn't park things for long."""
+    Anything unrecognized is 'transient' — unknown failures
+    shouldn't park things for long."""
     e = (last_error or "").strip()
     if e.startswith("HTTP 400"):
         return "bad_request"
@@ -1180,6 +1230,18 @@ def _classify_error(last_error: Optional[str]) -> str:
         return "auth"
     if e.startswith("HTTP 5"):
         return "server"
+    # Network class (chain slimming, 2026-11-10): the strings
+    # OpenAICompatProvider.call actually sets for network
+    # failures/timeouts are "network drop: <err>" (its URLError /
+    # TimeoutError / ConnectionError handler) — plus a bare
+    # TimeoutError surfaced by _attempt_provider_call's "raised:"
+    # path or a "timed out" socket reason. These used to be
+    # 'transient' (30 s), so one sick endpoint was re-walked at
+    # full timeout cost by the next turn ~31 s later; now they
+    # bench for NETWORK_BENCH_S (default 900 s).
+    low = e.lower()
+    if "network drop" in low or "timed out" in low or "timeouterror" in low:
+        return "network"
     return "transient"
 
 
@@ -1196,6 +1258,10 @@ def _note_model_failed(name: str, model: Optional[str],
     cls = _classify_error(last_error)
     if cls == "bad_request":
         return
+    if cls == "network":
+        _MODEL_COOLDOWN.mark_failed(
+            _pair_key(name, model), _network_bench_s())
+        return
     _MODEL_COOLDOWN.mark_failed(
         _pair_key(name, model), _FAILURE_DURATIONS[cls][1])
 
@@ -1207,6 +1273,33 @@ def _note_model_ok(name: str, model: Optional[str]) -> None:
 def clear_model_cooldown() -> None:
     """Reset the per-(provider, model) registry (tests; key swaps)."""
     _MODEL_COOLDOWN.clear()
+
+
+def _bench_endpoint_family(failed_provider, endpoint: str, chain) -> None:
+    """Bench every other provider in the chain sharing the failed
+    provider's base_url, provider axis, for NETWORK_BENCH_S.
+
+    One Gemini outage otherwise costs one full timeout PER POOLED
+    LEG, discovered one turn at a time: the failed_endpoints set
+    in provider_call only dedupes within a single walk. Benching
+    the family puts the siblings into the same provider cooldown
+    the failed leg just earned, so later turns skip them with
+    zero network traffic until the bench expires (or every
+    candidate is cooling and the walk-anyway escape hatch fires).
+    Provider axis only — a sibling's (provider, model) pair is
+    untouched."""
+    try:
+        dur = _network_bench_s()
+        for other in chain:
+            if other.name == failed_provider.name:
+                continue
+            if getattr(other, "base_url", "") == endpoint:
+                _PROVIDER_COOLDOWN.mark_failed(other.name, dur)
+                add_log(f"provider {other.name}: benched {int(dur)}s "
+                        f"with endpoint family of "
+                        f"{failed_provider.name} (network failure)")
+    except Exception as _e_silent:
+        _config_silent.log_silent("_bench_endpoint_family", _e_silent)
 
 
 def chain_all_quarantined() -> bool:
@@ -1374,6 +1467,11 @@ def provider_call(
     ignore_pairs = bool(candidates) and all(
         _model_in_cooldown(p.name, _eff_model(p)) for p in candidates)
     failed_endpoints = set()
+    # Chain slimming: real network attempts made on cloud legs in
+    # THIS walk (see the cap check in the loop). Cooldown /
+    # unavailable skips never reach the attempt site, so they
+    # never consume the cap; the local leg never counts.
+    cloud_attempts = 0
     for provider in chain:
         runtime.check_cancelled()
         if only_provider and provider.name != only_provider:
@@ -1406,6 +1504,22 @@ def provider_call(
             _record_provider_failure(provider, kind='cooldown',
                                      retry_at=_MODEL_COOLDOWN.until(_pair_key(provider.name, _eff_model(provider))))
             continue
+        # Chain slimming: per-turn cloud attempt cap. Once the
+        # cap is spent, remaining cloud legs are skipped WITHOUT
+        # network traffic and recorded honestly as 'attempt_cap'
+        # (not as provider failures — the provider may be fine;
+        # the turn's budget is what ran out). only_provider walks
+        # are exempt (a caller naming one leg means it), and the
+        # ollama_local leg is always attempted: it costs no rate
+        # limit and is the fallback of last resort.
+        if not only_provider and provider.name != "ollama_local":
+            if cloud_attempts >= _chain_max_cloud_attempts():
+                add_log(f"provider {provider.name}: cloud attempt cap "
+                        f"({_chain_max_cloud_attempts()}) reached this "
+                        f"turn, skipping without a network attempt")
+                _record_provider_failure(provider, kind='attempt_cap')
+                continue
+            cloud_attempts += 1
         _note_call(provider.name)
         attempt_started = time.monotonic()
         try:
@@ -1459,6 +1573,12 @@ def provider_call(
         _record_provider_failure(provider, latency_ms=int((time.monotonic() - attempt_started) * 1000))
         if endpoint and ctx.provider_failures[-1]['kind'] == 'network':
             failed_endpoints.add(endpoint)
+            # Endpoint-family bench: the siblings sharing this
+            # endpoint (e.g. the other pooled Gemini legs) are
+            # benched NOW for NETWORK_BENCH_S instead of each
+            # being discovered by its own full timeout on a
+            # later turn.
+            _bench_endpoint_family(provider, endpoint, chain)
         add_log(f"provider {provider.name} returned nothing, trying next")
     add_log("provider_call: chain exhausted, all providers down")
     return None

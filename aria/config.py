@@ -180,6 +180,38 @@ OLLAMA_LOCAL_VISION_MODEL, _ = key_get("OLLAMA_LOCAL_VISION_MODEL", "qwen2.5vl:7
 OLLAMA_LOCAL_VISION_TIMEOUT_S, _ = key_get("OLLAMA_LOCAL_VISION_TIMEOUT_S", "300")
 
 
+def _key_int(name, default):
+    """Positive-integer config from key_get, with the
+    PROVIDER_MODE-style warning: a non-numeric or non-positive
+    value is a typo, not a setting — fall back to the default
+    and say so."""
+    raw, _src = key_get(name, str(default))
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        value = 0
+    if value < 1:
+        print(f"[ARIA] Config: {name}={raw!r} is not a positive "
+              f"integer — using {default}.", flush=True)
+        return default
+    return value
+
+
+# Chain slimming (Alek, 2026-11-10): one turn must not fan out
+# into a full-price attempt on every leg. CHAIN_MAX_CLOUD_ATTEMPTS
+# caps how many cloud legs a single provider_call walk may really
+# attempt (the local leg is exempt — it costs no rate limit and
+# is the fallback of last resort); GEMINI_POOL_MAX_LEGS caps how
+# many pooled Gemini keys become chain legs (quota is per Google
+# Cloud PROJECT, so extra legs mostly buy extra timeouts);
+# NETWORK_BENCH_S is how long a provider (and every sibling on
+# the same endpoint) sits out after a network failure/timeout,
+# instead of being re-walked at full timeout cost ~30 s later.
+CHAIN_MAX_CLOUD_ATTEMPTS = _key_int("CHAIN_MAX_CLOUD_ATTEMPTS", 2)
+GEMINI_POOL_MAX_LEGS = _key_int("GEMINI_POOL_MAX_LEGS", 2)
+NETWORK_BENCH_S = _key_int("NETWORK_BENCH_S", 900)
+
+
 def _normalize_provider_mode(raw) -> str:
     """PROVIDER_MODE is a two-state switch: "auto" (the configured
     provider chain serves, cloud legs included) or "local_only"
