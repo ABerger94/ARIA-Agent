@@ -196,6 +196,61 @@ def _set_mission(mid: int, **fields) -> None:
           (*fields.values(), mid))
 
 
+def _cas_mission_status(mid: int, new_status: str, *,
+                        allowed) -> bool:
+    """Compare-and-swap a mission's status: set new_status only
+    when the current status is in `allowed`. Returns True when
+    the transition landed. One write transaction, so a pause or
+    cancel arriving during verification cannot be overwritten
+    by the verify/repair path (pass 36 #30)."""
+    allowed = tuple(allowed)
+    if not allowed:
+        return False
+    placeholders = ", ".join("?" for _ in allowed)
+    with _memory.DB_LOCK:
+        conn = sqlite3.connect(_memory.db_path())
+        try:
+            cur = conn.execute(
+                "UPDATE missions SET status = ? WHERE id = ? "
+                f"AND status IN ({placeholders})",
+                (new_status, mid, *allowed))
+            conn.commit()
+            return cur.rowcount == 1
+        finally:
+            conn.close()
+
+
+def _cas_repair(mid: int, step_ids: List[int]) -> bool:
+    """Atomically queue a verify repair: reset the target steps
+    to pending AND move the mission back to running, but only
+    when it is still in 'verifying' — the state _verify put it
+    in. A pause or cancel that landed during grading makes the
+    swap fail, and the caller leaves the mission exactly as the
+    pause/cancel left it (pass 36 #30). One transaction, so the
+    step resets and the status move cannot straddle a cancel."""
+    with _memory.DB_LOCK:
+        conn = sqlite3.connect(_memory.db_path())
+        try:
+            placeholders = ", ".join("?" for _ in step_ids)
+            cur = conn.execute(
+                "UPDATE missions SET status = 'running' "
+                "WHERE id = ? AND status = 'verifying'",
+                (mid,))
+            if cur.rowcount != 1:
+                conn.rollback()
+                return False
+            if step_ids:
+                conn.execute(
+                    "UPDATE mission_steps SET status = 'pending', "
+                    "output = NULL WHERE mission_id = ? AND id IN "
+                    f"({placeholders})",
+                    (mid, *step_ids))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+
 def _set_step(step_id: int, **fields) -> None:
     if not fields:
         return
@@ -1192,7 +1247,13 @@ def _verify(mid: int) -> bool:
     steps = _step_rows(mid)
     if m['status'] in TERMINAL or m['status'] == 'paused':
         return True
-    _set_mission(mid, status="verifying")
+    # Pass 36 #30: enter 'verifying' by compare-and-swap — a
+    # pause or cancel that landed between the worker loop's
+    # status check and this write must not be overwritten by
+    # the verify pass. If the swap fails, the mission already
+    # moved (paused / terminal) and verify stands down.
+    if not _cas_mission_status(mid, "verifying", allowed=RUNNABLE):
+        return True
     verdict: Optional[bool] = None
     if _VERIFIER is not None:
         try:
@@ -1239,8 +1300,17 @@ def _verify(mid: int) -> bool:
             for s in _grade_targets(grade_result, steps):
                 if s not in bad:
                     bad.append(s)
+    # Pass 36 #30: grading is slow (model calls) — a pause or
+    # cancel may have landed while it ran. Re-read before any
+    # terminal or repair write: a mission that is now paused or
+    # terminal keeps the status it was given, and verify stands
+    # down (the worker loop re-enters on resume; a cancelled
+    # mission is already finished).
+    m = _mission_row(mid)
+    if m is None or m["status"] in TERMINAL or m["status"] == "paused":
+        return True
     if verdict:
-        _finish(mid, "done")
+        _finish(mid, "done", only_from={"verifying"})
         return True
     attempts = int(m["verify_attempts"] or 0) + 1
     _set_mission(mid, verify_attempts=attempts)
@@ -1251,11 +1321,17 @@ def _verify(mid: int) -> bool:
         targets = bad or steps[-1:]
         if any(not retry_safe(s['tool']) for s in targets):
             _finish(mid, 'done_unverified', note='Verification did not pass. '
-                    'Actions with effects were preserved; check their receipts instead of repeating them.')
+                    'Actions with effects were preserved; check their receipts instead of repeating them.',
+                    only_from={"verifying"})
             return True
-        for s in targets:
-            _set_step(s["id"], status="pending", output=None)
-        _set_mission(mid, status="running")
+        # Atomic repair transition (pass 36 #30): reset the
+        # targets and move back to running only while the
+        # mission is still in 'verifying'. If a pause/cancel
+        # landed after the re-read above, the swap fails and
+        # the mission is left exactly as the pause/cancel
+        # left it — the repair is not queued.
+        if not _cas_repair(mid, [s["id"] for s in targets]):
+            return True
         add_log(f"[mission] #{mid} verify failed — repair "
                 f"attempt {attempts}/{MAX_VERIFY_ATTEMPTS}")
         return False
@@ -1263,7 +1339,8 @@ def _verify(mid: int) -> bool:
             note="Verification did not pass after "
                  f"{MAX_VERIFY_ATTEMPTS} repair attempt(s) — "
                  "the recorded step outputs do not prove the "
-                 "goal was accomplished.")
+                 "goal was accomplished.",
+            only_from={"verifying"})
     return True
 
 
@@ -1318,7 +1395,7 @@ def _build_summary(m: Dict[str, Any],
 
 
 def _finish(mid: int, status: str, note: str = "",
-            grade: Optional[dict] = None) -> None:
+            grade: Optional[dict] = None, *, only_from=None) -> None:
     """Pass 36 #21: the grade committed alongside the status
     is the current verification's result. Callers pass it
     directly (grade=); until _verify does, a terminal
@@ -1326,12 +1403,22 @@ def _finish(mid: int, status: str, note: str = "",
     handoff _outcome_grade just wrote for this mission — the
     pop means no later finish can re-render it, and the
     (database, mission) key means no other project's grade can
-    leak in. Any other status renders no grade."""
+    leak in. Any other status renders no grade. `only_from`
+    is the pass 36 #30 compare-and-swap: when given, the
+    finish lands only when the mission is currently in one of
+    those statuses — the verify path passes {"verifying"}, so
+    a pause or cancel that landed during grading is never
+    overwritten by a late done/done_unverified. Other callers
+    omit it and keep the existing behaviour."""
     # Pass 36 #35: ensure the grade_json column exists before
     # the row is read or the structured verdict is written.
     _ensure_tables()
     m = _mission_row(mid)
     if m is None or m["status"] in TERMINAL:
+        return
+    if only_from is not None and m["status"] not in only_from:
+        add_log(f"[mission] #{mid} finish to {status} refused: "
+                f"status is {m['status']}, not in {sorted(only_from)}")
         return
     if grade is None and status in ("done", "done_unverified"):
         grade = _CURRENT_GRADE.pop((_memory.db_path(), mid), None)

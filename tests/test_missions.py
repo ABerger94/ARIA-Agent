@@ -395,6 +395,67 @@ def test_verify_failure_closes_done_unverified(env):
     assert len(_calls("fake_note")) == 1
 
 
+def test_verify_stands_down_when_paused_during_grading(env):
+    # Pass 36 #30: a pause arriving during grading (the slow
+    # model call inside _verify) must not be overwritten by the
+    # repair path or a late done — verify re-reads the mission
+    # after grading and stands down.
+    mid, _out = _create("pause during grading proof",
+                        [("fake_note", {"text": "only"})])
+    _approve_plan(mid)
+    step = missions._step_rows(mid)[0]
+    missions._set_step(step["id"], status="done",
+                       output="noted only")
+
+    def _pausing_verifier(goal, steps):
+        missions.pause_mission(mid)
+        return True
+
+    missions.set_verifier(_pausing_verifier)
+    assert missions._verify(mid) is True
+    row = _row(mid)
+    assert row["status"] == "paused", row
+    assert missions._step_rows(mid)[0]["status"] == "done"
+
+
+def test_verify_stands_down_when_cancelled_during_grading(env):
+    # Pass 36 #30: same shape for a cancel landing during
+    # grading — the mission stays cancelled, never done.
+    mid, _out = _create("cancel during grading proof",
+                        [("fake_note", {"text": "only"})])
+    _approve_plan(mid)
+    step = missions._step_rows(mid)[0]
+    missions._set_step(step["id"], status="done",
+                       output="noted only")
+
+    def _cancelling_verifier(goal, steps):
+        missions.cancel_mission(mid)
+        return True
+
+    missions.set_verifier(_cancelling_verifier)
+    assert missions._verify(mid) is True
+    row = _row(mid)
+    assert row["status"] == "cancelled", row
+
+
+def test_verify_finish_refuses_status_that_left_verifying(env):
+    # Pass 36 #30: the _finish compare-and-swap — a done write
+    # issued for a mission that has since been paused lands
+    # nowhere.
+    mid, _out = _create("cas finish proof",
+                        [("fake_note", {"text": "only"})])
+    _approve_plan(mid)
+    missions._set_mission(mid, status="verifying")
+    missions.pause_mission(mid)
+    missions._finish(mid, "done", only_from={"verifying"})
+    assert _row(mid)["status"] == "paused"
+    # ...while the same call lands when the mission is still
+    # in 'verifying'.
+    missions._set_mission(mid, status="verifying")
+    missions._finish(mid, "done", only_from={"verifying"})
+    assert _row(mid)["status"] == "done"
+
+
 def test_refused_browser_open_fails_the_mission(env):
     # Pass 25 (pass 24 runner-up #2): a refused browser
     # navigation used to return a plain string, normalize read

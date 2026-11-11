@@ -471,19 +471,40 @@ class TaskQueue:
             elif isinstance(e, TaskBlocked):
                 # Parked, not failed: checkpoint persisted, reason
                 # recorded, resumable via the task_resume tool.
+                # Pass 36 #30: a cancel that arrived while the
+                # task was parking must win — persisting
+                # 'blocked' here would overwrite the 'cancelled'
+                # cancel() already recorded (and resurrect the
+                # task as resumable after a restart).
                 taskstore.checkpoint(task.task_id, e.state)
-                taskstore.finish(task.task_id, "blocked",
-                                 blocked_reason=e.reason)
-                with self._lock:
-                    task.status = TaskStatus.BLOCKED
-                    task.error = e.reason
-                add_log(f"Task blocked: [{task.task_id}] {e.reason[:80]}")
+                if task.cancel_flag.is_set():
+                    taskstore.finish(task.task_id, "cancelled")
+                    with self._lock:
+                        task.status = TaskStatus.CANCELLED
+                    add_log(f"Task cancelled while parking: "
+                            f"[{task.task_id}]")
+                else:
+                    taskstore.finish(task.task_id, "blocked",
+                                     blocked_reason=e.reason)
+                    with self._lock:
+                        task.status = TaskStatus.BLOCKED
+                        task.error = e.reason
+                    add_log(f"Task blocked: [{task.task_id}] {e.reason[:80]}")
             else:
-                with self._lock:
-                    task.status = TaskStatus.FAILED
-                    task.error = str(e)
-                taskstore.finish(task.task_id, "failed", error=str(e))
-                add_log(f"Task failed: [{task.task_id}] {e}")
+                # Pass 36 #30: same cancel-wins rule for an
+                # unexpected failure racing a cancel.
+                if task.cancel_flag.is_set():
+                    taskstore.finish(task.task_id, "cancelled")
+                    with self._lock:
+                        task.status = TaskStatus.CANCELLED
+                    add_log(f"Task cancelled while failing: "
+                            f"[{task.task_id}]")
+                else:
+                    with self._lock:
+                        task.status = TaskStatus.FAILED
+                        task.error = str(e)
+                    taskstore.finish(task.task_id, "failed", error=str(e))
+                    add_log(f"Task failed: [{task.task_id}] {e}")
         finally:
             with self._lock:
                 self._active_count -= 1

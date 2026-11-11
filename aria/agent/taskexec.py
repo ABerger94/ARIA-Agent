@@ -475,6 +475,11 @@ class AgentExecutor:
         if self._verifier is not None:
             try:
                 return self._verifier(goal, completed, results)
+            except runtime.Cancelled:
+                # Pass 36 #30: cancellation is not a verifier
+                # error — propagate it instead of parking the
+                # task as blocked on an unverified outcome.
+                raise
             except Exception as e:
                 add_log(f"taskexec: verifier errored ({e}); outcome unverified")
                 return "Verification unavailable; recorded work needs review"
@@ -565,6 +570,9 @@ class AgentExecutor:
                 "exactly one line: 'VERDICT: PASS' or "
                 "'VERDICT: FAIL — <one short reason>'. Judge only "
                 "the evidence above; missing evidence is a FAIL.")
+        except runtime.Cancelled:
+            # Pass 36 #30: see above.
+            raise
         except Exception as e:
             add_log(f"taskexec: verifier unavailable ({e}); outcome unverified")
             return "Verification unavailable; recorded work needs review"
@@ -965,6 +973,14 @@ class AgentExecutor:
                                 f"{rejection[:80]}")
                         raise TaskBlocked(
                             f"verifier: {rejection}", _state())
+                # Pass 36 #30: a cancel arriving during grading
+                # must not be answered with the completion
+                # summary — the queue checks the flag only after
+                # execute() returns, by which time the summary
+                # would already have been spoken.
+                if _cancelled():
+                    add_log("taskexec: task cancelled before summary")
+                    return "Task cancelled."
                 summary = self._summarizer(goal, completed)
                 if self._last_grade and \
                         self._last_grade.get("verdict") == "pass":
