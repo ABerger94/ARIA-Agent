@@ -623,10 +623,28 @@ def test_system_prompt_uses_local_recall_and_prioritizes_the_newest_message():
 
 def _install_vision_stub(fn):
     """Install a fake aria.vision (both sys.modules and the parent attr,
-    since `from aria import vision` prefers the parent attribute)."""
+    since `from aria import vision` prefers the parent attribute).
+
+    Pass 36 #08: the brain pre-pass now routes through
+    vision.describe_image(), not _ollama_native_vision_call, so the
+    stub provides both seams — describe_image drives the fake the
+    same way the real service drives its text caller, and returns a
+    DONE ResultText carrying the description."""
     import types
+    from aria.outcome import ResultText
     vision_stub = types.ModuleType('aria.vision')
     vision_stub._ollama_native_vision_call = fn
+
+    def _describe(image_bytes, question="", *, sys_prompt=None,
+                  kind="image"):
+        contents = [{"role": "user", "parts": [
+            {"text": question or "describe"},
+            {"inline_data": {"mime_type": "image/jpeg",
+                             "data": "stub"}}]}]
+        return ResultText(fn(sys_prompt or "", contents))
+
+    vision_stub.describe_image = _describe
+    vision_stub.release_screen_hash = lambda: None
     sys.modules['aria.vision'] = vision_stub
     sys.modules['aria'].vision = vision_stub
 
