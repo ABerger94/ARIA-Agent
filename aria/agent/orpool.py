@@ -120,6 +120,24 @@ def _default_transport(url, headers=None, json=None, timeout=None):
     return requests.post(url, headers=headers, json=json, timeout=timeout)
 
 
+def _local_only() -> bool:
+    """Live PROVIDER_MODE gate (pass 36 #01): in Local only mode
+    the background pool must make zero OpenRouter calls. The
+    live mode lives in aria.agent.providers.provider_mode();
+    aria.config.PROVIDER_MODE is the restart-time fallback for
+    surfaces that predate it. Never raises."""
+    try:
+        from aria.agent.providers import provider_mode as _pm
+        return _pm() == "local_only"
+    except Exception:
+        pass
+    try:
+        return str(getattr(_config, "PROVIDER_MODE", "auto")
+                   or "auto").strip().lower() == "local_only"
+    except Exception:
+        return False
+
+
 class OrPool:
     """OpenRouter free-pool client for background work. Constructing
     one is cheap and never raises; availability is checked per call."""
@@ -153,11 +171,22 @@ class OrPool:
     def available(self) -> bool:
         if not getattr(_config, "ORPOOL_ENABLED", True):
             return False
+        # Pass 36 #01: Local only means zero OpenRouter calls —
+        # the pool reports unavailable and every caller degrades
+        # through its existing failure path (skip / fallback /
+        # cannot_grade), instead of the toggle leaving a live
+        # background route to OpenRouter.
+        if _local_only():
+            return False
         return bool(self.api_key)
 
     def _require_available(self) -> None:
         if not getattr(_config, "ORPOOL_ENABLED", True):
             raise OrPoolUnavailable("background pool disabled (ARIA_ORPOOL=0)")
+        if _local_only():
+            raise OrPoolUnavailable(
+                "background pool unavailable in Local only mode "
+                "(PROVIDER_MODE=local_only)")
         if not self.api_key:
             raise OrPoolUnavailable("no OpenRouter API key configured")
 

@@ -225,6 +225,69 @@ def test_pool_404_parks_model_for_session():
     print("ok pool_404_parks_model_for_session")
 
 
+def test_pool_local_only_zero_transport():
+    # Pass 36 #01: PROVIDER_MODE=local_only gates the pool
+    # transport itself — available() is False, every entry
+    # point raises before the transport is touched.
+    transport = _ScriptedTransport({
+        "m1": [_Resp(200, "must never be called")],
+    })
+    pool = _pool(transport, models=("m1",))
+    saved = providers.PROVIDER_MODE
+    try:
+        providers.PROVIDER_MODE = "local_only"
+        assert not pool.available()
+        for call in (lambda: pool.chat("hi"),
+                     lambda: pool.chat_traced("hi", "sys"),
+                     lambda: pool.chat_json("hi"),
+                     lambda: pool.vision("hi", "aGVsbG8="),
+                     lambda: pool.multi_turn(
+                         [{"role": "user", "content": "hi"}])):
+            try:
+                call()
+                raise AssertionError("expected OrPoolUnavailable")
+            except orpool.OrPoolUnavailable:
+                pass
+    finally:
+        providers.PROVIDER_MODE = saved
+    assert transport.calls == [], \
+        "local_only must make zero pool transport calls"
+    print("ok pool_local_only_zero_transport")
+
+
+def test_local_turn_zero_pool_transport(monkeypatch):
+    # Pass 36 #01: a full local turn — post-turn extraction,
+    # planning, grading — makes ZERO pool transport calls.
+    # The pool gate does the work; each caller degrades through
+    # its own path (skip / local adapter / cannot_grade).
+    memextract = importlib.import_module("aria.agent.memextract")
+    planner = importlib.import_module("aria.agent.planner")
+    grader = importlib.import_module("aria.agent.grader")
+    transport = _ScriptedTransport({
+        "m1": [_Resp(200, "must never be called")] * 10,
+    })
+    pool = _pool(transport, models=("m1",))
+    monkeypatch.setattr(providers, "PROVIDER_MODE", "local_only")
+    monkeypatch.setattr(orpool, "get_pool", lambda: pool)
+    monkeypatch.setattr(
+        providers, "provider_text",
+        lambda system, prompt, role="default": "local plan text")
+
+    # Post-turn extraction skips without a gate call.
+    saved = memextract.extract_now(
+        "my favorite color is blue", "Noted.", pool=pool)
+    assert saved == {}, saved
+    # Planning routes to the local leg, not the pool.
+    assert planner._default_llm("plan this", "sys") == "local plan text"
+    # Grading cannot grade without ever touching the pool.
+    out = grader.grade(
+        "g", [{"step": 1, "tool": "web_search", "output": "x"}])
+    assert out["verdict"] == "cannot_grade", out
+    assert transport.calls == [], \
+        f"local turn made pool transport calls: {transport.calls}"
+    print("ok local_turn_zero_pool_transport")
+
+
 def test_pool_400_parks_model_too():
     transport = _ScriptedTransport({
         "m1": [_Resp(400)],

@@ -105,10 +105,35 @@ def _system_prompt() -> str:
         "}")
 
 
+def _local_only() -> bool:
+    """Live PROVIDER_MODE, same read as the pool gate (pass 36
+    #01). Never raises."""
+    try:
+        from aria.agent.providers import provider_mode as _pm
+        return _pm() == "local_only"
+    except Exception:
+        pass
+    try:
+        return str(getattr(_config, "PROVIDER_MODE", "auto")
+                   or "auto").strip().lower() == "local_only"
+    except Exception:
+        return False
+
+
 def _default_llm(prompt: str, system: str) -> str:
-    from aria.agent.orpool import get_pool
-    return get_pool().chat(prompt, system=system, max_tokens=2048,
-                           temperature=0.2)
+    """Default planning LLM: the background pool. In Local only
+    mode the pool is unavailable by design (pass 36 #01), so
+    planning routes to the local leg through provider_text
+    instead of failing open to a web search."""
+    from aria.agent.orpool import get_pool, OrPoolUnavailable
+    try:
+        return get_pool().chat(prompt, system=system, max_tokens=2048,
+                               temperature=0.2)
+    except OrPoolUnavailable:
+        if not _local_only():
+            raise
+        from aria.agent.providers import provider_text
+        return provider_text(system, prompt)
 
 
 def _valid_task_type(raw) -> str:

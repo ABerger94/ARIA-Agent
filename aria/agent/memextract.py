@@ -106,6 +106,18 @@ def extract_now(user_text: str, assistant_text: str, *,
     Exposed for tests and the harness; production calls go through
     maybe_extract_async."""
     pool = _resolve_pool(pool)
+    # Pass 36 #01: in Local only mode the pool reports
+    # unavailable and extraction is skipped outright — no gate
+    # call, no OpenRouter traffic, no spawned work. (Pools
+    # without an available() method — test fakes — are treated
+    # as available; a real pool answers this itself.)
+    try:
+        _available = pool.available() \
+            if hasattr(pool, "available") else True
+    except Exception:
+        _available = True
+    if not _available:
+        return {}
     try:
         gate = pool.chat(_gate_prompt(user_text, assistant_text),
                          system=_GATE_SYSTEM, max_tokens=5, temperature=0.0)
