@@ -37,6 +37,7 @@ from aria.config import (
     OLLAMA_VISION_MODEL, OLLAMA_CODE_MODEL,
     OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_LOCAL_TIMEOUT_S,
     OLLAMA_LOCAL_VISION_MODEL, OLLAMA_LOCAL_VISION_TIMEOUT_S,
+    OLLAMA_ALLOW_REMOTE,
     PROVIDER_CHAIN, PROVIDER_MODE, KEY_QUARANTINE_DURATION_S,  # noqa: F401 — PROVIDER_MODE is this module's live mode global: read via provider_mode(), rebound by set_provider_mode(), patched directly by tests
     quarantine_key, key_is_quarantined, key_mask, add_log,
 )
@@ -192,6 +193,12 @@ def _record_provider_failure(provider, *, kind=None, code=None, retry_at=0, late
         'unconfigured': 'API key, model, or endpoint not configured',
         'cooldown': 'temporarily cooling down after a failed request',
         'budget': 'project model budget blocked this request',
+        # Pass 36 #05: the local leg failed verification (non-loopback
+        # host, or the daemon answered but lacks the model) — a typed
+        # error, never a silent fall-through to cloud.
+        'local_unverified': 'local Ollama verification failed',
+        # Pass 36 #06: the mode flipped mid-walk; the walk aborted.
+        'mode_change': 'provider mode changed during this turn',
     }
     summary = descriptions[kind] + (f' (HTTP {code})' if code else '')
     if retry_at > time.time():
@@ -215,7 +222,14 @@ def provider_failure_message() -> str:
         # not answer. Say so plainly — the generic messages below
         # ("add an API key", "no provider responded") would mislead:
         # no cloud provider was tried, by design, and none will be
-        # as a silent fallback.
+        # as a silent fallback. A typed verification failure names
+        # its own reason (#05) instead of the generic wording.
+        unverified = [f for f in ctx.provider_failures
+                      if f.get('kind') == 'local_unverified']
+        if unverified:
+            return ("Local Ollama verification failed: "
+                    f"{unverified[0].get('summary', '')} "
+                    "No cloud provider was tried.")
         return ("Local-only mode is on and the local model is unavailable. "
                 "No cloud provider was tried. Check that Ollama is running "
                 "on this machine, or set PROVIDER_MODE back to auto.")
@@ -836,11 +850,50 @@ class LocalOllamaProvider(OpenAICompatProvider):
       floor instead — see _call_timeout.
     """
 
-    def __init__(self, name: str, base_url: str, model: str):
+    def __init__(self, name: str, base_url: str, model: str, verify: bool = False):
         super().__init__(name, base_url, "ollama-local", model)
+        # Pass 36 #05: the daemon + model capability check, run at
+        # leg construction when asked (the provider_call walk asks;
+        # the frame render loop does not — see _build_chain).
+        # Cached (300s) inside verify_local_ollama, so repeated
+        # construction stays cheap. None until verified.
+        self.local_verification: Optional[Dict[str, Any]] = None
+        if verify:
+            self.verify()
+
+    def verify(self, force: bool = False) -> Dict[str, Any]:
+        """(Re-)verify this leg's endpoint and model; cached."""
+        self.local_verification = verify_local_ollama(
+            _ollama_host_root(), self.model, force=force)
+        return self.local_verification
 
     def is_available(self) -> bool:
-        return bool(self.base_url and self.model)
+        # Pass 36 #05: strict mode gates on loopback, not just on
+        # "a tag is configured" — a non-loopback host is not a
+        # local leg. Daemon liveness does NOT gate availability
+        # (a dead daemon fails fast inside call(), as before, and
+        # the walk records it as a network failure).
+        if not (self.base_url and self.model):
+            return False
+        strict = not bool(OLLAMA_ALLOW_REMOTE)
+        if strict and not is_loopback_host(self.base_url):
+            return False
+        return True
+
+    def call(self, system_instruction, contents, tool_decls=None, on_text_chunk=None):
+        # Pass 36 #05: local traffic goes through the dedicated
+        # opener (no proxy, no redirects) for the duration of this
+        # call only — the global opener is restored afterwards.
+        # (Tests monkeypatch urllib.request.urlopen, which this
+        # swap does not disturb.)
+        previous = getattr(urllib.request, "_opener", None)
+        try:
+            urllib.request._opener = _local_opener()
+            return super().call(system_instruction, contents,
+                                tool_decls=tool_decls,
+                                on_text_chunk=on_text_chunk)
+        finally:
+            urllib.request._opener = previous
 
     def _call_timeout(self) -> float:
         try:
@@ -874,6 +927,140 @@ def _ollama_local_base_url() -> str:
     return host if host.endswith("/v1") else host + "/v1"
 
 
+# --- Pass 36 #05: locality enforcement for ollama_local -----------
+# "ollama_local" used to be a registry name with no enforcement:
+# any OLLAMA_HOST was taken verbatim, over the same opener as the
+# cloud legs (proxies + redirects included), and Ollama can serve
+# cloud-backed tags through its OpenAI-compatible API. Strict mode
+# (the default) requires a verified loopback endpoint; a LAN or
+# remote Ollama needs the explicit non-strict route
+# (OLLAMA_ALLOW_REMOTE=1) and is then never treated as verified-local.
+
+def is_loopback_host(host: str) -> bool:
+    """True for localhost / 127.0.0.0/8 / ::1 (any spelling). Never raises."""
+    try:
+        from urllib.parse import urlparse
+        name = (urlparse(host).hostname or "").strip().lower()
+    except Exception:
+        return False
+    if name in ("localhost", "::1"):
+        return True
+    if name.startswith("127."):
+        try:
+            parts = name.split(".")
+            return len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255
+                                           for p in parts)
+        except Exception:
+            return False
+    return False
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Local traffic never follows a redirect: a redirect off the
+    loopback daemon is a misconfiguration, not a route."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            req.full_url, code,
+            f"redirect to {newurl} refused for local Ollama",
+            headers, fp)
+
+
+def _local_opener():
+    """Dedicated opener for local Ollama traffic: no proxy (a proxy
+    would carry 'local' inference off-machine), no redirects."""
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _NoRedirectHandler())
+
+
+def _ollama_host_root() -> str:
+    """OLLAMA_HOST without the /v1 suffix — the /api/tags surface."""
+    base = _ollama_local_base_url()
+    return base[:-3] if base.endswith("/v1") else base
+
+
+_LOCAL_VERIFY_CACHE: Dict[str, Dict[str, Any]] = {}
+_LOCAL_VERIFY_TTL_S = 300
+
+
+def verify_local_ollama(host=None, model=None, *, force=False) -> Dict[str, Any]:
+    """Verify the local Ollama endpoint: loopback (strict mode),
+    daemon reachable, and the configured chat model present on it
+    (daemon + model capability check). Returns {"ok", "code",
+    "reason", "strict", "host", "model", "models"}; "code" is one
+    of ok / non_loopback / daemon_unreachable / model_missing /
+    bad_response. Results are cached (300s) per (host, model) so
+    leg construction stays cheap; force=True re-probes. Never
+    raises — an unverifiable endpoint is a result, not an exception."""
+    host = host or _ollama_host_root()
+    model = model or OLLAMA_MODEL
+    strict = not bool(OLLAMA_ALLOW_REMOTE)
+    cache_key = f"{host}|{model}|{strict}"
+    now = time.monotonic()
+    cached = _LOCAL_VERIFY_CACHE.get(cache_key)
+    if cached and not force and now - cached.get("_at", 0) < _LOCAL_VERIFY_TTL_S:
+        return {k: v for k, v in cached.items() if not k.startswith("_")}
+    result: Dict[str, Any] = {"ok": False, "code": "daemon_unreachable",
+                              "reason": "", "strict": strict,
+                              "host": host, "model": model, "models": []}
+    if strict and not is_loopback_host(host):
+        result.update(code="non_loopback",
+                      reason=(f"OLLAMA_HOST {host} is not a loopback address; "
+                              f"strict local mode rejects it. Set "
+                              f"OLLAMA_ALLOW_REMOTE=1 for an explicit "
+                              f"non-strict route, or point OLLAMA_HOST at "
+                              f"this machine."))
+    else:
+        try:
+            req = urllib.request.Request(
+                host.rstrip("/") + "/api/tags",
+                headers={"User-Agent": "ARIA-Agent/1.0"})
+            with _local_opener().open(req, timeout=3) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            models = [m.get("name") for m in (data.get("models") or [])
+                      if isinstance(m, dict) and m.get("name")]
+            result["models"] = models
+            if model and model not in models:
+                result.update(code="model_missing",
+                              reason=(f"model '{model}' is not on the local "
+                                      f"Ollama daemon (has: "
+                                      f"{', '.join(models) or 'none'}). "
+                                      f"Pull it with `ollama pull {model}`."))
+            else:
+                result.update(ok=True, code="ok",
+                              reason="loopback daemon reachable, model present")
+        except urllib.error.HTTPError as e:
+            result.update(code="daemon_unreachable",
+                          reason=f"local Ollama daemon HTTP {e.code} on /api/tags")
+        except Exception as e:
+            result.update(code="daemon_unreachable",
+                          reason=f"local Ollama daemon unreachable ({e})".strip()[:160])
+    _LOCAL_VERIFY_CACHE[cache_key] = dict(result, _at=now)
+    return result
+
+
+def ollama_local_verified() -> bool:
+    """True when the configured ollama_local leg is verified-local:
+    a loopback host (strict) and no definitive verification failure
+    (non-loopback, or a daemon that answered but lacks the model).
+    A daemon that is merely unreachable right now does NOT revoke
+    verification — that is a transient failure, recorded as a
+    network error when the leg is attempted. Used by usage.reserve
+    (#13) to exempt verified-local inference from priced-model rules."""
+    try:
+        host = _ollama_host_root()
+        strict = not bool(OLLAMA_ALLOW_REMOTE)
+        if strict and not is_loopback_host(host):
+            return False
+        cached = _LOCAL_VERIFY_CACHE.get(f"{host}|{OLLAMA_MODEL}|{strict}")
+        if cached and cached.get("code") in ("non_loopback", "model_missing"):
+            return False
+        return True
+    except Exception:
+        return False
+
+
 def _gemini_providers() -> List[Provider]:
     """One provider per pooled Gemini key (Alek, 2026-10-27).
     The first keeps the name 'gemini'; the rest are 'gemini_2',
@@ -895,7 +1082,7 @@ def _gemini_providers() -> List[Provider]:
     return out
 
 
-def _provider_registry() -> Dict[str, Provider]:
+def _provider_registry(verify_local: bool = False) -> Dict[str, Provider]:
     """Every named OpenAI-compatible leg, including opt-in ones
     not in the default PROVIDER_CHAIN. _build_chain picks from
     this by configured order; the tier opt-in path builds a named
@@ -904,7 +1091,10 @@ def _provider_registry() -> Dict[str, Provider]:
     Pass 36 #16: each leg is constructed independently — one
     malformed local setting used to raise inside _build_chain
     and kill Gemini with it. A leg that fails to construct is
-    logged and skipped; the rest of the chain still serves."""
+    logged and skipped; the rest of the chain still serves.
+    verify_local=True runs the #05 daemon + model check at leg
+    construction (the provider_call walk asks for it; the frame
+    render loop must not — see _build_chain)."""
     registry: Dict[str, Provider] = {}
 
     def _add(name, build):
@@ -942,7 +1132,8 @@ def _provider_registry() -> Dict[str, Provider]:
     # running the connection is refused instantly and the walk
     # ends, the same end state as before this leg existed.
     _add("ollama_local", lambda: LocalOllamaProvider(
-        "ollama_local", _ollama_local_base_url(), OLLAMA_MODEL))
+        "ollama_local", _ollama_local_base_url(), OLLAMA_MODEL,
+        verify=verify_local))
     return registry
 
 
@@ -959,14 +1150,19 @@ def _providers_by_name(name: Optional[str]) -> List[Provider]:
     return [provider] if provider is not None else []
 
 
-def _build_chain() -> List[Provider]:
+def _build_chain(verify_local: bool = False) -> List[Provider]:
     """Providers in configured order. Phase 2/3 entries plug in here.
 
     The names come from effective_chain_names() — PROVIDER_CHAIN as
     PROVIDER_MODE gates it — so in local_only mode every caller of
     this function (the chain walk, provider_ping, the frame/OPS
-    readouts) sees exactly the one local leg."""
-    registry = _provider_registry()
+    readouts) sees exactly the one local leg.
+
+    verify_local=True runs the #05 daemon + model verification at
+    leg construction. The chain walk uses it; the frame/OPS
+    readouts must NOT (a readiness probe has no place on the
+    render loop — see #18)."""
+    registry = _provider_registry(verify_local=verify_local)
     chain: List[Provider] = []
     for n in effective_chain_names():
         if n == "gemini":
@@ -1450,6 +1646,17 @@ def provider_call(
             continue
         endpoint = getattr(provider, 'base_url', '')
         if not provider.is_available():
+            # Pass 36 #05: a strict-rejected local leg (non-loopback
+            # host) is a typed verification failure, not "unconfigured".
+            if getattr(provider, "name", "") == "ollama_local" and callable(
+                    getattr(provider, "verify", None)):
+                verification = provider.verify()
+                if not verification.get("ok"):
+                    _record_provider_failure(provider, kind='local_unverified')
+                    if ctx.provider_failures:
+                        ctx.provider_failures[-1]["summary"] = verification.get(
+                            "reason") or "local Ollama verification failed"
+                    continue
             key = getattr(provider, 'api_key', '')
             if not key or key == 'INSERT' or not getattr(provider, 'model', ''):
                 _record_provider_failure(provider, kind='unconfigured')
@@ -1476,6 +1683,22 @@ def provider_call(
             _record_provider_failure(provider, kind='cooldown',
                                      retry_at=_MODEL_COOLDOWN.until(_pair_key(provider.name, _eff_model(provider))))
             continue
+        # Pass 36 #05: verify the local leg before attempting it. A
+        # daemon that answered but lacks the model is a definitive
+        # failure — record it typed and skip, instead of falling
+        # through to cloud (in auto) or retrying a dead tag (in
+        # local-only). A merely unreachable daemon is transient:
+        # the attempt below fails fast as a network error, as before.
+        if getattr(provider, "name", "") == "ollama_local" and callable(
+                getattr(provider, "verify", None)):
+            verification = provider.verify()
+            if verification.get("code") == "model_missing":
+                _record_provider_failure(provider, kind='local_unverified')
+                if ctx.provider_failures:
+                    ctx.provider_failures[-1]["summary"] = verification.get(
+                        "reason") or "local Ollama verification failed"
+                add_log(f"provider ollama_local: {verification.get('reason')}")
+                continue
         _note_call(provider.name)
         attempt_started = time.monotonic()
         try:

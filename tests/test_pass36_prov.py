@@ -141,3 +141,149 @@ def test_07_env_override_is_visible():
         else:
             _os.environ["PROVIDER_MODE"] = saved
     print("ok 07 env override visible in status")
+
+
+# --- #05: locality enforcement for ollama_local ------------------------
+
+def test_05_loopback_host_detection():
+    assert pv.is_loopback_host("http://localhost:11434") is True
+    assert pv.is_loopback_host("http://127.0.0.1:11434/v1") is True
+    assert pv.is_loopback_host("http://127.12.34.56:11434") is True
+    assert pv.is_loopback_host("http://[::1]:11434") is True
+    assert pv.is_loopback_host("http://192.168.1.5:11434") is False
+    assert pv.is_loopback_host("http://ollama.example.com") is False
+    assert pv.is_loopback_host("http://localhost.evil.com") is False
+    assert pv.is_loopback_host(12345) is False
+    print("ok 05 loopback detection")
+
+
+def test_05_dedicated_opener_disables_proxy_and_redirects():
+    import urllib.request
+    opener = pv._local_opener()
+    # ProxyHandler({}) is deliberately never registered by
+    # add_handler (its only method is the skipped "proxy_open"),
+    # so the opener has NO proxy handling at all: local traffic
+    # can never be carried off-machine by an env proxy.
+    assert not any(hasattr(h, "proxies") for h in opener.handlers), (
+        "local opener must have no proxy handler")
+    assert "proxy" not in opener.handle_open, "no proxy open chain"
+    handler = [h for h in opener.handlers
+               if isinstance(h, pv._NoRedirectHandler)]
+    assert handler, "local opener must refuse redirects"
+    try:
+        handler[0].redirect_request(
+            urllib.request.Request("http://127.0.0.1/"),
+            None, 302, "Found", {}, "http://evil.example/")
+    except urllib.error.HTTPError as e:
+        assert e.code == 302
+    else:
+        raise AssertionError("redirect was not refused")
+    print("ok 05 dedicated opener: no proxy, no redirects")
+
+
+def _fake_opener(models):
+    import urllib.request
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self):
+            return json.dumps({"models": [{"name": m} for m in models]}).encode()
+
+    class _Opener:
+        def open(self, req, timeout=None):
+            return _Resp()
+    return _Opener()
+
+
+def test_05_verify_rejects_non_loopback_in_strict_mode():
+    saved = pv.OLLAMA_ALLOW_REMOTE
+    pv._LOCAL_VERIFY_CACHE.clear()
+    try:
+        pv.OLLAMA_ALLOW_REMOTE = False
+        result = pv.verify_local_ollama("http://192.168.1.5:11434",
+                                        "qwen2.5:7b", force=True)
+        assert result["ok"] is False and result["code"] == "non_loopback", result
+        assert "OLLAMA_ALLOW_REMOTE" in result["reason"], result
+        # Explicit non-strict route: the host is accepted for probing.
+        pv.OLLAMA_ALLOW_REMOTE = True
+        real_opener = pv._local_opener
+        pv._local_opener = lambda: _fake_opener(["qwen2.5:7b"])
+        try:
+            result = pv.verify_local_ollama("http://192.168.1.5:11434",
+                                            "qwen2.5:7b", force=True)
+        finally:
+            pv._local_opener = real_opener
+        assert result["ok"] is True and result["code"] == "ok", result
+        assert result["strict"] is False, result
+    finally:
+        pv.OLLAMA_ALLOW_REMOTE = saved
+        pv._LOCAL_VERIFY_CACHE.clear()
+    print("ok 05 non-loopback rejected in strict mode, allowed non-strict")
+
+
+def test_05_verify_reports_missing_model():
+    saved = pv.OLLAMA_ALLOW_REMOTE
+    pv._LOCAL_VERIFY_CACHE.clear()
+    pv.OLLAMA_ALLOW_REMOTE = False
+    real_opener = pv._local_opener
+    pv._local_opener = lambda: _fake_opener(["llama3:8b"])
+    try:
+        result = pv.verify_local_ollama("http://localhost:11434",
+                                        "qwen2.5:7b", force=True)
+        assert result["ok"] is False and result["code"] == "model_missing", result
+        assert "qwen2.5:7b" in result["reason"], result
+        result = pv.verify_local_ollama("http://localhost:11434",
+                                        "llama3:8b", force=True)
+        assert result["ok"] is True, result
+    finally:
+        pv._local_opener = real_opener
+        pv.OLLAMA_ALLOW_REMOTE = saved
+        pv._LOCAL_VERIFY_CACHE.clear()
+    print("ok 05 daemon + model capability check")
+
+
+def test_05_non_loopback_leg_is_unavailable_in_strict_mode():
+    saved = pv.OLLAMA_ALLOW_REMOTE
+    try:
+        pv.OLLAMA_ALLOW_REMOTE = False
+        leg = pv.LocalOllamaProvider("ollama_local",
+                                     "http://192.168.1.5:11434/v1", "qwen2.5:7b")
+        assert leg.is_available() is False
+        pv.OLLAMA_ALLOW_REMOTE = True
+        assert leg.is_available() is True
+        # Loopback stays available in strict mode (daemon liveness
+        # does not gate availability — it fails fast at call time).
+        pv.OLLAMA_ALLOW_REMOTE = False
+        local = pv.LocalOllamaProvider("ollama_local",
+                                       "http://localhost:11434/v1", "qwen2.5:7b")
+        assert local.is_available() is True
+    finally:
+        pv.OLLAMA_ALLOW_REMOTE = saved
+    print("ok 05 strict non-loopback leg unavailable")
+
+
+def test_05_walk_skips_missing_model_with_typed_error():
+    from aria import runtime
+    saved_mode = pv.PROVIDER_MODE
+    saved_chain = pv._build_chain
+    pv.PROVIDER_MODE = "auto"
+    leg = pv.LocalOllamaProvider("ollama_local",
+                                 "http://localhost:11434/v1", "qwen2.5:7b")
+    leg.verify = lambda force=False: {
+        "ok": False, "code": "model_missing",
+        "reason": "model 'qwen2.5:7b' is not on the local Ollama daemon",
+        "strict": True, "host": "http://localhost:11434",
+        "model": "qwen2.5:7b", "models": []}
+    pv._build_chain = lambda: [leg]
+    try:
+        with runtime.execution():
+            assert pv.provider_call("sys", [{"role": "user",
+                                             "parts": [{"text": "hi"}]}]) is None
+            failures = runtime.current().provider_failures
+        assert failures and failures[0]["kind"] == "local_unverified", failures
+        assert "qwen2.5:7b" in failures[0]["summary"], failures
+    finally:
+        pv._build_chain = saved_chain
+        pv.PROVIDER_MODE = saved_mode
+    print("ok 05 missing-model leg skipped with typed error, no cloud fall-through")
