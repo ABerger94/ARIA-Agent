@@ -758,6 +758,29 @@ def _run_agent_fast_path(user_prompt: str, say, allow_greeting=True) -> Optional
     return spoken_ack
 
 
+def _ollama_safe_mode_active() -> bool:
+    """Pass 36 #14: True when the local model must get read-only
+    tools only — OLLAMA_SAFE_MODE is on (config default True) AND
+    the effective provider mode is local_only, so every turn in
+    this session is served by the local Ollama leg. The flag is
+    read live (config is a constant here; the mode is rebindable
+    at runtime), so a toggle flip takes effect on the next turn
+    without a restart. In Auto mode this is False: the declaration
+    filter stays off and the per-attempt enforcement in
+    _timed_execute covers any turn a local fallback leg serves."""
+    try:
+        from aria.config import OLLAMA_SAFE_MODE
+        if not OLLAMA_SAFE_MODE:
+            return False
+    except Exception:
+        return False
+    try:
+        from aria.agent.providers import provider_mode
+        return str(provider_mode() or "auto").strip().lower() == "local_only"
+    except Exception:
+        return False
+
+
 @runtime.foreground
 def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: bool = False,
               reply_sink: Optional[List[str]] = None, preauthorized: bool = False,
@@ -926,7 +949,8 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
 
             # Call the provider chain
             loaded_tk = get_loaded_toolkits()
-            decls = get_toolkit_declarations(loaded_tk)
+            decls = get_toolkit_declarations(
+                loaded_tk, safe_mode=_ollama_safe_mode_active())
 
             # Pass 36 #17: when the walk will serve locally, size
             # the prompt against the local leg's actual context
@@ -1066,6 +1090,30 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
             tripped = None
 
             def _timed_execute(fname, fargs, tag):
+                # Pass 36 #14: enforce the same capability set per
+                # actual local attempt — a turn the local leg served
+                # (a local fallback leg in Auto mode, or a turn
+                # whose declarations predated a mode flip) may not
+                # dispatch an action tool under OLLAMA_SAFE_MODE.
+                # A user approval (preauthorized replay) still
+                # executes: the user approved that exact call.
+                if (not preauthorized
+                        and call_stats.get("provider") == "ollama_local"):
+                    try:
+                        from aria.config import OLLAMA_SAFE_MODE as _safe
+                    except Exception:
+                        _safe = False
+                    if _safe:
+                        try:
+                            from aria.tool_policy import safe_mode_allowed
+                            _allowed = safe_mode_allowed(fname, fargs)
+                        except Exception:
+                            _allowed = False
+                        if not _allowed:
+                            return (f"[Safe mode: '{fname}' is not "
+                                    "available from the local model "
+                                    "(OLLAMA_SAFE_MODE is on — read-only "
+                                    "tools only).]")
                 t0 = time.time()
                 res, _ = execute_tool(fname, fargs, preauthorized=preauthorized)
                 ms = int((time.time() - t0) * 1000)

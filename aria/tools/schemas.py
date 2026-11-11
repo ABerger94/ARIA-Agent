@@ -976,9 +976,33 @@ def get_tool_decls_by_name() -> Dict[str, Dict[str, Any]]:
     return merged
 
 
-def get_toolkit_declarations(loaded_toolkits: Set[str]) -> List[Dict[str, Any]]:
+def filter_declarations_for_safe_mode(
+        decls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Pass 36 #14: drop every declaration the local model may not
+    call under OLLAMA_SAFE_MODE — the read-only allowlist
+    (tool_policy.safe_mode_declared). Shape-preserving: groups are
+    kept, declarations inside are filtered, empty groups dropped.
+    load_toolkit stays: it is the read-only way the model unlocks
+    further read-only toolkits."""
+    from aria.tool_policy import safe_mode_declared
+    out: List[Dict[str, Any]] = []
+    for group in (decls or []):
+        kept = [d for d in group.get("function_declarations", [])
+                if safe_mode_declared(d.get("name", ""))]
+        if kept:
+            out.append({"function_declarations": kept})
+    return out
+
+
+def get_toolkit_declarations(loaded_toolkits: Set[str], *,
+                            safe_mode: bool = False) -> List[Dict[str, Any]]:
     """Build the tools payload from currently loaded toolkits.
     Always appends load_toolkit meta-tool.
+
+    safe_mode (pass 36 #14): when True, only the read-only
+    allowlist is offered (OLLAMA_SAFE_MODE — the local model gets
+    read-only tools only). load_toolkit stays so the model can
+    unlock further read-only toolkits.
     """
     decls = get_tool_decls_by_name()
     out = []
@@ -987,6 +1011,9 @@ def get_toolkit_declarations(loaded_toolkits: Set[str]) -> List[Dict[str, Any]]:
             for name in TOOLKITS[tk]["tools"]:
                 if name in decls:
                     out.append(decls[name])
+    if safe_mode:
+        from aria.tool_policy import safe_mode_declared
+        out = [d for d in out if safe_mode_declared(d["name"])]
     out.append(LOAD_TOOLKIT_DECLARATION)
     return [{"function_declarations": out}]
 

@@ -470,6 +470,50 @@ def _recheck_gui_binding(fn_name, args):
         return None
 
 
+def _ollama_safe_mode_blocks(fn_name: str, args: dict,
+                             preauthorized: bool) -> bool:
+    """Pass 36 #14: True when this call must be refused under
+    OLLAMA_SAFE_MODE — the flag is on AND the effective provider
+    mode is local_only, so every turn is served by the local
+    Ollama leg, and the tool is not in the read-only allowlist
+    (tool_policy.safe_mode_allowed, args-aware). A user approval
+    (preauthorized replay) still executes — the user approved
+    that exact call — and approval resolvers never gate, since
+    parking one would deadlock resolution. Returns False on any
+    probe failure: fail-open here, because brain's declaration
+    filter and per-attempt refusal are the primary enforcement
+    and dispatch must not wedge ordinary tool use on a broken
+    probe."""
+    if preauthorized:
+        return False
+    try:
+        if not _config_mod.OLLAMA_SAFE_MODE:
+            return False
+    except Exception:
+        return False
+    try:
+        from aria.agent.providers import provider_mode
+        if str(provider_mode() or "auto").strip().lower() != "local_only":
+            return False
+    except Exception:
+        return False
+    try:
+        from aria.tool_policy import safe_mode_allowed
+        if safe_mode_allowed(fn_name, args):
+            return False
+    except Exception:
+        return False
+    try:
+        from aria import approval as _approval_mod
+        if (fn_name in _approval_mod.NEVER_GATED
+                and not _config_mod.is_user_tool(fn_name)
+                and not _config_mod.is_discovered_mcp_tool(fn_name)):
+            return False
+    except Exception:
+        pass
+    return True
+
+
 def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple[str, bool]:
     """Dispatch one tool with full validation, sandboxing, and audit logging.
     Returns (result_text, False); approval may park the request before its
@@ -634,6 +678,19 @@ def _execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tupl
     if _config_mod.is_safe_mode() and _config_mod.is_safe_mode_blocked(fn_name):
         return (f"[Safe mode: '{fn_name}' is disabled. "
                 f"Disable safe mode to use shell, GUI control, or email.]",
+                False)
+    # 3a2. OLLAMA_SAFE_MODE (pass 36 #14): in local_only mode every
+    # turn is served by the local Ollama leg, so its read-only
+    # capability set is enforced at dispatch too — this covers
+    # callers that never pass through brain's declaration filter
+    # (Live, missions, delegated tasks, direct calls). A user
+    # approval (preauthorized replay) still executes. This is a
+    # behaviour change: local action tools are unavailable by
+    # default under the documented flag.
+    if _ollama_safe_mode_blocks(fn_name, args, preauthorized):
+        return (f"[Safe mode: '{fn_name}' is not available from the "
+                "local model in Local only mode (OLLAMA_SAFE_MODE is "
+                "on — read-only tools only).]",
                 False)
     # 3c. Mission envelope: when the current execution runs under
     # one, only its allowed tools may run — nested calls included.
