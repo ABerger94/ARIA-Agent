@@ -257,11 +257,55 @@ def test_probes_file_and_journal(tmp_path, monkeypatch):
     assert ("journal", "done") in kinds
     file_probes = [p for p in probes if p["kind"] == "file"]
     assert file_probes and file_probes[0]["exists"] is True
+    # Pass 36 #24: the journal attested this file's hash at
+    # write time and the bytes still match — verified, not
+    # merely present.
+    assert file_probes[0]["status"] == "verified", file_probes[0]
     assert file_probes[0]["size"] == len("landed content")
     bundle = grader.build_bundle("g", steps,
                                  rubrics.get_rubric("code_change"),
                                  probes=probes)
     assert "landed content" in bundle
+
+
+def test_file_probe_changed_and_missing_pass36_24(
+        tmp_path, monkeypatch):
+    # Pass 36 #24: a file edited after the journal recorded its
+    # hash reads "changed" (not verified), and a file deleted
+    # after attestation reads "missing" — each distinct, each
+    # rendered so in the bundle.
+    from aria.tools import builtins
+    monkeypatch.setattr(builtins, "WORKSPACE_DIR", str(tmp_path))
+    target = tmp_path / "out.txt"
+    target.write_text("original content", encoding="utf-8")
+    steps = grader.normalize_steps([{
+        "step": 1, "tool": "write_file",
+        "parameters": {"filename": "out.txt"},
+        "output": "wrote it"}])
+    op = "test:probe:24"
+    assert action_journal.begin(op, "write_file",
+                                {"filename": "out.txt"}) is None
+    evidenced = action_journal.add_evidence(
+        "write_file", {"filename": "out.txt"}, "file written")
+    action_journal.finish(op, evidenced)
+
+    target.write_text("someone edited this", encoding="utf-8")
+    probes = grader.build_probes(steps, journal_ids={1: op})
+    fp = [p for p in probes if p["kind"] == "file"][0]
+    assert fp["status"] == "changed", fp
+    assert fp["exists"] is True
+    # The sample comes from the same read as the hash: it is
+    # the NEW bytes, not the recorded ones.
+    assert fp["sample"] == "someone edited this"
+    bundle = grader.build_bundle(
+        "g", steps, rubrics.get_rubric("code_change"), probes=probes)
+    assert "DIFFERS from the recorded artifact hash" in bundle
+
+    target.unlink()
+    probes = grader.build_probes(steps, journal_ids={1: op})
+    fp = [p for p in probes if p["kind"] == "file"][0]
+    assert fp["status"] == "missing", fp
+    assert fp["exists"] is False
 
 
 def test_file_probe_rejected_path_is_unavailable(tmp_path,

@@ -49,6 +49,7 @@ exactly as before.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -271,7 +272,7 @@ def _file_probe(step: dict,
     claimed parameter; a claim with no attested artifact is
     still probed, but only after the current roots/reserved
     check passes, and its hash is never treated as verified
-    (pass 36 #24 threads the attested hash in)."""
+    (pass 36 #24 compares the attested hash when one exists)."""
     tool = step["tool"]
     args = step.get("parameters") or {}
     if tool == "write_file":
@@ -293,7 +294,7 @@ def _file_probe(step: dict,
         path = str(attested["path"])
         probe["path"] = path
     try:
-        from aria import action_journal, workspaces
+        from aria import workspaces
         from aria.tools import builtins
         if attested is not None:
             resolved = _recheck_resolved(path)
@@ -308,26 +309,55 @@ def _file_probe(step: dict,
                            f"({e})")
         return probe
     probe["path"] = resolved
+    # Pass 36 #24: the journal artifact's recorded sha256 is
+    # the expected hash — a preexisting or later-edited file no
+    # longer reads as fresh evidence. The hash and the sample
+    # come from ONE handle: the bytes are hashed as they are
+    # read, so the sample can never describe different bytes
+    # from the recorded digest. Missing / changed / unreadable
+    # are distinct statuses, not a silent non-existence.
+    expected_hash = None
+    if attested is not None:
+        expected_hash = attested.get("sha256")
     try:
-        from aria import action_journal
-        info = action_journal.check_artifact(resolved)
-        if not info.get("verified") and "File missing" in \
-                str(info.get("reason") or ""):
+        digest = hashlib.sha256()
+        prefix = bytearray()
+        size = 0
+        try:
+            with open(resolved, "rb") as stream:
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    size += len(chunk)
+                    if len(prefix) < _SAMPLE_CAP:
+                        prefix.extend(
+                            chunk[:_SAMPLE_CAP - len(prefix)])
+        except FileNotFoundError:
             probe["status"] = "missing"
             probe["reason"] = "File missing"
             return probe
+        except Exception as e:
+            probe["status"] = "unreadable"
+            probe["reason"] = f"{type(e).__name__}"
+            return probe
+        sha = digest.hexdigest()
         probe["exists"] = True
-        # Pass 36 #24 (not yet applied here): an attested hash
-        # still needs comparing before this may read "verified".
-        probe["status"] = "unverified"
-        probe["size"] = info.get("size")
-        probe["sha256"] = info.get("sha256")
-        try:
-            with open(info.get("path", resolved), "r",
-                      encoding="utf-8", errors="replace") as f:
-                probe["sample"] = f.read(_SAMPLE_CAP)
-        except Exception:
-            probe["sample"] = ""
+        probe["size"] = size
+        probe["sha256"] = sha
+        probe["sample"] = prefix.decode(
+            "utf-8", errors="replace")
+        if expected_hash:
+            probe["expected_sha256"] = str(expected_hash)
+            if sha == str(expected_hash):
+                probe["status"] = "verified"
+            else:
+                probe["status"] = "changed"
+                probe["reason"] = ("content differs from the "
+                                   "recorded artifact hash")
+        else:
+            probe["status"] = "unverified"
     except Exception as e:
         probe["status"] = "unreadable"
         probe["reason"] = f"{type(e).__name__}"
