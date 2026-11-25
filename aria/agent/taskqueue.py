@@ -152,6 +152,7 @@ class TaskQueue:
                             "completed": rec.get("completed") or [],
                             "results": rec.get("results") or {},
                             "pending_child": rec.get("pending_child"),
+                            "pending_approval": rec.get("pending_approval"),
                             "execution_scope": execution_scope}
             if not goal:
                 goal = rec.get("goal", "")
@@ -520,9 +521,49 @@ _queue_lock = threading.Lock()
 _recovered_projects = set()
 
 
+_approval_listener_registered = False
+
+
+def _on_approval_resolved(token, tool, args, approved, result) -> None:
+    """Approval-store listener: a delegated task parked behind
+    this token records the user's answer and resumes, so the
+    step settles from the approved replay (or the task stops on
+    a denial) instead of the token being orphaned. Runs under
+    the parked call's project (approval._notify_resolution).
+    Never raises."""
+    try:
+        task_id = taskstore.resolve_pending_approval(
+            token, approved, str(result or ""))
+        if not task_id:
+            return
+        q = get_queue()
+        with q._lock:
+            old = q._tasks.get(task_id)
+        speak = old.speak if old is not None else None
+        new_id = q.submit("", speak=speak, resume_from=task_id)
+        add_log(f"Task [{task_id}] approval {token} "
+                f"{'approved' if approved else 'denied'} — resuming "
+                f"as [{new_id}]")
+    except Exception as e:
+        add_log(f"Task approval listener failed for {token}: {e}")
+
+
+def _ensure_approval_listener() -> None:
+    global _approval_listener_registered
+    if _approval_listener_registered:
+        return
+    try:
+        from aria import approval as _approval
+        _approval.add_resolution_listener(_on_approval_resolved)
+        _approval_listener_registered = True
+    except Exception as e:
+        add_log(f"Task approval listener not registered: {e}")
+
+
 def get_queue() -> TaskQueue:
     """Process-wide queue singleton, started on first use (his shape)."""
     global _queue
+    _ensure_approval_listener()
     with _queue_lock:
         if _queue is None:
             _queue = TaskQueue()

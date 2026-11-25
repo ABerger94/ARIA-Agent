@@ -93,6 +93,12 @@ def _system_prompt() -> str:
         "(step N's result), which the executor substitutes.\n"
         "- Mark a step critical=true only when the task fails "
         "without it.\n"
+        "- When later steps depend on what an earlier step returns "
+        "(which files exist, what a search found), make that step "
+        "the LAST step of the plan and mark it checkpoint=true: "
+        "after it runs you will be shown its result and asked to "
+        "plan the remaining work. Never plan past a checkpoint "
+        "step.\n"
         "- Set task_type by the goal's dominant work: "
         "\"research\" (gathering and answering from sources), "
         "\"code_change\" (editing code or files), or \"general\" "
@@ -106,7 +112,7 @@ def _system_prompt() -> str:
         '  "task_type": "general",\n'
         '  "steps": [\n'
         '    {"step": 1, "tool": "tool_name", "description": "what this step does",\n'
-        '     "parameters": {}, "critical": true}\n'
+        '     "parameters": {}, "critical": true, "checkpoint": false}\n'
         "  ]\n"
         "}")
 
@@ -272,13 +278,22 @@ def _parse_plan(raw: str, goal: str) -> Optional[dict]:
     return plan
 
 
-def _sanitize(plan: dict, goal: str) -> Optional[dict]:
+def _sanitize(plan: dict, goal: str,
+              start: int = 1) -> Optional[dict]:
     """Validate + clamp a parsed plan. Returns None when nothing
-    usable remains (caller falls back)."""
+    usable remains (caller falls back).
+
+    start is the first display number: a replan or continuation
+    numbers its steps AFTER the steps already completed, so a
+    display number ({stepN}, the verifier view, the gates) names
+    exactly one step across plan revisions. A checkpoint step
+    ends the plan — anything planned past it is dropped, because
+    the remaining work is planned from its result."""
     known = known_tools()
     warnings: List[str] = list(plan.get("warnings") or [])
     steps: List[dict] = []
-    for raw_step in plan.get("steps") or []:
+    raw_steps = plan.get("steps") or []
+    for pos, raw_step in enumerate(raw_steps):
         if not isinstance(raw_step, dict):
             continue
         tool = str(raw_step.get("tool") or "").strip()
@@ -294,13 +309,21 @@ def _sanitize(plan: dict, goal: str) -> Optional[dict]:
         # re-sanitized, or a hand-built plan) keeps it.
         steps.append({
             "id": str(raw_step.get("id") or _new_step_id()),
-            "step": len(steps) + 1,
+            "step": start + len(steps),
             "tool": tool,
             "description": str(raw_step.get("description") or ""),
             "parameters": raw_step.get("parameters")
             if isinstance(raw_step.get("parameters"), dict) else {},
             "critical": bool(raw_step.get("critical", False)),
+            "checkpoint": bool(raw_step.get("checkpoint", False)),
         })
+        if steps[-1]["checkpoint"]:
+            if pos + 1 < len(raw_steps):
+                warnings.append(
+                    "dropped steps planned past checkpoint step "
+                    f"{steps[-1]['step']} — the rest is planned "
+                    "from its result")
+            break
     cap = _plan_max_steps()
     if len(steps) > cap:
         warnings.append(
@@ -349,36 +372,131 @@ def create_plan(goal: str, context: str = "",
         return _fallback_plan(goal)
 
 
+_RESULT_PREVIEW = 300  # chars of each completed step's result shown to the replanner
+
+
+def _next_display_number(completed_steps: list) -> int:
+    """First display number for a follow-on plan revision: one
+    past the highest number already used by a completed step, so
+    numbers never collide across revisions."""
+    used = [s.get("step") for s in completed_steps or []
+            if isinstance(s, dict) and isinstance(s.get("step"), int)]
+    return (max(used) + 1) if used else 1
+
+
+def _completed_summary(completed_steps: list,
+                       results: Optional[dict]) -> str:
+    """The completed steps as the replanner sees them: number,
+    tool, and a bounded preview of what each one returned (keyed
+    by stable step id, display number as the legacy fallback)."""
+    lines = []
+    for s in completed_steps or []:
+        out = None
+        if results:
+            out = results.get(s.get("id"))
+            if out is None:
+                out = results.get(str(s.get("step")))
+        line = f"  - Step {s.get('step')} ({s.get('tool')}): DONE"
+        if out is not None:
+            preview = " ".join(str(out).split())[:_RESULT_PREVIEW]
+            line += f" — result: {preview}"
+        lines.append(line)
+    return "\n".join(lines) if lines else "  (none)"
+
+
+def _numbering_note(start: int) -> str:
+    return (f"Number the new steps from {start}. A parameter may "
+            "use {stepN} for any completed step listed above or any "
+            "new step before it, and {prev} for the step just "
+            "before.")
+
+
 def replan(goal: str, completed_steps: list, failed_step: dict,
-           error: str, llm: Optional[Callable] = None) -> dict:
+           error: str, llm: Optional[Callable] = None,
+           results: Optional[dict] = None) -> dict:
     """Revised plan for the REMAINING work after a step failure.
     Same validation/clamps/fallback as create_plan: a failed
     replan raises PlanningFailed unless the goal is explicitly
-    research-shaped (pass 36 #33)."""
+    research-shaped (pass 36 #33).
+
+    The new steps are numbered after the completed ones, so
+    {stepN} and every display-number view stay unambiguous
+    across revisions, and the prompt carries each completed
+    step's result so the revision can build on it."""
     llm = llm or _default_llm
-    completed_summary = "\n".join(
-        f"  - Step {s.get('step')} ({s.get('tool')}): DONE"
-        for s in completed_steps)
+    start = _next_display_number(completed_steps)
     prompt = (
         f"Goal: {goal}\n\n"
-        f"Already completed:\n{completed_summary if completed_summary else '  (none)'}\n\n"
+        f"Already completed:\n"
+        f"{_completed_summary(completed_steps, results)}\n\n"
         f"Failed step: [{failed_step.get('tool')}] "
         f"{failed_step.get('description')}\n"
         f"Error: {str(error)[:400]}\n\n"
         "Create a REVISED plan for the remaining work only. "
-        "Do not repeat completed steps.")
+        "Do not repeat completed steps. "
+        f"{_numbering_note(start)}")
     try:
         raw = llm(prompt, _system_prompt())
         plan = _parse_plan(raw, goal)
         if plan is not None:
-            plan = _sanitize(plan, goal)
+            plan = _sanitize(plan, goal, start=start)
         if plan is None:
             add_log("planner: replan unusable, using fallback plan")
-            return _fallback_plan(goal)
+            return _renumber(_fallback_plan(goal), start)
         add_log(f"planner: revised plan — {len(plan['steps'])} step(s)")
         return plan
     except PlanningFailed:
         raise
     except Exception as e:
         add_log(f"planner: replan failed ({e}), using fallback plan")
-        return _fallback_plan(goal)
+        return _renumber(_fallback_plan(goal), start)
+
+
+def _renumber(plan: dict, start: int) -> dict:
+    for i, step in enumerate(plan.get("steps") or []):
+        step["step"] = start + i
+    return plan
+
+
+def continue_plan(goal: str, completed_steps: list,
+                  results: Optional[dict] = None,
+                  llm: Optional[Callable] = None) -> Optional[dict]:
+    """Plan the work that follows a checkpoint step, from what the
+    completed steps actually returned. Returns a plan whose
+    "steps" may be EMPTY — the model saying the goal is already
+    met — or None when no usable continuation could be made (the
+    caller then verifies the work done so far instead of
+    guessing). Never sends anything to a search backend as a
+    stand-in: a continuation has no fallback plan."""
+    llm = llm or _default_llm
+    start = _next_display_number(completed_steps)
+    prompt = (
+        f"Goal: {goal}\n\n"
+        f"Completed so far:\n"
+        f"{_completed_summary(completed_steps, results)}\n\n"
+        "Using these results, plan the REMAINING work only. Do "
+        "not repeat completed steps. If the goal is already "
+        'accomplished, return "steps": []. '
+        f"{_numbering_note(start)}")
+    try:
+        raw = llm(prompt, _system_prompt())
+        plan = _parse_plan(raw, goal)
+        if plan is None:
+            add_log("planner: continuation unusable")
+            return None
+        if not plan.get("steps"):
+            add_log("planner: continuation — goal already met")
+            return {"goal": plan.get("goal") or goal, "steps": [],
+                    "task_type": _valid_task_type(plan.get("task_type")),
+                    "plan_rev": _new_plan_rev(), "warnings": []}
+        plan = _sanitize(plan, goal, start=start)
+        if plan is None:
+            add_log("planner: continuation had no usable steps")
+            return None
+        for w in plan["warnings"]:
+            add_log(f"planner: {w}")
+        add_log(f"planner: continuation — {len(plan['steps'])} step(s)")
+        return plan
+    except Exception as e:
+        add_log(f"planner: continuation failed ({e})")
+        return None
