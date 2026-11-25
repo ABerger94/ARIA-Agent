@@ -98,6 +98,71 @@ def _persist_pending_tool_receipts(contents):
         _config_silent.log_silent("_persist_pending_tool_receipts", _e_silent)
 
 
+# Tool exchanges carried into history (so the next turn can see
+# what this turn's tools returned): each functionResponse output is
+# capped, and the whole turn's outputs share a budget, so one large
+# result cannot push the conversation itself out of the window.
+_HISTORY_TOOL_OUTPUT_CAP = 1500
+_HISTORY_TOOL_TURN_BUDGET = 6000
+
+
+def _shrink_tool_output(output, cap: int):
+    text = output if isinstance(output, str) else json.dumps(
+        output, default=str)
+    if len(text) <= cap:
+        return output
+    return text[:cap] + f" …[truncated {len(text) - cap} chars]"
+
+
+def _turn_tool_exchange(contents, turn_user_entry) -> list:
+    """The functionCall / functionResponse entries this turn added
+    after its user message, as compact copies fit for history:
+    thought parts dropped, each tool output capped. Returns [] when
+    the turn used no tools or its user entry cannot be found.
+    Never raises."""
+    try:
+        start = next((i for i, e in enumerate(contents)
+                      if e is turn_user_entry), None)
+        if start is None:
+            return []
+        picked = []
+        for entry in contents[start + 1:]:
+            parts = [p for p in entry.get("parts") or []
+                     if isinstance(p, dict)
+                     and ("functionCall" in p or "functionResponse" in p)]
+            if parts:
+                picked.append((entry.get("role"), parts))
+        n_resp = sum(1 for _r, parts in picked for p in parts
+                     if "functionResponse" in p) or 1
+        cap = max(200, min(_HISTORY_TOOL_OUTPUT_CAP,
+                           _HISTORY_TOOL_TURN_BUDGET // n_resp))
+        out = []
+        for role, parts in picked:
+            new_parts = []
+            for p in parts:
+                if "functionResponse" in p:
+                    fr = dict(p["functionResponse"])
+                    resp = fr.get("response")
+                    if isinstance(resp, dict) and "output" in resp:
+                        resp = {**resp, "output": _shrink_tool_output(
+                            resp["output"], cap)}
+                    else:
+                        resp = {"output": _shrink_tool_output(resp, cap)}
+                    fr["response"] = resp
+                    new_parts.append({"functionResponse": fr})
+                else:
+                    new_parts.append(dict(p))
+            out.append({"role": role, "parts": new_parts})
+        # History must stay well-formed: never leave a call without
+        # its response (a loop-guard break can end on a call).
+        while out and any("functionCall" in p for p in out[-1]["parts"]):
+            out.pop()
+        return out
+    except Exception as _e_silent:
+        _config_silent.log_silent("_turn_tool_exchange", _e_silent)
+        return []
+
+
 def _part_chars(part) -> int:
     """Character size of one content part, counting ALL content
     (pass 36 #17). The old cap counted text parts only, so a
@@ -142,24 +207,54 @@ def _history_chars(history) -> int:
     return total
 
 
+def _is_tool_entry(entry) -> bool:
+    return any(isinstance(p, dict)
+               and ("functionCall" in p or "functionResponse" in p)
+               for p in (entry or {}).get("parts", []))
+
+
+def _is_turn_start(entry) -> bool:
+    """A plain user message: the only safe first entry of history
+    (a leading functionCall/functionResponse would be an orphan the
+    providers reject)."""
+    return (entry or {}).get("role") == "user" and \
+        not _is_tool_entry(entry)
+
+
 def _compact_conversation_history(max_chars: int = 24000):
     """Ensure history stays strictly bounded by both turn count and total token/character budget.
 
     Pass 36 #17: the character cap now counts every part
     (functionCall args, functionResponse JSON, inline data), not
     just text parts — tool-heavy turns used to blow past the cap
-    while it read small."""
+    while it read small.
+
+    Tool-exchange entries (kept so the next turn can see what a
+    tool returned) do not count toward HISTORY_TURNS, and every
+    trim cuts at the start of a user turn, so history never begins
+    with a tool call or response separated from its pair."""
     global CONVERSATION_HISTORY
-    if len(CONVERSATION_HISTORY) > HISTORY_TURNS:
-        CONVERSATION_HISTORY = CONVERSATION_HISTORY[-HISTORY_TURNS:]
+    hist = CONVERSATION_HISTORY
+
+    def _cut_to_turn_start(idx: int) -> int:
+        while idx < len(hist) and not _is_turn_start(hist[idx]):
+            idx += 1
+        return idx
+
+    start = 0
+    plain = [i for i, e in enumerate(hist) if not _is_tool_entry(e)]
+    if len(plain) > HISTORY_TURNS:
+        start = _cut_to_turn_start(plain[-HISTORY_TURNS])
     total_chars = 0
-    for item in reversed(CONVERSATION_HISTORY):
-        for p in item.get("parts", []):
+    for idx in range(len(hist) - 1, start - 1, -1):
+        for p in hist[idx].get("parts", []):
             total_chars += _part_chars(p)
         if total_chars > max_chars:
-            idx = CONVERSATION_HISTORY.index(item)
-            CONVERSATION_HISTORY = CONVERSATION_HISTORY[idx + 1:]
+            start = _cut_to_turn_start(idx + 1)
             break
+    start = _cut_to_turn_start(start)
+    if start:
+        CONVERSATION_HISTORY = hist[start:]
 
 
 def _fit_contents_to_local_context(system_instruction, contents, decls):
@@ -881,7 +976,8 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
     # 2. Append to history & memory logs
     prompt_label = "User (Screen View): " if is_screen else "User: "
     sentinel.reset()  # new user turn: fresh runaway-loop window
-    CONVERSATION_HISTORY.append({"role": "user", "parts": [{"text": f"{prompt_label}{user_prompt}"}]})
+    _hist_user_entry = {"role": "user", "parts": [{"text": f"{prompt_label}{user_prompt}"}]}
+    CONVERSATION_HISTORY.append(_hist_user_entry)
     _compact_conversation_history()
 
     log_conversation("User", user_prompt)
@@ -892,10 +988,11 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
         b64_img = base64.b64encode(image_bytes).decode("utf-8")
         user_parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64_img}})
 
+    _turn_user_entry: Dict[str, Any] = {"role": "user", "parts": user_parts}
     contents: List[Dict[str, Any]] = [
         {"role": "user", "parts": [{"text": "You are online and listening."}]},
         {"role": "model", "parts": [{"text": "Systems online and ready."}]}
-    ] + CONVERSATION_HISTORY[:-1] + [{"role": "user", "parts": user_parts}]
+    ] + CONVERSATION_HISTORY[:-1] + [_turn_user_entry]
 
     system_instruction = build_system_instruction(user_prompt)
     _turn_t0 = time.time()
@@ -1051,6 +1148,21 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
                     if _empty_retries <= 1:
                         continue
                     final_text = "I didn't catch that — nothing was done."
+                # Keep this turn's tool calls and (capped) results
+                # in history, between the user message and the
+                # reply: only the final text used to be kept, so
+                # the next turn could not see what a tool returned
+                # unless the reply happened to repeat it.
+                # Inserted right after this turn's user message,
+                # ahead of any audit lines the tools appended.
+                _exchange = _turn_tool_exchange(contents, _turn_user_entry)
+                if _exchange:
+                    _at = next((i for i, e in enumerate(CONVERSATION_HISTORY)
+                                if e is _hist_user_entry), None)
+                    if _at is None:
+                        CONVERSATION_HISTORY.extend(_exchange)
+                    else:
+                        CONVERSATION_HISTORY[_at + 1:_at + 1] = _exchange
                 CONVERSATION_HISTORY.append({"role": "model", "parts": [{"text": final_text}]})
                 _compact_conversation_history()
 

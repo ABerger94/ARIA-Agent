@@ -226,7 +226,7 @@ def test_executor_critical_replan_cap_then_abort():
     orig_create, orig_replan = planner.create_plan, planner.replan
     try:
         planner.create_plan = lambda goal, context="", llm=None: plan
-        def _replan(goal, completed, failed, error, llm=None):
+        def _replan(goal, completed, failed, error, llm=None, results=None):
             replan_calls[0] += 1
             return plan
         planner.replan = _replan
@@ -276,14 +276,231 @@ def test_executor_budget_abort():
     print("ok executor_budget_abort")
 
 
-def test_executor_approval_gate_aborts():
+# ------------------------------------------------- approval parking
+def _approval_plan(tool):
+    plan = {"goal": "g", "plan_rev": "r1", "steps": [
+        {"id": "s-1", "step": 1, "tool": tool, "description": "d",
+         "parameters": {}, "critical": True}]}
+    return plan
+
+
+def test_executor_approval_parks_with_token():
+    # A step parked behind an approval used to ABORT the task,
+    # orphaning the live token: approving it later ran the action
+    # detached from a task already reported as failed. The task
+    # now parks with the token so the resolution can settle it.
     _register("fake_gated", ScriptedTool(
         ["[AWAITING_APPROVAL token=abc123] run_python_code"]))
     steps = [_step("fake_gated", critical=True)]
     ex = _executor(llm=lambda p, s: _plan_json(steps))
+    with pytest.raises(taskexec.TaskBlocked) as ei:
+        ex.execute("goal")
+    pa = ei.value.state["pending_approval"]
+    assert pa["token"] == "abc123" and pa["tool"] == "fake_gated", pa
+    assert pa["step_id"] == ei.value.state["plan"]["steps"][0]["id"]
+    assert "approval" in ei.value.reason and "abc123" in ei.value.reason
+
+
+def test_executor_resume_settles_from_approved_replay():
+    tool = _register("fake_gated2", ScriptedTool(["SHOULD-NOT-RUN"]))
+    resume = {"plan": _approval_plan("fake_gated2"), "completed": [],
+              "results": {},
+              "pending_approval": {
+                  "step": 1, "step_id": "s-1", "tool": "fake_gated2",
+                  "token": "abc123",
+                  "resolution": {"approved": True,
+                                 "result": "replayed-ok"}}}
+    out = _executor().execute("goal", resume=resume)
+    assert out == "SUMMARY-OK", out
+    assert tool.calls == [], "the approved replay must not run twice"
+
+
+def test_executor_resume_after_denial_stops():
+    tool = _register("fake_gated3", ScriptedTool(["SHOULD-NOT-RUN"]))
+    resume = {"plan": _approval_plan("fake_gated3"), "completed": [],
+              "results": {},
+              "pending_approval": {
+                  "step": 1, "step_id": "s-1", "tool": "fake_gated3",
+                  "token": "abc123",
+                  "resolution": {"approved": False, "result": "denied"}}}
+    out = _executor().execute("goal", resume=resume)
+    assert "denied" in out, out
+    assert taskexec.normalize(out).status == "failed", out
+    assert tool.calls == []
+
+
+def test_executor_resume_unresolved_approval(monkeypatch):
+    tool = _register("fake_gated4", ScriptedTool(["fresh-run"]))
+    pending = {"step": 1, "step_id": "s-1", "tool": "fake_gated4",
+               "token": "abc123"}
+    # Still pending in the store: keep waiting, do not re-run.
+    monkeypatch.setattr(taskexec, "_approval_still_pending",
+                        lambda t: True)
+    with pytest.raises(taskexec.TaskBlocked):
+        _executor().execute("goal", resume={
+            "plan": _approval_plan("fake_gated4"), "completed": [],
+            "results": {}, "pending_approval": dict(pending)})
+    assert tool.calls == []
+    # Expired with no resolution: it never ran — run it fresh.
+    monkeypatch.setattr(taskexec, "_approval_still_pending",
+                        lambda t: False)
+    out = _executor().execute("goal", resume={
+        "plan": _approval_plan("fake_gated4"), "completed": [],
+        "results": {}, "pending_approval": dict(pending)})
+    assert out == "SUMMARY-OK", out
+    assert len(tool.calls) == 1
+
+
+def test_taskstore_records_approval_resolution():
+    taskstore = taskqueue.taskstore
+    taskstore.create("tA", "goal")
+    taskstore.checkpoint("tA", {
+        "plan": _approval_plan("x"), "completed": [], "results": {},
+        "pending_approval": {"step_id": "s-1", "token": "aaaa1111"}})
+    # Not blocked yet (still parking): recorded, no resume.
+    assert taskstore.resolve_pending_approval(
+        "aaaa1111", True, "ok") is None
+    assert taskstore.get("tA")["pending_approval"]["resolution"] == \
+        {"approved": True, "result": "ok"}
+    # A checkpoint written after the tap keeps the resolution.
+    taskstore.checkpoint("tA", {
+        "plan": _approval_plan("x"), "completed": [], "results": {},
+        "pending_approval": {"step_id": "s-1", "token": "aaaa1111"}})
+    assert "resolution" in taskstore.get("tA")["pending_approval"]
+
+    taskstore.create("tB", "goal")
+    taskstore.checkpoint("tB", {
+        "plan": _approval_plan("x"), "completed": [], "results": {},
+        "pending_approval": {"step_id": "s-1", "token": "bbbb2222"}})
+    taskstore.finish("tB", "blocked", blocked_reason="waiting")
+    # A replay that re-parked moves the wait to the new token.
+    assert taskstore.resolve_pending_approval(
+        "bbbb2222", True,
+        "[AWAITING_APPROVAL token=cccc3333] again") is None
+    assert taskstore.get("tB")["pending_approval"]["token"] == "cccc3333"
+    # The final answer resolves the blocked task and names it.
+    assert taskstore.resolve_pending_approval(
+        "cccc3333", True, "done") == "tB"
+    assert taskstore.resolve_pending_approval("nope", True, "x") is None
+
+
+# ------------------------------------------------- NEED_INPUT
+def test_executor_need_input_reason_strips_prefix():
+    _register("fake_ask", ScriptedTool(["NEED_INPUT: which folder?"]))
+    steps = [_step("fake_ask", critical=True)]
+    ex = _executor(llm=lambda p, s: _plan_json(steps))
+    with pytest.raises(taskexec.TaskBlocked) as ei:
+        ex.execute("goal")
+    assert ei.value.reason == "which folder?", ei.value.reason
+
+
+# ------------------------------------------------- budget mid-step
+def test_executor_budget_bounds_a_hung_step():
+    def _slow(args):
+        time.sleep(4.0)
+        return "late"
+    dispatch.register_tool("fake_slow", _slow, replay_safe=True)
+    steps = [_step("fake_slow", critical=True)]
+    saved = config.DELEGATED_TASK_BUDGET_S
+    config.DELEGATED_TASK_BUDGET_S = 1  # _cap() reads whole seconds
+    try:
+        ex = _executor(llm=lambda p, s: _plan_json(steps))
+        t0 = time.time()
+        with pytest.raises(taskexec.TaskBlocked) as ei:
+            ex.execute("goal")
+        assert time.time() - t0 < 3.0, "the budget must bound the step"
+    finally:
+        config.DELEGATED_TASK_BUDGET_S = saved
+    assert "still running" in ei.value.reason, ei.value.reason
+
+
+# ------------------------------------------------- replan numbering
+def test_replan_numbers_after_completed_and_sees_results():
+    _register("fake_first", ScriptedTool(["first-output"]))
+    _register("fake_breaks", ScriptedTool(
+        ["[Tool Error: wrong approach, try something else]"]))
+    later = _register("fake_later", ScriptedTool(["later-output"]))
+    prompts = []
+
+    def _llm(prompt, system):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return _plan_json([_step("fake_first"),
+                               _step("fake_breaks", critical=True)])
+        return _plan_json([_step("fake_later",
+                                 params={"x": "{step1}"})])
+    ex = _executor(llm=_llm)
     out = ex.execute("goal")
-    assert "needs your approval" in out, out
-    print("ok executor_approval_gate_aborts")
+    assert out == "SUMMARY-OK", out
+    replan_prompt = prompts[1]
+    assert "result: first-output" in replan_prompt, replan_prompt
+    assert "Number the new steps from 2" in replan_prompt
+    # {step1} names the completed step, not the replacement
+    assert later.calls[0]["x"] == "first-output", later.calls
+
+
+def test_planner_replan_numbering():
+    _register("fake_ok", ScriptedTool(["ok"]))
+    done = [{"id": "a", "step": 1, "tool": "fake_ok"},
+            {"id": "b", "step": 2, "tool": "fake_ok"}]
+    plan = planner.replan("g", done, {"tool": "fake_ok"}, "err",
+                          llm=lambda p, s: _plan_json(
+                              [_step("fake_ok"), _step("fake_ok")]),
+                          results={"a": "r1", "b": "r2"})
+    assert [s["step"] for s in plan["steps"]] == [3, 4], plan
+
+
+# ------------------------------------------------- continuations
+def test_planner_drops_steps_past_a_checkpoint():
+    _register("fake_ok", ScriptedTool(["ok"]))
+    cp = dict(_step("fake_ok"), checkpoint=True)
+    plan = planner.create_plan("g", llm=lambda p, s: _plan_json(
+        [_step("fake_ok"), cp, _step("fake_ok")]))
+    assert len(plan["steps"]) == 2 and plan["steps"][-1]["checkpoint"]
+    assert any("checkpoint" in w for w in plan["warnings"])
+
+
+def test_executor_continues_after_checkpoint_step():
+    _register("fake_list", ScriptedTool(["a.txt, b.txt"]))
+    act = _register("fake_act", ScriptedTool(["acted"]))
+    prompts = []
+
+    def _llm(prompt, system):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return _plan_json([dict(_step("fake_list"), checkpoint=True)])
+        return _plan_json([_step("fake_act", params={"files": "{step1}"})])
+    out = _executor(llm=_llm).execute("goal")
+    assert out == "SUMMARY-OK", out
+    assert len(prompts) == 2 and "Completed so far" in prompts[1]
+    assert "result: a.txt, b.txt" in prompts[1]
+    assert act.calls == [{"files": "a.txt, b.txt"}], act.calls
+
+
+def test_executor_empty_continuation_finishes():
+    _register("fake_list2", ScriptedTool(["nothing to do"]))
+    calls = []
+
+    def _llm(prompt, system):
+        calls.append(prompt)
+        if len(calls) == 1:
+            return _plan_json([dict(_step("fake_list2"), checkpoint=True)])
+        return json.dumps({"goal": "g", "steps": []})
+    out = _executor(llm=_llm).execute("goal")
+    assert out == "SUMMARY-OK", out
+    assert len(calls) == 2
+
+
+def test_executor_continuations_are_capped():
+    _register("fake_loop", ScriptedTool(["more"]))
+    calls = []
+
+    def _llm(prompt, system):
+        calls.append(prompt)
+        return _plan_json([dict(_step("fake_loop"), checkpoint=True)])
+    out = _executor(llm=_llm).execute("goal")
+    assert out == "SUMMARY-OK", out
+    assert len(calls) == 1 + config.MAX_PLAN_CONTINUATIONS, len(calls)
 
 
 # ---------------------------------------------------------------- queue

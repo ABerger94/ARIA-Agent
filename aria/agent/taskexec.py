@@ -255,6 +255,26 @@ def _resolved_artifact_path(tool: str, params: dict
         return None
 
 
+_APPROVAL_TOKEN_RE = re.compile(r"token=([0-9a-f]+)")
+
+
+def _approval_still_pending(token: str) -> bool:
+    """True when the shared approval store still holds `token`
+    (unresolved and unexpired). When the store cannot be read the
+    answer is True: a task must keep waiting rather than re-run a
+    step whose parked approval may still be live."""
+    try:
+        from aria import approval as _approval
+        return any(e.get("token") == token
+                   for e in _approval.pending_entries())
+    except Exception:
+        return True
+
+
+class _StepTimedOut(Exception):
+    """A step's tool call outlived the task's remaining budget."""
+
+
 def _ensure_plan_ids(plan: Dict[str, Any]) -> Dict[str, Any]:
     """Stamp a plan revision id and stable step ids onto a plan
     that lacks them (pass 36 #26). Hand-built or monkeypatched
@@ -317,6 +337,40 @@ class AgentExecutor:
         self._step_params: Dict[Any, dict] = {}
 
     # -- skeptical verifier (Gap fill 3) --------------------------
+    def _run_bounded(self, tool: str, params: dict,
+                     timeout_s: float) -> Any:
+        """Run one tool call, but wait at most timeout_s for it.
+
+        The task budget used to be checked only BETWEEN steps, so
+        a single hung tool could hold the worker indefinitely.
+        The call runs on a helper thread carrying this thread's
+        execution context (runtime.copied_call); when the budget
+        runs out first, _StepTimedOut is raised and the caller
+        parks the task — the call itself cannot be killed safely
+        and may still finish, so its effect is left to the action
+        journal's receipt (still 'executing' → UNVERIFIED on a
+        resume), never assumed. Exceptions from the tool,
+        runtime.Cancelled included, re-raise here unchanged."""
+        import threading
+        box: Dict[str, Any] = {}
+
+        def _call():
+            try:
+                box["out"] = self._tool_runner(tool, params)
+            except BaseException as e:  # noqa: BLE001 — re-raised below
+                box["err"] = e
+
+        worker = threading.Thread(
+            target=runtime.copied_call(_call), daemon=True,
+            name=f"aria-task-step-{tool}")
+        worker.start()
+        worker.join(max(0.0, timeout_s))
+        if worker.is_alive():
+            raise _StepTimedOut()
+        if "err" in box:
+            raise box["err"]
+        return box.get("out")
+
     def _grader_chat(self):
         """The grader's chat callable for this executor: None
         lets the grader use its pool-backed default (which
@@ -846,6 +900,7 @@ class AgentExecutor:
         budget_s = _cap("DELEGATED_TASK_BUDGET_S", 600)
         max_attempts = _cap("STEP_MAX_ATTEMPTS", 3)
         max_replans = _cap("MAX_REPLAN_ATTEMPTS", 2)
+        max_continuations = _cap("MAX_PLAN_CONTINUATIONS", 3)
         t0 = time.time()
 
         def _cancelled() -> bool:
@@ -871,6 +926,11 @@ class AgentExecutor:
                     # checkpoint, so a resume settles THAT child
                     # instead of submitting another one.
                     "pending_child": pending_child,
+                    # A step parked behind an approval keeps its
+                    # token here, so the resolution listener can
+                    # record the outcome and the resume settles
+                    # the step from it instead of re-running it.
+                    "pending_approval": pending_approval,
                     # Pass 36 #23 (h): per-step evidence rides
                     # the checkpoint so a resume probes from what
                     # actually ran (None when nothing has run
@@ -912,6 +972,7 @@ class AgentExecutor:
         # Pass 28 #20: a pending child survives in the checkpoint
         # state across parks; a fresh run has none.
         pending_child = (resume or {}).get("pending_child")
+        pending_approval = (resume or {}).get("pending_approval")
         if resume and resume.get("plan"):
             # Resume from a persisted checkpoint: reuse the plan,
             # keep the finished steps and their results. Results
@@ -946,7 +1007,8 @@ class AgentExecutor:
                         {"goal": goal, "plan": plan,
                          "completed": list(completed),
                          "results": dict(results),
-                         "pending_child": pending_child})
+                         "pending_child": pending_child,
+                         "pending_approval": pending_approval})
                 _ensure_plan_ids(plan)
             else:
                 _ensure_plan_ids(plan)
@@ -975,6 +1037,7 @@ class AgentExecutor:
             results = {}
             skip_steps = set()
         replans = 0
+        continuations = 0
         _checkpoint()
 
         while True:
@@ -1065,6 +1128,38 @@ class AgentExecutor:
                         f"record")
                     pending_child = None
                     break
+                preset_out = None
+                if pending_approval and \
+                        pending_approval.get("step_id") == step.get("id"):
+                    # This step parked behind an approval on an
+                    # earlier run. Settle it from the recorded
+                    # resolution — the approved replay already
+                    # ran the call, so re-running it here would
+                    # repeat the effect.
+                    _res = pending_approval.get("resolution")
+                    _tok = str(pending_approval.get("token") or "")
+                    if _res is not None:
+                        if not _res.get("approved"):
+                            add_log("taskexec: step approval denied — "
+                                    "task stopped")
+                            return _finish_outcome(
+                                f"You denied step {step.get('step')} "
+                                f"({step.get('tool')}), so I stopped "
+                                f"the task.")
+                        preset_out = str(_res.get("result") or "")
+                        pending_approval = None
+                    elif _approval_still_pending(_tok):
+                        raise TaskBlocked(
+                            f"waiting for your approval of step "
+                            f"{step.get('step')} ({step.get('tool')}) "
+                            f"— token {_tok}", _state())
+                    else:
+                        # Expired or lost with no recorded
+                        # resolution: it never executed. Run the
+                        # step fresh, which parks a new approval.
+                        add_log(f"taskexec: approval {_tok} expired "
+                                "unresolved; re-parking the step")
+                        pending_approval = None
                 if _cancelled():
                     add_log("taskexec: task cancelled")
                     return "Task cancelled."
@@ -1133,10 +1228,23 @@ class AgentExecutor:
                         op = (f"{_scope}:step:{_sid}:"
                               f"{signature(tool, params)}")
                         self._op_ids[_sid] = op
-                        with runtime.operation(op):
-                            out = self._tool_runner(tool, params)
+                        if preset_out is not None:
+                            out, preset_out = preset_out, None
+                        else:
+                            with runtime.operation(op):
+                                out = self._run_bounded(
+                                    tool, params,
+                                    budget_s - (time.time() - t0))
                     except runtime.Cancelled:
                         raise
+                    except _StepTimedOut:
+                        add_log(f"taskexec: step {step.get('step')} "
+                                f"({tool}) outlived the task budget")
+                        raise TaskBlocked(
+                            f"step {step.get('step')} ({tool}) was "
+                            f"still running when the {budget_s}s task "
+                            f"budget ran out — its outcome is unknown; "
+                            f"check it before resuming", _state())
                     except Exception as e:
                         out = f"[Tool Error: {type(e).__name__}: {e}]"
                     if tool in ("delegate_task", "task_resume") and \
@@ -1164,32 +1272,58 @@ class AgentExecutor:
                                 f"{_m.group(1)} "
                                 f"(step {step.get('step')})",
                                 _state())
-                    if normalize(out).status in (UNVERIFIED, STARTED, ASK) and not str(out).startswith('[AWAITING_APPROVAL'):
-                        raise TaskBlocked(str(out), _state())
-                    # Approval gate / safe mode FIRST: those strings
-                    # are never a success — they need the user, not
-                    # a retry — abort the task deterministically.
-                    if isinstance(out, str) and (
-                            out.startswith("[AWAITING_APPROVAL")
-                            or out.startswith("[Safe mode:")):
+                    _out_text = str(out)
+                    if _out_text.startswith("NEED_INPUT:"):
+                        # The step is asking the user something
+                        # only the user can answer: park the task
+                        # with its checkpoint (Gap fill 3). Checked
+                        # before the generic ASK park below, which
+                        # used to catch it first (NEED_INPUT
+                        # normalizes to ASK) and keep the prefix.
+                        reason = _out_text[len("NEED_INPUT:"):].strip() \
+                            or "a step needs user input"
+                        add_log(f"taskexec: task blocked — {reason[:80]}")
+                        raise TaskBlocked(reason, _state())
+                    if _out_text.startswith("[AWAITING_APPROVAL"):
+                        # The dispatcher parked this call in the
+                        # shared approval store. Park the task WITH
+                        # the token: the queue's resolution listener
+                        # records the user's answer and resumes the
+                        # task, which settles this step from the
+                        # approved replay's result. Aborting here
+                        # used to orphan a live token whose later
+                        # approval ran the action detached from a
+                        # task already reported as failed.
+                        _tm = _APPROVAL_TOKEN_RE.search(_out_text)
+                        if _tm is not None:
+                            pending_approval = {
+                                "step": step.get("step"),
+                                "step_id": step.get("id"),
+                                "tool": tool,
+                                "token": _tm.group(1)}
+                            add_log(f"taskexec: step {step.get('step')} "
+                                    f"({tool}) parked for approval "
+                                    f"token={_tm.group(1)}")
+                            raise TaskBlocked(
+                                f"waiting for your approval of step "
+                                f"{step.get('step')} ({tool}) — token "
+                                f"{_tm.group(1)}", _state())
+                    # Safe mode (or a tokenless approval string):
+                    # never a success, and a retry cannot help —
+                    # abort the task deterministically.
+                    if _out_text.startswith(("[AWAITING_APPROVAL",
+                                             "[Safe mode:")):
                         rec = failures.surface_failure(
                             f"taskexec.step:{tool}", out, critical=True,
                             decision=failures.ABORT,
                             reason="A step is gated on user approval or safe mode.",
-                            user_message="A step needs your approval, so I stopped the task.")
+                            user_message="A step is blocked by safe mode, so I stopped the task.")
                         msg = (rec or {}).get("user_message") or \
-                            "A step needs your approval, so I stopped the task."
+                            "A step is blocked by safe mode, so I stopped the task."
                         return _finish_outcome(msg)
+                    if normalize(out).status in (UNVERIFIED, STARTED, ASK):
+                        raise TaskBlocked(_out_text, _state())
                     if not _is_failure(out):
-                        if isinstance(out, str) and \
-                                out.startswith("NEED_INPUT:"):
-                            # The step is asking the user something
-                            # only the user can answer: park the
-                            # task with its checkpoint (Gap fill 3).
-                            reason = out[len("NEED_INPUT:"):].strip() \
-                                or "a step needs user input"
-                            add_log(f"taskexec: task blocked — {reason[:80]}")
-                            raise TaskBlocked(reason, _state())
                         results[step.get("id")] = out
                         completed.append(step)
                         step_done = True
@@ -1228,6 +1362,23 @@ class AgentExecutor:
                 if failed_step is not None:
                     break
 
+            if failed_step is None and steps[-1].get("checkpoint") \
+                    and continuations < max_continuations:
+                # The plan ended at a checkpoint step: plan the
+                # remaining work from what actually came back,
+                # instead of guessing it all up front. An empty
+                # continuation means the goal is met; an
+                # unusable one falls through to verification of
+                # the work done so far (the grader judges it).
+                continuations += 1
+                cont = planner.continue_plan(
+                    goal, completed, results, llm=self._llm)
+                if cont is not None and cont.get("steps"):
+                    _ensure_plan_ids(cont)
+                    plan = cont
+                    skip_steps = set()
+                    _checkpoint()
+                    continue
             if failed_step is None:
                 if verify:
                     # Pass 36 #31: the grade gets what is left
@@ -1284,7 +1435,8 @@ class AgentExecutor:
                     f"after step failure")
             try:
                 plan = planner.replan(goal, completed, failed_step,
-                                      failed_error, llm=self._llm)
+                                      failed_error, llm=self._llm,
+                                      results=results)
             except planner.PlanningFailed as e:
                 # Pass 36 #33: the replan produced nothing usable
                 # and the goal is not research-shaped — abort

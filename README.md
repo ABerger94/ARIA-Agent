@@ -103,8 +103,15 @@ background through a durable journal (`aria/agent/taskstore.py`): every
 step checkpoints as it finishes, a crash or restart marks in-flight work
 *blocked* instead of losing it, `task_resume` continues a blocked task
 skipping the steps already done, a step that needs you parks as
-*blocked_input* with its question attached, and a skeptical verifier turn
-checks the result before she calls it done. She never replays a finished
+*blocked_input* with its question attached, a step that needs your
+approval parks with its approval token (approve it and the task resumes
+from the approved call's result; deny it and the task stops), and a
+skeptical verifier turn checks the result before she calls it done. A
+plan may end at a *checkpoint* step whose output decides what comes
+next — the rest is then planned from what that step actually returned.
+Replans number their steps after the completed ones and see their
+results, and the task budget bounds a hung tool call, not only the gaps
+between steps. She never replays a finished
 step and never claims a step she didn't run.
 
 **Durable missions.** `mission_create` (`aria/missions.py`) is the

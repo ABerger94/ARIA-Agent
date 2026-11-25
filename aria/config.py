@@ -552,6 +552,7 @@ MEMORY_EXTRACT_ASYNC = os.environ.get(
 PLAN_MAX_STEPS = 5                 # SS3.3: a plan is at most 5 steps
 STEP_MAX_ATTEMPTS = 3              # SS3.3: per-step attempts <= 3
 MAX_REPLAN_ATTEMPTS = 2            # SS3.3: replans per task <= 2
+MAX_PLAN_CONTINUATIONS = 3         # checkpoint-step continuations per task run
 ERROR_USER_MESSAGE_MAX_WORDS = 15  # SS3.2/SS3.3: spoken failure text cap
 TASK_QUEUE_MAX_CONCURRENT = 1      # SS3.3: queue concurrency is 1
 DELEGATED_TASK_BUDGET_S = 600      # SS3.3: whole-task wall-clock budget

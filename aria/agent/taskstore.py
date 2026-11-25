@@ -145,7 +145,7 @@ def create(task_id: str, goal: str, resumed_from: str = "", execution_scope: str
         "results": {str(k): v for k, v in (results or {}).items()},
         "blocked_reason": "", "result": "", "error": "",
         "resumed_from": resumed_from, "resumed_by": "",
-        "pending_child": None,
+        "pending_child": None, "pending_approval": None,
         "execution_scope": execution_scope or f"task:{task_id}",
         "spend_cap": spend_cap, "budget_scope": budget_scope or "",
         "envelope": _jsonable(envelope), "mission_id": mission_id,
@@ -193,6 +193,17 @@ def checkpoint(task_id: str, state: Dict[str, Any]) -> None:
         rec["results"] = {str(k): v for k, v in
                           (state.get("results") or {}).items()}
         rec["pending_child"] = state.get("pending_child")
+        # A resolution the approval listener already recorded for
+        # the same token survives a checkpoint written after it
+        # (the park's own checkpoint can land after a fast tap).
+        new_pa = state.get("pending_approval")
+        old_pa = rec.get("pending_approval")
+        if isinstance(new_pa, dict) and isinstance(old_pa, dict) \
+                and new_pa.get("token") == old_pa.get("token") \
+                and "resolution" in old_pa \
+                and "resolution" not in new_pa:
+            new_pa = {**new_pa, "resolution": old_pa["resolution"]}
+        rec["pending_approval"] = new_pa
         # Pass 36 #25: per-step evidence (substituted params +
         # op id + resolved artifact path) rides the checkpoint
         # when the executor supplies it; when it does not, a
@@ -281,6 +292,50 @@ def set_grade(task_id: str, grade: Optional[dict]) -> bool:
             rec["grade"] = _structured_grade(grade)
         rec["updated_at"] = time.time()
         return _save(data)
+
+
+def resolve_pending_approval(token: str, approved: bool,
+                             result: str) -> Optional[str]:
+    """Record the user's answer on the blocked task whose step is
+    parked behind approval `token`. Returns that task's id, or
+    None when no blocked task waits on the token.
+
+    An approved replay that re-parked behind a fresh token (a
+    handler-side gate) moves the wait to the new token instead
+    of recording a resolution. Otherwise the resolution
+    {approved, result} rides the pending_approval record, so the
+    resume settles the step from the replay's result rather than
+    executing the call a second time."""
+    import re as _re
+    token = str(token or "")
+    if not token:
+        return None
+    with _LOCK:
+        data = _load()
+        for task_id, rec in data.items():
+            pa = rec.get("pending_approval")
+            if not isinstance(pa, dict) or pa.get("token") != token:
+                continue
+            text = str(result or "")
+            chained = _re.search(r"token=([0-9a-f]+)", text) \
+                if (approved and text.startswith("[AWAITING_APPROVAL")) \
+                else None
+            if chained:
+                pa["token"] = chained.group(1)
+                pa.pop("resolution", None)
+            else:
+                pa["resolution"] = {"approved": bool(approved),
+                                    "result": text}
+            rec["pending_approval"] = pa
+            rec["updated_at"] = time.time()
+            _save(data)
+            if chained or rec.get("status") not in RESUMABLE_STATUSES:
+                # Still parking (the record flips to 'blocked'
+                # right after): the resolution is recorded and a
+                # later task_resume settles from it.
+                return None
+            return task_id
+    return None
 
 
 def get(task_id: str) -> Optional[Dict[str, Any]]:
