@@ -87,6 +87,10 @@ def test_pipe_name_from_sid():
     assert coucou.pipe_name(FAKE_SID) == rf"\\.\pipe\coucou-{FAKE_SID}"
 
 
+def test_island_pipe_name_from_sid():
+    assert coucou.island_pipe_name(FAKE_SID) == rf"\\.\pipe\aria-island-{FAKE_SID}"
+
+
 # ------------------------------------------------------------- emit
 
 def test_emit_writes_one_json_line():
@@ -95,14 +99,48 @@ def test_emit_writes_one_json_line():
          _patched(coucou, "_write_line", _capture_transport(calls)), \
          _patched(sys, "platform", "win32"):
         assert coucou.emit("PreToolUse", tool_name="web_search") is True
-    assert len(calls) == 1
-    path, line = calls[0]
-    assert path == coucou.pipe_name(FAKE_SID)
+    # Both island surfaces get the same single line: the original
+    # Coucou pipe and the ARIA Island fork pipe.
+    assert len(calls) == 2
+    paths = [path for path, _line in calls]
+    assert paths == [coucou.pipe_name(FAKE_SID), coucou.island_pipe_name(FAKE_SID)]
+    assert calls[0][1] == calls[1][1]
+    line = calls[0][1]
     assert line.endswith(b"\n")
     payload = json.loads(line.decode("utf-8"))
     assert payload["hook_event_name"] == "PreToolUse"
     assert payload["coucou_agent"] == "aria"
     assert payload["tool_name"] == "web_search"
+
+
+def test_emit_one_pipe_failing_does_not_break_the_other():
+    calls = []
+
+    def flaky(path, line):
+        calls.append((path, line))
+        if "aria-island" in path:
+            raise OSError("fork not running")
+        return True
+
+    with _patched(coucou, "_current_user_sid", lambda: FAKE_SID), \
+         _patched(coucou, "_write_line", flaky), \
+         _patched(sys, "platform", "win32"):
+        assert coucou.emit("SessionStart") is True
+    assert len(calls) == 2
+
+    calls.clear()
+
+    def flaky_reverse(path, line):
+        calls.append((path, line))
+        if "aria-island" not in path:
+            raise OSError("coucou not running")
+        return True
+
+    with _patched(coucou, "_current_user_sid", lambda: FAKE_SID), \
+         _patched(coucou, "_write_line", flaky_reverse), \
+         _patched(sys, "platform", "win32"):
+        assert coucou.emit("SessionStart") is True
+    assert len(calls) == 2
 
 
 def test_emit_fail_silent_when_pipe_absent():

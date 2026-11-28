@@ -64,6 +64,13 @@ def pipe_name(sid: str) -> str:
     return rf"\\.\pipe\coucou-{sid}"
 
 
+def island_pipe_name(sid: str) -> str:
+    """The pipe the ARIA Island fork listens on for this user.
+    A separate name from Coucou's, so the fork and the original
+    Coucou can run side by side; ARIA writes to both."""
+    return rf"\\.\pipe\aria-island-{sid}"
+
+
 def build_payload(event_name: str, **fields) -> dict:
     payload = {
         "hook_event_name": event_name,
@@ -76,16 +83,26 @@ def build_payload(event_name: str, **fields) -> dict:
 
 
 def emit(event_name: str, **fields) -> bool:
-    """Send one hook event to Coucou. Returns True only when the
-    line was written to the pipe; every failure is a quiet False."""
+    """Send one hook event to every island surface (the original
+    Coucou and the ARIA Island fork). Returns True when the line
+    was written to at least one pipe; each pipe is attempted
+    independently, so one surface being closed never blocks or
+    breaks the other. Every failure is a quiet False."""
     try:
         if not enabled():
             return False
-        path = _pipe_path()
-        if not path:
+        paths = _pipe_paths()
+        if not paths:
             return False
         line = (json.dumps(build_payload(event_name, **fields)) + "\n").encode("utf-8")
-        return bool(_write_line(path, line))
+        delivered = False
+        for path in paths:
+            try:
+                if _write_line(path, line):
+                    delivered = True
+            except Exception:
+                pass
+        return delivered
     except Exception:
         return False
 
@@ -117,13 +134,13 @@ def session_end() -> bool:
 
 # ------------------------------------------------------------ pipe plumbing
 
-def _pipe_path():
+def _pipe_paths():
     if sys.platform != "win32":
-        return None
+        return []
     sid = _current_user_sid()
     if not sid:
-        return None
-    return pipe_name(sid)
+        return []
+    return [pipe_name(sid), island_pipe_name(sid)]
 
 
 def _current_user_sid():
