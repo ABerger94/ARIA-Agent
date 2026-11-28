@@ -1454,6 +1454,15 @@ def main():
 
     start_all()
 
+    # Coucou link: ARIA's pill appears in the desktop island
+    # (fail-silent; SessionEnd is armed via atexit and also
+    # emitted in the finally below).
+    try:
+        from aria import coucou_link as _coucou_link
+        _coucou_link.session_start()
+    except Exception:
+        pass
+
     try:
         if _select_ui_host() == "qt":
             from aria import qthost as _qthost
@@ -1472,6 +1481,11 @@ def main():
         pass
     finally:
         RUNNING = False
+        try:
+            from aria import coucou_link as _coucou_link
+            _coucou_link.session_end()
+        except Exception:
+            pass
         cv2.destroyAllWindows()
         memory.spine_write_resume_card()
         print("[ARIA] Shutdown complete. Resume card recorded.", flush=True)

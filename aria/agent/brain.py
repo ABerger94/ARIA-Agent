@@ -889,6 +889,13 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
         _RESTART_TIMER = None
 
     LAST_USER_MESSAGE = user_prompt or ""
+    # Coucou link: a user turn starts — her pill goes "thinking".
+    # Event only; the prompt text itself is not forwarded.
+    try:
+        from aria import coucou_link as _coucou_link
+        _coucou_link.emit("UserPromptSubmit")
+    except Exception:
+        pass
     reset_turn_state()
     auto_resolve_toolkits(LAST_USER_MESSAGE)
     set_turn_context(LAST_USER_MESSAGE)
@@ -959,6 +966,11 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
     # 1. Fast-path shortcut check
     _fast = _run_agent_fast_path(user_prompt, say, image_bytes is None)
     if _fast is not None:
+        try:
+            from aria import coucou_link as _coucou_link
+            _coucou_link.emit("Stop")
+        except Exception:
+            pass
         return _fast
 
     # 1b. Vision pre-pass. No provider on the OpenAI-compatible /v1 chain
@@ -996,6 +1008,7 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
 
     system_instruction = build_system_instruction(user_prompt)
     _turn_t0 = time.time()
+    _turn_failed = False
 
     try:
         _empty_retries = 0
@@ -1309,9 +1322,15 @@ def run_agent(user_prompt: str, image_bytes: Optional[bytes] = None, is_screen: 
             pass
         add_log(f"Agent Error: {e}")
         say(f"Protocol error: {e}")
+        _turn_failed = True
         return f"Error: {e}"
     finally:
         BUSY_PROCESSING = False
+        try:
+            from aria import coucou_link as _coucou_link
+            _coucou_link.emit("StopFailure" if _turn_failed else "Stop")
+        except Exception:
+            pass
         hud.set_hud_state("idle")
         hud.draw_hud()
         _maybe_restart_after_self_edit(say)

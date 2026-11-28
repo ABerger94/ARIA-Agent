@@ -372,6 +372,13 @@ def _repair_or_exhaust(fn_name: str, args: dict, err_str: str) -> str:
 
 
 def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple[str, bool]:
+    # Coucou link: mirror the call into the desktop island.
+    # Tool name only — never args (privacy; see coucou_link).
+    try:
+        from aria import coucou_link as _coucou_link
+        _coucou_link.emit("PreToolUse", tool_name=fn_name)
+    except Exception:
+        pass
     ctx = runtime.current()
     parent = runtime.operation_id()
     depth = runtime.DISPATCH_DEPTH.get()
@@ -393,6 +400,13 @@ def execute_tool(fn_name: str, args: dict, preauthorized: bool = False) -> Tuple
         runtime.DISPATCH_DEPTH.reset(token)
         try:
             _fleet_mod.finish(_fleet_token, _fleet_mod.result_ok(result[0]) if result else False)
+        except Exception:
+            pass
+        try:
+            from aria import coucou_link as _coucou_link
+            _coucou_link.emit(
+                "PostToolUse" if result and result[1] else "PostToolUseFailure",
+                tool_name=fn_name)
         except Exception:
             pass
 
